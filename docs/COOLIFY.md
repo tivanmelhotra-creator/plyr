@@ -43,6 +43,15 @@ ghcr.io/saeedkhoshafsar/plyr:latest
 > برای `ghcr.io` با یک GitHub Personal Access Token (با scope `read:packages`) اضافه
 > کنید. عمومی‌کردن ساده‌تر است.
 
+> 🧩 **معماری CPU (مهم):** workflow این پروژه image را برای **هر دو** معماری
+> `linux/amd64` (x86) و `linux/arm64` (ARM) می‌سازد (با `platforms` در buildx +
+> QEMU). اگر سرور Coolify شما ARM باشد (مثل Ampere/Graviton/برخی VPSها) و image فقط
+> amd64 باشد، هنگام deploy این خطا را می‌بینید:
+> `no matching manifest for linux/arm64/v8 ... no match for platform`.
+> راه‌حل همان است: مطمئن شوید نسخهٔ به‌روزِ workflow (با خط
+> `platforms: linux/amd64,linux/arm64`) اجرا شده و image جدید منتشر شده، سپس در
+> Coolify **Redeploy** بزنید.
+
 ---
 
 ## مرحله ۱ — پاک‌کردن منبع اشتباه قبلی (اگر ساختید)
