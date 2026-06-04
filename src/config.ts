@@ -302,7 +302,10 @@ export const getPlanByLevel = (level: number): PlanConfig => {
 // ============================================
 // Validation Warnings
 // ============================================
-if (config.API_KEYS_ENABLED && config.API_KEYS.size === 0) {
+// Note: in 'single' mode auth uses the shared API_TOKEN, not the multi-tenant
+// API_KEYS list, so an empty API_KEYS set is expected and harmless. Only warn
+// in 'multi' mode where API_KEYS actually gates per-user access.
+if (config.DEPLOYMENT_MODE === 'multi' && config.API_KEYS_ENABLED && config.API_KEYS.size === 0) {
   console.warn('[CONFIG] ⚠️ API_KEYS_ENABLED is true but no API_KEYS defined!');
 }
 
