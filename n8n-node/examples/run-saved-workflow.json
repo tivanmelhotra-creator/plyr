@@ -1,0 +1,79 @@
+{
+  "name": "Automation Backend — Run Saved Workflow (Model B)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "runSaved",
+        "userId": "local",
+        "workflowId": "wf_0123456789abcdef",
+        "triggerData": "{\n  \"searchTerm\": \"laptop\",\n  \"maxPages\": 3\n}",
+        "headless": true,
+        "webhookUrl": "",
+        "wait": true,
+        "idempotencyKey": "={{ $now.toFormat('yyyy-LL-dd-HH') }}"
+      },
+      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Run Saved Workflow (wait)",
+      "type": "n8n-nodes-automationbackend.automationBackend",
+      "typeVersion": 1,
+      "position": [480, 300],
+      "credentials": {
+        "automationBackendApi": {
+          "id": "1",
+          "name": "Automation Backend account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "events": ["job.completed", "job.failed", "step.error"],
+        "verifySignature": true
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "On Job / Step Webhook",
+      "type": "n8n-nodes-automationbackend.automationBackendTrigger",
+      "typeVersion": 1,
+      "position": [240, 540],
+      "webhookId": "automation-backend-saved-example",
+      "credentials": {
+        "automationBackendApi": {
+          "id": "1",
+          "name": "Automation Backend account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": {
+      "main": [
+        [
+          {
+            "node": "Run Saved Workflow (wait)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "pinData": {}
+}
