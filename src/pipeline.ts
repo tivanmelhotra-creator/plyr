@@ -10,6 +10,12 @@ import { ModuleLoader } from './core/ModuleLoader';
 import { ConditionEngine } from './core/ConditionEngine';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
+import {
+  emptyStream,
+  normalizeToItems,
+  summarizeItems,
+  type WorkflowItem
+} from './core/WorkflowItems';
 
 // برای Node.js < 18، این را uncomment کنید:
 // import fetch from 'node-fetch';
@@ -709,7 +715,11 @@ export async function runPipeline(params: {
     variables: new Map<string, any>(),
     globalLoopCounter: 0,
     quotaManager,
-    onEvent
+    onEvent,
+    // Step 21: start every workflow with a single empty item, like n8n,
+    // so the first node always has exactly one input item to act on.
+    items: emptyStream(),
+    nodeOutputs: {}
   };
 
   let globalStepNumber = 0;
@@ -2532,6 +2542,27 @@ export async function runPipeline(params: {
         globalStepNumber++;
         stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, result, stepStartTime));
 
+        // Step 21: maintain the uniform item stream. Normalize this
+        // step's result into items; when a step yields nothing usable
+        // (e.g. a click) the previous stream passes through unchanged.
+        {
+          const __inputItems: WorkflowItem[] = context.items;
+          const __produced = normalizeToItems(result);
+          const __outputItems: WorkflowItem[] =
+            __produced.length > 0 ? __produced : __inputItems;
+          context.items = __outputItems;
+          // Remember this node's output for future $node["key"].json refs.
+          const __nodeKey = step.saveAs || `${step.action}#${globalStepNumber}`;
+          context.nodeOutputs[__nodeKey] = __outputItems;
+          // Attach item-flow metadata to the StepOutput we just pushed.
+          const __so = stepOutputs[stepOutputs.length - 1];
+          const __sum = summarizeItems(__outputItems);
+          __so.inputItemCount = __inputItems.length;
+          __so.outputItemCount = __sum.itemCount;
+          __so.outputSample = __sum.sample;
+          __so.outputTruncated = __sum.truncated;
+        }
+
         if (step.saveAs) {
           safeStoreVariable(context.variables, step.saveAs, result, log);
         }
@@ -2561,7 +2592,17 @@ export async function runPipeline(params: {
       // Step 16: live event - announce step completion (best-effort).
       if (stepOutputs.length > __outLenBefore) {
         const __last = stepOutputs[stepOutputs.length - 1];
-        context.onEvent?.('step.done', { index: __last.step, action: __last.action, success: __last.success, durationMs: __last.durationMs });
+        context.onEvent?.('step.done', {
+          index: __last.step,
+          action: __last.action,
+          success: __last.success,
+          durationMs: __last.durationMs,
+          // Step 21: per-step item flow for the NDV-style live panel.
+          inputItemCount: __last.inputItemCount,
+          outputItemCount: __last.outputItemCount,
+          outputSample: __last.outputSample,
+          outputTruncated: __last.outputTruncated
+        });
       }
     }
   };

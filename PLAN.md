@@ -514,12 +514,12 @@ n8n در «اتصال APIها و سرویس‌ها» عالی است، اما **
 
 > هر استپ = چرخهٔ کامل: پیاده‌سازی → tsc+build+test سبز → به‌روزرسانی PLAN/SESSION/README → پاک‌سازی artifact → commit+push روی main + لینک کامیت.
 
-- [ ] **استپ ۲۱ — مدل دادهٔ یکنواخت آیتم‌محور (زیربنای همه‌چیز، الهام مستقیم از n8n)**
-  1. تعریف قرارداد `WorkflowItem = { json: Record<string,unknown>, binary?: {...} }` و «جریان آیتم» بین استپ‌ها در `pipeline.ts`.
-  2. هر استپ ورودی `items[]` می‌گیرد و خروجی `items[]` می‌دهد؛ سازگاری عقب‌رو با متغیرهای فعلی (`set_variable`/extract) حفظ شود.
-  3. ثبت **ورودی/خروجی هر استپ** در رویدادهای live (افزودن `inputItems`/`outputItems`/`itemCount` به `step.done`).
-  4. زمینه‌سازی برای Expression: نگه‌داشتن خروجی هر نود برای ارجاع `$node["name"].json`.
-  - تست: قرارداد آیتم + پوشش n-آیتمی (یک استپ روی چند آیتم) + سازگاری عقب‌رو.
+- [x] **استپ ۲۱ — مدل دادهٔ یکنواخت آیتم‌محور (زیربنای همه‌چیز، الهام مستقیم از n8n)** ✅ _(۲۰۲۶-۰۶-۰۶)_
+  1. ✅ ماژول مستقل و خالصِ `src/core/WorkflowItems.ts`: قرارداد `WorkflowItem = { json: Record<string,unknown>, binary?: Record<string,WorkflowBinary> }` + helperهای `emptyItem/emptyStream/isWorkflowItem/toItem/normalizeToItems/resolveOutputStream/itemsToJson/summarizeItems`.
+  2. ✅ «جریان آیتم» در `pipeline.ts`: هر workflow با **یک آیتم خالی** شروع می‌شود (مثل n8n)؛ خروجی هر استپ با `normalizeToItems(result)` به `items[]` تبدیل می‌شود (شیء→۱ آیتم، آرایه→n آیتم، primitive→`{value}`)؛ اگر استپ خروجی نداشته باشد (مثل click) جریان قبلی **pass-through** می‌شود. سازگاری عقب‌رو کامل: `variables`/`set_variable`/`extract`/`saveAs` دست‌نخورده ماندند (مدل آیتم لایه‌ی اضافه است، نه جایگزین).
+  3. ✅ ثبت ورودی/خروجی هر استپ: فیلدهای `inputItemCount`/`outputItemCount`/`outputSample`/`outputTruncated` به `StepOutput` و رویداد `step.done` افزوده شد (sample با سقف ~۸KB برای جلوگیری از سیل کانال زنده).
+  4. ✅ زمینهٔ Expression: `context.nodeOutputs[nodeKey]` خروجی هر نود را با کلید `saveAs` یا `action#index` نگه می‌دارد (برای ارجاع آیندهٔ `$node["name"].json`).
+  - ✅ تست: `tests/unit/workflow-items.test.ts` (۲۳ تست) — قرارداد آیتم + normalize + fan-out n-آیتمی + pass-through + summarize/cap + سازگاری. `tsc`/`build` سبز، `npm test`=**۱۸۰** (۱۵۷→۱۸۰).
 
 - [ ] **استپ ۲۲ — کتابخانهٔ چند-ورکفلو در UI + اتصال به CRUD موجود**
   1. ویوی «ورکفلوها»: لیست کارت از `GET /workflows/:userId` (نام/توضیح/نسخه/آخرین ویرایش/وضعیت فعال).

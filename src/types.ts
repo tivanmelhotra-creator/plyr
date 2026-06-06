@@ -4,6 +4,7 @@ import type { ProfileManager } from './core/ProfileManager';
 import type { PlanConfig } from './config';
 import type { Condition } from './core/ConditionEngine';
 import type { QuotaManager } from './core/QuotaManager';
+import type { WorkflowItem } from './core/WorkflowItems';
 
 // ============================================
 // Step Output
@@ -16,6 +17,12 @@ export interface StepOutput {
   error?: string;
   timestamp: string;
   durationMs: number;
+  // Step 21 (item-based data model): how many items flowed in/out of
+  // this step and a small JSON-safe preview of the output items.
+  inputItemCount?: number;
+  outputItemCount?: number;
+  outputSample?: Record<string, unknown>[];
+  outputTruncated?: boolean;
 }
 
 // ============================================
@@ -89,6 +96,12 @@ export interface AutomationContext {
   variables: Map<string, unknown>;
   globalLoopCounter: number;
   quotaManager: QuotaManager;
+  // Step 21 (item-based data model): the uniform item stream flowing
+  // between steps (n8n-style). Starts as a single empty item.
+  items: WorkflowItem[];
+  // Per-node output memory keyed by a node identity (saveAs or
+  // action#index), enabling future $node["name"].json expressions.
+  nodeOutputs: Record<string, WorkflowItem[]>;
 }
 
 // ============================================
