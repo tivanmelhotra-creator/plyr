@@ -1114,3 +1114,16 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   font-size: 12px;
   pointer-events: none;
 }
+
+/* ===== Step 27 — per-node error-handling settings (NDV Settings block) ===== */
+.ndv-settings {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.ndv-settings-head { margin-bottom: 8px; }
+.ndv-settings-sub {
+  margin-inline-start: 10px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--border);
+}

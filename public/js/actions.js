@@ -169,6 +169,10 @@
     { id: 'try', icon: '🛡️', cat: 'flow',
       branches: [{ id: 'try', label: 'port.try' }, { id: 'catch', label: 'port.catch' }, { id: 'finally', label: 'port.finally' }],
       fields: [] },
+    // Step 27: deliberate, conditional failure (n8n "Stop And Error").
+    { id: 'stop_and_error', icon: '🛑', cat: 'flow', fields: [
+      { k: 'message', label: 'p.message', type: 'string', ph: 'Why this stops', expr: true, help: 'help.stopError' },
+    ] },
   ];
 
   // Rich field-type registry (Step 25). `input` tells the renderer which

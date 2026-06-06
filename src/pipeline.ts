@@ -8,6 +8,12 @@ import type { AutomationContext, JobResult, StepOutput, CancelChecker, Automatio
 import type { ProfileManager } from './core/ProfileManager';
 import { ModuleLoader } from './core/ModuleLoader';
 import { ConditionEngine } from './core/ConditionEngine';
+import {
+  normalizeErrorPolicy,
+  shouldRetry,
+  retryDelayMs,
+  isStopAndError,
+} from './core/ErrorPolicy';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
@@ -793,6 +799,7 @@ export async function runPipeline(params: {
     stepsToRun: AutomationStep[]
   ): Promise<{ break?: boolean; continue?: boolean; return?: boolean; returnValue?: any } | void> => {
 
+    stepLoop:
     for (let i = 0; i < stepsToRun.length; i++) {
       const step = stepsToRun[i];
       const stepStartTime = Date.now();
@@ -834,12 +841,26 @@ export async function runPipeline(params: {
         finalParams[key] = engine.resolveVariables(finalParams[key]);
       }
 
+      // ── Step 27: per-step error policy (retry / continue-on-fail) ──
+      const __policy = normalizeErrorPolicy(step);
+      const __sgBefore = globalStepNumber;
+      const __soBefore = stepOutputs.length;
+      let __attempt = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+      __attempt++;
       try {
         // ════════════════════════════════════════════════════════════════
         // 1. FAIL
         // ════════════════════════════════════════════════════════════════
         if (step.action === 'fail') {
           throw new WorkflowFailError(String(finalParams.message || 'Terminated by user'));
+        }
+
+        // Step 27: STOP AND ERROR — deliberate, conditional failure.
+        if (isStopAndError(step)) {
+          const __msg = String(finalParams.message || finalParams.errorMessage || 'Stopped by Stop-And-Error');
+          throw new Error(__msg);
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -850,7 +871,7 @@ export async function runPipeline(params: {
           log(`[USER] ${message}`);
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'log', true, { message }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -866,7 +887,7 @@ export async function runPipeline(params: {
             const res = await executeStepGroup(step.else);
             if (res) return res;
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -892,7 +913,7 @@ export async function runPipeline(params: {
 
             iter++;
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -912,7 +933,7 @@ export async function runPipeline(params: {
             if (res?.return) return res;
             if (res?.break) break;
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -925,7 +946,7 @@ export async function runPipeline(params: {
 
           if (!Array.isArray(items)) {
             log(`[WARN] foreach: "${itemsKey}" is not an array, skipping`);
-            continue;
+            continue stepLoop;
           }
 
           for (let k = 0; k < items.length; k++) {
@@ -940,7 +961,7 @@ export async function runPipeline(params: {
             if (res?.return) return res;
             if (res?.break) break;
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -954,7 +975,7 @@ export async function runPipeline(params: {
             const res = await executeStepGroup(caseSteps);
             if (res) return res;
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -978,7 +999,7 @@ export async function runPipeline(params: {
               if (res) return res;
             }
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1004,7 +1025,7 @@ export async function runPipeline(params: {
           }
 
           safeStoreVariable(context.variables, String(finalParams.name), val, log);
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1028,7 +1049,7 @@ export async function runPipeline(params: {
             if (parseBoolean(finalParams.optional)) {
               globalStepNumber++;
               stepOutputs.push(createStepOutput(globalStepNumber, 'attribute', true, { skipped: true }, stepStartTime));
-              continue;
+              continue stepLoop;
             }
             throw new Error(`Element not found: ${selector}`);
           }
@@ -1064,7 +1085,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'attribute', true, resultData, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1083,7 +1104,7 @@ export async function runPipeline(params: {
             if (parseBoolean(finalParams.optional)) {
               globalStepNumber++;
               stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, { skipped: true, count: 0 }, stepStartTime));
-              continue;
+              continue stepLoop;
             }
             throw new Error(`Element not found: ${selector}`);
           }
@@ -1108,7 +1129,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, { count, action: actionType }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1135,7 +1156,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'add-style', true, { applied: true }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1160,7 +1181,7 @@ export async function runPipeline(params: {
               globalStepNumber++;
               stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, emptyResult, stepStartTime));
               if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, emptyResult, log);
-              continue;
+              continue stepLoop;
             }
             throw new Error(`Element not found: ${selector}`);
           }
@@ -1214,7 +1235,7 @@ export async function runPipeline(params: {
           if (step.saveAs) {
             safeStoreVariable(context.variables, step.saveAs, result, log);
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1268,7 +1289,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, { selector, human }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1304,7 +1325,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'mouse-move', true, { x: targetX, y: targetY, human }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1376,7 +1397,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'drag-drop', true, { source, target: target || `(${targetX},${targetY})` }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1407,7 +1428,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, { text: text.substring(0, 20) }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1476,7 +1497,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'scroll', true, { scrolled: scrollResult }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1526,7 +1547,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'screenshot', true, { sizeKB, type, target: targetDesc }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1549,7 +1570,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'select', true, { selector }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1570,7 +1591,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, { selector }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1611,7 +1632,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'upload', true, { files: validatedFiles.map(f => path.basename(f)) }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1662,7 +1683,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'download', true, resultData, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1721,7 +1742,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'navigate', true, { action: navAction, url: context.page?.url() }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1745,7 +1766,7 @@ export async function runPipeline(params: {
             log('[FRAME] Switched back to main page');
             globalStepNumber++;
             stepOutputs.push(createStepOutput(globalStepNumber, 'switch-frame', true, { target: 'main' }, stepStartTime));
-            continue;
+            continue stepLoop;
           }
 
           let frame: any = null;
@@ -1809,7 +1830,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'switch-frame', true, { url: frame.url(), name: frame.name() || null }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -1911,7 +1932,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'clipboard', true, { action, data: resultData }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2074,7 +2095,7 @@ export async function runPipeline(params: {
 
             throw new Error(`HTTP Request Failed: ${errorMsg}`);
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2119,7 +2140,7 @@ export async function runPipeline(params: {
           const pages = context.browserContext.pages();
           if (pages.length === 0) {
             log('[TAB] No tabs to close');
-            continue;
+            continue stepLoop;
           }
 
           const hasTarget = finalParams.url || finalParams.title || finalParams.urlContains ||
@@ -2186,7 +2207,7 @@ export async function runPipeline(params: {
             { closed, remaining: context.browserContext.pages().length },
             stepStartTime
           ));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2235,7 +2256,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'switch-tab', true, { url: target.url() }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2262,7 +2283,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'handle-dialog', true, { handler: action }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2329,7 +2350,7 @@ export async function runPipeline(params: {
               throw e;
             }
           }
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2378,7 +2399,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'cookie', true, { op, data: resultData }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2455,7 +2476,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'variable', true, { op, name: target }, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2501,7 +2522,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'export-data', true, resultData, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2519,7 +2540,7 @@ export async function runPipeline(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'notification', true, resultData, stepStartTime));
-          continue;
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -2576,6 +2597,20 @@ export async function runPipeline(params: {
         }
 
       } catch (stepError: any) {
+        // Step 27: never retry/swallow fatal control-flow errors.
+        const __fatal = stepError instanceof WorkflowFailError
+          || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|QUOTA_EXHAUSTED|Safety Stop)/.test(String(stepError && stepError.message));
+        // Retry-on-fail: roll back this attempt's bookkeeping and try again.
+        if (!__fatal && __policy.retryOnFail && shouldRetry(__attempt, __policy.maxTries)) {
+          globalStepNumber = __sgBefore;
+          stepOutputs.length = __soBefore;
+          const __delay = retryDelayMs(__attempt, __policy.waitBetweenTriesMs);
+          log(`[RETRY] Step '${step.action}' failed (attempt ${__attempt}/${__policy.maxTries}): ${stepError.message}. Retrying in ${__delay}ms...`);
+          context.onEvent?.('step.retry', { index: globalStepNumber + 1, action: step.action, attempt: __attempt, maxTries: __policy.maxTries, error: String(stepError.message || stepError) });
+          await new Promise(r => setTimeout(r, __delay));
+          continue; // retry the step body (while loop)
+        }
+        // Record the failed step output + emit step.error.
         globalStepNumber++;
         stepOutputs.push(createStepOutput(
           globalStepNumber,
@@ -2586,8 +2621,18 @@ export async function runPipeline(params: {
           stepError.message
         ));
         context.onEvent?.('step.error', { index: globalStepNumber, action: step.action, error: String(stepError.message || stepError) });
+        // Continue-on-fail: swallow the (non-fatal) error and carry on.
+        if (!__fatal && __policy.continueOnFail) {
+          log(`[CONTINUE-ON-FAIL] Step '${step.action}' failed but continueOnFail is set; continuing.`);
+          if (step.saveAs) {
+            safeStoreVariable(context.variables, step.saveAs, { error: String(stepError.message || stepError) }, log);
+          }
+          break; // leave the retry loop; the for-loop advances to next step
+        }
         throw stepError;
       }
+      break; // attempt succeeded — leave the retry loop
+      } // end Step 27 retry while-loop
 
       // Step 16: live event - announce step completion (best-effort).
       if (stepOutputs.length > __outLenBefore) {

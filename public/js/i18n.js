@@ -275,6 +275,15 @@
       'help.fillText': 'متنی که در فیلد تایپ می‌شود؛ می‌تواند اکسپرشن باشد.',
       'help.saveAs': 'مقدار استخراج‌شده با این نام در متغیرها ذخیره می‌شود.',
       'help.varValue': 'مقدار مستقیم یا اکسپرشن؛ اگر «از» پر باشد نادیده گرفته می‌شود.',
+      // Error handling settings (Step 27)
+      'settings.errorHandling': 'مدیریت خطا',
+      'settings.continueOnFail': 'ادامه در صورت خطا',
+      'settings.retryOnFail': 'تلاش مجدد در صورت خطا',
+      'settings.maxTries': 'حداکثر تعداد تلاش',
+      'settings.waitBetweenTries': 'فاصلهٔ بین تلاش‌ها (ms)',
+      'help.continueOnFail': 'اگر این نود خطا داد، خطا نادیده گرفته شده و اجرا با نود بعدی ادامه می‌یابد.',
+      'help.retryOnFail': 'پیش از شکست، این نود چند بار دوباره اجرا می‌شود (با فاصلهٔ تنظیم‌شده).',
+      'help.stopError': 'پیام خطایی که هنگام توقف عمدی ورکفلو نمایش داده می‌شود؛ می‌تواند اکسپرشن باشد.',
 
       // Workflows (Step 22)
       'wf.title': 'ورکفلوها',
@@ -644,6 +653,15 @@
       'help.fillText': 'Text to type into the field; may be an expression.',
       'help.saveAs': 'The extracted value is stored under this variable name.',
       'help.varValue': 'A literal value or expression; ignored when “from” is set.',
+      // Error handling settings (Step 27)
+      'settings.errorHandling': 'Error handling',
+      'settings.continueOnFail': 'Continue On Fail',
+      'settings.retryOnFail': 'Retry On Fail',
+      'settings.maxTries': 'Max tries',
+      'settings.waitBetweenTries': 'Wait between tries (ms)',
+      'help.continueOnFail': 'If this node errors, the error is swallowed and execution continues with the next node.',
+      'help.retryOnFail': 'Re-run this node up to N times (with the configured wait) before failing.',
+      'help.stopError': 'Error message shown when the workflow is stopped on purpose; may be an expression.',
 
       // Workflows (Step 22)
       'wf.title': 'Workflows',

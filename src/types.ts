@@ -72,6 +72,16 @@ export interface AutomationStep {
   catch?: AutomationStep[];
   finally?: AutomationStep[];
   cases?: Record<string, AutomationStep[]>;
+
+  // ── Step 27: per-step error handling (n8n-grade) ──
+  /** Swallow this step's error and continue with the next step. */
+  continueOnFail?: boolean;
+  /** Re-run this step on failure up to `maxTries` times. */
+  retryOnFail?: boolean;
+  /** Total attempts when retryOnFail is on (>=1, capped). */
+  maxTries?: number;
+  /** Base wait between retry attempts, in milliseconds. */
+  waitBetweenTriesMs?: number;
 }
 
 // ============================================

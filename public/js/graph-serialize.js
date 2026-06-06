@@ -103,6 +103,24 @@
     return cond;
   }
 
+  // Step 27: copy a node's error-handling settings onto its serialized step as
+  // top-level AutomationStep fields (continueOnFail / retryOnFail / maxTries /
+  // waitBetweenTriesMs). Only emits fields that are explicitly set, so plain
+  // nodes stay clean. The settings live on `node.errorPolicy` (set by the NDV
+  // Settings tab); tolerant of missing/garbage values.
+  function applyErrorPolicy(step, node) {
+    var ep = node && node.errorPolicy;
+    if (!ep || typeof ep !== 'object') return;
+    if (ep.continueOnFail === true) step.continueOnFail = true;
+    if (ep.retryOnFail === true) {
+      step.retryOnFail = true;
+      var mt = parseInt(ep.maxTries, 10);
+      if (isFinite(mt) && mt > 1) step.maxTries = mt;
+      var wt = parseInt(ep.waitBetweenTriesMs, 10);
+      if (isFinite(wt) && wt >= 0) step.waitBetweenTriesMs = wt;
+    }
+  }
+
   // -------- graph -> steps[] (serialize) -------------------------------------
   // Walks a chain starting from the node reached via `startEdgePort` of
   // `fromId`. `seen` guards against cycles within a single chain walk.
@@ -117,7 +135,10 @@
       if (!node) break;
       seen[nextId] = true;
       var built = buildNode(graph, node, seen);
-      if (built.step) steps.push(built.step);
+      if (built.step) {
+        applyErrorPolicy(built.step, node);
+        steps.push(built.step);
+      }
       // Determine the continuation node id.
       nextId = built.continueId;
     }
@@ -239,6 +260,16 @@
           if (c.selector !== undefined) node.params.selector = String(c.selector);
           if (c.value !== undefined) node.params.value = String(c.value);
           if (c.expected !== undefined) node.params.expected = String(c.expected);
+        }
+        // Step 27: reconstruct the node's error-handling settings from the step.
+        if (s.continueOnFail === true || s.retryOnFail === true) {
+          node.errorPolicy = {};
+          if (s.continueOnFail === true) node.errorPolicy.continueOnFail = true;
+          if (s.retryOnFail === true) {
+            node.errorPolicy.retryOnFail = true;
+            if (s.maxTries !== undefined) node.errorPolicy.maxTries = s.maxTries;
+            if (s.waitBetweenTriesMs !== undefined) node.errorPolicy.waitBetweenTriesMs = s.waitBetweenTriesMs;
+          }
         }
         graph.nodes[id] = node;
         if (prevId === null) {

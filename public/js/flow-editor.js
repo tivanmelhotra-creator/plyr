@@ -859,6 +859,89 @@
     });
   }
 
+  // Step 27: collapsible "Settings" block for a node's error-handling policy.
+  // Stored on node.errorPolicy and serialized as top-level AutomationStep fields
+  // (continueOnFail / retryOnFail / maxTries / waitBetweenTriesMs).
+  function buildErrorSettings(node) {
+    node.errorPolicy = node.errorPolicy || {};
+    var ep = node.errorPolicy;
+    var wrap = document.createElement('div');
+    wrap.className = 'ndv-settings';
+
+    var head = document.createElement('div');
+    head.className = 'ndv-col-head ndv-settings-head';
+    head.textContent = t('settings.errorHandling');
+    wrap.appendChild(head);
+
+    function toggleRow(key, labelKey, helpKey, onChange) {
+      var row = document.createElement('div');
+      row.className = 'form-row ndv-row';
+      var lw = document.createElement('div');
+      lw.className = 'ndv-label-wrap';
+      var lab = document.createElement('label');
+      lab.textContent = t(labelKey);
+      lw.appendChild(lab);
+      var tog = document.createElement('label');
+      tog.className = 'ndv-toggle';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = ep[key] === true;
+      var slide = document.createElement('span');
+      slide.className = 'ndv-toggle-slide';
+      tog.appendChild(cb); tog.appendChild(slide);
+      lw.appendChild(tog);
+      row.appendChild(lw);
+      if (helpKey) {
+        var help = document.createElement('div');
+        help.className = 'ndv-help';
+        help.textContent = t(helpKey);
+        row.appendChild(help);
+      }
+      cb.addEventListener('change', function () {
+        ep[key] = cb.checked;
+        if (onChange) onChange();
+        renderNodes();
+      });
+      return row;
+    }
+
+    function numRow(key, labelKey, ph, min) {
+      var row = document.createElement('div');
+      row.className = 'form-row ndv-row';
+      var lw = document.createElement('div');
+      lw.className = 'ndv-label-wrap';
+      var lab = document.createElement('label');
+      lab.textContent = t(labelKey);
+      lw.appendChild(lab);
+      row.appendChild(lw);
+      var inp = document.createElement('input');
+      inp.type = 'number';
+      inp.className = 'field ndv-field';
+      if (typeof min === 'number') inp.min = String(min);
+      inp.placeholder = ph || '';
+      inp.value = ep[key] != null ? String(ep[key]) : '';
+      inp.addEventListener('input', function () {
+        var v = inp.value === '' ? undefined : Number(inp.value);
+        ep[key] = v;
+      });
+      row.appendChild(inp);
+      return row;
+    }
+
+    wrap.appendChild(toggleRow('continueOnFail', 'settings.continueOnFail', 'help.continueOnFail'));
+
+    var retrySub = document.createElement('div');
+    retrySub.className = 'ndv-settings-sub';
+    function syncRetrySub() { retrySub.style.display = ep.retryOnFail === true ? '' : 'none'; }
+    wrap.appendChild(toggleRow('retryOnFail', 'settings.retryOnFail', 'help.retryOnFail', syncRetrySub));
+    retrySub.appendChild(numRow('maxTries', 'settings.maxTries', '3', 1));
+    retrySub.appendChild(numRow('waitBetweenTriesMs', 'settings.waitBetweenTries', '1000', 0));
+    wrap.appendChild(retrySub);
+    syncRetrySub();
+
+    return wrap;
+  }
+
   function renderInspector() {
     var box = dom.inspector;
     box.innerHTML = '';
@@ -903,6 +986,9 @@
         paramCol.appendChild(buildFieldRow(node, f));
       });
     }
+
+    // Step 27: per-node error-handling settings (Continue/Retry On Fail).
+    paramCol.appendChild(buildErrorSettings(node));
 
     renderOutputColumn(outCol, node.id);
 

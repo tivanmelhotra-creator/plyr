@@ -19,11 +19,13 @@ import { join } from 'node:path';
 import vm from 'node:vm';
 
 interface Edge { from: string; to: string; port?: string }
-interface Node { id: string; action: string; params?: Record<string, unknown>; x?: number; y?: number }
+interface ErrorPolicy { continueOnFail?: boolean; retryOnFail?: boolean; maxTries?: number; waitBetweenTriesMs?: number }
+interface Node { id: string; action: string; params?: Record<string, unknown>; x?: number; y?: number; errorPolicy?: ErrorPolicy }
 interface Graph { nodes: Record<string, Node>; edges: Edge[]; nextId?: number }
 interface Step { action: string; params?: Record<string, unknown>; condition?: any;
   then?: Step[]; else?: Step[]; steps?: Step[]; catch?: Step[]; finally?: Step[];
-  cases?: Record<string, Step[]> }
+  cases?: Record<string, Step[]>;
+  continueOnFail?: boolean; retryOnFail?: boolean; maxTries?: number; waitBetweenTriesMs?: number }
 interface ValResult { ok: boolean; errors: { code: string; nodeId?: string }[]; warnings: { code: string; nodeId?: string }[] }
 interface GS {
   graphToSteps: (g: Graph) => Step[];
@@ -325,5 +327,62 @@ describe('graph-serialize — Step 24 validation', () => {
     );
     const res = GS.validateGraph(g);
     expect(res.errors.some((e) => e.code === 'switch-var')).toBe(true);
+  });
+});
+
+describe('graph-serialize — Step 27 error policy', () => {
+  it('emits continueOnFail / retryOnFail (+ maxTries/wait) as top-level step fields', () => {
+    const g = graph(
+      [{
+        id: 'a', action: 'click', params: { selector: '.x' },
+        errorPolicy: { continueOnFail: true, retryOnFail: true, maxTries: 5, waitBetweenTriesMs: 2000 },
+      }],
+      [{ from: 'start', to: 'a', port: 'next' }],
+    );
+    const steps = GS.graphToSteps(g);
+    expect(steps[0]).toEqual({
+      action: 'click',
+      params: { selector: '.x' },
+      continueOnFail: true,
+      retryOnFail: true,
+      maxTries: 5,
+      waitBetweenTriesMs: 2000,
+    });
+  });
+
+  it('omits error-policy fields entirely for a plain node', () => {
+    const g = graph(
+      [{ id: 'a', action: 'click', params: { selector: '.x' } }],
+      [{ from: 'start', to: 'a', port: 'next' }],
+    );
+    const steps = GS.graphToSteps(g);
+    expect(steps[0]).toEqual({ action: 'click', params: { selector: '.x' } });
+    expect('continueOnFail' in steps[0]).toBe(false);
+    expect('retryOnFail' in steps[0]).toBe(false);
+  });
+
+  it('does not emit maxTries/wait when retryOnFail is off', () => {
+    const g = graph(
+      [{ id: 'a', action: 'click', params: { selector: '.x' }, errorPolicy: { continueOnFail: true } }],
+      [{ from: 'start', to: 'a', port: 'next' }],
+    );
+    const steps = GS.graphToSteps(g);
+    expect(steps[0].continueOnFail).toBe(true);
+    expect('retryOnFail' in steps[0]).toBe(false);
+    expect('maxTries' in steps[0]).toBe(false);
+  });
+
+  it('round-trips error policy: steps -> graph -> steps', () => {
+    const original: Step[] = [
+      { action: 'goto', params: { url: 'https://x.com' }, retryOnFail: true, maxTries: 3, waitBetweenTriesMs: 1000 },
+      { action: 'click', params: { selector: '.btn' }, continueOnFail: true },
+    ];
+    const g = GS.stepsToGraph(original);
+    const back = GS.graphToSteps(g);
+    expect(back[0].retryOnFail).toBe(true);
+    expect(back[0].maxTries).toBe(3);
+    expect(back[0].waitBetweenTriesMs).toBe(1000);
+    expect(back[1].continueOnFail).toBe(true);
+    expect('retryOnFail' in back[1]).toBe(false);
   });
 });
