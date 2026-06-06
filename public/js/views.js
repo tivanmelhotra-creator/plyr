@@ -29,6 +29,11 @@
     if (window.BrowserView && typeof window.BrowserView.stop === 'function') {
       try { window.BrowserView.stop(); } catch (e) { /* noop */ }
     }
+    // Step 26: tear down the bottom run/log drawer when leaving the editor
+    // (the panel is editor-scoped; persisted last-run survives in localStorage).
+    if (window.RunPanel && typeof window.RunPanel.unmount === 'function') {
+      try { window.RunPanel.unmount(); } catch (e) { /* noop */ }
+    }
   }
 
   function t(k) { return U().t(k); }
@@ -872,6 +877,14 @@
       pendingWorkflowToOpen = null;
     }
 
+    // Step 26: mount the collapsible bottom run/log drawer and restore the
+    // "last run" of whatever workflow is currently open (survives reloads).
+    if (window.RunPanel) {
+      window.RunPanel.mount();
+      var cur0 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      window.RunPanel.loadLastRun(cur0 && cur0.id ? cur0.id : null);
+    }
+
     function refreshWfLabel() {
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
       if (cur && cur.id) {
@@ -971,6 +984,17 @@
             location.hash = '#/jobs?job=' + encodeURIComponent(data.jobId) +
               '&user=' + encodeURIComponent(uid);
           });
+          // Step 26: stream this job's live events into the bottom run/log
+          // drawer — per-node halos, badges and the step timeline update live.
+          if (window.RunPanel) {
+            var curR = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+            window.RunPanel.loadLastRun(curR && curR.id ? curR.id : null);
+            window.RunPanel.startJob({
+              userId: uid,
+              jobId: data.jobId,
+              apiKey: API.getKey ? API.getKey() : '',
+            });
+          }
         })
         .catch(function (err) {
           resultEl.innerHTML = '<div class="result-banner err">❌ ' +

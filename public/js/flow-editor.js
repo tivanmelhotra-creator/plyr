@@ -64,6 +64,8 @@
   var nodeStatus = {};  // Step 23: { nodeId: 'idle'|'running'|'success'|'error' }
   var paletteQuery = ''; // Step 23: palette search text
   var nodeResults = {};  // Step 25: { nodeId: { input:[...], output:[...] } } per-node items for the NDV INPUT/OUTPUT columns (populated by the live runner in Step 26)
+  var nodeMeta = {};     // Step 26: { nodeId: { outputItemCount, inputItemCount, durationMs, status, error } } drives the on-node success/error badge + tooltip
+  var nodePins = {};     // Step 26: { nodeId: true } pinned nodes (show a 📌 indicator on the card)
 
   // Step 22: the saved-workflow currently open in the editor (if any).
   // { id, name, description, version, headless, webhookUrl } | null.
@@ -77,7 +79,7 @@
 
   function newGraph() {
     var start = { id: 'start', action: '__start__', params: {}, x: 60, y: 200 };
-    nodeStatus = {};
+    nodeStatus = {}; nodeMeta = {}; nodePins = {}; nodeResults = {};
     return { nodes: { start: start }, edges: [], nextId: 0, selected: null,
       selSet: {}, view: { x: 0, y: 0, scale: 1 } };
   }
@@ -163,7 +165,7 @@
       state = g;
       state.selected = null;
       state.selSet = {};
-      nodeStatus = {};
+      nodeStatus = {}; nodeMeta = {}; nodePins = {}; nodeResults = {};
       if (dom) renderAll();
       return;
     }
@@ -213,7 +215,7 @@
       state.view = data.view || { x: 0, y: 0, scale: 1 };
       state.selected = null;
       state.selSet = {};
-      nodeStatus = {};
+      nodeStatus = {}; nodeMeta = {}; nodePins = {}; nodeResults = {};
       return true;
     } catch (e) { return false; }
   }
@@ -438,6 +440,40 @@
       '<span class="fn-title">' + esc(nodeTitle(node)) + '</span>' +
       '<span class="fn-status" aria-hidden="true"></span>';
     card.appendChild(header);
+
+    // Step 26: per-node run badge (✓ items + time / ✕ reason) + tooltip, and a
+    // pin indicator. Driven by the last run's meta (nodeMeta) / pins (nodePins).
+    if (!isStart) {
+      var meta = nodeMeta[node.id];
+      if (meta && (meta.status === 'success' || meta.status === 'error')) {
+        var badge = document.createElement('div');
+        var ok = meta.status === 'success';
+        badge.className = 'fn-badge ' + (ok ? 'ok' : 'bad');
+        var parts = [];
+        if (ok) {
+          parts.push('✓');
+          if (meta.outputItemCount != null) parts.push(meta.outputItemCount + ' ' + t('rp.items'));
+          if (meta.durationMs != null) parts.push(meta.durationMs + 'ms');
+        } else {
+          parts.push('✕');
+          if (meta.error) parts.push(String(meta.error).slice(0, 24));
+        }
+        badge.textContent = parts.join(' ');
+        var tip = ok
+          ? (t('rp.done') + ' · ' + (meta.outputItemCount != null ? meta.outputItemCount + ' ' + t('rp.items') : '') +
+             (meta.durationMs != null ? ' · ' + meta.durationMs + 'ms' : ''))
+          : (t('rp.error') + (meta.error ? ' — ' + meta.error : ''));
+        badge.title = tip;
+        card.appendChild(badge);
+      }
+      if (nodePins[node.id]) {
+        var pinmark = document.createElement('div');
+        pinmark.className = 'fn-pin';
+        pinmark.textContent = '📌';
+        pinmark.title = t('rp.pinned');
+        card.appendChild(pinmark);
+      }
+    }
 
     // brief summary of params under the title
     if (node.action !== '__start__') {
@@ -922,6 +958,7 @@
 
   function clearStatuses() {
     nodeStatus = {};
+    nodeMeta = {};
     if (dom) renderNodes();
   }
 
@@ -949,6 +986,9 @@
     if (id === 'start') return;
     delete state.nodes[id];
     delete nodeStatus[id];
+    delete nodeMeta[id];
+    delete nodePins[id];
+    delete nodeResults[id];
     delete state.selSet[id];
     state.edges = state.edges.filter(function (e) {
       return e.from !== id && e.to !== id;
@@ -964,6 +1004,9 @@
     ids.forEach(function (id) {
       delete state.nodes[id];
       delete nodeStatus[id];
+      delete nodeMeta[id];
+      delete nodePins[id];
+      delete nodeResults[id];
       state.edges = state.edges.filter(function (e) {
         return e.from !== id && e.to !== id;
       });
@@ -1420,7 +1463,58 @@
       nodeResults[nodeId] = res || {};
       if (dom && state && state.selected === nodeId) renderInspector();
     },
-    clearResults: function () { nodeResults = {}; if (dom) renderInspector(); },
+    clearResults: function () {
+      nodeResults = {}; nodeMeta = {}; nodePins = {};
+      if (dom) { renderNodes(); renderInspector(); }
+    },
+
+    // ---- Step 26: live run wiring by chain index --------------------------
+    // The live runner addresses nodes by their 0-based position in the main
+    // chain (chainNodeIds()). These helpers translate that to the internal
+    // nodeId so run-panel.js need not know about node identity.
+    //
+    // res = { output:[...items], meta:{ outputItemCount, inputItemCount,
+    //         durationMs, status, error } }. Stores OUTPUT items for the NDV
+    // and the meta that drives the on-node success/error badge.
+    setNodeResultsByIndex: function (chainIndex0, res) {
+      if (typeof chainIndex0 !== 'number') return;
+      var ids = chainNodeIds();
+      var id = ids[chainIndex0];
+      if (!id || !state.nodes[id]) return;
+      res = res || {};
+      // preserve any existing input (derived) while updating output/meta
+      var prev = nodeResults[id] || {};
+      nodeResults[id] = {
+        input: Array.isArray(res.input) ? res.input : prev.input,
+        output: Array.isArray(res.output) ? res.output : (prev.output || []),
+      };
+      if (res.meta) nodeMeta[id] = res.meta;
+      if (dom) {
+        renderNodes();
+        if (state.selected === id) renderInspector();
+      }
+    },
+    // Select the chain node at a 0-based index and open its NDV.
+    selectByChainIndex: function (chainIndex0) {
+      if (typeof chainIndex0 !== 'number') return;
+      var ids = chainNodeIds();
+      var id = ids[chainIndex0];
+      if (!id || !state.nodes[id]) return;
+      selectNode(id);
+    },
+    // Pin / unpin a chain node (0-based) — shows a 📌 on the card.
+    pinByIndex: function (chainIndex0, on) {
+      var ids = chainNodeIds();
+      var id = ids[chainIndex0];
+      if (!id) return;
+      if (on === false) delete nodePins[id]; else nodePins[id] = true;
+      if (dom) renderNodes();
+    },
+    isPinnedByIndex: function (chainIndex0) {
+      var ids = chainNodeIds();
+      var id = ids[chainIndex0];
+      return !!(id && nodePins[id]);
+    },
 
     // ---- Step 24: graph validation ----------------------------------------
     // { ok, errors:[{code,nodeId?,message}], warnings:[...] } — message values

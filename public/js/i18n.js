@@ -146,6 +146,19 @@
       'live.evt.stepError': 'خطای گام',
       'live.evt.log': 'لاگ',
 
+      // Step 26: کشوی اجرا/لاگ + badge نودها + Pinning
+      'rp.title': 'اجرا / لاگ',
+      'rp.empty': 'هنوز اجرایی انجام نشده است.',
+      'rp.items': 'آیتم',
+      'rp.idle': 'بی‌کار',
+      'rp.running': 'در حال اجرا',
+      'rp.done': 'پایان‌یافته',
+      'rp.error': 'خطا',
+      'rp.toggle': 'باز/بستن پنل اجرا',
+      'rp.clear': 'پاک‌سازی',
+      'rp.pin': 'سنجاق‌کردن خروجی این گام',
+      'rp.pinned': 'سنجاق‌شده',
+
       // Live Browser View + Element Picker (Step 12)
       'bv.title': 'مرورگر زنده + انتخاب عنصر',
       'bv.subtitle': 'مرورگر سروری را زنده ببینید، روی صفحه کلیک/تایپ کنید و با ابزار انتخاب، سلکتور CSS/XPath را خودکار بسازید.',
@@ -501,6 +514,19 @@
       'live.evt.stepDone': 'Step finished',
       'live.evt.stepError': 'Step error',
       'live.evt.log': 'Log',
+
+      // Step 26: run/log drawer + node badges + pinning
+      'rp.title': 'Run / Log',
+      'rp.empty': 'No run yet.',
+      'rp.items': 'items',
+      'rp.idle': 'Idle',
+      'rp.running': 'Running',
+      'rp.done': 'Done',
+      'rp.error': 'Error',
+      'rp.toggle': 'Toggle run panel',
+      'rp.clear': 'Clear',
+      'rp.pin': 'Pin this step\u2019s output',
+      'rp.pinned': 'Pinned',
 
       // Live Browser View + Element Picker (Step 12)
       'bv.title': 'Live Browser + Element Picker',
