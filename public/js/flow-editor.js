@@ -63,6 +63,7 @@
   var clipboard = null; // Step 23: copied nodes (for paste)
   var nodeStatus = {};  // Step 23: { nodeId: 'idle'|'running'|'success'|'error' }
   var paletteQuery = ''; // Step 23: palette search text
+  var nodeResults = {};  // Step 25: { nodeId: { input:[...], output:[...] } } per-node items for the NDV INPUT/OUTPUT columns (populated by the live runner in Step 26)
 
   // Step 22: the saved-workflow currently open in the editor (if any).
   // { id, name, description, version, headless, webhookUrl } | null.
@@ -564,6 +565,264 @@
     box.appendChild(wrap);
   }
 
+  // ---- Step 25: NDV (Node Detail View) — three-column INPUT | Parameters |
+  // OUTPUT, rich field types, Fixed/Expression toggle, drag&drop-to-expression.
+  function fieldTypeOf(f) {
+    return (CAT && CAT.fieldType)
+      ? CAT.fieldType(f)
+      : { type: (f.type === 'text' ? 'string' : f.type === 'select' ? 'options' : (f.type || 'string')), input: 'text', expressionable: false };
+  }
+
+  // The items feeding a node's INPUT column = the OUTPUT of the node connected
+  // to its (first) incoming edge. Falls back to {} so drag tokens still work.
+  function inputItemsFor(nodeId) {
+    var r = nodeResults[nodeId];
+    if (r && Array.isArray(r.input)) return r.input;
+    // derive from the predecessor's stored output, if any
+    for (var i = 0; i < state.edges.length; i++) {
+      if (state.edges[i].to === nodeId) {
+        var from = nodeResults[state.edges[i].from];
+        if (from && Array.isArray(from.output)) return from.output;
+      }
+    }
+    return [];
+  }
+  function outputItemsFor(nodeId) {
+    var r = nodeResults[nodeId];
+    return (r && Array.isArray(r.output)) ? r.output : [];
+  }
+
+  // Flatten an item's JSON into dot-paths (for INPUT drag tokens). Depth-limited.
+  function jsonPaths(obj, base, out, depth) {
+    out = out || []; depth = depth || 0;
+    if (depth > 3 || obj == null || typeof obj !== 'object') return out;
+    var keys = Object.keys(obj).slice(0, 40);
+    keys.forEach(function (k) {
+      var path = base ? base + '.' + k : k;
+      var v = obj[k];
+      out.push({ path: path, value: v });
+      if (v && typeof v === 'object' && !Array.isArray(v)) jsonPaths(v, path, out, depth + 1);
+    });
+    return out;
+  }
+
+  function renderInputColumn(col, nodeId) {
+    col.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'ndv-col-head';
+    head.textContent = t('ndv.input');
+    col.appendChild(head);
+    var items = inputItemsFor(nodeId);
+    if (!items.length) {
+      var empty = document.createElement('div');
+      empty.className = 'muted small ndv-empty';
+      empty.textContent = t('ndv.noInput');
+      col.appendChild(empty);
+      return;
+    }
+    var sample = items[0] && items[0].json ? items[0].json : items[0];
+    var paths = jsonPaths(sample, '$json', [], 0);
+    var list = document.createElement('div');
+    list.className = 'ndv-fields';
+    paths.forEach(function (p) {
+      var pill = document.createElement('div');
+      pill.className = 'ndv-pill';
+      pill.setAttribute('draggable', 'true');
+      pill.dataset.expr = '{{ ' + p.path + ' }}';
+      var preview = (p.value != null && typeof p.value !== 'object') ? String(p.value) : '';
+      pill.innerHTML = '<span class="ndv-pill-key">' + esc(p.path) + '</span>' +
+        (preview ? '<span class="ndv-pill-val">' + esc(preview.slice(0, 24)) + '</span>' : '');
+      pill.addEventListener('dragstart', function (ev) {
+        ev.dataTransfer.setData('text/x-expr', pill.dataset.expr);
+        ev.dataTransfer.setData('text/plain', pill.dataset.expr);
+        ev.dataTransfer.effectAllowed = 'copy';
+      });
+      list.appendChild(pill);
+    });
+    col.appendChild(list);
+  }
+
+  function renderOutputColumn(col, nodeId) {
+    col.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'ndv-col-head';
+    head.textContent = t('ndv.output');
+    col.appendChild(head);
+    var items = outputItemsFor(nodeId);
+    if (!items.length) {
+      var empty = document.createElement('div');
+      empty.className = 'muted small ndv-empty';
+      empty.textContent = t('ndv.noOutput');
+      col.appendChild(empty);
+      return;
+    }
+    var pre = document.createElement('pre');
+    pre.className = 'ndv-json';
+    try { pre.textContent = JSON.stringify(items, null, 2).slice(0, 4000); }
+    catch (e) { pre.textContent = String(items); }
+    col.appendChild(pre);
+  }
+
+  // Build one parameter control row (rich type + Fixed/Expression toggle).
+  function buildFieldRow(node, f) {
+    var ft = fieldTypeOf(f);
+    var row = document.createElement('div');
+    row.className = 'form-row ndv-row';
+
+    var labelWrap = document.createElement('div');
+    labelWrap.className = 'ndv-label-wrap';
+    var label = document.createElement('label');
+    label.textContent = t(f.label);
+    labelWrap.appendChild(label);
+
+    // expression-mode state lives on the node (params + an _expr flag map)
+    node._expr = node._expr || {};
+    var current = node.params[f.k];
+    var isExprVal = window.ExpressionEngine
+      ? window.ExpressionEngine.isExpression(current) : /\{\{[\s\S]*?\}\}/.test(String(current || ''));
+    var exprMode = ft.expressionable && (node._expr[f.k] === true || isExprVal);
+
+    var toggle = null;
+    if (ft.expressionable) {
+      toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'ndv-expr-toggle' + (exprMode ? ' on' : '');
+      toggle.textContent = exprMode ? t('expr.expression') : t('expr.fixed');
+      toggle.title = t('expr.toggleHint');
+      labelWrap.appendChild(toggle);
+    }
+    row.appendChild(labelWrap);
+
+    function commit(v) {
+      node.params[f.k] = v;
+      renderNodes();
+      renderFieldFeedback();
+    }
+
+    var input;
+    function buildControl() {
+      if (input && input.parentNode) input.parentNode.removeChild(input);
+      if (exprMode) {
+        input = document.createElement('textarea');
+        input.className = 'field ndv-field ndv-expr-input';
+        input.rows = 2;
+        input.placeholder = '{{ $json.field }}';
+        input.value = node.params[f.k] != null ? String(node.params[f.k]) : '';
+        // drag&drop a token from the INPUT column
+        input.addEventListener('dragover', function (ev) { ev.preventDefault(); input.classList.add('drag-over'); });
+        input.addEventListener('dragleave', function () { input.classList.remove('drag-over'); });
+        input.addEventListener('drop', function (ev) {
+          ev.preventDefault(); input.classList.remove('drag-over');
+          var tok = ev.dataTransfer.getData('text/x-expr') || ev.dataTransfer.getData('text/plain');
+          if (!tok) return;
+          var pos = input.selectionStart != null ? input.selectionStart : input.value.length;
+          input.value = input.value.slice(0, pos) + tok + input.value.slice(pos);
+          commit(input.value);
+        });
+        input.addEventListener('input', function () { commit(input.value); });
+      } else if (ft.input === 'select') {
+        input = document.createElement('select');
+        input.className = 'field ndv-field';
+        (f.options || []).forEach(function (opt) {
+          var o = document.createElement('option');
+          o.value = opt; o.textContent = opt === '' ? '—' : opt;
+          input.appendChild(o);
+        });
+        input.value = node.params[f.k] != null ? node.params[f.k] : (f.options ? f.options[0] : '');
+        input.addEventListener('change', function () { commit(input.value); });
+      } else if (ft.input === 'toggle') {
+        input = document.createElement('label');
+        input.className = 'ndv-toggle';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = node.params[f.k] === true || node.params[f.k] === 'true';
+        var slide = document.createElement('span'); slide.className = 'ndv-toggle-slide';
+        input.appendChild(cb); input.appendChild(slide);
+        cb.addEventListener('change', function () { commit(cb.checked); });
+      } else if (ft.input === 'textarea' || ft.input === 'json' || ft.input === 'code') {
+        input = document.createElement('textarea');
+        input.className = 'field ndv-field' + (ft.input === 'code' ? ' ndv-code' : ft.input === 'json' ? ' ndv-jsonin' : '');
+        input.rows = ft.input === 'textarea' ? 2 : 4;
+        input.placeholder = f.ph || '';
+        input.value = node.params[f.k] != null ? String(node.params[f.k]) : '';
+        input.addEventListener('input', function () { commit(input.value); });
+      } else {
+        input = document.createElement('input');
+        input.className = 'field ndv-field';
+        input.type = ft.input === 'number' ? 'number'
+          : ft.input === 'password' ? 'password'
+          : ft.input === 'datetime' ? 'datetime-local' : 'text';
+        if (ft.input === 'number') {
+          if (typeof f.min === 'number') input.min = String(f.min);
+          if (typeof f.max === 'number') input.max = String(f.max);
+        }
+        input.placeholder = f.ph || '';
+        input.value = node.params[f.k] != null ? String(node.params[f.k]) : '';
+        input.addEventListener('input', function () {
+          var v = input.value;
+          if (ft.input === 'number' && v !== '') v = Number(v);
+          commit(v);
+        });
+      }
+      row.appendChild(input);
+    }
+    buildControl();
+
+    if (toggle) {
+      toggle.addEventListener('click', function () {
+        exprMode = !exprMode;
+        node._expr[f.k] = exprMode;
+        toggle.textContent = exprMode ? t('expr.expression') : t('expr.fixed');
+        toggle.classList.toggle('on', exprMode);
+        buildControl();
+        renderFieldFeedback();
+      });
+    }
+
+    // help + inline expression preview/validation
+    var feedback = document.createElement('div');
+    feedback.className = 'ndv-feedback';
+    if (f.help) {
+      var help = document.createElement('div');
+      help.className = 'ndv-help';
+      help.textContent = t(f.help);
+      feedback.appendChild(help);
+    }
+    var prev = document.createElement('div');
+    prev.className = 'ndv-preview';
+    prev.dataset.fk = f.k;
+    feedback.appendChild(prev);
+    row.appendChild(feedback);
+    row._field = f;
+    return row;
+  }
+
+  // Re-evaluate every expression field's preview against the node's INPUT
+  // sample, marking errors inline (never throws — uses mapParams semantics).
+  function renderFieldFeedback() {
+    if (!dom || !dom.inspector) return;
+    var node = state.selected ? state.nodes[state.selected] : null;
+    if (!node) return;
+    var sample = inputItemsFor(node.id);
+    var ctx = { json: (sample[0] && sample[0].json) ? sample[0].json : (sample[0] || {}), index: 0 };
+    var previews = dom.inspector.querySelectorAll('.ndv-preview');
+    Array.prototype.forEach.call(previews, function (el) {
+      var fk = el.dataset.fk;
+      var raw = node.params[fk];
+      el.className = 'ndv-preview';
+      el.textContent = '';
+      if (!window.ExpressionEngine || !window.ExpressionEngine.isExpression(raw)) return;
+      try {
+        var v = window.ExpressionEngine.evaluateTemplate(raw, ctx);
+        el.classList.add('ok');
+        el.textContent = '= ' + (typeof v === 'object' ? JSON.stringify(v) : String(v)).slice(0, 80);
+      } catch (e) {
+        el.classList.add('err');
+        el.textContent = '⚠ ' + (e && e.message ? e.message : t('expr.invalid'));
+      }
+    });
+  }
+
   function renderInspector() {
     var box = dom.inspector;
     box.innerHTML = '';
@@ -574,52 +833,51 @@
       return;
     }
     var act = actionById(node.action);
+
+    var ndv = document.createElement('div');
+    ndv.className = 'ndv';
+
+    // header
     var h = document.createElement('div');
-    h.className = 'insp-title';
+    h.className = 'insp-title ndv-title';
     h.textContent = nodeTitle(node);
-    box.appendChild(h);
+    ndv.appendChild(h);
+
+    var cols = document.createElement('div');
+    cols.className = 'ndv-cols';
+
+    var inCol = document.createElement('div'); inCol.className = 'ndv-col ndv-col-input';
+    var paramCol = document.createElement('div'); paramCol.className = 'ndv-col ndv-col-params';
+    var outCol = document.createElement('div'); outCol.className = 'ndv-col ndv-col-output';
+
+    renderInputColumn(inCol, node.id);
+
+    var pHead = document.createElement('div');
+    pHead.className = 'ndv-col-head';
+    pHead.textContent = t('ndv.parameters');
+    paramCol.appendChild(pHead);
 
     if (!act || act.fields.length === 0) {
       var none = document.createElement('div');
-      none.className = 'muted small';
+      none.className = 'muted small ndv-empty';
       none.textContent = t('fe.noParams');
-      box.appendChild(none);
-      appendValidation(box);
-      return;
+      paramCol.appendChild(none);
+    } else {
+      act.fields.forEach(function (f) {
+        paramCol.appendChild(buildFieldRow(node, f));
+      });
     }
 
-    act.fields.forEach(function (f) {
-      var row = document.createElement('div');
-      row.className = 'form-row';
-      var label = document.createElement('label');
-      label.textContent = t(f.label);
-      row.appendChild(label);
+    renderOutputColumn(outCol, node.id);
 
-      var input;
-      if (f.type === 'select') {
-        input = document.createElement('select');
-        f.options.forEach(function (opt) {
-          var o = document.createElement('option');
-          o.value = opt; o.textContent = opt;
-          input.appendChild(o);
-        });
-        input.value = node.params[f.k] || f.options[0];
-      } else {
-        input = document.createElement('input');
-        input.type = f.type === 'number' ? 'number' : 'text';
-        input.placeholder = f.ph || '';
-        input.value = node.params[f.k] || '';
-      }
-      input.className = 'field';
-      input.addEventListener('input', function () {
-        node.params[f.k] = input.value;
-        // live-update node summary only (cheap)
-        renderNodes();
-      });
-      row.appendChild(input);
-      box.appendChild(row);
-    });
+    cols.appendChild(inCol);
+    cols.appendChild(paramCol);
+    cols.appendChild(outCol);
+    ndv.appendChild(cols);
+    box.appendChild(ndv);
+
     appendValidation(box);
+    renderFieldFeedback();
   }
 
   function renderAll() {
@@ -1153,6 +1411,16 @@
     // 'idle' | 'running' | 'success' | 'error'.
     setNodeStatus: setNodeStatus,
     clearStatuses: clearStatuses,
+
+    // ---- Step 25: NDV per-node results (INPUT/OUTPUT columns) -------------
+    // The live runner (Step 26) calls setNodeResults(nodeId, { input, output })
+    // with arrays of WorkflowItem-shaped objects; the NDV re-renders if open.
+    setNodeResults: function (nodeId, res) {
+      if (!nodeId) return;
+      nodeResults[nodeId] = res || {};
+      if (dom && state && state.selected === nodeId) renderInspector();
+    },
+    clearResults: function () { nodeResults = {}; if (dom) renderInspector(); },
 
     // ---- Step 24: graph validation ----------------------------------------
     // { ok, errors:[{code,nodeId?,message}], warnings:[...] } — message values

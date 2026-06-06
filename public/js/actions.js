@@ -5,12 +5,21 @@
 // the node-based visual editor (flow-editor.js). Previously the catalog
 // was duplicated in both files; it now lives here as window.ACTION_CATALOG.
 //
-// Field format: { k, label, type, ph?, options? }
+// Field format: { k, label, type, ph?, options?, expr?, help?, min?, max? }
 //   - k:        param key sent to the backend as params[k]
 //   - label:    i18n key (e.g. 'p.url')
-//   - type:     'text' | 'number' | 'select'
-//   - ph:       placeholder (text/number only)
-//   - options:  array of option values (select only)
+//   - type:     rich field type — one of FIELD_TYPES below
+//   - ph:       placeholder (text-like types)
+//   - options:  array of option values (options/multiOptions)
+//   - expr:     true when the field supports {{ }} expression mode (Step 25)
+//   - help:     i18n key for an inline help/description hint (Step 25)
+//   - min/max:  numeric bounds (number type, Step 25)
+//
+// Rich field types (Step 25 — n8n-style NDV):
+//   string | password | multiline | number | boolean | options |
+//   multiOptions | collection | fixedCollection | assignment | dateTime |
+//   code | json | filter
+// Legacy 'text'/'select' are aliased to 'string'/'options' by fieldType().
 //
 // Each action also carries a `cat` (category id) used by the visual editor
 // (Step 23) for colour-coding + grouping/searching the palette. Categories
@@ -26,11 +35,11 @@
   var ACTIONS = [
     // ---- Navigation & timing -----------------------------------------
     { id: 'goto', icon: '🌐', cat: 'navigation', fields: [
-      { k: 'url', label: 'p.url', type: 'text', ph: 'https://example.com' },
+      { k: 'url', label: 'p.url', type: 'string', ph: 'https://example.com', expr: true, help: 'help.url' },
     ] },
     { id: 'wait', icon: '⏳', cat: 'navigation', fields: [
-      { k: 'ms', label: 'p.ms', type: 'number', ph: '1000' },
-      { k: 'selector', label: 'p.selector', type: 'text', ph: '(optional) #ready' },
+      { k: 'ms', label: 'p.ms', type: 'number', ph: '1000', min: 0, expr: true, help: 'help.ms' },
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) #ready', help: 'help.waitSelector' },
     ] },
 
     // ---- Mouse / interaction -----------------------------------------
@@ -46,12 +55,12 @@
 
     // ---- Forms / keyboard --------------------------------------------
     { id: 'fill', icon: '✏️', cat: 'interaction', fields: [
-      { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[name=q]' },
-      { k: 'text', label: 'p.text', type: 'text', ph: 'hello' },
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[name=q]' },
+      { k: 'text', label: 'p.text', type: 'string', ph: 'hello', expr: true, help: 'help.fillText' },
     ] },
     { id: 'type', icon: '⌨️', cat: 'interaction', fields: [
-      { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[name=q]' },
-      { k: 'text', label: 'p.text', type: 'text', ph: 'hello' },
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[name=q]' },
+      { k: 'text', label: 'p.text', type: 'string', ph: 'hello', expr: true, help: 'help.fillText' },
     ] },
     { id: 'press', icon: '↩️', cat: 'interaction', fields: [
       { k: 'text', label: 'p.key', type: 'text', ph: 'Enter' },
@@ -67,54 +76,54 @@
 
     // ---- Data extraction & export ------------------------------------
     { id: 'extract', icon: '📤', cat: 'data', fields: [
-      { k: 'selector', label: 'p.selector', type: 'text', ph: '.price' },
-      { k: 'name', label: 'p.name', type: 'text', ph: 'price' },
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '.price' },
+      { k: 'name', label: 'p.name', type: 'string', ph: 'price', help: 'help.saveAs' },
     ] },
     { id: 'export-data', icon: '💾', cat: 'data', fields: [
-      { k: 'format', label: 'p.format', type: 'select', options: ['json', 'csv'] },
-      { k: 'from', label: 'p.from', type: 'text', ph: '(optional) variable name' },
-      { k: 'filename', label: 'p.filename', type: 'text', ph: 'export' },
+      { k: 'format', label: 'p.format', type: 'options', options: ['json', 'csv'] },
+      { k: 'from', label: 'p.from', type: 'string', ph: '(optional) variable name' },
+      { k: 'filename', label: 'p.filename', type: 'string', ph: 'export', expr: true },
     ] },
     { id: 'screenshot', icon: '📸', cat: 'data', fields: [] },
 
     // ---- Variables (Automa-style transforms) -------------------------
     { id: 'variable', icon: '🔢', cat: 'data', fields: [
-      { k: 'op', label: 'p.op', type: 'select', options: ['set', 'regex', 'replace', 'slice', 'split', 'join', 'sort'] },
-      { k: 'name', label: 'p.name', type: 'text', ph: 'result' },
-      { k: 'from', label: 'p.from', type: 'text', ph: '(optional) source variable' },
-      { k: 'value', label: 'p.value', type: 'text', ph: 'literal value (if no "from")' },
-      { k: 'pattern', label: 'p.pattern', type: 'text', ph: 'regex / replace pattern' },
-      { k: 'flags', label: 'p.flags', type: 'text', ph: 'g i m' },
-      { k: 'replacement', label: 'p.replacement', type: 'text', ph: 'replace op' },
-      { k: 'separator', label: 'p.separator', type: 'text', ph: 'split / join' },
+      { k: 'op', label: 'p.op', type: 'options', options: ['set', 'regex', 'replace', 'slice', 'split', 'join', 'sort'] },
+      { k: 'name', label: 'p.name', type: 'string', ph: 'result' },
+      { k: 'from', label: 'p.from', type: 'string', ph: '(optional) source variable' },
+      { k: 'value', label: 'p.value', type: 'string', ph: 'literal value (if no "from")', expr: true, help: 'help.varValue' },
+      { k: 'pattern', label: 'p.pattern', type: 'string', ph: 'regex / replace pattern' },
+      { k: 'flags', label: 'p.flags', type: 'string', ph: 'g i m' },
+      { k: 'replacement', label: 'p.replacement', type: 'string', ph: 'replace op' },
+      { k: 'separator', label: 'p.separator', type: 'string', ph: 'split / join' },
       { k: 'start', label: 'p.start', type: 'number', ph: 'slice start' },
       { k: 'end', label: 'p.end', type: 'number', ph: 'slice end' },
-      { k: 'numeric', label: 'p.numeric', type: 'select', options: ['', 'true', 'false'] },
-      { k: 'desc', label: 'p.desc', type: 'select', options: ['', 'true', 'false'] },
+      { k: 'numeric', label: 'p.numeric', type: 'boolean' },
+      { k: 'desc', label: 'p.desc', type: 'boolean' },
     ] },
 
     // ---- Cookies & clipboard -----------------------------------------
     { id: 'cookie', icon: '🍪', cat: 'integration', fields: [
-      { k: 'op', label: 'p.op', type: 'select', options: ['getAll', 'get', 'set', 'clear'] },
-      { k: 'name', label: 'p.name', type: 'text', ph: 'session_id' },
-      { k: 'value', label: 'p.value', type: 'text', ph: 'set op only' },
-      { k: 'domain', label: 'p.domain', type: 'text', ph: '(optional) .example.com' },
+      { k: 'op', label: 'p.op', type: 'options', options: ['getAll', 'get', 'set', 'clear'] },
+      { k: 'name', label: 'p.name', type: 'string', ph: 'session_id' },
+      { k: 'value', label: 'p.value', type: 'string', ph: 'set op only', expr: true },
+      { k: 'domain', label: 'p.domain', type: 'string', ph: '(optional) .example.com' },
       { k: 'expires', label: 'p.expires', type: 'number', ph: '(optional) unix ts' },
     ] },
     { id: 'clipboard', icon: '📋', cat: 'integration', fields: [
-      { k: 'action', label: 'p.op', type: 'select', options: ['get', 'set', 'copy', 'paste'] },
-      { k: 'text', label: 'p.text', type: 'text', ph: 'set op' },
-      { k: 'selector', label: 'p.selector', type: 'text', ph: 'copy/paste op' },
+      { k: 'action', label: 'p.op', type: 'options', options: ['get', 'set', 'copy', 'paste'] },
+      { k: 'text', label: 'p.text', type: 'string', ph: 'set op', expr: true },
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'copy/paste op' },
     ] },
 
     // ---- Notification & logging --------------------------------------
     { id: 'notification', icon: '🔔', cat: 'integration', fields: [
-      { k: 'title', label: 'p.title', type: 'text', ph: 'Done' },
-      { k: 'message', label: 'p.message', type: 'text', ph: 'workflow finished' },
-      { k: 'level', label: 'p.level', type: 'select', options: ['info', 'success', 'warn', 'error'] },
+      { k: 'title', label: 'p.title', type: 'string', ph: 'Done', expr: true },
+      { k: 'message', label: 'p.message', type: 'multiline', ph: 'workflow finished', expr: true },
+      { k: 'level', label: 'p.level', type: 'options', options: ['info', 'success', 'warn', 'error'] },
     ] },
     { id: 'log', icon: '📝', cat: 'integration', fields: [
-      { k: 'message', label: 'p.message', type: 'text', ph: 'checkpoint' },
+      { k: 'message', label: 'p.message', type: 'multiline', ph: 'checkpoint', expr: true },
     ] },
 
     // ---- Flow / branching (Step 24) ----------------------------------
@@ -125,42 +134,75 @@
     { id: 'if', icon: '🔀', cat: 'flow',
       branches: [{ id: 'then', label: 'port.then' }, { id: 'else', label: 'port.else' }],
       fields: [
-        { k: 'selector', label: 'p.selector', type: 'text', ph: '(optional) .el' },
-        { k: 'operator', label: 'p.operator', type: 'select', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
-        { k: 'value', label: 'p.value', type: 'text', ph: '(optional) left/var value' },
-        { k: 'expected', label: 'p.expected', type: 'text', ph: '(optional) compare to' },
+        { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
+        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
+        { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
+        { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
       ] },
     { id: 'switch', icon: '🔢', cat: 'flow',
       branches: [{ id: 'default', label: 'port.default' }],
       dynamicBranches: 'cases',
       fields: [
-        { k: 'variable', label: 'p.variable', type: 'text', ph: 'status' },
-        { k: 'casesList', label: 'p.cases', type: 'text', ph: 'a, b, c (comma list)' },
+        { k: 'variable', label: 'p.variable', type: 'string', ph: 'status', expr: true },
+        { k: 'casesList', label: 'p.cases', type: 'string', ph: 'a, b, c (comma list)' },
       ] },
     { id: 'loop', icon: '🔁', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
-        { k: 'count', label: 'p.count', type: 'number', ph: '3' },
+        { k: 'count', label: 'p.count', type: 'number', ph: '3', min: 0, expr: true },
       ] },
     { id: 'foreach', icon: '🔂', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
-        { k: 'items', label: 'p.items', type: 'text', ph: 'variable holding array' },
-        { k: 'itemVar', label: 'p.itemVar', type: 'text', ph: 'item' },
+        { k: 'items', label: 'p.items', type: 'string', ph: 'variable holding array', expr: true },
+        { k: 'itemVar', label: 'p.itemVar', type: 'string', ph: 'item' },
       ] },
     { id: 'while', icon: '♾️', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
-        { k: 'selector', label: 'p.selector', type: 'text', ph: '(optional) .el' },
-        { k: 'operator', label: 'p.operator', type: 'select', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
-        { k: 'value', label: 'p.value', type: 'text', ph: '(optional) left/var value' },
-        { k: 'expected', label: 'p.expected', type: 'text', ph: '(optional) compare to' },
-        { k: 'maxIterations', label: 'p.maxIterations', type: 'number', ph: '100' },
+        { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
+        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
+        { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
+        { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
+        { k: 'maxIterations', label: 'p.maxIterations', type: 'number', ph: '100', min: 1 },
       ] },
     { id: 'try', icon: '🛡️', cat: 'flow',
       branches: [{ id: 'try', label: 'port.try' }, { id: 'catch', label: 'port.catch' }, { id: 'finally', label: 'port.finally' }],
       fields: [] },
   ];
+
+  // Rich field-type registry (Step 25). `input` tells the renderer which
+  // control to build. `expr` marks types that can carry a {{ }} expression by
+  // default (the per-field `expr` flag can still opt-in/out individually).
+  var FIELD_TYPES = {
+    string:          { input: 'text',     expr: true },
+    password:        { input: 'password',  expr: false },
+    multiline:       { input: 'textarea',  expr: true },
+    number:          { input: 'number',    expr: true },
+    boolean:         { input: 'toggle',    expr: false },
+    options:         { input: 'select',    expr: false },
+    multiOptions:    { input: 'multi',     expr: false },
+    collection:      { input: 'collection', expr: false },
+    fixedCollection: { input: 'collection', expr: false },
+    assignment:      { input: 'assignment', expr: true },
+    dateTime:        { input: 'datetime',  expr: true },
+    code:            { input: 'code',       expr: false },
+    json:            { input: 'json',       expr: true },
+    filter:          { input: 'filter',     expr: false },
+  };
+  // Normalise a field's declared type (incl. legacy aliases) to a FIELD_TYPES
+  // entry plus the effective `expressionable` flag for that specific field.
+  function fieldType(field) {
+    field = field || {};
+    var t = field.type || 'string';
+    if (t === 'text') t = 'string';
+    if (t === 'select') t = 'options';
+    var meta = FIELD_TYPES[t] || FIELD_TYPES.string;
+    // A field is expressionable only when it explicitly opts in (`expr:true`)
+    // AND its type supports expressions.
+    var expressionable = field.expr === true && meta.expr === true;
+    return { type: t, input: meta.input, expressionable: expressionable };
+  }
 
   // Category metadata for the visual editor (Step 23): colour + i18n label.
   // `color` drives the node's left accent bar and palette group dot.
@@ -212,6 +254,8 @@
     categoryById: categoryById,
     branchesOf: branchesOf,
     isBranching: isBranching,
+    FIELD_TYPES: FIELD_TYPES,
+    fieldType: fieldType,
     ids: function () { return ACTIONS.map(function (a) { return a.id; }); },
   };
 })();

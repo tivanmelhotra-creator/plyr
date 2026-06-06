@@ -244,6 +244,25 @@
       'val.emptyIf': 'شرط هیچ شاخه‌ای ندارد (then/else)',
       'val.switchVar': 'switch به نام متغیر نیاز دارد',
 
+      // NDV — Node Detail View (Step 25)
+      'ndv.input': 'ورودی',
+      'ndv.parameters': 'پارامترها',
+      'ndv.output': 'خروجی',
+      'ndv.noInput': 'هنوز داده‌ای از نود قبلی وجود ندارد. پس از اجرا اینجا نمایش داده می‌شود (می‌توانید فیلدها را بکشید).',
+      'ndv.noOutput': 'هنوز خروجی‌ای ثبت نشده است. این نود را اجرا کنید تا نتیجه اینجا دیده شود.',
+      // Expression / mapping (Step 25)
+      'expr.fixed': 'ثابت',
+      'expr.expression': 'اکسپرشن',
+      'expr.toggleHint': 'تغییر بین مقدار ثابت و اکسپرشن ({{ }})',
+      'expr.invalid': 'اکسپرشن نامعتبر',
+      // Field help hints (Step 25)
+      'help.url': 'آدرس کامل صفحه‌ای که باز می‌شود. می‌تواند اکسپرشن باشد، مثلاً {{ $json.link }}.',
+      'help.ms': 'مدت انتظار به میلی‌ثانیه (۱۰۰۰ = یک ثانیه).',
+      'help.waitSelector': 'اختیاری: تا ظاهر شدن این انتخابگر صبر می‌کند.',
+      'help.fillText': 'متنی که در فیلد تایپ می‌شود؛ می‌تواند اکسپرشن باشد.',
+      'help.saveAs': 'مقدار استخراج‌شده با این نام در متغیرها ذخیره می‌شود.',
+      'help.varValue': 'مقدار مستقیم یا اکسپرشن؛ اگر «از» پر باشد نادیده گرفته می‌شود.',
+
       // Workflows (Step 22)
       'wf.title': 'ورکفلوها',
       'wf.subtitle': 'کتابخانهٔ ورکفلوهای ذخیره‌شدهٔ شما — بسازید، ویرایش، کپی، اجرا و نسخه‌بندی کنید. دیگر به یک ورکفلو محدود نیستید.',
@@ -580,6 +599,25 @@
       'val.foreachItems': 'foreach requires an array variable',
       'val.emptyIf': 'If has no branch (then/else)',
       'val.switchVar': 'switch requires a variable name',
+
+      // NDV — Node Detail View (Step 25)
+      'ndv.input': 'INPUT',
+      'ndv.parameters': 'Parameters',
+      'ndv.output': 'OUTPUT',
+      'ndv.noInput': 'No data from the previous node yet. It appears here after a run (drag fields into expressions).',
+      'ndv.noOutput': 'No output captured yet. Run this node to see its result here.',
+      // Expression / mapping (Step 25)
+      'expr.fixed': 'Fixed',
+      'expr.expression': 'Expression',
+      'expr.toggleHint': 'Switch between a fixed value and an expression ({{ }})',
+      'expr.invalid': 'Invalid expression',
+      // Field help hints (Step 25)
+      'help.url': 'Full URL to open. May be an expression, e.g. {{ $json.link }}.',
+      'help.ms': 'How long to wait, in milliseconds (1000 = one second).',
+      'help.waitSelector': 'Optional: wait until this selector appears.',
+      'help.fillText': 'Text to type into the field; may be an expression.',
+      'help.saveAs': 'The extracted value is stored under this variable name.',
+      'help.varValue': 'A literal value or expression; ignored when “from” is set.',
 
       // Workflows (Step 22)
       'wf.title': 'Workflows',

@@ -919,3 +919,88 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 @media (max-width: 640px) {
   .wf-grid { grid-template-columns: 1fr; }
 }
+
+/* ===== Step 25 — NDV (Node Detail View): three-column INPUT|Parameters|OUTPUT,
+   rich field controls, Fixed/Expression toggle, drag&drop-to-expression. ===== */
+.ndv { display: flex; flex-direction: column; gap: 8px; }
+.ndv-title { font-weight: 700; margin-bottom: 2px; }
+.ndv-cols { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 1100px) {
+  .ndv-cols { grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.6fr) minmax(120px, 0.8fr); }
+}
+.ndv-col {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  min-width: 0;
+}
+.ndv-col-params { background: var(--bg-elev-2); }
+.ndv-col-head {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 8px;
+}
+.ndv-empty { color: var(--text-faint); padding: 4px 0; }
+
+/* INPUT column — draggable field pills */
+.ndv-fields { display: flex; flex-direction: column; gap: 4px; }
+.ndv-pill {
+  display: flex; justify-content: space-between; gap: 6px; align-items: center;
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev-2); cursor: grab; font-size: 12px;
+  transition: var(--transition);
+}
+.ndv-pill:hover { border-color: var(--primary); background: var(--primary-soft); }
+.ndv-pill:active { cursor: grabbing; }
+.ndv-pill-key { font-family: ui-monospace, monospace; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ndv-pill-val { color: var(--text-faint); font-size: 11px; flex: 0 0 auto; }
+
+/* OUTPUT column — JSON dump */
+.ndv-json {
+  margin: 0; font-family: ui-monospace, monospace; font-size: 11px;
+  white-space: pre-wrap; word-break: break-word; color: var(--text-dim);
+  max-height: 320px; overflow: auto;
+}
+
+/* Parameters column — rich rows */
+.ndv-row { flex-direction: column; align-items: stretch; gap: 4px; margin-bottom: 10px; }
+.ndv-label-wrap { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ndv-label-wrap label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.ndv-field { width: 100%; min-width: 0; }
+.ndv-expr-input, .ndv-code, .ndv-jsonin {
+  font-family: ui-monospace, monospace; font-size: 12px; resize: vertical;
+}
+.ndv-expr-input { border-color: var(--primary); background: var(--primary-soft); }
+.ndv-expr-input.drag-over { outline: 2px dashed var(--primary); outline-offset: 1px; }
+
+/* Fixed / Expression pill toggle */
+.ndv-expr-toggle {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text-faint); cursor: pointer;
+  transition: var(--transition);
+}
+.ndv-expr-toggle:hover { border-color: var(--primary); color: var(--text); }
+.ndv-expr-toggle.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* boolean toggle */
+.ndv-toggle { position: relative; display: inline-flex; width: 42px; height: 22px; cursor: pointer; }
+.ndv-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ndv-toggle-slide {
+  position: absolute; inset: 0; border-radius: 999px; background: var(--border);
+  transition: var(--transition);
+}
+.ndv-toggle-slide::before {
+  content: ''; position: absolute; top: 2px; inset-inline-start: 2px;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: var(--transition);
+}
+.ndv-toggle input:checked + .ndv-toggle-slide { background: var(--primary); }
+.ndv-toggle input:checked + .ndv-toggle-slide::before { transform: translateX(20px); }
+[dir="rtl"] .ndv-toggle input:checked + .ndv-toggle-slide::before { transform: translateX(-20px); }
+
+/* help + inline expression preview/validation */
+.ndv-feedback { display: flex; flex-direction: column; gap: 2px; }
+.ndv-help { font-size: 11px; color: var(--text-faint); }
+.ndv-preview { font-size: 11px; font-family: ui-monospace, monospace; min-height: 0; }
+.ndv-preview.ok { color: var(--success); }
+.ndv-preview.err { color: var(--danger); }
