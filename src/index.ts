@@ -11,6 +11,7 @@ import { glob } from 'glob';
 
 import { config } from './config';
 import { runPipeline } from './pipeline';
+import { buildItemsFromTrigger, buildManualItems } from './core/TriggerEngine';
 import { ProfileManager } from './core/ProfileManager';
 import { UserManager } from './core/UserManager';
 import { QuotaManager } from './core/QuotaManager';
@@ -434,9 +435,27 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       pipeline.exec().catch(() => {});
     }
 
+    // Step 28: a trigger may carry data to seed the first node's input
+    // stream. `triggerData` shape: { source, body?, headers?, query?, method?, data? }.
+    let initialItems;
+    const td = job.data.triggerData;
+    if (td && typeof td === 'object') {
+      if (td.source === 'webhook' || td.headers || td.query || (td.body !== undefined)) {
+        initialItems = buildItemsFromTrigger({
+          body: td.body,
+          headers: td.headers,
+          query: td.query,
+          method: td.method
+        });
+      } else if (td.data !== undefined) {
+        initialItems = buildManualItems(td.data);
+      }
+    }
+
     const result = await runPipeline({
       userId,
       steps: job.data.steps,
+      initialItems,
       headless: job.data.headless ?? config.DEFAULT_HEADLESS,
       log,
       jobId: job.id!,

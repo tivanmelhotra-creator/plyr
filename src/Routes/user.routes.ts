@@ -101,6 +101,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const plan = await UserManager.getUserPlan(connection, userId);
       const steps = validateSteps(body.steps, plan);
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
+      // Step 28: optional trigger data to seed the first node's input items.
+      const triggerData = (body.triggerData && typeof body.triggerData === 'object')
+        ? body.triggerData
+        : undefined;
 
       // [F3] Sync mode + idempotency are opt-in via query / header.
       const wait = req.query.wait === 'true' || req.query.wait === '1';
@@ -162,7 +166,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Add job to queue
       const job = await queue.add(
         'run',
-        { userId, steps, headless, webhookUrl },
+        { userId, steps, headless, webhookUrl, triggerData },
         { priority: plan.priority }
       );
 
@@ -868,6 +872,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const webhookUrl = validateWebhookUrl(
         req.body?.webhookUrl !== undefined ? req.body.webhookUrl : wf.webhookUrl
       );
+      // Step 28: optional trigger data passed at run time (manual/webhook).
+      const triggerData = (req.body?.triggerData && typeof req.body.triggerData === 'object')
+        ? req.body.triggerData
+        : undefined;
 
       const wait = req.query.wait === 'true' || req.query.wait === '1';
       const rawIdemKey = (req.headers['idempotency-key'] as string | undefined)?.trim();
@@ -927,7 +935,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Enqueue, tagging the job with its source workflow for traceability.
       const job = await queue.add(
         'run',
-        { userId, steps, headless, webhookUrl, __workflowId: workflowId, __workflowVersion: wf.version },
+        { userId, steps, headless, webhookUrl, triggerData, __workflowId: workflowId, __workflowVersion: wf.version },
         { priority: plan.priority }
       );
       await connection.sadd(activeKey, job.id!);

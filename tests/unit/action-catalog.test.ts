@@ -27,6 +27,8 @@ interface Catalog {
   actionById: (id: string) => Action;
   categoryById: (id: string) => Category;
   ids: () => string[];
+  TRIGGER_IDS?: string[];
+  isTrigger?: (id: string) => boolean;
 }
 
 let catalog: Catalog;
@@ -103,5 +105,31 @@ describe('action catalog — Step 23 category contract', () => {
     expect(catalog.actionById(first.id).id).toBe(first.id);
     // unknown id -> fallback (first action), never undefined
     expect(catalog.actionById('nope')).toBeTruthy();
+  });
+
+  // ── Step 28: trigger nodes (n8n Model B entry points) ──
+  it('defines the four trigger actions under the trigger category', () => {
+    const triggerIds = ['trigger_manual', 'trigger_webhook', 'trigger_schedule', 'trigger_telegram'];
+    triggerIds.forEach((id) => {
+      const a = catalog.ACTIONS.find((x) => x.id === id);
+      expect(a, `missing action ${id}`).toBeTruthy();
+      expect(a!.cat).toBe('trigger');
+    });
+  });
+
+  it('exposes TRIGGER_IDS and isTrigger() helper', () => {
+    expect(Array.isArray(catalog.TRIGGER_IDS)).toBe(true);
+    expect(catalog.TRIGGER_IDS!.length).toBe(4);
+    expect(catalog.isTrigger!('trigger_webhook')).toBe(true);
+    expect(catalog.isTrigger!('click')).toBe(false);
+  });
+
+  it('the webhook trigger has method/path/secret fields; schedule has cron/timezone', () => {
+    const wh = catalog.ACTIONS.find((a) => a.id === 'trigger_webhook')!;
+    const whKeys = wh.fields.map((f) => f.k);
+    expect(whKeys).toEqual(expect.arrayContaining(['method', 'path', 'secret']));
+    const sch = catalog.ACTIONS.find((a) => a.id === 'trigger_schedule')!;
+    const schKeys = sch.fields.map((f) => f.k);
+    expect(schKeys).toEqual(expect.arrayContaining(['cron', 'timezone']));
   });
 });

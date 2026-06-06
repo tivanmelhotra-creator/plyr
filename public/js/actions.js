@@ -173,7 +173,32 @@
     { id: 'stop_and_error', icon: '🛑', cat: 'flow', fields: [
       { k: 'message', label: 'p.message', type: 'string', ph: 'Why this stops', expr: true, help: 'help.stopError' },
     ] },
+
+    // ---- Triggers (Step 28 — n8n Model B: the workflow's entry point) -----
+    // Trigger nodes describe HOW a saved workflow is activated. They produce
+    // the first node's input items (manual data / webhook body / schedule
+    // context). The backend treats them as configuration, not browser steps.
+    { id: 'trigger_manual', icon: '▶️', cat: 'trigger', fields: [
+      { k: 'data', label: 'p.triggerData', type: 'json', ph: '{ "key": "value" }', expr: true, help: 'help.triggerManualData' },
+    ] },
+    { id: 'trigger_webhook', icon: '🪝', cat: 'trigger', fields: [
+      { k: 'method', label: 'p.httpMethod', type: 'options', options: ['*', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE'], help: 'help.triggerMethod' },
+      { k: 'path', label: 'p.webhookPath', type: 'string', ph: 'my-hook', help: 'help.triggerPath' },
+      { k: 'secret', label: 'p.webhookSecret', type: 'password', ph: '(optional) HMAC secret', help: 'help.triggerSecret' },
+    ] },
+    { id: 'trigger_schedule', icon: '⏰', cat: 'trigger', fields: [
+      { k: 'cron', label: 'p.cron', type: 'string', ph: '*/5 * * * *', help: 'help.triggerCron' },
+      { k: 'timezone', label: 'p.timezone', type: 'string', ph: 'UTC', help: 'help.triggerTimezone' },
+    ] },
+    { id: 'trigger_telegram', icon: '✈️', cat: 'trigger', fields: [
+      { k: 'botToken', label: 'p.botToken', type: 'password', ph: '123456:ABC-DEF...', help: 'help.triggerBotToken' },
+      { k: 'chatId', label: 'p.chatId', type: 'string', ph: '(optional) filter chat id', help: 'help.triggerChatId' },
+    ] },
   ];
+
+  // Step 28: action ids that are triggers (entry points), not browser steps.
+  var TRIGGER_IDS = ['trigger_manual', 'trigger_webhook', 'trigger_schedule', 'trigger_telegram'];
+  function isTrigger(id) { return TRIGGER_IDS.indexOf(id) !== -1; }
 
   // Rich field-type registry (Step 25). `input` tells the renderer which
   // control to build. `expr` marks types that can carry a {{ }} expression by
@@ -260,6 +285,8 @@
     isBranching: isBranching,
     FIELD_TYPES: FIELD_TYPES,
     fieldType: fieldType,
+    TRIGGER_IDS: TRIGGER_IDS,
+    isTrigger: isTrigger,
     ids: function () { return ACTIONS.map(function (a) { return a.id; }); },
   };
 })();

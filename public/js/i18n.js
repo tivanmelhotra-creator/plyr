@@ -285,6 +285,24 @@
       'help.retryOnFail': 'پیش از شکست، این نود چند بار دوباره اجرا می‌شود (با فاصلهٔ تنظیم‌شده).',
       'help.stopError': 'پیام خطایی که هنگام توقف عمدی ورکفلو نمایش داده می‌شود؛ می‌تواند اکسپرشن باشد.',
 
+      // Triggers (Step 28)
+      'p.triggerData': 'دادهٔ ورودی',
+      'p.httpMethod': 'متد HTTP',
+      'p.webhookPath': 'مسیر وبهوک',
+      'p.webhookSecret': 'سکرت (HMAC)',
+      'p.cron': 'عبارت Cron',
+      'p.timezone': 'منطقهٔ زمانی',
+      'p.botToken': 'توکن بات',
+      'p.chatId': 'شناسهٔ چت',
+      'help.triggerManualData': 'دادهٔ JSON که به‌عنوان آیتم‌های ورودیِ اولین نود تزریق می‌شود (اجرای دستی).',
+      'help.triggerMethod': 'فقط درخواست‌های با این متد ورکفلو را فعال کنند؛ «*» یعنی همهٔ متدها.',
+      'help.triggerPath': 'بخش پایانی URL وبهوک منحصربه‌فرد این ورکفلو.',
+      'help.triggerSecret': 'در صورت تنظیم، امضای HMAC هدر X-Signature روی بدنه بررسی می‌شود.',
+      'help.triggerCron': 'زمان‌بندی به‌صورت cron (۵ یا ۶ بخش)؛ مثل «*/5 * * * *» هر ۵ دقیقه.',
+      'help.triggerTimezone': 'منطقهٔ زمانی برای زمان‌بندی (پیش‌فرض UTC).',
+      'help.triggerBotToken': 'توکن بات تلگرام؛ پیام‌های دریافتی این ورکفلو را فعال می‌کنند.',
+      'help.triggerChatId': 'در صورت تنظیم، فقط پیام‌های این چت ورکفلو را فعال می‌کنند.',
+
       // Workflows (Step 22)
       'wf.title': 'ورکفلوها',
       'wf.subtitle': 'کتابخانهٔ ورکفلوهای ذخیره‌شدهٔ شما — بسازید، ویرایش، کپی، اجرا و نسخه‌بندی کنید. دیگر به یک ورکفلو محدود نیستید.',
@@ -662,6 +680,24 @@
       'help.continueOnFail': 'If this node errors, the error is swallowed and execution continues with the next node.',
       'help.retryOnFail': 'Re-run this node up to N times (with the configured wait) before failing.',
       'help.stopError': 'Error message shown when the workflow is stopped on purpose; may be an expression.',
+
+      // Triggers (Step 28)
+      'p.triggerData': 'Input data',
+      'p.httpMethod': 'HTTP method',
+      'p.webhookPath': 'Webhook path',
+      'p.webhookSecret': 'Secret (HMAC)',
+      'p.cron': 'Cron expression',
+      'p.timezone': 'Timezone',
+      'p.botToken': 'Bot token',
+      'p.chatId': 'Chat id',
+      'help.triggerManualData': 'JSON data injected as the first node\u2019s input items (manual run).',
+      'help.triggerMethod': 'Only requests with this method trigger the workflow; \u201c*\u201d means any method.',
+      'help.triggerPath': 'The trailing segment of this workflow\u2019s unique webhook URL.',
+      'help.triggerSecret': 'When set, the X-Signature HMAC header over the body is verified.',
+      'help.triggerCron': 'Schedule as cron (5 or 6 fields); e.g. \u201c*/5 * * * *\u201d runs every 5 minutes.',
+      'help.triggerTimezone': 'Timezone used for scheduling (defaults to UTC).',
+      'help.triggerBotToken': 'Telegram bot token; inbound messages activate this workflow.',
+      'help.triggerChatId': 'When set, only messages from this chat activate the workflow.',
 
       // Workflows (Step 22)
       'wf.title': 'Workflows',

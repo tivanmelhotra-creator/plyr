@@ -14,6 +14,7 @@ import {
   retryDelayMs,
   isStopAndError,
 } from './core/ErrorPolicy';
+import { isTriggerAction } from './core/TriggerEngine';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
@@ -683,6 +684,10 @@ export async function runPipeline(params: {
   userPlan: PlanConfig;
   quotaManager: QuotaManager;
   onEvent?: (type: string, data?: Record<string, unknown>) => void;
+  // Step 28: optional initial item stream injected by a trigger
+  // (webhook body/headers/query, schedule context, or manual data).
+  // When omitted, the workflow starts with a single empty item.
+  initialItems?: WorkflowItem[];
 }): Promise<JobResult> {
   const {
     userId,
@@ -695,7 +700,8 @@ export async function runPipeline(params: {
     profileManager,
     userPlan,
     quotaManager,
-    onEvent
+    onEvent,
+    initialItems
   } = params;
 
   if (isCancelled && await isCancelled()) {
@@ -724,7 +730,10 @@ export async function runPipeline(params: {
     onEvent,
     // Step 21: start every workflow with a single empty item, like n8n,
     // so the first node always has exactly one input item to act on.
-    items: emptyStream(),
+    // Step 28: a trigger may inject the initial stream (e.g. webhook body).
+    items: (Array.isArray(initialItems) && initialItems.length > 0)
+      ? initialItems
+      : emptyStream(),
     nodeOutputs: {}
   };
 
@@ -861,6 +870,16 @@ export async function runPipeline(params: {
         if (isStopAndError(step)) {
           const __msg = String(finalParams.message || finalParams.errorMessage || 'Stopped by Stop-And-Error');
           throw new Error(__msg);
+        }
+
+        // Step 28: TRIGGER nodes are entry-point configuration, not browser
+        // steps. The trigger's data was already injected into the initial
+        // item stream by the worker, so here we simply record a pass-through
+        // and continue — the existing item stream flows to the next node.
+        if (isTriggerAction(step.action)) {
+          globalStepNumber++;
+          stepOutputs.push(createStepOutput(globalStepNumber, step.action!, true, { trigger: true, itemCount: context.items.length }, stepStartTime));
+          continue stepLoop;
         }
 
         // ════════════════════════════════════════════════════════════════

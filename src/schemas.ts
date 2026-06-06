@@ -22,6 +22,16 @@ const stepsEnvelope = z
 // headless accepts boolean | string | number (coerced later by validateHeadless)
 const headlessLoose = z.union([z.boolean(), z.string(), z.number()]).optional();
 
+// Step 28: optional trigger data injected as the workflow's initial item
+// stream. Either a webhook-style envelope ({ source:'webhook', body, headers,
+// query, method }) or a manual payload ({ data: ... }). We validate it loosely
+// here (an object) and let TriggerEngine map it to items[] in the worker.
+const triggerDataLoose = z
+  .object({}, { invalid_type_error: 'triggerData must be an object' })
+  .passthrough()
+  .optional()
+  .nullable();
+
 export const runBodySchema = z.object({
   userId: z.union([z.string(), z.number()], {
     required_error: 'userId is required',
@@ -30,6 +40,7 @@ export const runBodySchema = z.object({
   steps: stepsEnvelope,
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
+  triggerData: triggerDataLoose,
 });
 
 // Basic cron shape check (5 or 6 space-separated fields). Detailed scheduling
