@@ -12,6 +12,10 @@
 //   - ph:       placeholder (text/number only)
 //   - options:  array of option values (select only)
 //
+// Each action also carries a `cat` (category id) used by the visual editor
+// (Step 23) for colour-coding + grouping/searching the palette. Categories
+// are defined in CATEGORIES below.
+//
 // Each backend action ({ action, params }) must be implemented in
 // src/pipeline.ts. Loaded BEFORE i18n/api/views/flow-editor in index.html.
 // LF line endings (public/** convention).
@@ -21,60 +25,60 @@
 
   var ACTIONS = [
     // ---- Navigation & timing -----------------------------------------
-    { id: 'goto', icon: '🌐', fields: [
+    { id: 'goto', icon: '🌐', cat: 'navigation', fields: [
       { k: 'url', label: 'p.url', type: 'text', ph: 'https://example.com' },
     ] },
-    { id: 'wait', icon: '⏳', fields: [
+    { id: 'wait', icon: '⏳', cat: 'navigation', fields: [
       { k: 'ms', label: 'p.ms', type: 'number', ph: '1000' },
       { k: 'selector', label: 'p.selector', type: 'text', ph: '(optional) #ready' },
     ] },
 
     // ---- Mouse / interaction -----------------------------------------
-    { id: 'click', icon: '🖱️', fields: [
+    { id: 'click', icon: '🖱️', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'button.submit' },
     ] },
-    { id: 'hover', icon: '👆', fields: [
+    { id: 'hover', icon: '👆', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: '.menu' },
     ] },
-    { id: 'scroll', icon: '🧭', fields: [
+    { id: 'scroll', icon: '🧭', cat: 'interaction', fields: [
       { k: 'direction', label: 'p.direction', type: 'select', options: ['bottom', 'top'] },
     ] },
 
     // ---- Forms / keyboard --------------------------------------------
-    { id: 'fill', icon: '✏️', fields: [
+    { id: 'fill', icon: '✏️', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[name=q]' },
       { k: 'text', label: 'p.text', type: 'text', ph: 'hello' },
     ] },
-    { id: 'type', icon: '⌨️', fields: [
+    { id: 'type', icon: '⌨️', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[name=q]' },
       { k: 'text', label: 'p.text', type: 'text', ph: 'hello' },
     ] },
-    { id: 'press', icon: '↩️', fields: [
+    { id: 'press', icon: '↩️', cat: 'interaction', fields: [
       { k: 'text', label: 'p.key', type: 'text', ph: 'Enter' },
     ] },
-    { id: 'select', icon: '🔽', fields: [
+    { id: 'select', icon: '🔽', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'select#country' },
       { k: 'value', label: 'p.value', type: 'text', ph: 'IR' },
     ] },
-    { id: 'upload', icon: '📎', fields: [
+    { id: 'upload', icon: '📎', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[type=file]' },
       { k: 'path', label: 'p.value', type: 'text', ph: 'uploads/file.pdf' },
     ] },
 
     // ---- Data extraction & export ------------------------------------
-    { id: 'extract', icon: '📤', fields: [
+    { id: 'extract', icon: '📤', cat: 'data', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: '.price' },
       { k: 'name', label: 'p.name', type: 'text', ph: 'price' },
     ] },
-    { id: 'export-data', icon: '💾', fields: [
+    { id: 'export-data', icon: '💾', cat: 'data', fields: [
       { k: 'format', label: 'p.format', type: 'select', options: ['json', 'csv'] },
       { k: 'from', label: 'p.from', type: 'text', ph: '(optional) variable name' },
       { k: 'filename', label: 'p.filename', type: 'text', ph: 'export' },
     ] },
-    { id: 'screenshot', icon: '📸', fields: [] },
+    { id: 'screenshot', icon: '📸', cat: 'data', fields: [] },
 
     // ---- Variables (Automa-style transforms) -------------------------
-    { id: 'variable', icon: '🔢', fields: [
+    { id: 'variable', icon: '🔢', cat: 'data', fields: [
       { k: 'op', label: 'p.op', type: 'select', options: ['set', 'regex', 'replace', 'slice', 'split', 'join', 'sort'] },
       { k: 'name', label: 'p.name', type: 'text', ph: 'result' },
       { k: 'from', label: 'p.from', type: 'text', ph: '(optional) source variable' },
@@ -90,29 +94,46 @@
     ] },
 
     // ---- Cookies & clipboard -----------------------------------------
-    { id: 'cookie', icon: '🍪', fields: [
+    { id: 'cookie', icon: '🍪', cat: 'integration', fields: [
       { k: 'op', label: 'p.op', type: 'select', options: ['getAll', 'get', 'set', 'clear'] },
       { k: 'name', label: 'p.name', type: 'text', ph: 'session_id' },
       { k: 'value', label: 'p.value', type: 'text', ph: 'set op only' },
       { k: 'domain', label: 'p.domain', type: 'text', ph: '(optional) .example.com' },
       { k: 'expires', label: 'p.expires', type: 'number', ph: '(optional) unix ts' },
     ] },
-    { id: 'clipboard', icon: '📋', fields: [
+    { id: 'clipboard', icon: '📋', cat: 'integration', fields: [
       { k: 'action', label: 'p.op', type: 'select', options: ['get', 'set', 'copy', 'paste'] },
       { k: 'text', label: 'p.text', type: 'text', ph: 'set op' },
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'copy/paste op' },
     ] },
 
     // ---- Notification & logging --------------------------------------
-    { id: 'notification', icon: '🔔', fields: [
+    { id: 'notification', icon: '🔔', cat: 'integration', fields: [
       { k: 'title', label: 'p.title', type: 'text', ph: 'Done' },
       { k: 'message', label: 'p.message', type: 'text', ph: 'workflow finished' },
       { k: 'level', label: 'p.level', type: 'select', options: ['info', 'success', 'warn', 'error'] },
     ] },
-    { id: 'log', icon: '📝', fields: [
+    { id: 'log', icon: '📝', cat: 'integration', fields: [
       { k: 'message', label: 'p.message', type: 'text', ph: 'checkpoint' },
     ] },
   ];
+
+  // Category metadata for the visual editor (Step 23): colour + i18n label.
+  // `color` drives the node's left accent bar and palette group dot.
+  var CATEGORIES = [
+    { id: 'navigation',  color: '#4f8cff', label: 'cat.navigation' },
+    { id: 'interaction', color: '#a855f7', label: 'cat.interaction' },
+    { id: 'data',        color: '#3ecf8e', label: 'cat.data' },
+    { id: 'flow',        color: '#f5a623', label: 'cat.flow' },
+    { id: 'integration', color: '#06b6d4', label: 'cat.integration' },
+    { id: 'trigger',     color: '#ef4444', label: 'cat.trigger' }
+  ];
+  function categoryById(id) {
+    for (var i = 0; i < CATEGORIES.length; i++) {
+      if (CATEGORIES[i].id === id) return CATEGORIES[i];
+    }
+    return { id: 'other', color: '#6b7280', label: 'cat.other' };
+  }
 
   function actionById(id) {
     for (var i = 0; i < ACTIONS.length; i++) {
@@ -124,7 +145,9 @@
   // Expose globally (CSP-safe, no modules).
   window.ACTION_CATALOG = {
     ACTIONS: ACTIONS,
+    CATEGORIES: CATEGORIES,
     actionById: actionById,
+    categoryById: categoryById,
     ids: function () { return ACTIONS.map(function (a) { return a.id; }); },
   };
 })();

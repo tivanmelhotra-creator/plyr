@@ -527,11 +527,11 @@ n8n در «اتصال APIها و سرویس‌ها» عالی است، اما **
   3. ✅ تاریخچهٔ نسخه (`GET /:workflowId/versions`) با باز/بست درون کارت + بازگردانی (restore = ذخیرهٔ snapshot به‌عنوان نسخهٔ جدید با PUT). قرارداد API در `api.js`: `put()` + `wfBase/listWorkflows/getWorkflow/createWorkflow/updateWorkflow/deleteWorkflow/listWorkflowVersions/runWorkflow`.
   - ✅ i18n کامل (fa+en): `nav.workflows` + `fe.saveServer`/`fe.unsaved` + بلوک کامل `wf.*` (۲۸ کلید در هر زبان). CSS کلاس‌های `.wf-grid/.wf-card/.wf-card-head/.wf-name/.wf-desc/.wf-meta/.wf-actions/.wf-versions/.wf-ver-row` + هلپر عمومی `.small`. CRUD سمت سرور از قبل با `tests/integration/workflows.test.ts` + `tests/unit/workflow-service.test.ts` پوشش‌داده شده. `tsc`/`build` سبز، `npm test`=**۱۸۰**. (تصمیم: موقعیت نودها در استپ ۲۲ سمت سرور ذخیره نمی‌شود؛ ادیتور چیدمان خطی تمیز را از `steps[]` بازسازی می‌کند — ذخیرهٔ موقعیت به بازطراحی Canvas در استپ ۲۳ موکول شد.)
 
-- [ ] **استپ ۲۳ — بازطراحی بصری Canvas نودبیس (هم‌حسِ n8n، بدون کپی کد — لایسنس AGPL)**
-  1. Drag&Drop از palette، اتصال زیبای پورت‌ها (Bézier)، grid snap، minimap، zoom/fit-to-screen، انتخاب چندتایی، کپی/پیست.
-  2. دسته‌بندی و رنگ‌بندی بلوک‌ها (Trigger/Navigation/Interaction/Data/Flow/Integration) + آیکون و جست‌وجوی نود.
-  3. **حالت‌های بصری نود** (پایهٔ UI، دادهٔ واقعی در استپ ۲۶): idle / running (خط/هالهٔ چرخان) / success (سبز) / error (قرمز).
-  - تست رندر + رفت‌وبرگشت گراف.
+- [x] **استپ ۲۳ — بازطراحی بصری Canvas نودبیس (هم‌حسِ n8n، بدون کپی کد — لایسنس AGPL)** ✅ _(۲۰۲۶-۰۶-۰۶)_
+  1. ✅ Drag&Drop از palette به کانواس (`text/ab-action` در dataTransfer + `placeNewNode`)، grid-snap (`GRID=20`، `Alt`=جابه‌جایی آزاد)، minimap (پایین-انتها، کلیک=هم‌مرکزسازی)، کنترل‌های zoom/fit (`zoomIn/zoomOut/fitToScreen` با `nodesBBox`)، انتخاب چندتایی (`selSet`) + box-select (`Shift`+درگ روی پس‌زمینه) + جابه‌جایی گروهی، کپی/پیست (`Ctrl+C`/`Ctrl+V`)، انتخاب‌همه (`Ctrl+A`)، حذف (`Delete`/`Backspace`).
+  2. ✅ دسته‌بندی و رنگ‌بندی بلوک‌ها: `cat` روی هر ۱۸ اکشن + آرایهٔ `CATEGORIES` (navigation/interaction/data/flow/integration/trigger) با رنگ هگز و لیبل i18n + `categoryById`؛ نوار لهجهٔ رنگی روی نود (`--cat-color` + `border-inline-start`). palette با جست‌وجوی نود (`renderPalette`/`renderPaletteList`) و گروه‌بندی بر اساس دسته.
+  3. ✅ **حالت‌های بصری نود** (پایهٔ UI، دادهٔ واقعی در استپ ۲۶): `setNodeStatus(ref,status)`/`clearStatuses()` با `ref=nodeId|index زنجیره`؛ idle / running (هالهٔ چرخان `@keyframes fe-pulse` + نقطهٔ `fe-blink`) / success (سبز) / error (قرمز).
+  - ✅ تست DOM-free کاتالوگ اکشن `tests/unit/action-catalog.test.ts` (۹ تست؛ بارگذاری `actions.js` با شیم `window` از طریق `node:vm` — بدون افزودن jsdom). i18n کامل (fa+en): `fe.searchNode/noNodes/zoomIn/zoomOut/fit` + `cat.*` (۱۲ کلید جدید با برابری fa/en) + به‌روزرسانی `fe.hint`. `tsc`/`build` سبز، `npm test`=**۱۸۹** (۱۸۰+۹)، smoke مرورگر=۰ خطای کنسول. (تصمیم: `flow-editor.js` به‌خاطر وابستگی سنگین به DOM با smoke مرورگر پوشش داده شد نه unit؛ موقعیت نودها هنوز سمت سرور ذخیره نمی‌شود — به استپ ۲۴ موکول شد.)
 
 - [ ] **استپ ۲۴ — نودهای شاخه‌دار و سریالایز کامل گراف غیرخطی**
   1. پورت‌های چندگانه برای `if`(true/false)، `switch`(cases+default)، `loop/foreach`(body/done)، `try`(try/catch/finally).
