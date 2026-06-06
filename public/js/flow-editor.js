@@ -46,6 +46,11 @@
   var drag = null;   // active node-drag or connection-drag context
   var listeners = []; // [{ target, type, fn }] for clean unmount
 
+  // Step 22: the saved-workflow currently open in the editor (if any).
+  // { id, name, description, version, headless, webhookUrl } | null.
+  // When null, the editor is editing an unsaved/local graph.
+  var currentWorkflow = null;
+
   function uid(prefix) {
     state.nextId += 1;
     return (prefix || 'n') + state.nextId;
@@ -547,5 +552,33 @@
     reset: function () { state = newGraph(); if (dom) renderAll(); },
     getState: function () { return state; },
     ACTIONS: ACTIONS,
+
+    // ---- Step 22: saved-workflow context ----------------------------------
+    // Open a saved workflow: rebuild the graph from its steps and remember its
+    // identity so a subsequent Save does a PUT (version bump) rather than create.
+    openWorkflow: function (meta, steps) {
+      currentWorkflow = meta
+        ? {
+            id: meta.id,
+            name: meta.name,
+            description: meta.description || '',
+            version: meta.version,
+            headless: meta.headless,
+            webhookUrl: meta.webhookUrl,
+          }
+        : null;
+      loadSteps(steps || []);
+      if (dom) renderAll();
+    },
+    // Begin editing a brand-new, unsaved workflow (clears the canvas + context).
+    newWorkflow: function () {
+      currentWorkflow = null;
+      state = newGraph();
+      if (dom) renderAll();
+    },
+    getCurrentWorkflow: function () { return currentWorkflow; },
+    setCurrentWorkflow: function (meta) {
+      currentWorkflow = meta || null;
+    },
   };
 })();

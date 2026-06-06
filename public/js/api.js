@@ -74,6 +74,9 @@
   function post(path, body, opts) {
     return request(path, Object.assign({ method: 'POST', body: body }, opts || {}));
   }
+  function put(path, body, opts) {
+    return request(path, Object.assign({ method: 'PUT', body: body }, opts || {}));
+  }
   function del(path, opts) {
     return request(path, Object.assign({ method: 'DELETE' }, opts || {}));
   }
@@ -146,6 +149,35 @@
     return del('/schedule/' + encodeURIComponent(userId) + '/' + encodeURIComponent(key));
   }
 
+  // ---------------------------------------------
+  // Saved workflows (Step 22 — multi-workflow library).
+  // All endpoints are scoped per-user; ids are server-generated (wf_<hex>).
+  // ---------------------------------------------
+  function wfBase(userId) {
+    return '/workflows/' + encodeURIComponent(userId);
+  }
+  function listWorkflows(userId) {
+    return get(wfBase(userId));
+  }
+  function getWorkflow(userId, workflowId) {
+    return get(wfBase(userId) + '/' + encodeURIComponent(workflowId));
+  }
+  function createWorkflow(userId, body) {
+    return post(wfBase(userId), body);
+  }
+  function updateWorkflow(userId, workflowId, body) {
+    return put(wfBase(userId) + '/' + encodeURIComponent(workflowId), body);
+  }
+  function deleteWorkflow(userId, workflowId) {
+    return del(wfBase(userId) + '/' + encodeURIComponent(workflowId));
+  }
+  function listWorkflowVersions(userId, workflowId) {
+    return get(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/versions');
+  }
+  function runWorkflow(userId, workflowId, body) {
+    return post(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/run', body || {});
+  }
+
   /** Admin stats (requires admin token). */
   function adminStats() {
     return get('/admin/stats', { admin: true });
@@ -178,11 +210,19 @@
     getQuota: getQuota,
     listSchedules: listSchedules,
     deleteSchedule: deleteSchedule,
+    listWorkflows: listWorkflows,
+    getWorkflow: getWorkflow,
+    createWorkflow: createWorkflow,
+    updateWorkflow: updateWorkflow,
+    deleteWorkflow: deleteWorkflow,
+    listWorkflowVersions: listWorkflowVersions,
+    runWorkflow: runWorkflow,
     adminStats: adminStats,
     validateAdminToken: validateAdminToken,
     request: request,
     get: get,
     post: post,
+    put: put,
     del: del,
     health: health,
     validateKey: validateKey,

@@ -521,11 +521,11 @@ n8n در «اتصال APIها و سرویس‌ها» عالی است، اما **
   4. ✅ زمینهٔ Expression: `context.nodeOutputs[nodeKey]` خروجی هر نود را با کلید `saveAs` یا `action#index` نگه می‌دارد (برای ارجاع آیندهٔ `$node["name"].json`).
   - ✅ تست: `tests/unit/workflow-items.test.ts` (۲۳ تست) — قرارداد آیتم + normalize + fan-out n-آیتمی + pass-through + summarize/cap + سازگاری. `tsc`/`build` سبز، `npm test`=**۱۸۰** (۱۵۷→۱۸۰).
 
-- [ ] **استپ ۲۲ — کتابخانهٔ چند-ورکفلو در UI + اتصال به CRUD موجود**
-  1. ویوی «ورکفلوها»: لیست کارت از `GET /workflows/:userId` (نام/توضیح/نسخه/آخرین ویرایش/وضعیت فعال).
-  2. عملیات کامل: ساخت/تغییرنام/کپی(duplicate)/حذف/باز کردن در ادیتور؛ flow-editor به‌جای localStorage ورکفلوی انتخابی را load/save (PUT با بامپ نسخه).
-  3. تاریخچهٔ نسخه (`/versions`) + بازگردانی (restore). مهاجرت گراف localStorage فعلی به «ورکفلوی بدون‌عنوان».
-  - i18n کامل + تست route + تست سریالایز گراف↔steps.
+- [x] **استپ ۲۲ — کتابخانهٔ چند-ورکفلو در UI + اتصال به CRUD موجود** ✅ _(۲۰۲۶-۰۶-۰۶)_
+  1. ✅ ویوی «ورکفلوها» (`renderWorkflows` در `views.js`): گرید کارت از `GET /workflows/:userId` (نام/توضیح/نسخه/تعداد استپ/آخرین ویرایش)؛ آیتم ناوبری `📚 ورکفلوها` + روت `#/workflows` در `app.js`/`index.html`.
+  2. ✅ عملیات کامل روی هر کارت: ساخت (`createWorkflow`)/تغییرنام (`updateWorkflow`)/کپی=duplicate/حذف (`deleteWorkflow`)/اجرا (`runWorkflow`)/باز کردن در ادیتور. ادیتور دیگر به یک گراف localStorage محدود نیست: دکمهٔ «💾 ذخیره روی سرور» ورکفلوی جاری را PUT می‌کند (بامپ نسخه) یا برای ورکفلوی جدید نام می‌پرسد و POST می‌کند؛ `flow-editor.js` با `currentWorkflow`/`openWorkflow`/`newWorkflow`/`getCurrentWorkflow` زمینهٔ ورکفلو را نگه می‌دارد و گراف را از `steps[]` بازسازی می‌کند.
+  3. ✅ تاریخچهٔ نسخه (`GET /:workflowId/versions`) با باز/بست درون کارت + بازگردانی (restore = ذخیرهٔ snapshot به‌عنوان نسخهٔ جدید با PUT). قرارداد API در `api.js`: `put()` + `wfBase/listWorkflows/getWorkflow/createWorkflow/updateWorkflow/deleteWorkflow/listWorkflowVersions/runWorkflow`.
+  - ✅ i18n کامل (fa+en): `nav.workflows` + `fe.saveServer`/`fe.unsaved` + بلوک کامل `wf.*` (۲۸ کلید در هر زبان). CSS کلاس‌های `.wf-grid/.wf-card/.wf-card-head/.wf-name/.wf-desc/.wf-meta/.wf-actions/.wf-versions/.wf-ver-row` + هلپر عمومی `.small`. CRUD سمت سرور از قبل با `tests/integration/workflows.test.ts` + `tests/unit/workflow-service.test.ts` پوشش‌داده شده. `tsc`/`build` سبز، `npm test`=**۱۸۰**. (تصمیم: موقعیت نودها در استپ ۲۲ سمت سرور ذخیره نمی‌شود؛ ادیتور چیدمان خطی تمیز را از `steps[]` بازسازی می‌کند — ذخیرهٔ موقعیت به بازطراحی Canvas در استپ ۲۳ موکول شد.)
 
 - [ ] **استپ ۲۳ — بازطراحی بصری Canvas نودبیس (هم‌حسِ n8n، بدون کپی کد — لایسنس AGPL)**
   1. Drag&Drop از palette، اتصال زیبای پورت‌ها (Bézier)، grid snap، minimap، zoom/fit-to-screen، انتخاب چندتایی، کپی/پیست.

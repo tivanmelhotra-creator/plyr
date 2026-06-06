@@ -528,6 +528,193 @@
   }
 
   // =============================================
+  // WORKFLOWS (Step 22 — multi-workflow library)
+  // Card list backed by the real /workflows CRUD. Create / rename /
+  // duplicate / delete / open-in-editor / version history + restore / run.
+  // =============================================
+  // When set, renderEditor() will open this workflow on next render.
+  var pendingWorkflowToOpen = null;
+
+  function renderWorkflows(root) {
+    var uid = effectiveUserId();
+    root.innerHTML =
+      '<div class="card">' +
+        '<div class="toolbar">' +
+          '<h3 class="card-title" style="margin:0">📚 ' + t('wf.title') + '</h3>' +
+          '<span class="spacer"></span>' +
+          '<button class="btn btn-primary btn-sm" id="wf-new">＋ ' + t('wf.new') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" id="wf-refresh">' + t('common.refresh') + '</button>' +
+        '</div>' +
+        '<p class="muted small">' + t('wf.subtitle') + '</p>' +
+        '<div id="wf-body"><div class="placeholder"><span class="spinner"></span> ' + t('common.loading') + '</div></div>' +
+      '</div>';
+
+    function openInEditor(wf) {
+      pendingWorkflowToOpen = wf;
+      location.hash = '#/editor';
+    }
+
+    function load() {
+      var body = root.querySelector('#wf-body');
+      API.listWorkflows(uid)
+        .then(function (data) {
+          var list = (data && data.workflows) || [];
+          var head = '<div class="muted" style="margin-bottom:12px">' +
+            t('wf.count') + ': ' + U().num(list.length) + '</div>';
+          if (list.length === 0) {
+            body.innerHTML = head + '<div class="placeholder">' + t('wf.empty') + '</div>';
+            return;
+          }
+          var cards = list.map(function (wf) {
+            var steps = Array.isArray(wf.steps) ? wf.steps.length : 0;
+            return '<div class="wf-card" data-id="' + esc(wf.id) + '">' +
+              '<div class="wf-card-head">' +
+                '<span class="wf-name">' + esc(wf.name) + '</span>' +
+                '<span class="badge">v' + esc(String(wf.version)) + '</span>' +
+              '</div>' +
+              (wf.description ? '<div class="wf-desc muted small">' + esc(wf.description) + '</div>' : '') +
+              '<div class="wf-meta muted small">' +
+                '<span>' + steps + ' ' + t('wf.steps') + '</span> · ' +
+                '<span>' + esc(t('wf.updated')) + ': ' + esc(fmtTime(wf.updatedAt)) + '</span>' +
+              '</div>' +
+              '<div class="wf-actions">' +
+                '<button class="btn btn-primary btn-sm" data-open="' + esc(wf.id) + '">✏️ ' + t('wf.open') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-run="' + esc(wf.id) + '">▶️ ' + t('wf.run') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-rename="' + esc(wf.id) + '">' + t('wf.rename') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-dup="' + esc(wf.id) + '">' + t('wf.duplicate') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-versions="' + esc(wf.id) + '">🕘 ' + t('wf.versions') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-del="' + esc(wf.id) + '">🗑️ ' + t('common.delete') + '</button>' +
+              '</div>' +
+              '<div class="wf-versions" id="wf-ver-' + esc(wf.id) + '" hidden></div>' +
+            '</div>';
+          }).join('');
+          body.innerHTML = head + '<div class="wf-grid">' + cards + '</div>';
+
+          function find(id) {
+            for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+            return null;
+          }
+
+          body.querySelectorAll('[data-open]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var wf = find(b.getAttribute('data-open'));
+              if (wf) openInEditor(wf);
+            });
+          });
+          body.querySelectorAll('[data-run]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var id = b.getAttribute('data-run');
+              b.disabled = true;
+              API.runWorkflow(uid, id, {})
+                .then(function (d) {
+                  U().toast(t('wf.queued') + ' ' + (d.jobId || ''), 'success');
+                  location.hash = '#/jobs?job=' + encodeURIComponent(d.jobId) +
+                    '&user=' + encodeURIComponent(uid);
+                })
+                .catch(function (err) { U().toast(err.message, 'error'); })
+                .then(function () { b.disabled = false; });
+            });
+          });
+          body.querySelectorAll('[data-rename]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var wf = find(b.getAttribute('data-rename'));
+              if (!wf) return;
+              var name = prompt(t('wf.renamePrompt'), wf.name);
+              if (name == null) return;
+              name = String(name).trim();
+              if (!name) { U().toast(t('wf.nameRequired'), 'error'); return; }
+              API.updateWorkflow(uid, wf.id, {
+                name: name, description: wf.description || null,
+                steps: wf.steps, headless: wf.headless, webhookUrl: wf.webhookUrl
+              })
+                .then(function () { U().toast(t('wf.renamed'), 'success'); load(); })
+                .catch(function (err) { U().toast(err.message, 'error'); });
+            });
+          });
+          body.querySelectorAll('[data-dup]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var wf = find(b.getAttribute('data-dup'));
+              if (!wf) return;
+              API.createWorkflow(uid, {
+                name: wf.name + ' ' + t('wf.copySuffix'),
+                description: wf.description || null,
+                steps: wf.steps, headless: wf.headless, webhookUrl: wf.webhookUrl
+              })
+                .then(function () { U().toast(t('wf.duplicated'), 'success'); load(); })
+                .catch(function (err) { U().toast(err.message, 'error'); });
+            });
+          });
+          body.querySelectorAll('[data-del]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              if (!confirm(t('wf.confirmDelete'))) return;
+              API.deleteWorkflow(uid, b.getAttribute('data-del'))
+                .then(function () { U().toast(t('wf.deleted'), 'success'); load(); })
+                .catch(function (err) { U().toast(err.message, 'error'); });
+            });
+          });
+          body.querySelectorAll('[data-versions]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var id = b.getAttribute('data-versions');
+              var box = body.querySelector('#wf-ver-' + cssId(id));
+              if (!box) return;
+              if (!box.hidden) { box.hidden = true; box.innerHTML = ''; return; }
+              box.hidden = false;
+              box.innerHTML = '<div class="muted small"><span class="spinner"></span> ' + t('common.loading') + '</div>';
+              API.listWorkflowVersions(uid, id)
+                .then(function (data) {
+                  var vers = (data && data.versions) || [];
+                  if (!vers.length) { box.innerHTML = '<div class="muted small">' + t('wf.noVersions') + '</div>'; return; }
+                  box.innerHTML = vers.map(function (v) {
+                    var n = Array.isArray(v.steps) ? v.steps.length : 0;
+                    return '<div class="wf-ver-row">' +
+                      '<span class="badge">v' + esc(String(v.version)) + '</span> ' +
+                      '<span class="muted small">' + esc(fmtTime(v.savedAt)) + ' · ' + n + ' ' + t('wf.steps') + '</span> ' +
+                      '<button class="btn btn-ghost btn-sm" data-restore="' + esc(id) + '" data-v="' + esc(String(v.version)) + '">' + t('wf.restore') + '</button>' +
+                    '</div>';
+                  }).join('');
+                  box.querySelectorAll('[data-restore]').forEach(function (rb) {
+                    rb.addEventListener('click', function () {
+                      var wid = rb.getAttribute('data-restore');
+                      var vnum = parseInt(rb.getAttribute('data-v'), 10);
+                      var snap = null;
+                      for (var i = 0; i < vers.length; i++) if (vers[i].version === vnum) snap = vers[i];
+                      if (!snap) return;
+                      if (!confirm(t('wf.confirmRestore'))) return;
+                      // Restore = save the snapshot as a NEW current version (PUT bumps version).
+                      API.updateWorkflow(uid, wid, {
+                        name: snap.name, description: snap.description || null,
+                        steps: snap.steps, headless: snap.headless, webhookUrl: snap.webhookUrl
+                      })
+                        .then(function () { U().toast(t('wf.restored'), 'success'); load(); })
+                        .catch(function (err) { U().toast(err.message, 'error'); });
+                    });
+                  });
+                })
+                .catch(function (err) { box.innerHTML = '<div class="muted small">⚠️ ' + esc(err.message) + '</div>'; });
+            });
+          });
+        })
+        .catch(function (err) {
+          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+        });
+    }
+
+    root.querySelector('#wf-refresh').addEventListener('click', load);
+    root.querySelector('#wf-new').addEventListener('click', function () {
+      if (window.FlowEditor) window.FlowEditor.newWorkflow();
+      pendingWorkflowToOpen = null;
+      location.hash = '#/editor';
+    });
+    load();
+  }
+
+  // Safe id fragment for building element selectors (workflow ids are wf_<hex>,
+  // but guard against anything unexpected so querySelector never throws).
+  function cssId(id) {
+    return String(id).replace(/[^A-Za-z0-9_-]/g, '');
+  }
+
+  // =============================================
   // ADMIN
   // =============================================
   function renderAdmin(root) {
@@ -641,11 +828,12 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="card-head">' +
-          '<h2>🧩 ' + t('fe.title') + '</h2>' +
+          '<h2>🧩 ' + t('fe.title') + ' <span class="muted small" id="fe-wf-label"></span></h2>' +
           '<div class="row-actions">' +
             '<button class="btn btn-ghost btn-sm" id="fe-from-run">' + t('fe.fromRun') + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-load">' + t('fe.load') + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-save">' + t('fe.save') + '</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-save-server">💾 ' + t('fe.saveServer') + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-clear">' + t('fe.clear') + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-json">' + t('fe.toJson') + '</button>' +
             '<button class="btn btn-primary btn-sm" id="fe-run">▶️ ' + t('fe.run') + '</button>' +
@@ -666,6 +854,7 @@
       '</div>';
 
     var resultEl = root.querySelector('#fe-result');
+    var wfLabel = root.querySelector('#fe-wf-label');
 
     FE.mount({
       canvas: root.querySelector('#fe-canvas'),
@@ -673,6 +862,65 @@
       world: root.querySelector('#fe-world'),
       palette: root.querySelector('#fe-palette'),
       inspector: root.querySelector('#fe-inspector'),
+    });
+
+    // Step 22: if the Workflows view asked us to open a saved workflow, load it
+    // now (rebuilds the graph from its steps and remembers its identity so a
+    // later "Save to server" performs a version-bumping PUT instead of create).
+    if (pendingWorkflowToOpen) {
+      FE.openWorkflow(pendingWorkflowToOpen, pendingWorkflowToOpen.steps || []);
+      pendingWorkflowToOpen = null;
+    }
+
+    function refreshWfLabel() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (cur && cur.id) {
+        wfLabel.textContent = '— ' + cur.name + ' (v' + cur.version + ')';
+      } else {
+        wfLabel.textContent = '— ' + t('fe.unsaved');
+      }
+    }
+    refreshWfLabel();
+
+    // Save (or create) the current graph as a server-side saved workflow.
+    root.querySelector('#fe-save-server').addEventListener('click', function () {
+      var uid = effectiveUserId();
+      if (!uid) { U().toast(t('fe.needUserId'), 'error'); return; }
+      var steps = FE.toSteps();
+      if (!steps.length) { U().toast(t('fe.noSteps'), 'error'); return; }
+
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      var btn = root.querySelector('#fe-save-server');
+      btn.disabled = true;
+
+      if (cur && cur.id) {
+        // Existing workflow → PUT (bumps version + snapshots history).
+        API.updateWorkflow(uid, cur.id, {
+          name: cur.name, description: cur.description || null,
+          steps: steps, headless: cur.headless, webhookUrl: cur.webhookUrl
+        })
+          .then(function (data) {
+            FE.setCurrentWorkflow(data.workflow);
+            U().toast(t('wf.saved') + ' (v' + data.workflow.version + ')', 'success');
+            refreshWfLabel();
+          })
+          .catch(function (err) { U().toast(err.message, 'error'); })
+          .then(function () { btn.disabled = false; });
+      } else {
+        // New workflow → ask for a name, then create (version 1).
+        var name = prompt(t('wf.namePrompt'), t('wf.defaultName'));
+        if (name == null) { btn.disabled = false; return; }
+        name = String(name).trim();
+        if (!name) { U().toast(t('wf.nameRequired'), 'error'); btn.disabled = false; return; }
+        API.createWorkflow(uid, { name: name, steps: steps, headless: true })
+          .then(function (data) {
+            FE.setCurrentWorkflow(data.workflow);
+            U().toast(t('wf.created'), 'success');
+            refreshWfLabel();
+          })
+          .catch(function (err) { U().toast(err.message, 'error'); })
+          .then(function () { btn.disabled = false; });
+      }
     });
 
     root.querySelector('#fe-save').addEventListener('click', function () {
@@ -735,6 +983,7 @@
   function render(route, root) {
     switch (route) {
       case 'run': return renderRun(root);
+      case 'workflows': return renderWorkflows(root);
       case 'editor': return renderEditor(root);
       case 'jobs': return renderJobs(root);
       case 'browser':
