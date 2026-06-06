@@ -146,6 +146,16 @@
       'live.evt.stepError': 'خطای گام',
       'live.evt.log': 'لاگ',
 
+      // Step 29: لینک مشاهدهٔ زندهٔ قابل‌اشتراک
+      'live.share': 'اشتراک لینک زنده',
+      'live.shareCopied': 'لینک زنده کپی شد',
+      'live.shareError': 'ساخت لینک اشتراک ناموفق بود',
+      'live.viewTitle': 'مشاهدهٔ زندهٔ اجرا',
+      'live.readonly': 'این یک نمای فقط‌خواندنی است.',
+      'live.done': 'اجرا کامل شد',
+      'live.failed': 'اجرا ناموفق بود',
+      'live.running': 'در حال اجرا…',
+
       // Step 26: کشوی اجرا/لاگ + badge نودها + Pinning
       'rp.title': 'اجرا / لاگ',
       'rp.empty': 'هنوز اجرایی انجام نشده است.',
@@ -541,6 +551,16 @@
       'live.evt.stepDone': 'Step finished',
       'live.evt.stepError': 'Step error',
       'live.evt.log': 'Log',
+
+      // Step 29: shareable live-view link
+      'live.share': 'Share live link',
+      'live.shareCopied': 'Live link copied',
+      'live.shareError': 'Could not create share link',
+      'live.viewTitle': 'Live run view',
+      'live.readonly': 'This is a read-only view.',
+      'live.done': 'Run completed',
+      'live.failed': 'Run failed',
+      'live.running': 'Running…',
 
       // Step 26: run/log drawer + node badges + pinning
       'rp.title': 'Run / Log',

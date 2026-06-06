@@ -224,6 +224,24 @@ export const config = {
   WEBHOOK_SECRET: cleanEnv(process.env.WEBHOOK_SECRET) || '',
 
   // ============================================
+  // Step 29: two-channel live reporting
+  // ============================================
+  // Per-step outbound webhook: when STEP_WEBHOOK_ENABLED is true, each
+  // step.start/done/error/retry is delivered live to the job's webhookUrl
+  // (same HMAC scheme as job webhooks). Disabled by default to preserve
+  // existing job-only webhook behaviour.
+  STEP_WEBHOOK_ENABLED: cleanEnv(process.env.STEP_WEBHOOK_ENABLED) === 'true',
+  // Secret used to sign shareable live-view tokens. Falls back to
+  // WEBHOOK_SECRET, then API_TOKEN, so a token can always be minted.
+  LIVE_SHARE_SECRET:
+    cleanEnv(process.env.LIVE_SHARE_SECRET)
+    || cleanEnv(process.env.WEBHOOK_SECRET)
+    || API_TOKEN
+    || '',
+  // Default share-link lifetime (seconds). 0 = never expires.
+  LIVE_SHARE_TTL_SEC: parseInt(cleanEnv(process.env.LIVE_SHARE_TTL_SEC) || '86400', 10),
+
+  // ============================================
   // n8n / API Integration (F3)
   // ============================================
   // Synchronous /run?wait=true: max time (ms) to block waiting for a job to

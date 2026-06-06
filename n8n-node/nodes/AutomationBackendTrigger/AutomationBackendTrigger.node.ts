@@ -39,7 +39,7 @@ export class AutomationBackendTrigger implements INodeType {
     group: ['trigger'],
     version: 1,
     subtitle: '={{$parameter["events"]}}',
-    description: 'Starts a workflow when the Automation Backend sends a webhook (with optional HMAC verification)',
+    description: 'Starts a workflow when the Automation Backend sends a job- or step-level webhook (with optional HMAC verification)',
     defaults: {
       name: 'Automation Backend Trigger',
     },
@@ -78,9 +78,17 @@ export class AutomationBackendTrigger implements INodeType {
           { name: 'Job Cancelled', value: 'job.cancelled' },
           { name: 'Job Blocked', value: 'job.blocked' },
           { name: 'Quota Exhausted', value: 'job.quota_exhausted' },
+          // Step 29: per-step live events (two-channel reporting). These
+          // arrive when the backend has STEP_WEBHOOK_ENABLED=true and a
+          // webhookUrl is set on the job.
+          { name: 'Step Started', value: 'step.start' },
+          { name: 'Step Done', value: 'step.done' },
+          { name: 'Step Error', value: 'step.error' },
+          { name: 'Step Retry', value: 'step.retry' },
         ],
         default: ['job.completed', 'job.failed'],
-        description: 'Only emit for these webhook events. Leave empty to accept all events.',
+        description:
+          'Only emit for these events. Includes job-level and (Step 29) per-step events. Leave empty to accept all events.',
       },
       {
         displayName: 'Verify Signature',

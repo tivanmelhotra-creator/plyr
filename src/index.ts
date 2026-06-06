@@ -29,12 +29,13 @@ import { asyncBlockCheck } from './middleware/block-check';
 // Utils & Services
 import { isVipUser } from './utils/helpers';
 import { STATS_KEY, getUserActiveJobsKey, getLiveChannel } from './utils/redis-keys';
-import { sendWebhook } from './services/webhook.service';
+import { sendWebhook, sendStepWebhook } from './services/webhook.service';
 import { persistJob } from './services/job.service';
 
 // Step 16: Live Channel (WebSocket + SSE) live job events.
 import { LiveBus, JobLivePublisher } from './core/LiveBus';
 import { LiveServer, authorizeLive } from './core/LiveServer';
+import { buildStepWebhookPayload, buildShareToken, shouldDeliverStepEvent } from './core/StepReporter';
 import { LiveBrowserManager } from './core/LiveBrowser';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
 
@@ -284,13 +285,54 @@ app.use('/admin', routes.admin);
 // Replays the recent buffer, then streams new events via Redis Pub/Sub.
 // WebSocket (/live/ws) is preferred; this is the fallback for environments
 // where WS is blocked (e.g. some corporate proxies).
+// ============================================
+// LIVE SHARE LINK (Step 29)
+// ============================================
+// POST /live/share/:userId/:jobId  -> mint a signed share token + URL.
+// Requires normal API-key auth (only the owner can create a share link).
+// The returned link embeds the token in the query string so it can be
+// opened by anyone without exposing the API key.
+app.post('/live/share/:userId/:jobId', async (req, res) => {
+  const userId = String(req.params.userId);
+  const jobId = String(req.params.jobId);
+  const apiKey = (req.headers['x-api-key'] as string | undefined)
+    || (req.body && req.body.api_key ? String(req.body.api_key) : undefined);
+  const auth = await authorizeLive(apiKey, userId);
+  if (!auth.ok) {
+    res.status(auth.reason === 'missing_api_key' ? 401 : 403).json({
+      success: false, error: 'Share denied', reason: auth.reason
+    });
+    return;
+  }
+  if (!config.LIVE_SHARE_SECRET) {
+    res.status(503).json({ success: false, error: 'Share secret not configured' });
+    return;
+  }
+  let ttl = config.LIVE_SHARE_TTL_SEC;
+  const reqTtl = req.body && req.body.ttlSec;
+  if (typeof reqTtl === 'number' && Number.isFinite(reqTtl)) ttl = Math.floor(reqTtl);
+  const token = buildShareToken(userId, jobId, config.LIVE_SHARE_SECRET, ttl);
+  const base = `${req.protocol}://${req.get('host')}`;
+  const url = `${base}/live/view/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}?share=${encodeURIComponent(token)}`;
+  res.json({ success: true, token, url, expiresInSec: ttl });
+});
+
+// GET /live/view/:userId/:jobId  -> serve the shareable read-only live page.
+// Auth happens client-side via the share token (or api_key) against the
+// SSE/WS endpoints; this route only serves the static HTML shell.
+app.get('/live/view/:userId/:jobId', (_req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'live-view.html'));
+});
+
 app.get('/live/sse/:userId/:jobId', async (req, res) => {
   const userId = String(req.params.userId);
   const jobId = String(req.params.jobId);
   const apiKey = (req.headers['x-api-key'] as string | undefined)
     || (req.query.api_key ? String(req.query.api_key) : undefined);
+  // Step 29: optional shareable-link token (read-only access).
+  const share = req.query.share ? String(req.query.share) : undefined;
 
-  const auth = await authorizeLive(apiKey, userId);
+  const auth = await authorizeLive(apiKey, userId, { share, jobId });
   if (!auth.ok) {
     res.status(auth.reason === 'missing_api_key' ? 401 : 403).json({
       success: false,
@@ -473,8 +515,17 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       userPlan,
       quotaManager,
       // Step 16: forward step-level live events from the pipeline.
+      // Step 29: ALSO deliver per-step events to the job webhook URL
+      // (channel 1 of two-channel live reporting) when enabled.
       onEvent: (type: string, data?: Record<string, unknown>) => {
         livePub.emit(type as Parameters<typeof livePub.emit>[0], data);
+        if (webhookUrl && config.STEP_WEBHOOK_ENABLED && shouldDeliverStepEvent(type)) {
+          const stepPayload = buildStepWebhookPayload({ type, jobId: job.id!, userId, data });
+          if (stepPayload) {
+            // fire-and-forget; sendStepWebhook never throws into the pipeline.
+            void sendStepWebhook(webhookUrl, stepPayload);
+          }
+        }
       }
     });
 

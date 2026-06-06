@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <title>مشاهدهٔ زنده | Live View</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%A1%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body data-lang="fa" class="live-view-body">
+  <main class="live-view-wrap">
+    <header class="live-view-header">
+      <div class="live-view-title">
+        <span class="live-view-logo">📡</span>
+        <div>
+          <h1 data-i18n="live.viewTitle">مشاهدهٔ زندهٔ اجرا</h1>
+          <p class="live-view-sub" id="lv-meta"></p>
+        </div>
+      </div>
+      <div class="live-view-status">
+        <span id="lv-status-dot" class="lv-dot"></span>
+        <span id="lv-status-text" data-i18n="live.connecting">در حال اتصال…</span>
+      </div>
+    </header>
+
+    <section class="live-view-steps" id="lv-steps" aria-live="polite"></section>
+
+    <footer class="live-view-footer">
+      <span id="lv-error" class="lv-error" hidden></span>
+      <span class="lv-readonly" data-i18n="live.readonly">این یک نمای فقط‌خواندنی است.</span>
+    </footer>
+  </main>
+
+  <script src="/js/live-view.js"></script>
+</body>
+</html>

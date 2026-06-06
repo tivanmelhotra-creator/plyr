@@ -11,6 +11,7 @@ import { config } from '../config';
 import { LiveBus } from './LiveBus';
 import { getApiKeyManager } from '../middleware/auth';
 import { getLiveChannel } from '../utils/redis-keys';
+import { verifyShareToken } from './StepReporter';
 
 // ================================================================
 // LiveServer (Step 16) - WebSocket fan-out for live job events.
@@ -38,8 +39,22 @@ export interface LiveAuthResult {
 
 export const authorizeLive = async (
   apiKey: string | undefined,
-  userId: string
+  userId: string,
+  opts?: { share?: string | undefined; jobId?: string | undefined }
 ): Promise<LiveAuthResult> => {
+  // Step 29: a valid signed share token grants read-only live access to
+  // exactly the (userId, jobId) it was minted for — no API key required.
+  // This is what makes the live-view link shareable.
+  if (opts?.share && config.LIVE_SHARE_SECRET) {
+    const v = verifyShareToken(opts.share, config.LIVE_SHARE_SECRET);
+    if (v.ok && v.parts
+        && String(v.parts.userId) === String(userId)
+        && (!opts.jobId || String(v.parts.jobId) === String(opts.jobId))) {
+      return { ok: true };
+    }
+    // A share token was supplied but did not check out: fall through to
+    // API-key auth so a legitimate owner can still connect.
+  }
   // If auth is globally disabled, allow (dev/self-hosted convenience).
   if (!config.API_KEYS_ENABLED) {
     return { ok: true };
@@ -143,6 +158,8 @@ export class LiveServer {
       const jobId = parsed.searchParams.get('jobId') || '';
       const apiKey = parsed.searchParams.get('api_key')
         || (req.headers['x-api-key'] as string | undefined);
+      // Step 29: optional shareable-link token (read-only access).
+      const share = parsed.searchParams.get('share') || undefined;
 
       if (!userId || !jobId) {
         socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -150,7 +167,7 @@ export class LiveServer {
         return;
       }
 
-      authorizeLive(apiKey, userId).then((auth) => {
+      authorizeLive(apiKey, userId, { share, jobId }).then((auth) => {
         if (!auth.ok) {
           socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
           socket.destroy();
