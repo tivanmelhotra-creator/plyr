@@ -116,6 +116,50 @@
     { id: 'log', icon: '📝', cat: 'integration', fields: [
       { k: 'message', label: 'p.message', type: 'text', ph: 'checkpoint' },
     ] },
+
+    // ---- Flow / branching (Step 24) ----------------------------------
+    // These actions declare multiple OUTPUT PORTS via `branches`. Each
+    // branch's nodes are serialised into a nested group on the backend
+    // AutomationStep (then/else/steps/cases/catch/finally). A node WITHOUT
+    // `branches` implicitly has a single 'next' port (the linear default).
+    { id: 'if', icon: '🔀', cat: 'flow',
+      branches: [{ id: 'then', label: 'port.then' }, { id: 'else', label: 'port.else' }],
+      fields: [
+        { k: 'selector', label: 'p.selector', type: 'text', ph: '(optional) .el' },
+        { k: 'operator', label: 'p.operator', type: 'select', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
+        { k: 'value', label: 'p.value', type: 'text', ph: '(optional) left/var value' },
+        { k: 'expected', label: 'p.expected', type: 'text', ph: '(optional) compare to' },
+      ] },
+    { id: 'switch', icon: '🔢', cat: 'flow',
+      branches: [{ id: 'default', label: 'port.default' }],
+      dynamicBranches: 'cases',
+      fields: [
+        { k: 'variable', label: 'p.variable', type: 'text', ph: 'status' },
+        { k: 'casesList', label: 'p.cases', type: 'text', ph: 'a, b, c (comma list)' },
+      ] },
+    { id: 'loop', icon: '🔁', cat: 'flow',
+      branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
+      fields: [
+        { k: 'count', label: 'p.count', type: 'number', ph: '3' },
+      ] },
+    { id: 'foreach', icon: '🔂', cat: 'flow',
+      branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
+      fields: [
+        { k: 'items', label: 'p.items', type: 'text', ph: 'variable holding array' },
+        { k: 'itemVar', label: 'p.itemVar', type: 'text', ph: 'item' },
+      ] },
+    { id: 'while', icon: '♾️', cat: 'flow',
+      branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
+      fields: [
+        { k: 'selector', label: 'p.selector', type: 'text', ph: '(optional) .el' },
+        { k: 'operator', label: 'p.operator', type: 'select', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
+        { k: 'value', label: 'p.value', type: 'text', ph: '(optional) left/var value' },
+        { k: 'expected', label: 'p.expected', type: 'text', ph: '(optional) compare to' },
+        { k: 'maxIterations', label: 'p.maxIterations', type: 'number', ph: '100' },
+      ] },
+    { id: 'try', icon: '🛡️', cat: 'flow',
+      branches: [{ id: 'try', label: 'port.try' }, { id: 'catch', label: 'port.catch' }, { id: 'finally', label: 'port.finally' }],
+      fields: [] },
   ];
 
   // Category metadata for the visual editor (Step 23): colour + i18n label.
@@ -142,12 +186,32 @@
     return ACTIONS[0];
   }
 
+  // Step 24: the output ports of an action. Branching actions declare them
+  // via `branches`; every other action has a single implicit 'next' port.
+  function branchesOf(id) {
+    var act = null;
+    for (var i = 0; i < ACTIONS.length; i++) {
+      if (ACTIONS[i].id === id) { act = ACTIONS[i]; break; }
+    }
+    if (act && Array.isArray(act.branches) && act.branches.length) {
+      return act.branches.slice();
+    }
+    return [{ id: 'next', label: 'port.next' }];
+  }
+  // True when an action has more than the single linear 'next' port.
+  function isBranching(id) {
+    var b = branchesOf(id);
+    return !(b.length === 1 && b[0].id === 'next');
+  }
+
   // Expose globally (CSP-safe, no modules).
   window.ACTION_CATALOG = {
     ACTIONS: ACTIONS,
     CATEGORIES: CATEGORIES,
     actionById: actionById,
     categoryById: categoryById,
+    branchesOf: branchesOf,
+    isBranching: isBranching,
     ids: function () { return ACTIONS.map(function (a) { return a.id; }); },
   };
 })();

@@ -11,7 +11,12 @@
  *   - The linear list of nodes reachable from start is serialised to the SAME
  *     `steps: [{ action, params }]` JSON the backend already accepts.
  *
- * Exposes window.FlowEditor = { mount, unmount, toSteps, loadSteps }.
+ * Exposes window.FlowEditor = { mount, unmount, toSteps, loadSteps, validate, ... }.
+ *
+ * Step 24: nodes can be BRANCHING (if/switch/loop/foreach/while/try) with
+ * multiple labelled output ports. Edges carry a `port` id; serialisation to/
+ * from the backend's nested steps[] (then/else/cases/steps/catch/finally) is
+ * delegated to the DOM-free GraphSerialize module (public/js/graph-serialize.js).
  *
  * Loaded AFTER app.js is NOT guaranteed; this file is loaded before app.js in
  * index.html (order: i18n -> api -> flow-editor -> views -> app), so — like
@@ -88,9 +93,16 @@
   // ---- Serialisation: graph <-> steps[] -------------------------------------
   // Walk the chain from `start` following each node's single outgoing edge.
   // Produces [{ action, params }] identical to the linear run-builder format.
+  // The 'next' (main-chain) edge from a node. Used by chainNodeIds() for the
+  // linear status walk; branch edges (then/else/body/...) are ignored here.
   function outgoing(nodeId) {
     for (var i = 0; i < state.edges.length; i++) {
-      if (state.edges[i].from === nodeId) return state.edges[i];
+      var e = state.edges[i];
+      if (e.from === nodeId && (e.port || 'next') === 'next') return e;
+    }
+    // start node may use a non-'next' first edge in older graphs — fall back.
+    for (var j = 0; j < state.edges.length; j++) {
+      if (state.edges[j].from === nodeId) return state.edges[j];
     }
     return null;
   }
@@ -112,7 +124,15 @@
     return params;
   }
 
+  // Step 24: serialization is delegated to the DOM-free GraphSerialize module
+  // (public/js/graph-serialize.js) so it can be unit-tested without a DOM.
+  // This supports non-linear branching graphs (if/switch/loop/foreach/while/try)
+  // and nests them into the backend's then/else/cases/steps/catch/finally shape.
+  function GS() { return window.GraphSerialize; }
+
   function toSteps() {
+    if (GS()) return GS().graphToSteps(state);
+    // Fallback (serializer not loaded): linear walk.
     var steps = [];
     var seen = {};
     var edge = outgoing('start');
@@ -120,18 +140,33 @@
     while (edge && guard < 1000) {
       guard += 1;
       var node = state.nodes[edge.to];
-      if (!node || seen[node.id]) break; // missing or cycle -> stop
+      if (!node || seen[node.id]) break;
       seen[node.id] = true;
-      if (node.action !== '__start__') {
-        steps.push({ action: node.action, params: coerceParams(node) });
-      }
+      if (node.action !== '__start__') steps.push({ action: node.action, params: coerceParams(node) });
       edge = outgoing(node.id);
     }
     return steps;
   }
 
-  // Build a clean left-to-right chain graph from a steps[] array.
+  // Validate the current graph (orphan nodes, missing required params, etc.).
+  function validate() {
+    if (GS()) return GS().validateGraph(state);
+    return { ok: true, errors: [], warnings: [] };
+  }
+
+  // Rebuild a laid-out graph from a (possibly nested) steps[] array.
   function loadSteps(steps) {
+    if (GS()) {
+      var g = GS().stepsToGraph(steps || []);
+      // preserve a fresh selection/view shape the editor expects
+      state = g;
+      state.selected = null;
+      state.selSet = {};
+      nodeStatus = {};
+      if (dom) renderAll();
+      return;
+    }
+    // Fallback: linear layout.
     state = newGraph();
     var prevId = 'start';
     var x = 280;
@@ -146,7 +181,7 @@
         });
       state.nodes[id] = { id: id, action: s.action, params: params,
         x: snap(x), y: snap(160 + (i % 2) * 40) };
-      state.edges.push({ from: prevId, to: id });
+      state.edges.push({ from: prevId, to: id, port: 'next' });
       prevId = id;
       x += 240;
     });
@@ -184,13 +219,39 @@
 
   // ---- Geometry helpers -----------------------------------------------------
   function nodeW() { return 190; }
-  function nodeH(node) {
+  // Step 24: ports of a node. Branching actions expose multiple output ports
+  // (then/else, body/done, try/catch/finally, switch cases). Returns a list of
+  // { id, label } where the first is at the top.
+  function portsOf(node) {
+    if (node.action === '__start__') return [{ id: 'next', label: 'port.next' }];
+    var base = (CAT.branchesOf ? CAT.branchesOf(node.action) : [{ id: 'next', label: 'port.next' }]);
+    // if/switch/try also expose an implicit 'next' (main-chain continuation).
     var act = actionById(node.action);
-    var rows = act ? act.fields.length : 0;
-    return 44 + rows * 0; // header only; params live in inspector
+    var needsNext = act && (node.action === 'if' || node.action === 'switch' || node.action === 'try');
+    var ports = base.slice();
+    // dynamic switch cases from a comma list (casesList param)
+    if (node.action === 'switch' && node.params && node.params.casesList) {
+      String(node.params.casesList).split(',').forEach(function (raw) {
+        var v = raw.trim();
+        if (v) ports.push({ id: 'case:' + v, label: v });
+      });
+    }
+    if (needsNext) ports.push({ id: 'next', label: 'port.next' });
+    return ports;
   }
-  function outPort(node) {
-    return { x: node.x + nodeW(), y: node.y + 22 };
+  function nodeH(node) {
+    var ports = portsOf(node);
+    return Math.max(48, 36 + ports.length * 20);
+  }
+  // Y position of a given output port slot (port id) on a node.
+  function portY(node, portId) {
+    var ports = portsOf(node);
+    var idx = 0;
+    for (var i = 0; i < ports.length; i++) { if (ports[i].id === portId) { idx = i; break; } }
+    return node.y + 30 + idx * 20;
+  }
+  function outPort(node, portId) {
+    return { x: node.x + nodeW(), y: portY(node, portId || (portsOf(node)[0] || {}).id || 'next') };
   }
   function inPort(node) {
     return { x: node.x, y: node.y + 22 };
@@ -320,11 +381,13 @@
       var from = state.nodes[e.from];
       var to = state.nodes[e.to];
       if (!from || !to) return;
-      var p1 = outPort(from);
+      var port = e.port || 'next';
+      var p1 = outPort(from, port);
       var p2 = inPort(to);
       var path = document.createElementNS(svgns, 'path');
       path.setAttribute('d', curvePath(p1.x, p1.y, p2.x, p2.y));
-      path.setAttribute('class', 'flow-edge');
+      // Step 24: colour-code branch edges (then=green, else/catch=red, etc.).
+      path.setAttribute('class', 'flow-edge edge-' + port.replace(/[^a-z0-9]+/gi, '-'));
       path.setAttribute('data-edge', String(idx));
       // click an edge to delete it
       path.addEventListener('click', function (ev) {
@@ -404,11 +467,36 @@
       card.appendChild(pin);
     }
 
-    // output port (right) — start + every action node has one
-    var pout = document.createElement('div');
-    pout.className = 'flow-port out';
-    pout.setAttribute('data-port', 'out');
-    card.appendChild(pout);
+    // Step 24: one output port per branch (start + linear nodes have a single
+    // 'next'; if/switch/loop/foreach/while/try expose multiple labelled ports).
+    card.style.minHeight = nodeH(node) + 'px';
+    var ports = portsOf(node);
+    var branching = ports.length > 1;
+    if (branching) card.classList.add('is-branching');
+    ports.forEach(function (p) {
+      var po = document.createElement('div');
+      po.className = 'flow-port out port-' + p.id.replace(/[^a-z0-9]+/gi, '-');
+      po.setAttribute('data-port', p.id);
+      po.style.top = (portY(node, p.id) - node.y) + 'px';
+      card.appendChild(po);
+      if (branching) {
+        var lbl = document.createElement('span');
+        lbl.className = 'flow-port-label';
+        // case:<v> labels show the raw case value
+        lbl.textContent = p.id.indexOf('case:') === 0 ? p.id.slice(5) : t(p.label);
+        lbl.style.top = (portY(node, p.id) - node.y - 8) + 'px';
+        card.appendChild(lbl);
+      }
+      // connection drag — start on THIS output port (carries its port id)
+      po.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0) return;
+        ev.stopPropagation();
+        var op = outPort(node, p.id);
+        drag = { type: 'connect', from: node.id, fromPort: p.id,
+          startX: op.x, startY: op.y, preview: { x: op.x, y: op.y } };
+        renderEdges();
+      });
+    });
 
     // node drag (move) — start on header. Shift/Ctrl adds to multi-selection.
     header.addEventListener('mousedown', function (ev) {
@@ -435,15 +523,6 @@
         }) };
     });
 
-    // connection drag — start on output port
-    pout.addEventListener('mousedown', function (ev) {
-      if (ev.button !== 0) return;
-      ev.stopPropagation();
-      var op = outPort(node);
-      drag = { type: 'connect', from: node.id, startX: op.x, startY: op.y, preview: { x: op.x, y: op.y } };
-      renderEdges();
-    });
-
     card.addEventListener('click', function (ev) {
       ev.stopPropagation();
       selectNode(node.id);
@@ -461,12 +540,37 @@
     Object.keys(state.nodes).forEach(function (id) { renderNode(state.nodes[id]); });
   }
 
+  // Step 24: append a small validation summary (errors/warnings) to a box.
+  function appendValidation(box) {
+    var res = validate();
+    var wrap = document.createElement('div');
+    wrap.className = 'fe-validation';
+    var items = (res.errors || []).map(function (e) { return { kind: 'error', it: e }; })
+      .concat((res.warnings || []).map(function (w) { return { kind: 'warn', it: w }; }));
+    if (!items.length) {
+      wrap.innerHTML = '<span class="v-ok">✓ ' + esc(t('val.ok')) + '</span>';
+      box.appendChild(wrap);
+      return;
+    }
+    items.forEach(function (entry) {
+      var row = document.createElement('div');
+      row.className = 'v-item v-' + entry.kind;
+      var name = entry.it.nodeId && state.nodes[entry.it.nodeId]
+        ? (state.nodes[entry.it.nodeId].action + ': ') : '';
+      row.innerHTML = '<span class="v-dot">' + (entry.kind === 'error' ? '✕' : '!') + '</span>' +
+        '<span>' + esc(name + t(entry.it.message)) + '</span>';
+      wrap.appendChild(row);
+    });
+    box.appendChild(wrap);
+  }
+
   function renderInspector() {
     var box = dom.inspector;
     box.innerHTML = '';
     var node = state.selected ? state.nodes[state.selected] : null;
     if (!node || node.action === '__start__') {
       box.innerHTML = '<div class="muted small">' + esc(t('fe.selectHint')) + '</div>';
+      appendValidation(box);
       return;
     }
     var act = actionById(node.action);
@@ -480,6 +584,7 @@
       none.className = 'muted small';
       none.textContent = t('fe.noParams');
       box.appendChild(none);
+      appendValidation(box);
       return;
     }
 
@@ -514,6 +619,7 @@
       row.appendChild(input);
       box.appendChild(row);
     });
+    appendValidation(box);
   }
 
   function renderAll() {
@@ -621,9 +727,10 @@
         return { action: n.action, params: JSON.parse(JSON.stringify(n.params || {})),
           x: n.x, y: n.y };
       }),
-      // keep internal edges between copied nodes (relative by array index)
+      // keep internal edges between copied nodes (relative by array index),
+      // preserving the originating port so branch structure survives paste.
       edges: state.edges.filter(function (e) { return idset[e.from] && idset[e.to]; })
-        .map(function (e) { return { from: ids.indexOf(e.from), to: ids.indexOf(e.to) }; }),
+        .map(function (e) { return { from: ids.indexOf(e.from), to: ids.indexOf(e.to), port: e.port || 'next' }; }),
     };
   }
 
@@ -641,7 +748,7 @@
     });
     clipboard.edges.forEach(function (e) {
       if (newIds[e.from] && newIds[e.to]) {
-        state.edges.push({ from: newIds[e.from], to: newIds[e.to] });
+        state.edges.push({ from: newIds[e.from], to: newIds[e.to], port: e.port || 'next' });
       }
     });
     state.selected = newIds[newIds.length - 1] || null;
@@ -658,13 +765,17 @@
     renderAll();
   }
 
-  // a node can have at most ONE outgoing edge (linear flow). Replace if exists.
-  function connect(fromId, toId) {
+  // Step 24: a node can have at most ONE outgoing edge PER output port.
+  // Reconnecting the same port replaces its previous target; branching nodes
+  // therefore fan out (e.g. if -> then + else, try -> try/catch/finally).
+  function connect(fromId, toId, port) {
     if (fromId === toId) return;
-    // prevent connecting into start
-    if (toId === 'start') return;
-    state.edges = state.edges.filter(function (e) { return e.from !== fromId; });
-    state.edges.push({ from: fromId, to: toId });
+    if (toId === 'start') return; // nothing connects into start
+    var p = port || 'next';
+    state.edges = state.edges.filter(function (e) {
+      return !(e.from === fromId && (e.port || 'next') === p);
+    });
+    state.edges.push({ from: fromId, to: toId, port: p });
     renderAll();
   }
 
@@ -850,7 +961,7 @@
         var card = el && el.closest ? el.closest('.flow-node') : null;
         if (card) {
           var toId = card.getAttribute('data-node');
-          if (toId) connect(drag.from, toId);
+          if (toId) connect(drag.from, toId, drag.fromPort || 'next');
         }
         drag = null;
         renderAll();
@@ -1042,6 +1153,11 @@
     // 'idle' | 'running' | 'success' | 'error'.
     setNodeStatus: setNodeStatus,
     clearStatuses: clearStatuses,
+
+    // ---- Step 24: graph validation ----------------------------------------
+    // { ok, errors:[{code,nodeId?,message}], warnings:[...] } — message values
+    // are i18n keys (val.*) the caller can translate.
+    validate: validate,
 
     // ---- Step 22: saved-workflow context ----------------------------------
     // Open a saved workflow: rebuild the graph from its steps and remember its

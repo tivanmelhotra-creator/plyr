@@ -214,6 +214,36 @@
       'cat.trigger': 'تریگر',
       'cat.other': 'سایر',
 
+      // Branching params (Step 24)
+      'p.operator': 'عملگر شرط',
+      'p.expected': 'مقدار مورد انتظار',
+      'p.variable': 'نام متغیر',
+      'p.cases': 'کِیس‌ها (فهرست با کاما)',
+      'p.count': 'تعداد تکرار',
+      'p.items': 'متغیر آرایه',
+      'p.itemVar': 'نام متغیر آیتم',
+      'p.maxIterations': 'حداکثر تکرار',
+      // Output port labels (branching nodes)
+      'port.next': 'بعدی',
+      'port.then': 'اگر درست',
+      'port.else': 'اگر نادرست',
+      'port.body': 'بدنه',
+      'port.done': 'پایان',
+      'port.try': 'تلاش',
+      'port.catch': 'خطا',
+      'port.finally': 'در نهایت',
+      'port.default': 'پیش‌فرض',
+      // Graph validation messages (Step 24)
+      'val.ok': 'گراف معتبر است',
+      'val.noGraph': 'گرافی وجود ندارد',
+      'val.empty': 'گراف خالی است — حداقل یک نود به «شروع» وصل کنید',
+      'val.orphan': 'نود بی‌اتصال (از «شروع» قابل دسترسی نیست)',
+      'val.unknownAction': 'اکشن ناشناخته',
+      'val.emptyLoop': 'حلقه بدنه ندارد',
+      'val.foreachItems': 'foreach به متغیر آرایه نیاز دارد',
+      'val.emptyIf': 'شرط هیچ شاخه‌ای ندارد (then/else)',
+      'val.switchVar': 'switch به نام متغیر نیاز دارد',
+
       // Workflows (Step 22)
       'wf.title': 'ورکفلوها',
       'wf.subtitle': 'کتابخانهٔ ورکفلوهای ذخیره‌شدهٔ شما — بسازید، ویرایش، کپی، اجرا و نسخه‌بندی کنید. دیگر به یک ورکفلو محدود نیستید.',
@@ -520,6 +550,36 @@
       'cat.integration': 'Integration',
       'cat.trigger': 'Trigger',
       'cat.other': 'Other',
+
+      // Branching params (Step 24)
+      'p.operator': 'Condition operator',
+      'p.expected': 'Expected value',
+      'p.variable': 'Variable name',
+      'p.cases': 'Cases (comma list)',
+      'p.count': 'Iterations',
+      'p.items': 'Array variable',
+      'p.itemVar': 'Item variable name',
+      'p.maxIterations': 'Max iterations',
+      // Output port labels (branching nodes)
+      'port.next': 'Next',
+      'port.then': 'If true',
+      'port.else': 'If false',
+      'port.body': 'Body',
+      'port.done': 'Done',
+      'port.try': 'Try',
+      'port.catch': 'Catch',
+      'port.finally': 'Finally',
+      'port.default': 'Default',
+      // Graph validation messages (Step 24)
+      'val.ok': 'Graph is valid',
+      'val.noGraph': 'No graph',
+      'val.empty': 'Graph is empty — connect at least one node to “Start”',
+      'val.orphan': 'Orphan node (not reachable from “Start”)',
+      'val.unknownAction': 'Unknown action',
+      'val.emptyLoop': 'Loop has no body',
+      'val.foreachItems': 'foreach requires an array variable',
+      'val.emptyIf': 'If has no branch (then/else)',
+      'val.switchVar': 'switch requires a variable name',
 
       // Workflows (Step 22)
       'wf.title': 'Workflows',

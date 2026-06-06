@@ -699,6 +699,67 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .flow-port.out { inset-inline-end: -7px; cursor: crosshair; }
 .flow-port.out:hover { transform: scale(1.25); }
 
+/* Step 24: branching nodes — multiple labelled output ports + edge colours */
+.flow-node.is-branching {
+  --cat-color: #f5a623; /* flow category */
+}
+.flow-node.is-branching .flow-node-sub { padding-bottom: 4px; }
+/* port colour cues so then/body/try read "go", else/catch read "stop" */
+.flow-port.out.port-then,
+.flow-port.out.port-body,
+.flow-port.out.port-try   { background: var(--success); }
+.flow-port.out.port-else,
+.flow-port.out.port-catch { background: var(--danger); }
+.flow-port.out.port-done,
+.flow-port.out.port-finally { background: #f5a623; }
+.flow-port.out[class*="port-case-"] { background: #06b6d4; }
+
+.flow-port-label {
+  position: absolute;
+  inset-inline-end: 12px;
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  padding: 1px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 3;
+}
+
+/* coloured branch edges (class set in renderEdges: edge-<port>) */
+.flow-edge.edge-then,
+.flow-edge.edge-body,
+.flow-edge.edge-try   { stroke: var(--success); }
+.flow-edge.edge-else,
+.flow-edge.edge-catch { stroke: var(--danger); }
+.flow-edge.edge-done,
+.flow-edge.edge-finally { stroke: #f5a623; }
+.flow-edge[class*="edge-case-"] { stroke: #06b6d4; }
+
+/* Step 24: validation panel (orphan nodes / missing params) */
+.fe-validation {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 11.5px;
+}
+.fe-validation .v-ok { color: var(--success); }
+.fe-validation .v-item {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 2px 0;
+}
+.fe-validation .v-error { color: var(--danger); }
+.fe-validation .v-warn { color: #f5a623; }
+.fe-validation .v-dot { flex: 0 0 auto; margin-top: 2px; }
+
 /* Step 23: box-select marquee (rendered inside .fe-world) */
 .fe-boxselect {
   position: absolute;
