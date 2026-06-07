@@ -99,3 +99,36 @@ body {
 .status.ok { color: var(--ok); }
 .status.bad { color: var(--bad); }
 .status.warn { color: var(--warn); }
+
+/* Step 31 — shared workflow list */
+.chk { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; cursor: pointer; }
+.chk input { accent-color: var(--accent); }
+.wflist { list-style: none; margin: 0 0 8px; padding: 0; max-height: 180px; overflow: auto; }
+.wflist .empty { color: var(--muted); padding: 4px 0; font-size: 11px; }
+.wfitem {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,.05);
+}
+.wfmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wfname { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wfsub { font-size: 10px; color: var(--muted); }
+
+/* Step 31 — live tick/error per node */
+.live .count { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.livesteps {
+  list-style: none; margin: 0 0 8px; padding: 0;
+  max-height: 160px; overflow: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+}
+.livesteps .empty { color: var(--muted); padding: 3px 4px; }
+.liverow {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 4px; border-bottom: 1px solid rgba(255,255,255,.05);
+}
+.liveicon { width: 14px; text-align: center; color: var(--muted); }
+.livelabel { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.liverow.running .liveicon { color: var(--warn); }
+.liverow.success .liveicon { color: var(--ok); }
+.liverow.error .liveicon { color: var(--bad); }
+.liverow.error .livelabel { color: var(--bad); }
+.liverow.retry .liveicon { color: var(--warn); }
