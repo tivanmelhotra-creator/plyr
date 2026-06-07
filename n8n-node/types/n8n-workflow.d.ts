@@ -47,16 +47,23 @@ declare module 'n8n-workflow' {
     hide?: { [key: string]: Array<string | number | boolean> };
   }
 
+  export interface INodePropertyCollection {
+    displayName: string;
+    name: string;
+    values: INodeProperties[];
+  }
+
   export interface INodeProperties {
     displayName: string;
     name: string;
     type: string;
     default: unknown;
     description?: string;
+    hint?: string;
     placeholder?: string;
     required?: boolean;
     noDataExpression?: boolean;
-    options?: INodePropertyOptions[];
+    options?: Array<INodePropertyOptions | INodePropertyCollection>;
     typeOptions?: INodePropertyTypeOptions;
     displayOptions?: IDisplayOptions;
   }
@@ -130,6 +137,22 @@ declare module 'n8n-workflow' {
     };
   }
 
+  // Context passed to `methods.loadOptions.*` handlers. n8n calls these to
+  // populate a dropdown (e.g. the list of saved workflows) before execution.
+  export interface ILoadOptionsFunctions {
+    getCredentials(name: string): Promise<IDataObject>;
+    getNodeParameter(name: string, fallback?: unknown): unknown;
+    getNode(): IDataObject;
+    helpers: {
+      httpRequestWithAuthentication: {
+        call(context: unknown, credentialsType: string, options: IHttpRequestOptions): Promise<unknown>;
+      };
+      httpRequest: {
+        call(context: unknown, options: IHttpRequestOptions): Promise<unknown>;
+      };
+    };
+  }
+
   export interface IWebhookResponseData {
     workflowData?: INodeExecutionData[][];
     webhookResponse?: unknown;
@@ -165,6 +188,11 @@ declare module 'n8n-workflow' {
 
   export interface INodeType {
     description: INodeTypeDescription;
+    methods?: {
+      loadOptions?: {
+        [methodName: string]: (this: ILoadOptionsFunctions) => Promise<INodePropertyOptions[]>;
+      };
+    };
     execute?(this: IExecuteFunctions): Promise<INodeExecutionData[][]>;
     webhook?(this: IWebhookFunctions): Promise<IWebhookResponseData>;
   }

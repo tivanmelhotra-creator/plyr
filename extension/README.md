@@ -2,11 +2,14 @@
 
 A lightweight **Manifest V3** Chrome/Chromium extension that lets you:
 
-- **Pick elements** on any real web page and instantly get a stable **CSS** + **XPath** selector (same selector logic used by the backend's Live Browser View).
+- **Pick elements** on any real web page and instantly get a stable **CSS** + **XPath** selector (same selector logic used by the backend's Live Browser View), then **insert the selector directly** into a `click`/`extract` step.
 - **Record actions** (click / type / Enter / navigation) on the page and turn them into backend **steps**.
-- **Send** the recorded steps to your self-hosted `automation-backend` as a Flow (`POST /run`) using your **API Key** — directly from the popup.
+- **Send** the recorded steps to your self-hosted `automation-backend` as an inline Flow (`POST /run`) using your **API Key** — directly from the popup.
+- **Use the same backend as the dashboard panel** (Step 31, *Model A*): the popup logs in with the *same* API key, lists the **same saved workflows** (`GET /workflows/:userId`), and can **run a saved workflow** (`POST /workflows/:userId/:workflowId/run`) on demand.
+- **Watch the run live** — the popup subscribes to the job's live stream (SSE) and paints a **tick ✓ / error ✗ / retry ↻** per node, mirroring the dashboard's live node states.
+- **Open the panel** in a new tab (the same UI the extension is a thin client of — not a parallel copy).
 
-It is the *"real browser"* companion (Solution B) to the in-app Live Browser View (Solution A). Use it when you want to capture selectors / flows while browsing in your own logged-in Chrome session.
+It is the *"real browser"* companion (Solution B) to the in-app Live Browser View (Solution A). Use it when you want to capture selectors / flows, or trigger and monitor your saved workflows, while browsing in your own logged-in Chrome session.
 
 ---
 
@@ -40,9 +43,9 @@ Click the extension icon to open the popup, then under **Backend**:
 |------------|--------------------------|-------|
 | Base URL   | `http://localhost:3000`  | Scheme optional — `localhost:3000` becomes `http://localhost:3000`. Trailing slash is stripped. |
 | API Key    | *(your key)*             | Sent as the `x-api-key` header. Never logged. |
-| User ID    | `0`                      | The `userId` used in the Flow payload. Use `0` (or your env root user) for the admin/env key. |
+| User ID    | `local`                  | The `userId` used in the Flow payload. In self-hosted single-user mode the backend binds the key to `local`; in multi-tenant mode it is your key's owner id. |
 
-Click **Save**, then **Test** to verify connectivity. *Test* calls `GET /me` with your key and shows **online / offline**.
+Click **Save**, then **Test connection** to verify connectivity. *Test* calls `GET /me` with your key, shows **online / offline**, resolves the **canonical userId** the key is bound to (auto-filled), and loads your saved **Workflows**. Click **Open panel** to open the dashboard UI in a new tab.
 
 ---
 
@@ -57,7 +60,13 @@ Open any normal **http/https** web page (the content script does not run on `chr
 4. From the picked box you can:
    - **Copy CSS** to the clipboard.
    - **Add click** → appends `{ action: "click", params: { selector } }` to the step list.
-   - **Add extract** → appends `{ action: "extract", params: { selector, name: "value" } }`.
+   - **Add extract** → prompts for a **field name** then appends `{ action: "extract", params: { selector, name } }` (so the extracted value lands in a named field).
+
+### Run a saved workflow (same list as the dashboard)
+1. After **Test connection**, the **Workflows** card lists your saved workflows (name · version · step count) — the *same* list shown in the dashboard panel.
+2. Click **▶ Run** on any workflow. Tick **show browser** first if you want a headful run.
+3. The popup queues the run (`POST /workflows/:userId/:workflowId/run`) and opens a **Live run** card that paints **✓ / ✗ / ↻** per node as the job streams events, ending with **Done ✓** or **Failed**.
+4. Use **↻ Refresh** to reload the list after editing workflows in the panel.
 
 ### Record a flow
 1. Click **⏺ Record**.
@@ -82,7 +91,7 @@ Open any normal **http/https** web page (the content script does not run on `chr
 
 ## 5. CORS / networking notes
 
-The extension performs the `GET /me` and `POST /run` requests from its **background service worker**, which is extension-privileged and granted `host_permissions: ["http://*/*", "https://*/*"]`. This avoids the page-context cross-origin restrictions a content-script fetch would hit, so **the default flow works even when the backend's `CORS_ALLOWED_ORIGINS` is empty**.
+The extension performs all backend requests (`GET /me`, `GET /workflows/:userId`, `POST /run`, `POST /workflows/:userId/:workflowId/run`, and the live `GET /live/sse/...` stream) from its **background service worker**, which is extension-privileged and granted `host_permissions: ["http://*/*", "https://*/*"]`. This avoids the page-context cross-origin restrictions a content-script fetch would hit, so **the default flow works even when the backend's `CORS_ALLOWED_ORIGINS` is empty**. The live stream is read in the worker via `fetch` + `ReadableStream` (MV3 workers have no `EventSource`), with the API key passed as `?api_key=` since SSE cannot set headers.
 
 However, if you customize the extension to fetch from a *page* context, or your backend sits behind a proxy that enforces `Origin` checks, configure CORS on the backend:
 
@@ -119,14 +128,16 @@ No data is sent anywhere except to the **Base URL** you configure. Your API Key 
 ```
 extension/
 ├── manifest.json          # MV3 manifest
-├── background.js          # service worker: sendFlow (/run), checkConnection (/me), relay
+├── background.js          # service worker: /me, /workflows list+run, /run, SSE live relay, open panel, content relay
+├── lib/
+│   └── ab-core.js         # pure shared helpers (window.ABCore): URL builders, list/me parse, live-event mapping, stepLabel — reused by popup + worker + unit tests
 ├── content/
 │   ├── selector.js        # window.ABSelector → cssPath() / xPath() (matches backend picker)
 │   └── recorder.js        # element picker overlay + action recorder
 ├── popup/
-│   ├── popup.html         # popup UI (config / capture / steps)
+│   ├── popup.html         # popup UI (config / workflows / capture / steps / live run)
 │   ├── popup.css          # dark theme
-│   └── popup.js           # popup controller (CSP-safe, no inline JS)
+│   └── popup.js           # popup controller (CSP-safe, no inline JS); consumes ABCore
 ├── icons/                 # 16 / 48 / 128 px
 └── README.md              # this file
 ```
@@ -140,3 +151,5 @@ extension/
 - **Send failed: http_401** — invalid/missing API Key.
 - **Send failed: http_400** — payload rejected by the backend schema (e.g. an unsupported action). Check the Steps list.
 - **No steps recorded** — make sure **Record** is active (button shows *Stop recording*) and you're interacting with the *active* tab.
+- **Workflows list is empty** — confirm you ran **Test connection** first (it resolves the userId and loads the list), and that the user actually has saved workflows. Use **↻ Refresh**.
+- **Live run shows no ticks** — the job may have finished before the popup subscribed, or the popup was closed (the SSE stream is driven by the popup session). Re-open the popup and re-run, or watch the job in the dashboard panel.

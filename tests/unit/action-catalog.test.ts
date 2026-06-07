@@ -133,3 +133,96 @@ describe('action catalog — Step 23 category contract', () => {
     expect(schKeys).toEqual(expect.arrayContaining(['cron', 'timezone']));
   });
 });
+
+// ── Step 32: Single Source of Truth guard ──────────────────────────────
+// The backend (src/pipeline.ts) is the authority for which actions can run.
+// This guard parses every action string the pipeline dispatches on and
+// asserts that each one is reachable from the UI catalog — either as a
+// catalog action id directly, or via a known alias group (the pipeline
+// accepts several spellings for the same behaviour, e.g. goto/goto-url/
+// navigate). This prevents a backend action from silently lacking a UI node.
+describe('action catalog — Step 32 backend/UI sync (Single Source of Truth)', () => {
+  // Alias groups: each canonical UI id <- the alternative spellings the
+  // backend pipeline also accepts for the same behaviour. Keep this in sync
+  // with the `if (step.action === ... || ...)` chains in src/pipeline.ts.
+  const ALIASES: Record<string, string[]> = {
+    goto: ['goto-url', 'navigate'],
+    extract: ['scrape', 'get-data'],
+    cookie: ['cookies'],
+    notification: ['notify'],
+    variable: ['set-variable', 'set_variable', 'transform'],
+    'export-data': ['export', 'export_data'],
+    'http-request': ['http', 'fetch', 'api'],
+    'mouse-move': ['mouse', 'move-mouse'],
+    'drag-drop': ['drag', 'dragAndDrop'],
+    'close-browser': ['close_browser'],
+    'close-tab': ['close_tab'],
+    'switch-frame': ['switch_frame'],
+    'switch-tab': ['switch_tab'],
+    'handle-dialog': ['handle_dialog'],
+    'add-style': ['css', 'inject-css'],
+    'remove-element': ['remove', 'hide'],
+    attribute: ['mark', 'mark-elements'],
+    download: ['download-file'],
+    upload: ['upload-file'],
+  };
+
+  // Backend-only control words that are produced by the graph serializer or
+  // are pure runtime control flow — they are NOT user-draggable palette nodes
+  // and therefore intentionally have no standalone UI catalog action.
+  const BACKEND_ONLY = new Set<string>([
+    'break', 'continue', 'return', // loop control emitted by flow nodes
+    'fail',                         // internal alias used by stop_and_error
+  ]);
+
+  function backendActions(): string[] {
+    const file = join(__dirname, '..', '..', 'src', 'pipeline.ts');
+    const code = readFileSync(file, 'utf8');
+    const found = new Set<string>();
+    // step.action === 'name'
+    const eqRe = /step\.action === '([^']+)'/g;
+    let m: RegExpExecArray | null;
+    while ((m = eqRe.exec(code)) !== null) found.add(m[1]);
+    // ['a','b'].includes(step.action)
+    const incRe = /\[([^\]]*)\]\.includes\(step\.action\)/g;
+    while ((m = incRe.exec(code)) !== null) {
+      const inner = m[1];
+      const lit = /'([^']+)'/g;
+      let n: RegExpExecArray | null;
+      while ((n = lit.exec(inner)) !== null) found.add(n[1]);
+    }
+    return Array.from(found).sort();
+  }
+
+  it('parses a non-trivial set of backend actions from pipeline.ts', () => {
+    const actions = backendActions();
+    // sanity: a few well-known actions must be present
+    expect(actions).toEqual(expect.arrayContaining(['click', 'goto', 'extract', 'fill']));
+    expect(actions.length).toBeGreaterThan(30);
+  });
+
+  it('every backend action is reachable from the UI catalog (id or alias)', () => {
+    const uiIds = new Set(catalog.ids());
+    // build a reverse alias map: aliasSpelling -> canonical UI id
+    const aliasToCanonical = new Map<string, string>();
+    for (const [canonical, alts] of Object.entries(ALIASES)) {
+      for (const alt of alts) aliasToCanonical.set(alt, canonical);
+    }
+
+    const uncovered = backendActions().filter((a) => {
+      if (BACKEND_ONLY.has(a)) return false;          // intentionally UI-less
+      if (uiIds.has(a)) return false;                 // direct catalog id
+      const canon = aliasToCanonical.get(a);          // known alias
+      if (canon && uiIds.has(canon)) return false;
+      return true;                                    // not covered anywhere
+    });
+
+    expect(uncovered, `backend actions with no UI definition: ${uncovered.join(', ')}`).toEqual([]);
+  });
+
+  it('every alias canonical id actually exists in the catalog', () => {
+    const uiIds = new Set(catalog.ids());
+    const badCanonicals = Object.keys(ALIASES).filter((id) => !uiIds.has(id));
+    expect(badCanonicals, `alias canonical ids missing from catalog: ${badCanonicals.join(', ')}`).toEqual([]);
+  });
+});

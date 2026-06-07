@@ -30,6 +30,18 @@
     <div class="row">
       <button class="btn" id="saveCfg">Save</button>
       <button class="btn ghost" id="checkCfg">Test connection</button>
+      <button class="btn ghost" id="openPanel">Open panel</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Workflows <span class="count" id="wfCount">0</span></h2>
+    <ul class="wflist" id="wflist">
+      <li class="empty">Test the connection, then Refresh to load your saved workflows.</li>
+    </ul>
+    <div class="row">
+      <button class="btn ghost sm" id="refreshWf">↻ Refresh</button>
+      <label class="chk"><input type="checkbox" id="runHeadful"> show browser</label>
     </div>
   </section>
 
@@ -66,6 +78,13 @@
     <div class="status" id="status"></div>
   </section>
 
+  <section class="card live" id="liveCard" hidden>
+    <h2>Live run <span class="count" id="liveJob">—</span></h2>
+    <ol class="livesteps" id="livesteps"></ol>
+    <div class="status" id="liveStatus"></div>
+  </section>
+
+  <script src="../lib/ab-core.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
