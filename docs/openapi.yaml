@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Automation Backend API
-  version: 40.0.0
+  version: 37.1.0
   description: >-
     Self-hosted browser-automation backend. Submit declarative `steps`
     workflows that run on a pooled Playwright browser, schedule recurring runs,

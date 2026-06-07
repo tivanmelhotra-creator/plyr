@@ -101,11 +101,35 @@ const FULL_ACCESS_PLAN: PlanConfig = {
   quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0,
 };
 
+// Read the real package version once at startup so /health, the admin
+// stats endpoint, the boot banner and outbound User-Agent headers all report
+// the SAME version as package.json (single source of truth — avoids drift).
+function resolvePackageVersion(): string {
+  try {
+    // dist/config.js lives one level under the project root, so does src/.
+    // require resolves relative to this compiled file; fall back to CWD.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pkg = require(path.join(__dirname, '..', 'package.json'));
+    if (pkg && typeof pkg.version === 'string' && pkg.version) return pkg.version;
+  } catch {
+    /* ignore — fall through to a safe default */
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pkg = require(path.join(process.cwd(), 'package.json'));
+    if (pkg && typeof pkg.version === 'string' && pkg.version) return pkg.version;
+  } catch {
+    /* ignore */
+  }
+  return '0.0.0';
+}
+const PACKAGE_VERSION = resolvePackageVersion();
+
 export const config = {
   // ============================================
   // Version
   // ============================================
-  VERSION: '40.0.0',  // ✅ Updated for Schedule feature
+  VERSION: PACKAGE_VERSION,  // single source of truth = package.json
 
   // ============================================
   // [H — Step 18] Deployment mode
