@@ -548,9 +548,11 @@
           '<h3 class="card-title" style="margin:0">📚 ' + t('wf.title') + '</h3>' +
           '<span class="spacer"></span>' +
           '<button class="btn btn-primary btn-sm" id="wf-new">＋ ' + t('wf.new') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" id="wf-templates">🧩 ' + t('wf.templates') + '</button>' +
           '<button class="btn btn-ghost btn-sm" id="wf-refresh">' + t('common.refresh') + '</button>' +
         '</div>' +
         '<p class="muted small">' + t('wf.subtitle') + '</p>' +
+        '<div id="wf-templates-box" hidden></div>' +
         '<div id="wf-body"><div class="placeholder"><span class="spinner"></span> ' + t('common.loading') + '</div></div>' +
       '</div>';
 
@@ -704,6 +706,55 @@
         });
     }
 
+    // Step 32: starter templates. A pure catalog (window.TEMPLATES) renders a
+    // small picker; choosing one saves it as a NEW workflow via the same CRUD.
+    function renderTemplates() {
+      var box = root.querySelector('#wf-templates-box');
+      if (!box) return;
+      if (!box.hidden) { box.hidden = true; box.innerHTML = ''; return; }
+      var T = window.TEMPLATES;
+      if (!T) { U().toast('templates unavailable', 'error'); return; }
+      box.hidden = false;
+      var cards = T.list().map(function (tpl) {
+        var n = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
+        return '<div class="wf-card" data-tpl="' + esc(tpl.id) + '">' +
+          '<div class="wf-card-head">' +
+            '<span class="wf-name">' + esc(tpl.icon || '🧩') + ' ' + esc(t(tpl.name)) + '</span>' +
+            '<span class="badge">' + n + ' ' + t('wf.steps') + '</span>' +
+          '</div>' +
+          '<div class="wf-desc muted small">' + esc(t(tpl.description)) + '</div>' +
+          '<div class="wf-actions">' +
+            '<button class="btn btn-primary btn-sm" data-usetpl="' + esc(tpl.id) + '">＋ ' + t('wf.useTemplate') + '</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+      box.innerHTML =
+        '<div class="card" style="margin:8px 0">' +
+          '<h4 style="margin:0 0 4px">' + t('wf.templatesTitle') + '</h4>' +
+          '<p class="muted small">' + t('wf.templatesHint') + '</p>' +
+          '<div class="wf-grid">' + cards + '</div>' +
+        '</div>';
+      box.querySelectorAll('[data-usetpl]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var id = b.getAttribute('data-usetpl');
+          var tpl = T.byId(id);
+          if (!tpl) return;
+          var body = T.toWorkflowBody(id, t(tpl.name));
+          if (!body) return;
+          b.disabled = true;
+          API.createWorkflow(uid, body)
+            .then(function () {
+              U().toast(t('wf.templateCreated'), 'success');
+              box.hidden = true; box.innerHTML = '';
+              load();
+            })
+            .catch(function (err) { U().toast(err.message, 'error'); })
+            .then(function () { b.disabled = false; });
+        });
+      });
+    }
+
+    root.querySelector('#wf-templates').addEventListener('click', renderTemplates);
     root.querySelector('#wf-refresh').addEventListener('click', load);
     root.querySelector('#wf-new').addEventListener('click', function () {
       if (window.FlowEditor) window.FlowEditor.newWorkflow();

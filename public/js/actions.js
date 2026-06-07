@@ -46,8 +46,23 @@
     { id: 'click', icon: '🖱️', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'button.submit' },
     ] },
+    { id: 'dblclick', icon: '🖱️', cat: 'interaction', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '.row' },
+    ] },
     { id: 'hover', icon: '👆', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: '.menu' },
+    ] },
+    { id: 'focus', icon: '🎯', cat: 'interaction', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[name=q]' },
+    ] },
+    { id: 'mouse-move', icon: '🖲️', cat: 'interaction', fields: [
+      { k: 'x', label: 'p.x', type: 'number', ph: '100', expr: true },
+      { k: 'y', label: 'p.y', type: 'number', ph: '200', expr: true },
+      { k: 'human', label: 'p.human', type: 'boolean' },
+    ] },
+    { id: 'drag-drop', icon: '🤏', cat: 'interaction', fields: [
+      { k: 'source', label: 'p.source', type: 'string', ph: '.draggable' },
+      { k: 'target', label: 'p.target', type: 'string', ph: '.dropzone' },
     ] },
     { id: 'scroll', icon: '🧭', cat: 'interaction', fields: [
       { k: 'direction', label: 'p.direction', type: 'select', options: ['bottom', 'top'] },
@@ -69,6 +84,12 @@
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'select#country' },
       { k: 'value', label: 'p.value', type: 'text', ph: 'IR' },
     ] },
+    { id: 'check', icon: '☑️', cat: 'interaction', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[type=checkbox]' },
+    ] },
+    { id: 'uncheck', icon: '⬜', cat: 'interaction', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[type=checkbox]' },
+    ] },
     { id: 'upload', icon: '📎', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[type=file]' },
       { k: 'path', label: 'p.value', type: 'text', ph: 'uploads/file.pdf' },
@@ -85,6 +106,16 @@
       { k: 'filename', label: 'p.filename', type: 'string', ph: 'export', expr: true },
     ] },
     { id: 'screenshot', icon: '📸', cat: 'data', fields: [] },
+    { id: 'download', icon: '⬇️', cat: 'data', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'a.download' },
+      { k: 'fileName', label: 'p.filename', type: 'string', ph: '(optional) report.pdf', expr: true },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '60000', min: 0 },
+    ] },
+    { id: 'attribute', icon: '🏷️', cat: 'data', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: 'a.link' },
+      { k: 'attribute', label: 'p.attribute', type: 'string', ph: 'href' },
+      { k: 'name', label: 'p.name', type: 'string', ph: 'link', help: 'help.saveAs' },
+    ] },
 
     // ---- Variables (Automa-style transforms) -------------------------
     { id: 'variable', icon: '🔢', cat: 'data', fields: [
@@ -124,6 +155,41 @@
     ] },
     { id: 'log', icon: '📝', cat: 'integration', fields: [
       { k: 'message', label: 'p.message', type: 'multiline', ph: 'checkpoint', expr: true },
+    ] },
+    { id: 'http-request', icon: '🌍', cat: 'integration', fields: [
+      { k: 'url', label: 'p.url', type: 'string', ph: 'https://api.example.com/x', expr: true, help: 'help.url' },
+      { k: 'method', label: 'p.httpMethod', type: 'options', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+      { k: 'headers', label: 'p.headers', type: 'json', ph: '{ "Authorization": "Bearer …" }', expr: true },
+      { k: 'body', label: 'p.body', type: 'json', ph: '{ "key": "value" }', expr: true },
+      { k: 'responseType', label: 'p.responseType', type: 'options', options: ['auto', 'json', 'text'] },
+      { k: 'name', label: 'p.name', type: 'string', ph: '(optional) save response as', help: 'help.saveAs' },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '30000', min: 0 },
+    ] },
+
+    // ---- DOM mutation -------------------------------------------------
+    { id: 'remove-element', icon: '🗑️', cat: 'interaction', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '.ad, .popup' },
+    ] },
+    { id: 'add-style', icon: '🎨', cat: 'interaction', fields: [
+      { k: 'css', label: 'p.css', type: 'multiline', ph: 'body { filter: grayscale(1); }' },
+    ] },
+
+    // ---- Frames / tabs / dialogs / session ---------------------------
+    { id: 'switch-frame', icon: '🖼️', cat: 'navigation', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '(empty = main frame) iframe#x' },
+    ] },
+    { id: 'switch-tab', icon: '🗂️', cat: 'navigation', fields: [
+      { k: 'index', label: 'p.index', type: 'number', ph: '0', min: 0, expr: true },
+      { k: 'urlContains', label: 'p.urlContains', type: 'string', ph: '(optional) match by url' },
+      { k: 'newTabUrl', label: 'p.newTabUrl', type: 'string', ph: '(optional) open new tab url' },
+    ] },
+    { id: 'close-tab', icon: '❎', cat: 'navigation', fields: [
+      { k: 'index', label: 'p.index', type: 'number', ph: '(optional) tab index', min: 0 },
+    ] },
+    { id: 'close-browser', icon: '🚪', cat: 'navigation', fields: [] },
+    { id: 'handle-dialog', icon: '💬', cat: 'navigation', fields: [
+      { k: 'action', label: 'p.op', type: 'options', options: ['accept', 'dismiss'] },
+      { k: 'promptText', label: 'p.promptText', type: 'string', ph: '(optional) text for prompt' },
     ] },
 
     // ---- Flow / branching (Step 24) ----------------------------------
