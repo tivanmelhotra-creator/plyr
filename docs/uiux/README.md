@@ -17,14 +17,20 @@ See also `00-PROCESS-node-design.md`.
 
 ## Index (locked / reviewed)
 
-| Stem | Role | Full | Lite | Spec |
-|------|------|------|------|------|
-| `ndv-condition-final` | Condition NDV focused | `.webp` | `lite/*.jpg` | `.md` |
-| `ndv-click-element-final` | Click Element NDV focused | `.webp` | `lite/*.jpg` | `.md` |
-| `shell-editor-click-ndv` | Full shell + Click NDV open | `.webp` | `lite/*.jpg` | `.md` |
-| `shell-editor-condition-ndv` | Full shell + Condition NDV open | `.webp` | `lite/*.jpg` | `.md` |
-| `shell-add-node-palette` | Shell with add-node palette | `.webp` | `lite/*.jpg` | `.md` |
-| `state-empty-canvas` | Empty canvas state | `.webp` | `lite/*.jpg` | `.md` |
+All six screens have been READ. Only the two `ndv-*-final` screens are in scope
+for *node design* — the four shell/state screens are read for their cross-cutting
+rules (tokens, node cards, connectors, status bar, category-derived modal glow).
+
+| Stem | Role | Full | Lite | Spec | Implementation |
+|------|------|------|------|------|----------------|
+| `ndv-condition-final` | Condition NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend `source`/`attribute` pending |
+| `ndv-click-element-final` | Click Element NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend click extras pending |
+| `shell-editor-click-ndv` | Full shell + Click NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ node cards / ports / connectors / status bar done; Outline + Activity Log pending |
+| `shell-editor-condition-ndv` | Full shell + Condition NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ `True`/`False` edge pills + selection glow done; per-node Run pending |
+| `shell-add-node-palette` | Shell with add-node palette | `.webp` | `lite/*.jpg` | `.md` | ◐ category-derived modal glow + node context menu done; palette/group toolbar pending |
+| `state-empty-canvas` | Empty canvas state | `.webp` | `lite/*.jpg` | `.md` | ✅ empty-state card + dot grid built |
+
+Remaining work per screen is tracked in `/HANDOFF_NEXT_SESSION.md` § 5.
 
 ## Rename map (history)
 | Old name | New name |

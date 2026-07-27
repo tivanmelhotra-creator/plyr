@@ -688,6 +688,11 @@
       'fe.startNode': 'Start',
       'fe.noParams': 'No parameters',
       'fe.deleteNode': 'Delete node',
+      // Node card kebab / right-click context menu (shell-add-node-palette.md)
+      'fe.nodeMenu': 'Node actions',
+      'fe.cloneNode': 'Clone node',
+      'fe.pinNode': 'Pin node',
+      'fe.unpinNode': 'Unpin node',
       'fe.save': 'Save',
       'fe.load': 'Load',
       'fe.clear': 'Clear',
@@ -705,6 +710,17 @@
       'fe.hint': 'Tip: drag a node (snaps to grid; hold Alt for free move) \u00b7 Shift+drag background = box-select \u00b7 Ctrl+C/V copy/paste \u00b7 Delete to remove \u00b7 mouse wheel to zoom \u00b7 click an edge to delete it.',
       'fe.saveServer': 'Save to server',
       'fe.unsaved': 'Unsaved workflow',
+      // Editor status bar (shell previews): Version · Auto-save · Last saved ·
+      // Workflow ID · Environment. Read-only telemetry cells.
+      'sb.version': 'Version',
+      'sb.unsaved': 'unsaved',
+      'sb.autoSave': 'Auto-save',
+      'sb.on': 'enabled',
+      'sb.off': 'off',
+      'sb.lastSaved': 'Last saved',
+      'sb.workflowId': 'Workflow ID',
+      'sb.environment': 'Environment',
+      'sb.envDev': 'Development',
       'fe.searchNode': 'Search nodes\u2026',
       'fe.noNodes': 'No matching nodes.',
       'fe.zoomIn': 'Zoom in',
@@ -738,6 +754,14 @@
       'port.catch': 'Catch',
       'port.finally': 'Finally',
       'port.default': 'Default',
+      // Mid-wire branch pills on the canvas. The shell previews label the two
+      // condition branches literally `True` / `False` (green / red pills) —
+      // shorter and more scannable than the port labels above.
+      'pill.true': 'True',
+      'pill.false': 'False',
+      'pill.body': 'Loop',
+      'pill.done': 'Done',
+      'pill.catch': 'Error',
       // Graph validation messages (Step 24)
       'val.ok': 'Graph is valid',
       'val.noGraph': 'No graph',
@@ -757,6 +781,7 @@
       'ndv.noOutput': 'No output captured yet. Run this node to see its result here.',
       // NDV modal + Aria shell + Condition Builder
       'ndv.runNode': 'Run node',
+      'ndv.open': 'Open settings',
       'ndv.close': 'Close',
       'ndv.statusIdle': 'Idle',
       'ndv.statusRunning': 'Running',
@@ -780,6 +805,140 @@
       'cb.ifFalse': 'False → Else branch',
       'cb.whileTrue': 'True → Loop body',
       'cb.whileFalse': 'False → Done',
+
+      /* =====================================================================
+       * Designed NDV strings — verbatim from the locked previews in docs/uiux/
+       *   ndv-click-element-final  ->  action `click`
+       *   ndv-condition-final      ->  actions `if` / `while`
+       * Wording matches the images exactly; do not "improve" it.
+       * ================================================================== */
+
+      // -- NDV shell (both designs) ---------------------------------------
+      'ndv.tabInstructions': 'Instructions',
+      'ndv.tabAdvanced': 'Advanced',
+      'ndv.tabError': 'Error',
+      'ndv.tabTest': 'Test',
+      'ndv.tabSchema': 'Schema',
+      'ndv.tabTable': 'Table',
+      'ndv.tabJson': 'JSON',
+      'ndv.run': 'Run',
+      'ndv.of': 'of',
+      'ndv.searchInput': 'Search input data...',
+      'ndv.searchOutput': 'Search output data...',
+      'ndv.noMatch': 'No matching field.',
+      'ndv.dragHint': 'Drag values into parameters.',
+      'ndv.dragHintCond': 'Drag values into conditions.',
+      'ndv.moreFields': 'More fields',
+      'ndv.outEmptyTitle': 'Run node to see output',
+      'ndv.outEmptySub': 'The output will appear here after you run this node.',
+      'ndv.status': 'Status',
+      'ndv.time': 'Time',
+      'ndv.size': 'Size',
+      'ndv.pickElement': 'Pick an element from the live browser page',
+      'ndv.pickHint': 'Open the Live Browser view to pick an element.',
+      'ndv.advancedEmpty': 'Every parameter of this node is already on the Instructions tab.',
+      'ndv.testHint': 'Read-only preview of what this node sends to the runtime.',
+
+      // -- Node display names (NDV header title / subtitle) ---------------
+      'nk.clickElement': 'Click Element',
+      'nk.click': 'Click',
+      'nk.condition': 'Condition',
+      'nk.whileLoop': 'While Loop',
+      'nk.loopCondition': 'Loop condition',
+
+      // -- Click Element design (ndv-click-element-final) -----------------
+      'click.secSelector': 'Selector',
+      'click.selectorType': 'Selector type',
+      'click.selTypeCss': 'CSS Selector',
+      'click.selTypeXpath': 'XPath',
+      'click.selTypeText': 'Text',
+      'click.selectorHelp': 'Use ◎ to pick an element from the live browser page.',
+      'click.secClickOptions': 'Click options',
+      'click.clickType': 'Click type',
+      'click.typeSingle': 'Single click',
+      'click.typeDouble': 'Double click',
+      'click.typeTriple': 'Triple click',
+      'click.btnLeft': 'Left',
+      'click.btnMiddle': 'Middle',
+      'click.btnRight': 'Right',
+      'click.clickCount': 'Click count',
+      'click.delayBefore': 'Delay before click (ms)',
+      'click.secSelectorOptions': 'Selector options',
+      'click.waitForSelector': 'Wait for selector',
+      'click.waitForSelectorHelp': 'Wait until the selector appears before clicking.',
+      'click.multipleMatches': 'Multiple matches',
+      'click.multipleMatchesHelp': 'Allow more than one match instead of failing.',
+      'click.highlightElement': 'Mark / highlight element',
+      'click.highlightElementHelp': 'Briefly outline the element before clicking (useful while debugging).',
+      'click.visibleOnly': 'Visible only',
+      'click.stableFor': 'Stable for (ms)',
+      'click.stableForHelp': 'Wait until element stops moving',
+      'click.secOffsets': 'Position offsets',
+      'click.offsetX': 'Offset X (px)',
+      'click.offsetY': 'Offset Y (px)',
+      'click.offsetHelp': 'Click point offset from element center/top-left',
+      'click.secModifiers': 'Optional modifiers',
+      'click.modAlt': 'Alt',
+      'click.modCtrl': 'Ctrl / Cmd',
+      'click.modShift': 'Shift',
+      'click.secBehavior': 'Behavior',
+      'click.humanLike': 'Human-like movement',
+      'click.forceClick': 'Force click',
+
+      // -- Condition Builder design (ndv-condition-final) -----------------
+      'cb.builder': 'Condition Builder',
+      'cb.addPath': 'Add path',
+      'cb.addPathV2': 'Multiple output paths arrive in a later version. Today a condition has one true path and one false path.',
+      'cb.path': 'Path',
+      'cb.allMustMatch': 'All conditions must be met (AND)',
+      'cb.orNewGroup': 'OR (New group)',
+      'cb.leftSource': 'Left source',
+      'cb.attributeName': 'Attribute name',
+      'cb.cssSelector': 'CSS Selector',
+      'cb.operator': 'Operator',
+      'cb.rightValue': 'Right value',
+      'cb.cloneRow': 'Duplicate condition',
+      'cb.collapseRow': 'Collapse',
+      'cb.expandRow': 'Expand',
+      'cb.truePath': 'True path',
+      'cb.truePathSub': 'Executed when condition is true',
+      'cb.falsePath': 'False path',
+      'cb.falsePathSub': 'Executed when condition is false',
+      'cb.outputPort': 'Output',
+      'cb.maxDepth': 'Max depth',
+      'cb.recommended': 'recommended',
+      'cb.evaluateMode': 'Evaluate mode',
+      'cb.evalFirst': 'First match',
+      'cb.evalAll': 'All groups',
+      'cb.loopGuard': 'Loop guard',
+
+      // Left-source options
+      'cbs.text': 'Element text',
+      'cbs.attribute': 'Element attribute',
+      'cbs.value': 'Input value',
+      'cbs.html': 'Element HTML',
+      'cbs.variable': 'Variable / expression',
+
+      // Operator labels
+      'op.exists': 'Exists',
+      'op.not_exists': 'Does not exist',
+      'op.visible': 'Is visible',
+      'op.hidden': 'Is hidden',
+      'op.equals': 'Equals',
+      'op.not_equals': 'Not equals',
+      'op.contains': 'Contains',
+      'op.not_contains': 'Does not contain',
+      'op.starts_with': 'Starts with',
+      'op.ends_with': 'Ends with',
+      'op.matches_regex': 'Matches regex',
+      'op.greater_than': 'Greater than',
+      'op.less_than': 'Less than',
+      'op.greater_equal': 'Greater or equal',
+      'op.less_equal': 'Less or equal',
+      'op.is_empty': 'Is empty',
+      'op.not_empty': 'Is not empty',
+      'op.is_true': 'Is true',
+      'op.is_false': 'Is false',
       // Expression / mapping (Step 25)
       'expr.fixed': 'Fixed',
       'expr.expression': 'Expression',
@@ -940,13 +1099,21 @@
     en: { dir: 'ltr', label: 'فارسی', next: 'fa' },
   };
 
+  // Phase-1 scope: the locked docs/uiux/ designs are English LTR + dark only, so
+  // English is the default language and the English table is the fallback for
+  // any key a translation is still missing. (fa/RTL stays available via the
+  // language toggle and will be completed in a later phase.)
   var STORAGE_KEY = 'ab_lang';
-  var current = localStorage.getItem(STORAGE_KEY) || 'fa';
-  if (!DICT[current]) current = 'fa';
+  var DEFAULT_LANG = 'en';
+  var current = localStorage.getItem(STORAGE_KEY) || DEFAULT_LANG;
+  if (!DICT[current]) current = DEFAULT_LANG;
 
   function t(key) {
-    var table = DICT[current] || DICT.fa;
-    return table[key] || (DICT.fa[key] || key);
+    var table = DICT[current] || DICT.en;
+    var v = table[key];
+    if (v != null) return v;
+    v = DICT.en[key];
+    return v != null ? v : key;
   }
 
   function meta() {

@@ -95,11 +95,26 @@
   }
 
   // -------- condition builder (matches ConditionEngine SimpleCondition) ------
+  // Params the Condition Builder NDV owns. They are encoded into the step's
+  // `condition` object, so they must never ALSO appear in `step.params`.
+  // `maxDepth` / `evaluateMode` are UI-only recursion/evaluation guards.
+  var CONDITION_ONLY_PARAMS = ['groups', 'selector', 'operator', 'value',
+    'expected', 'source', 'attribute', 'maxDepth', 'evaluateMode'];
+
+  // The Condition Builder design (ndv-condition-final) adds a "Left source" +
+  // "Attribute name" pair to each row. They travel to the backend as
+  // SimpleCondition.source / .attribute (ConditionEngine reads them when
+  // resolving the left-hand value). `source: 'text'` is the engine default, so
+  // it is omitted to keep serialised workflows stable/diff-friendly.
   function buildSimpleCondition(row) {
     var cond = { operator: (row && row.operator) || 'exists' };
     if (row && row.selector !== undefined && row.selector !== '') cond.selector = row.selector;
     if (row && row.value !== undefined && row.value !== '') cond.value = row.value;
     if (row && row.expected !== undefined && row.expected !== '') cond.expected = row.expected;
+    if (row && row.source !== undefined && row.source !== '' && row.source !== 'text') {
+      cond.source = row.source;
+    }
+    if (row && row.attribute !== undefined && row.attribute !== '') cond.attribute = row.attribute;
     return cond;
   }
 
@@ -151,6 +166,8 @@
       if (c.selector !== undefined) row.selector = String(c.selector);
       if (c.value !== undefined) row.value = String(c.value);
       if (c.expected !== undefined) row.expected = String(c.expected);
+      if (c.source !== undefined) row.source = String(c.source);
+      if (c.attribute !== undefined) row.attribute = String(c.attribute);
       return row;
     }
     function groupRows(c) {
@@ -261,12 +278,12 @@
       var loopStep = { action: action, params: params };
       if (action === 'while') {
         loopStep.condition = buildCondition(node.params || {});
-        // maxIterations stays in params; selector/operator/value/expected are
-        // condition-only, strip them from params so they don't double up.
-        delete loopStep.params.selector;
-        delete loopStep.params.operator;
-        delete loopStep.params.value;
-        delete loopStep.params.expected;
+        // Only `maxIterations` is a real `while` param. Everything the Condition
+        // Builder NDV writes (docs/uiux/ndv-condition-final) is condition-only
+        // and is already encoded inside `loopStep.condition`, so strip it from
+        // params — otherwise the same data would be serialised twice and the
+        // backend would receive params it does not understand.
+        CONDITION_ONLY_PARAMS.forEach(function (k) { delete loopStep.params[k]; });
       }
       var body = walkChain(graph, node.id, 'body', {});
       if (body.length) loopStep.steps = body;
@@ -341,10 +358,16 @@
             // composite AND/OR condition -> Condition Builder groups
             node.params.groups = JSON.stringify(grp);
           } else {
+            // Plain SimpleCondition -> legacy flat editor fields. `source` /
+            // `attribute` come from the Condition Builder's "Left source" pair
+            // and must round-trip too, otherwise re-opening a saved workflow
+            // silently resets them to the `text` default.
             if (c.operator !== undefined) node.params.operator = String(c.operator);
             if (c.selector !== undefined) node.params.selector = String(c.selector);
             if (c.value !== undefined) node.params.value = String(c.value);
             if (c.expected !== undefined) node.params.expected = String(c.expected);
+            if (c.source !== undefined) node.params.source = String(c.source);
+            if (c.attribute !== undefined) node.params.attribute = String(c.attribute);
           }
         }
         // Step 27: reconstruct the node's error-handling settings from the step.
@@ -476,5 +499,6 @@
     coerceParams: coerceParams,
     buildCondition: buildCondition,
     conditionToGroups: conditionToGroups,
+    CONDITION_ONLY_PARAMS: CONDITION_ONLY_PARAMS,
   };
 })();

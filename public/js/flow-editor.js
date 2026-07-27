@@ -67,6 +67,14 @@
   var nodeMeta = {};     // Step 26: { nodeId: { outputItemCount, inputItemCount, durationMs, status, error } } drives the on-node success/error badge + tooltip
   var nodePins = {};     // Step 26: { nodeId: true } pinned nodes (show a 📌 indicator on the card)
 
+  // Status bar "Last saved: HH:MM:SS" (shell previews). null until a save
+  // actually succeeds — the bar shows an em-dash rather than a fake time.
+  var lastSavedAt = null;
+  function clockLabel(d) {
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
   // Step 22: the saved-workflow currently open in the editor (if any).
   // { id, name, description, version, headless, webhookUrl } | null.
   // When null, the editor is editing an unsaved/local graph.
@@ -200,8 +208,11 @@
     });
   }
   function saveLocal() {
-    try { localStorage.setItem(LS_KEY, serialize()); return true; }
-    catch (e) { return false; }
+    try {
+      localStorage.setItem(LS_KEY, serialize());
+      lastSavedAt = clockLabel(new Date());
+      return true;
+    } catch (e) { return false; }
   }
   function loadLocal() {
     try {
@@ -221,7 +232,13 @@
   }
 
   // ---- Geometry helpers -----------------------------------------------------
-  function nodeW() { return 190; }
+  // Node card metrics come from the shell previews (docs/uiux/shell-editor-*.md):
+  // cards measure ~190x64, radius 8, with ports centred on the left/right edges.
+  var NODE_W = 190;
+  var NODE_H_MIN = 64;      // spec: "node card height 48-58" for the body, 64 with padding
+  var PORT_SLOT = 22;       // vertical pitch when a node exposes several ports
+  var PORT_R = 7;           // half of the 14px port dot (used to centre it)
+  function nodeW() { return NODE_W; }
   // Step 24: ports of a node. Branching actions expose multiple output ports
   // (then/else, body/done, try/catch/finally, switch cases). Returns a list of
   // { id, label } where the first is at the top.
@@ -244,20 +261,29 @@
   }
   function nodeH(node) {
     var ports = portsOf(node);
-    return Math.max(48, 36 + ports.length * 20);
+    // A single-port card is exactly the spec height; extra branch ports grow it
+    // just enough that each port keeps its PORT_SLOT pitch inside the card.
+    if (ports.length <= 1) return NODE_H_MIN;
+    return Math.max(NODE_H_MIN, 26 + ports.length * PORT_SLOT);
   }
-  // Y position of a given output port slot (port id) on a node.
+  // Y position of a given output port slot (port id) on a node. Ports are
+  // CENTRED on the card's right edge (previews) — a single port sits exactly at
+  // the vertical middle; multiple ports spread symmetrically around it.
   function portY(node, portId) {
     var ports = portsOf(node);
     var idx = 0;
     for (var i = 0; i < ports.length; i++) { if (ports[i].id === portId) { idx = i; break; } }
-    return node.y + 30 + idx * 20;
+    var h = nodeH(node);
+    var mid = node.y + h / 2;
+    var span = (ports.length - 1) * PORT_SLOT;
+    return Math.round(mid - span / 2 + idx * PORT_SLOT);
   }
   function outPort(node, portId) {
     return { x: node.x + nodeW(), y: portY(node, portId || (portsOf(node)[0] || {}).id || 'next') };
   }
+  // The input port is a single dot centred on the left edge.
   function inPort(node) {
-    return { x: node.x, y: node.y + 22 };
+    return { x: node.x, y: node.y + nodeH(node) / 2 };
   }
   function worldPoint(clientX, clientY) {
     var rect = dom.canvas.getBoundingClientRect();
@@ -370,6 +396,9 @@
     mm.appendChild(vp);
   }
 
+  // The previews describe connectors as smooth curves that "intentionally avoid
+  // sharp angles": a symmetric cubic bezier whose control points are pulled
+  // horizontally, so the wire leaves and enters both ports perfectly level.
   function curvePath(x1, y1, x2, y2) {
     var dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
     return 'M ' + x1 + ' ' + y1 +
@@ -377,9 +406,32 @@
       ' ' + x2 + ' ' + y2;
   }
 
+  // Branch ports whose edges carry a mid-wire label pill in the previews
+  // (`True` green, `False` red). Other ports stay unlabelled so the canvas
+  // does not turn into a wall of chips.
+  var EDGE_PILL_PORTS = {
+    then: { i18n: 'pill.true', tone: 'true' },
+    else: { i18n: 'pill.false', tone: 'false' },
+    body: { i18n: 'pill.body', tone: 'true' },
+    done: { i18n: 'pill.done', tone: 'neutral' },
+    catch: { i18n: 'pill.catch', tone: 'false' },
+  };
+
+  // Midpoint of the cubic above (t = 0.5) — where the pill is anchored.
+  function curveMidpoint(x1, y1, x2, y2) {
+    var dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
+    var c1x = x1 + dx, c2x = x2 - dx;
+    // B(0.5) = (P0 + 3*C1 + 3*C2 + P1) / 8
+    return {
+      x: (x1 + 3 * c1x + 3 * c2x + x2) / 8,
+      y: (y1 + 3 * y1 + 3 * y2 + y2) / 8,
+    };
+  }
+
   function renderEdges() {
     var svgns = 'http://www.w3.org/2000/svg';
     while (dom.svg.firstChild) dom.svg.removeChild(dom.svg.firstChild);
+    clearEdgePills();
     state.edges.forEach(function (e, idx) {
       var from = state.nodes[e.from];
       var to = state.nodes[e.to];
@@ -399,6 +451,19 @@
         renderAll();
       });
       dom.svg.appendChild(path);
+
+      // Mid-wire branch pill (`True` / `False`) — an HTML chip in the world
+      // layer so it inherits the canvas transform and stays crisp at any zoom.
+      var pill = EDGE_PILL_PORTS[port];
+      if (pill) {
+        var mid = curveMidpoint(p1.x, p1.y, p2.x, p2.y);
+        var chip = document.createElement('span');
+        chip.className = 'fe-edge-pill tone-' + pill.tone;
+        chip.textContent = t(pill.i18n);
+        chip.style.left = mid.x + 'px';
+        chip.style.top = mid.y + 'px';
+        dom.world.appendChild(chip);
+      }
     });
     // pending connection preview
     if (drag && drag.type === 'connect' && drag.preview) {
@@ -409,10 +474,41 @@
     }
   }
 
+  function clearEdgePills() {
+    if (!dom || !dom.world) return;
+    var old = dom.world.querySelectorAll('.fe-edge-pill');
+    Array.prototype.forEach.call(old, function (p) {
+      if (p.parentNode === dom.world) dom.world.removeChild(p);
+    });
+  }
+
   function nodeTitle(node) {
     if (node.action === '__start__') return t('fe.startNode');
+    // Designed nodes read with their human name on the card too, so the canvas
+    // and the NDV header agree (previews show "Click Element" / "Condition").
+    var key = NODE_DISPLAY_NAMES && NODE_DISPLAY_NAMES[node.action];
+    if (key) return t(key);
     // action ids are not translated (same convention as the linear run builder)
     return node.action;
+  }
+
+  // Second line of a node card. The shell previews show a short, human summary
+  // rather than a raw param dump — for if/while the Condition Builder model can
+  // render its groups as one readable statement (NdvModel.conditionSummary).
+  function nodeCardSummary(node, act) {
+    if (node.action === 'if' || node.action === 'while') {
+      if (window.NdvModel && window.NdvModel.conditionSummary) {
+        var s = window.NdvModel.conditionSummary(node.params || {}, t);
+        if (s) return s;
+      }
+    }
+    var bits = [];
+    if (act) act.fields.forEach(function (f) {
+      if (f.internal) return;          // never surface raw JSON blobs on a card
+      var v = node.params[f.k];
+      if (v) bits.push(String(v));
+    });
+    return bits.length ? bits.join(' · ').slice(0, 60) : t('fe.noParams');
   }
 
   function renderNode(node) {
@@ -475,32 +571,33 @@
       }
     }
 
-    // brief summary of params under the title
+    // Second line: human summary (Condition Builder statement for if/while).
     if (node.action !== '__start__') {
       var sum = document.createElement('div');
       sum.className = 'flow-node-sub';
-      var bits = [];
-      if (act) act.fields.forEach(function (f) {
-        var v = node.params[f.k];
-        if (v) bits.push(esc(String(v)));
-      });
-      sum.textContent = bits.length ? bits.join(' · ').slice(0, 60) : t('fe.noParams');
+      sum.textContent = nodeCardSummary(node, act);
+      sum.title = sum.textContent;
       card.appendChild(sum);
 
-      var del = document.createElement('button');
-      del.className = 'flow-node-del';
-      del.title = t('fe.deleteNode');
-      del.textContent = '×';
-      del.addEventListener('click', function (ev) {
+      // The previews put a `⋮` kebab in the card's top-right corner (not a bare
+      // ×). It opens the same context menu as right-click; the destructive
+      // delete stays inside that menu instead of one mis-click away.
+      var kebab = document.createElement('button');
+      kebab.className = 'flow-node-kebab';
+      kebab.title = t('fe.nodeMenu');
+      kebab.textContent = '⋮';
+      kebab.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        removeNode(node.id);
+        var r = kebab.getBoundingClientRect();
+        openNodeMenu(node.id, r.left, r.bottom + 4);
       });
-      card.appendChild(del);
+      card.appendChild(kebab);
 
-      // input port (left)
+      // input port (left, vertically centred on the card edge)
       var pin = document.createElement('div');
       pin.className = 'flow-port in';
       pin.setAttribute('data-port', 'in');
+      pin.style.top = (nodeH(node) / 2 - PORT_R) + 'px';
       card.appendChild(pin);
     }
 
@@ -514,14 +611,16 @@
       var po = document.createElement('div');
       po.className = 'flow-port out port-' + p.id.replace(/[^a-z0-9]+/gi, '-');
       po.setAttribute('data-port', p.id);
-      po.style.top = (portY(node, p.id) - node.y) + 'px';
+      // portY() returns an absolute world Y already centred on the card edge;
+      // subtract the port radius so the DOT (not its box) lands on that line.
+      po.style.top = (portY(node, p.id) - node.y - PORT_R) + 'px';
       card.appendChild(po);
       if (branching) {
         var lbl = document.createElement('span');
-        lbl.className = 'flow-port-label';
+        lbl.className = 'flow-port-label port-' + p.id.replace(/[^a-z0-9]+/gi, '-');
         // case:<v> labels show the raw case value
         lbl.textContent = p.id.indexOf('case:') === 0 ? p.id.slice(5) : t(p.label);
-        lbl.style.top = (portY(node, p.id) - node.y - 8) + 'px';
+        lbl.style.top = (portY(node, p.id) - node.y - 9) + 'px';
         card.appendChild(lbl);
       }
       // connection drag — start on THIS output port (carries its port id)
@@ -571,7 +670,79 @@
       if (!isStart) openNdv(node.id);
     });
 
+    // shell-add-node-palette.md §: right-click a node -> floating context menu.
+    card.addEventListener('contextmenu', function (ev) {
+      if (isStart) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      selectNode(node.id);
+      openNodeMenu(node.id, ev.clientX, ev.clientY);
+    });
+
     dom.world.appendChild(card);
+  }
+
+  // ---- node context menu (kebab / right-click) ------------------------------
+  // Inventory taken from docs/uiux/shell-add-node-palette.md: Clone · Rename ·
+  // Disable · Pin · Delete. Items whose backend/UI support does not exist yet
+  // are simply not listed — an unimplemented menu row is worse than no row.
+  function closeNodeMenu() {
+    var ex = document.querySelector('.fe-ctxmenu');
+    if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+  }
+
+  function openNodeMenu(nodeId, clientX, clientY) {
+    closeNodeMenu();
+    var node = state && state.nodes[nodeId];
+    if (!node || node.action === '__start__') return;
+
+    var menu = document.createElement('div');
+    menu.className = 'fe-ctxmenu';
+    var items = [
+      { icon: '⧉', label: t('fe.cloneNode'), fn: function () {
+        state.selSet = {}; state.selSet[nodeId] = true; state.selected = nodeId;
+        copySelection(); pasteClipboard();
+      } },
+      { icon: '⚙', label: t('ndv.open'), fn: function () { openNdv(nodeId); } },
+      { icon: nodePins[nodeId] ? '📌' : '📍',
+        label: nodePins[nodeId] ? t('fe.unpinNode') : t('fe.pinNode'),
+        fn: function () {
+          if (nodePins[nodeId]) delete nodePins[nodeId]; else nodePins[nodeId] = true;
+          renderNodes();
+        } },
+      { sep: true },
+      { icon: '🗑', label: t('fe.deleteNode'), danger: true,
+        fn: function () { removeNode(nodeId); } },
+    ];
+
+    items.forEach(function (it) {
+      if (it.sep) {
+        var sep = document.createElement('div');
+        sep.className = 'fe-ctxsep';
+        menu.appendChild(sep);
+        return;
+      }
+      var b = document.createElement('button');
+      b.className = 'fe-ctxitem' + (it.danger ? ' is-danger' : '');
+      b.innerHTML = '<span class="fe-ctxicon">' + it.icon + '</span>' +
+        '<span>' + esc(it.label) + '</span>';
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeNodeMenu();
+        it.fn();
+      });
+      menu.appendChild(b);
+    });
+
+    // Position in viewport coords, flipped back inside if it would overflow.
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    document.body.appendChild(menu);
+    var r = menu.getBoundingClientRect();
+    var x = Math.min(clientX, window.innerWidth - r.width - 8);
+    var y = Math.min(clientY, window.innerHeight - r.height - 8);
+    menu.style.left = Math.max(8, x) + 'px';
+    menu.style.top = Math.max(8, y) + 'px';
   }
 
   function renderNodes() {
@@ -1010,164 +1181,50 @@
     return t('ndv.statusIdle');
   }
 
-  // ---- Aria Condition Builder (ndv-condition-final.md) ---------------------
-  // AND rows within a group, OR between groups. Persisted on the node as
-  // params.groups = JSON [[row,...],[row,...]]; graph-serialize.js turns it
-  // into the backend's composite {any:[{all:[...]}]} condition.
-  var CB_OPERATORS = ['exists', 'not_exists', 'visible', 'hidden',
-    'equals', 'not_equals', 'contains', 'not_contains',
-    'starts_with', 'ends_with', 'matches_regex',
-    'greater_than', 'less_than', 'greater_equal', 'less_equal',
-    'is_empty', 'not_empty', 'is_true', 'is_false'];
-
-  function cbReadGroups(node) {
-    var g = null;
-    try { g = JSON.parse(node.params.groups); } catch (e) { g = null; }
-    if (!Array.isArray(g) || !g.length || !Array.isArray(g[0])) {
-      g = [[{
-        selector: node.params.selector || '',
-        operator: node.params.operator || 'exists',
-        value: node.params.value || '',
-        expected: node.params.expected || ''
-      }]];
+  // ---- NDV header subtitle -------------------------------------------------
+  // The designs show the node's *identity* under the title, not its category:
+  //   Click Element  /  #next-button        (selector)
+  //   Check Login Status  /  Condition      (node kind)
+  function ndvSubtitle(node) {
+    if (node.action === 'click') {
+      return node.params && node.params.selector ? String(node.params.selector) : t('nk.click');
     }
-    return g;
+    if (node.action === 'if') return t('nk.condition');
+    if (node.action === 'while') return t('nk.loopCondition');
+    var cat = categoryOf(node.action) || { label: 'cat.other' };
+    return t(cat.label || 'cat.other');
   }
 
-  function cbWriteGroups(node, groups) {
-    node.params.groups = JSON.stringify(groups);
-    // mirror the first row into the legacy flat params so the node-card
-    // summary + single-condition fallback keep working
-    var r0 = (groups[0] && groups[0][0]) || {};
-    node.params.selector = r0.selector || '';
-    node.params.operator = r0.operator || 'exists';
-    node.params.value = r0.value || '';
-    node.params.expected = r0.expected || '';
+  // Display title: designed nodes get a human name instead of the raw action id.
+  var NODE_DISPLAY_NAMES = { click: 'nk.clickElement', if: 'nk.condition', while: 'nk.whileLoop' };
+  function ndvTitle(node) {
+    var key = NODE_DISPLAY_NAMES[node.action];
+    return key ? t(key) : nodeTitle(node);
   }
 
-  function buildConditionBuilder(node) {
-    var wrap = document.createElement('div');
-    wrap.className = 'cb-wrap';
-    var groups = cbReadGroups(node);
-
-    function commit() { cbWriteGroups(node, groups); }
-    function rerender() {
-      commit();
-      var fresh = buildConditionBuilder(node);
-      if (wrap.parentNode) wrap.parentNode.replaceChild(fresh, wrap);
-    }
-
-    function inputCell(row, key, ph) {
-      var inp = document.createElement('input');
-      inp.type = 'text';
-      inp.className = 'field';
-      inp.placeholder = ph;
-      inp.value = row[key] || '';
-      inp.addEventListener('input', function () { row[key] = inp.value; commit(); });
-      return inp;
-    }
-
-    groups.forEach(function (rows, gi) {
-      if (gi > 0) {
-        var sep = document.createElement('div');
-        sep.className = 'cb-or-sep';
-        sep.innerHTML = '<span class="cb-or-pill">' + esc(t('cb.or')) + '</span>';
-        wrap.appendChild(sep);
-      }
-      var g = document.createElement('div');
-      g.className = 'cb-group';
-      var gh = document.createElement('div');
-      gh.className = 'cb-group-head';
-      var gt = document.createElement('span');
-      gt.textContent = t('cb.group') + ' ' + (gi + 1);
-      gh.appendChild(gt);
-      if (groups.length > 1) {
-        var gdel = document.createElement('button');
-        gdel.className = 'cb-group-del';
-        gdel.textContent = '✕';
-        gdel.title = t('cb.removeGroup');
-        gdel.addEventListener('click', function () { groups.splice(gi, 1); rerender(); });
-        gh.appendChild(gdel);
-      }
-      g.appendChild(gh);
-
-      rows.forEach(function (row, ri) {
-        if (ri > 0) {
-          var ap = document.createElement('span');
-          ap.className = 'cb-and-pill';
-          ap.textContent = t('cb.and');
-          g.appendChild(ap);
-        }
-        var r = document.createElement('div');
-        r.className = 'cb-row';
-        r.appendChild(inputCell(row, 'selector', t('p.selector')));
-        var sel = document.createElement('select');
-        sel.className = 'field';
-        CB_OPERATORS.forEach(function (op) {
-          var o = document.createElement('option');
-          o.value = op;
-          o.textContent = op;
-          if ((row.operator || 'exists') === op) o.selected = true;
-          sel.appendChild(o);
-        });
-        sel.addEventListener('change', function () { row.operator = sel.value; commit(); });
-        r.appendChild(sel);
-        r.appendChild(inputCell(row, 'value', t('p.value')));
-        r.appendChild(inputCell(row, 'expected', t('p.expected')));
-        var rdel = document.createElement('button');
-        rdel.className = 'cb-row-del';
-        rdel.title = t('cb.removeRow');
-        rdel.textContent = '×';
-        rdel.addEventListener('click', function () {
-          rows.splice(ri, 1);
-          if (!rows.length) groups.splice(gi, 1);
-          if (!groups.length) groups.push([{ operator: 'exists' }]);
-          rerender();
-        });
-        r.appendChild(rdel);
-        g.appendChild(r);
-      });
-
-      var addAndWrap = document.createElement('div');
-      addAndWrap.className = 'cb-add-row';
-      var addAnd = document.createElement('button');
-      addAnd.className = 'cb-btn';
-      addAnd.textContent = '+ ' + t('cb.addAnd');
-      addAnd.addEventListener('click', function () {
-        rows.push({ operator: 'exists' });
-        rerender();
-      });
-      addAndWrap.appendChild(addAnd);
-      g.appendChild(addAndWrap);
-      wrap.appendChild(g);
-    });
-
-    var addOrWrap = document.createElement('div');
-    addOrWrap.className = 'cb-add-row';
-    var addOr = document.createElement('button');
-    addOr.className = 'cb-btn';
-    addOr.textContent = '+ ' + t('cb.addOr');
-    addOr.addEventListener('click', function () {
-      groups.push([{ operator: 'exists' }]);
-      rerender();
-    });
-    addOrWrap.appendChild(addOr);
-    wrap.appendChild(addOrWrap);
-
-    // true/false result cards (routes to then/else or body/done ports)
-    var res = document.createElement('div');
-    res.className = 'cb-results';
-    var isIf = node.action === 'if';
-    res.innerHTML =
-      '<div class="cb-result-card true"><span class="cb-result-dot"></span>' +
-        esc(isIf ? t('cb.ifTrue') : t('cb.whileTrue')) + '</div>' +
-      '<div class="cb-result-card false"><span class="cb-result-dot"></span>' +
-        esc(isIf ? t('cb.ifFalse') : t('cb.whileFalse')) + '</div>';
-    wrap.appendChild(res);
-
-    commit();
-    return wrap;
+  // ---- NDV edge tone (category-derived modal border/glow) ------------------
+  // Cross-cutting rule extracted from docs/uiux/shell-add-node-palette.md:
+  // the modal's edge border + outer glow is NOT always orange — it is derived
+  // from the node's category. HTTP/request-family nodes (integration, and the
+  // browser/navigation family) read with a cool info blue; interaction and
+  // flow-logic nodes (the two LOCKED designs: click, condition) read orange.
+  // Any other category falls back to its own catalogue colour so the rule
+  // scales to nodes that have no preview yet.
+  var NDV_EDGE_BLUE = '#2BA6FF';   // token: "secondary accent (browser / info blue)"
+  var NDV_EDGE_ORANGE = '#FF8A1F'; // token: "primary accent"
+  var NDV_EDGE_BY_CATEGORY = {
+    integration: NDV_EDGE_BLUE,   // http-request, webhooks, online services
+    navigation: NDV_EDGE_BLUE,    // goto / wait — browser-family, same blue
+    interaction: NDV_EDGE_ORANGE, // click, type, hover — the click NDV preview
+    flow: NDV_EDGE_ORANGE,        // if / while — the condition NDV preview
+  };
+  function ndvEdgeTone(action) {
+    var cat = categoryOf(action) || {};
+    return NDV_EDGE_BY_CATEGORY[cat.id] || cat.color || NDV_EDGE_ORANGE;
   }
+
+  // Which NDV centre tab is showing: instructions | advanced | error | test.
+  var ndvTab = 'instructions';
 
   function renderInspector() {
     // legacy side panel stays empty (hidden by CSS); the NDV is a modal now
@@ -1175,6 +1232,8 @@
     var node = ndvOpen && state ? state.nodes[ndvOpen] : null;
     if (!node || node.action === '__start__') { closeNdv(); return; }
     var act = actionById(node.action);
+    var designed = window.NdvModel && window.NdvModel.isDesigned(node.action) &&
+      window.NdvNodes && window.NdvUI;
 
     var back = document.querySelector('.ndv-backdrop');
     if (!back) {
@@ -1188,24 +1247,29 @@
     back.innerHTML = '';
 
     var modal = document.createElement('div');
-    modal.className = 'ndv-modal';
+    modal.className = 'ndv-modal' + (designed ? ' is-designed' : '');
+    // Category-derived edge border/glow (blue for HTTP/browser-family, orange
+    // for click/condition) — see ndvEdgeTone() and shell-add-node-palette.md.
+    modal.style.setProperty('--ndv-edge', ndvEdgeTone(node.action));
     back.appendChild(modal);
 
     // ---- header: icon tile · title/subtitle · status badge · Run node · ×
     var head = document.createElement('div');
     head.className = 'ndv-head';
-    var cat = categoryOf(node.action) || { label: 'cat.other' };
+    var cat = categoryOf(node.action) || { color: '#6b7280' };
     var st = nodeStatus[node.id] || 'idle';
     head.innerHTML =
       '<span class="ndv-head-icon">' + (act ? act.icon : '⚙️') + '</span>' +
       '<span class="ndv-head-titles">' +
-        '<div class="ndv-head-title">' + esc(nodeTitle(node)) + '</div>' +
-        '<div class="ndv-head-sub">' + esc(t(cat.label || 'cat.other')) + '</div>' +
+        '<div class="ndv-head-title">' + esc(ndvTitle(node)) + '</div>' +
+        '<div class="ndv-head-sub">' + esc(ndvSubtitle(node)) + '</div>' +
       '</span>' +
-      '<span class="ndv-status-badge ' + st + '">' + esc(statusBadgeLabel(st)) + '</span>';
+      '<span class="ndv-status-badge ' + st + '"><span class="ndv-status-dot"></span>' +
+        esc(statusBadgeLabel(st)) + '</span>';
+    head.querySelector('.ndv-head-icon').style.setProperty('--cat-color', cat.color || '#FF8A1F');
     var runBtn = document.createElement('button');
     runBtn.className = 'ndv-run-btn';
-    runBtn.textContent = '▶ ' + t('ndv.runNode');
+    runBtn.innerHTML = '<span class="ndv-run-play">▶</span>' + esc(t('ndv.runNode'));
     runBtn.addEventListener('click', function () {
       closeNdv();
       var r = document.getElementById('fe-run');
@@ -1234,36 +1298,78 @@
     var paramCol = document.createElement('div'); paramCol.className = 'ndv-col ndv-col-params';
     var outCol = document.createElement('div'); outCol.className = 'ndv-col ndv-col-output';
 
-    renderInputColumn(inCol, node.id);
-
-    var pHead = document.createElement('div');
-    pHead.className = 'ndv-col-head';
-    pHead.textContent = t('ndv.parameters');
-    paramCol.appendChild(pHead);
-
-    if (node.action === 'if' || node.action === 'while') {
-      // condition nodes get the visual AND/OR condition builder; any extra
-      // non-condition fields (e.g. while.maxIterations) render below it
-      paramCol.appendChild(buildConditionBuilder(node));
-      if (act) act.fields.forEach(function (f) {
-        if (['selector', 'operator', 'value', 'expected'].indexOf(f.k) !== -1) return;
-        paramCol.appendChild(buildFieldRow(node, f));
-      });
-    } else if (!act || act.fields.length === 0) {
-      var none = document.createElement('div');
-      none.className = 'muted small ndv-empty';
-      none.textContent = t('fe.noParams');
-      paramCol.appendChild(none);
+    // ---------- INPUT ----------
+    if (designed) {
+      window.NdvNodes.renderInput(inCol, ndvContext(node));
     } else {
-      act.fields.forEach(function (f) {
-        paramCol.appendChild(buildFieldRow(node, f));
-      });
+      renderInputColumn(inCol, node.id);
     }
 
-    // Step 27: per-node error-handling settings (Continue/Retry On Fail).
-    paramCol.appendChild(buildErrorSettings(node));
+    // ---------- CENTRE ----------
+    // Designed nodes get the spec's tab row (Instructions | Advanced | Error |
+    // Test); undesigned nodes keep the plain "Parameters" heading.
+    if (designed) {
+      var tabRow = document.createElement('div');
+      tabRow.className = 'ndv-tabs';
+      [['instructions', 'ndv.tabInstructions'], ['advanced', 'ndv.tabAdvanced'],
+       ['error', 'ndv.tabError'], ['test', 'ndv.tabTest']].forEach(function (pair) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'ndv-tab' + (ndvTab === pair[0] ? ' on' : '');
+        b.textContent = t(pair[1]);
+        b.addEventListener('click', function () { ndvTab = pair[0]; renderInspector(); });
+        tabRow.appendChild(b);
+      });
+      paramCol.appendChild(tabRow);
 
-    renderOutputColumn(outCol, node.id);
+      var pane = document.createElement('div');
+      pane.className = 'ndv-pane';
+      paramCol.appendChild(pane);
+
+      if (ndvTab === 'instructions') {
+        window.NdvNodes.renderCenter(pane, ndvContext(node));
+      } else if (ndvTab === 'advanced') {
+        // fields the bespoke design does not surface (kept reachable, never lost)
+        var shown = designedFieldKeys(node.action);
+        var extra = (act ? act.fields : []).filter(function (f) {
+          return !f.internal && shown.indexOf(f.k) === -1;
+        });
+        if (!extra.length) {
+          pane.appendChild(emptyPane('ndv.advancedEmpty'));
+        } else {
+          extra.forEach(function (f) { pane.appendChild(buildFieldRow(node, f)); });
+        }
+      } else if (ndvTab === 'error') {
+        pane.appendChild(buildErrorSettings(node));
+      } else {
+        pane.appendChild(buildTestPane(node));
+      }
+    } else {
+      var pHead = document.createElement('div');
+      pHead.className = 'ndv-col-head';
+      pHead.textContent = t('ndv.parameters');
+      paramCol.appendChild(pHead);
+
+      // `internal: true` fields are owned by a bespoke NDV design; the generic
+      // fallback editor must not expose them as raw inputs.
+      var visible = (act ? act.fields : []).filter(function (f) { return !f.internal; });
+      if (!visible.length) {
+        paramCol.appendChild(emptyPane('fe.noParams'));
+      } else {
+        visible.forEach(function (f) {
+          paramCol.appendChild(buildFieldRow(node, f));
+        });
+      }
+      // Step 27: per-node error-handling settings (Continue/Retry On Fail).
+      paramCol.appendChild(buildErrorSettings(node));
+    }
+
+    // ---------- OUTPUT ----------
+    if (designed) {
+      window.NdvNodes.renderOutput(outCol, ndvContext(node));
+    } else {
+      renderOutputColumn(outCol, node.id);
+    }
 
     cols.appendChild(inCol);
     cols.appendChild(paramCol);
@@ -1273,6 +1379,75 @@
 
     appendValidation(body);
     renderFieldFeedback();
+  }
+
+  function emptyPane(key) {
+    var d = document.createElement('div');
+    d.className = 'muted small ndv-empty';
+    d.textContent = t(key);
+    return d;
+  }
+
+  // Parameter keys already rendered by each bespoke design (so the "Advanced"
+  // tab shows only what is NOT in the design and nothing is silently dropped).
+  function designedFieldKeys(action) {
+    if (action === 'click') {
+      return ['selectorType', 'selector', 'clickType', 'button', 'clickCount',
+        'delayBeforeMs', 'waitForSelector', 'timeout', 'scrollIntoView',
+        'multipleMatches', 'highlightElement', 'visibleOnly', 'stableForMs',
+        'offsetX', 'offsetY', 'modAlt', 'modCtrl', 'modShift', 'human', 'force'];
+    }
+    if (action === 'if' || action === 'while') {
+      return ['groups', 'selector', 'operator', 'value', 'expected', 'source',
+        'attribute', 'maxDepth', 'evaluateMode', 'maxIterations'];
+    }
+    return [];
+  }
+
+  // The "Test" tab: a read-only preview of what this node serialises to, which
+  // is the fastest way to confirm a design maps to the backend contract.
+  function buildTestPane(node) {
+    var wrap = document.createElement('div');
+    wrap.className = 'ndv-testpane';
+    wrap.appendChild(emptyPane('ndv.testHint'));
+    var pre = document.createElement('pre');
+    pre.className = 'aria-json';
+    try {
+      var gs = GS();
+      var step = null;
+      if (gs && gs.coerceParams) {
+        step = { action: node.action, params: gs.coerceParams(node.action, node.params) };
+        if ((node.action === 'if' || node.action === 'while') && gs.buildCondition) {
+          step.condition = gs.buildCondition(node.params || {});
+          ['selector', 'operator', 'value', 'expected', 'source', 'attribute', 'groups']
+            .forEach(function (k) { delete step.params[k]; });
+        }
+      } else {
+        step = { action: node.action, params: node.params };
+      }
+      pre.textContent = JSON.stringify(step, null, 2);
+    } catch (e) {
+      pre.textContent = String(e && e.message ? e.message : e);
+    }
+    wrap.appendChild(pre);
+    return wrap;
+  }
+
+  // Build the render context handed to the designed-node renderers.
+  function ndvContext(node) {
+    var input = inputItemsFor(node.id);
+    return {
+      node: node,
+      inputItems: input,
+      outputItems: outputItemsFor(node.id),
+      meta: nodeMeta[node.id] || { status: nodeStatus[node.id] || 'idle' },
+      exprContext: {
+        json: (input[0] && input[0].json) ? input[0].json : (input[0] || {}),
+        index: 0,
+      },
+      onParamsChange: function () { renderNodes(); renderFieldFeedback(); },
+      onStructureChange: function () { renderInspector(); },
+    };
   }
 
   function renderAll() {
@@ -1655,8 +1830,15 @@
     });
 
     // keyboard: Delete removes selection, Ctrl/Cmd+C/V copy-paste.
+    // Any click that is not inside the floating node menu dismisses it.
+    on(window, 'mousedown', function (ev) {
+      var m = document.querySelector('.fe-ctxmenu');
+      if (m && !m.contains(ev.target)) closeNodeMenu();
+    });
+
     on(window, 'keydown', function (ev) {
       if (!dom) return;
+      if (ev.key === 'Escape') closeNodeMenu();
       // ignore when typing in a field
       var tag = (ev.target && ev.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
@@ -1790,6 +1972,7 @@
 
   function unmount() {
     closeNdv();
+    closeNodeMenu();
     offAll();
     drag = null;
     dom = null;
@@ -1908,6 +2091,10 @@
     getCurrentWorkflow: function () { return currentWorkflow; },
     setCurrentWorkflow: function (meta) {
       currentWorkflow = meta || null;
+      // Any successful save stamps the status bar's "Last saved" cell.
+      lastSavedAt = meta ? clockLabel(new Date()) : null;
     },
+    // `HH:MM:SS` of the last successful save, or null if nothing saved yet.
+    getLastSavedAt: function () { return lastSavedAt; },
   };
 })();
