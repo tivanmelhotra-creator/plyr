@@ -236,6 +236,88 @@ function sanitizeSelector(selector: string): string {
   return selector;
 }
 
+// ━━━ RICH CLICK HELPERS (docs/uiux/ndv-click-element-final.md §5) ━━━
+// The Click Element NDV exposes far more than `{ selector }`. These helpers keep
+// the step branch readable and are shared with the other pointer actions.
+
+// `Selector type` dropdown (CSS / XPath / Text). Params keep storing the raw
+// string the user typed; the Playwright engine prefix is applied here so old
+// workflows (no selectorType => css) behave exactly as before.
+export function buildEngineSelector(selector: string, selectorType?: any): string {
+  const raw = sanitizeSelector(selector);
+  const kind = String(selectorType || 'css').toLowerCase();
+  if (kind === 'xpath') return raw.startsWith('xpath=') ? raw : `xpath=${raw}`;
+  if (kind === 'text') return raw.startsWith('text=') ? raw : `text=${raw}`;
+  return raw;
+}
+
+// `Optional modifiers` checkboxes. Ctrl/Cmd maps to ControlOrMeta so the same
+// workflow does the right thing on macOS and on Linux/Windows runners.
+type ClickModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
+export function clickModifiers(params: any): ClickModifier[] {
+  const mods: ClickModifier[] = [];
+  if (parseBoolean(params.modAlt)) mods.push('Alt');
+  if (parseBoolean(params.modCtrl)) mods.push('ControlOrMeta');
+  if (parseBoolean(params.modShift)) mods.push('Shift');
+  return mods;
+}
+
+// `Stable for (ms)` — "Wait until element stops moving". Polls the bounding box
+// and only returns once it has been unchanged for the requested window, so a
+// click never lands on an element that is still animating into place.
+export async function waitForStableBox(el: any, stableForMs: number, timeout: number): Promise<void> {
+  if (!(stableForMs > 0)) return;
+  const deadline = Date.now() + Math.max(timeout, stableForMs);
+  const poll = Math.max(20, Math.min(50, stableForMs));
+  let last = '';
+  let stableSince = 0;
+
+  while (Date.now() < deadline) {
+    const box = await el.boundingBox().catch(() => null);
+    const sig = box
+      ? `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)},${Math.round(box.height)}`
+      : '';
+
+    if (sig !== '' && sig === last) {
+      if (stableSince === 0) stableSince = Date.now();
+      if (Date.now() - stableSince >= stableForMs) return;
+    } else {
+      last = sig;
+      stableSince = 0;
+    }
+    await new Promise(r => setTimeout(r, poll));
+  }
+}
+
+// `Mark / highlight element` — a debugging aid from the design: briefly outline
+// the target (Aria orange) so screenshots/recordings show what was clicked.
+async function highlightElement(el: any, durationMs: number = 400): Promise<void> {
+  await el.evaluate((node: any, duration: number) => {
+    const style = (node as HTMLElement).style;
+    if (!style) return;
+    const prevOutline = style.outline;
+    const prevOffset = style.outlineOffset;
+    style.outline = '2px solid #FF8A1F';
+    style.outlineOffset = '2px';
+    setTimeout(() => { style.outline = prevOutline; style.outlineOffset = prevOffset; }, duration);
+  }, durationMs).catch(() => { /* best-effort, never fail a click over a highlight */ });
+}
+
+// `Offset X / Y (px)` — the design labels them as an offset from the element
+// CENTER, while Playwright's `position` is measured from the padding-box
+// top-left. Convert here; fall back to the raw offsets when the element has no
+// box (e.g. zero-size wrapper).
+export async function clickPosition(
+  el: any,
+  offsetX: number,
+  offsetY: number
+): Promise<{ x: number; y: number } | undefined> {
+  if (offsetX === 0 && offsetY === 0) return undefined;
+  const box = await el.boundingBox().catch(() => null);
+  if (!box) return { x: offsetX, y: offsetY };
+  return { x: box.width / 2 + offsetX, y: box.height / 2 + offsetY };
+}
+
 function validateHttpUrl(url: string, allowInternal: boolean = false): void {
   try {
     const parsed = new URL(url);
@@ -1261,62 +1343,135 @@ export async function runPipeline(params: {
         // 18-21. CLICK / DBLCLICK / HOVER / FOCUS
         // ════════════════════════════════════════════════════════════════
         if (['click', 'dblclick', 'hover', 'focus'].includes(step.action)) {
-          const selector = sanitizeSelector(String(finalParams.selector || ''));
-          if (!selector) throw new Error(`Selector required for ${step.action}`);
+          const rawSelector = String(finalParams.selector || '');
+          if (!rawSelector) throw new Error(`Selector required for ${step.action}`);
+          // `Selector type` (css | xpath | text). The output payload keeps the
+          // user-authored string so it matches exactly what the NDV shows.
+          const selectorType = String(finalParams.selectorType || 'css').toLowerCase();
+          const selector = sanitizeSelector(rawSelector);
+          const engineSelector = buildEngineSelector(rawSelector, selectorType);
 
           const timeout = parseInt(finalParams.timeout) || 30000;
           const force = parseBoolean(finalParams.force);
           const human = parseBoolean(finalParams.human);
-          // Rich click options (Final ui-ux click NDV): mouse button, click
-          // count, pre-click delay and scroll-into-view. All optional and
-          // backwards compatible with the plain { selector } form.
+          // Rich click options (Final ui-ux click NDV, sections 2 + 5). Every one
+          // is optional and backwards compatible with the plain { selector } form.
           const mouseButton = (['left', 'right', 'middle'].includes(String(finalParams.button))
             ? String(finalParams.button)
             : 'left') as 'left' | 'right' | 'middle';
-          const clickCount = Math.min(Math.max(parseInt(finalParams.clickCount) || 1, 1), 10);
+          // `Click type` is the friendly control, `Click count` the raw number.
+          // Whichever is more specific wins, so "double click" can never run once.
+          const clickTypeRaw = String(finalParams.clickType || 'single');
+          const typedCount = clickTypeRaw === 'triple' ? 3 : clickTypeRaw === 'double' ? 2 : 1;
+          const clickCount = Math.min(
+            Math.max(parseInt(finalParams.clickCount) || 1, typedCount, 1), 10
+          );
           const delayBeforeMs = Math.min(Math.max(parseInt(finalParams.delayBeforeMs) || 0, 0), 60000);
           const scrollIntoView = parseBoolean(finalParams.scrollIntoView);
+          // Gating flags. `waitForSelector` defaults to TRUE (the pre-NDV
+          // behaviour was an unconditional waitFor); `visibleOnly` decides
+          // whether we wait for visibility or for mere attachment.
+          const waitForSelector = finalParams.waitForSelector === undefined
+            ? true
+            : parseBoolean(finalParams.waitForSelector);
+          const visibleOnly = finalParams.visibleOnly === undefined
+            ? true
+            : parseBoolean(finalParams.visibleOnly);
+          const stableForMs = Math.min(Math.max(parseInt(finalParams.stableForMs) || 0, 0), 60000);
+          const offsetX = Math.round(parseFloat(finalParams.offsetX) || 0);
+          const offsetY = Math.round(parseFloat(finalParams.offsetY) || 0);
+          // Legacy steps (hand-written JSON / pre-NDV workflows) never declared
+          // `multipleMatches`, and the old code always acted on `.first()`.
+          // Only opt those INTO strict matching when the flag is present.
+          const strictSingleMatch = finalParams.multipleMatches !== undefined
+            && !parseBoolean(finalParams.multipleMatches);
+          const wantHighlight = parseBoolean(finalParams.highlightElement);
+          const modifiers = clickModifiers(finalParams);
 
           log(`[${step.action.toUpperCase()}] "${selector}" (human: ${human})`);
 
-          const el = context.page!.locator(selector).first();
-          await el.waitFor({ state: 'visible', timeout });
+          const locator = context.page!.locator(engineSelector);
+          // `Multiple matches` OFF = strict: more than one hit means the selector
+          // is ambiguous, and failing loudly beats silently clicking element #1.
+          if (strictSingleMatch) {
+            const matchCount = await locator.count().catch(() => 0);
+            if (matchCount > 1) {
+              throw new Error(
+                `Selector "${selector}" matched ${matchCount} elements; ` +
+                `enable "Multiple matches" to act on the first one`
+              );
+            }
+          }
+          const el = locator.first();
+
+          if (waitForSelector) {
+            await el.waitFor({ state: visibleOnly ? 'visible' : 'attached', timeout });
+          }
 
           if (scrollIntoView) {
             await el.scrollIntoViewIfNeeded({ timeout }).catch(() => { /* best-effort */ });
+          }
+          // `Stable for (ms)` is measured AFTER scrolling, otherwise the scroll
+          // itself is the movement we would be waiting out.
+          await waitForStableBox(el, stableForMs, timeout);
+          if (wantHighlight) {
+            await highlightElement(el);
           }
           if (delayBeforeMs > 0) {
             await new Promise((r) => setTimeout(r, delayBeforeMs));
           }
 
+          const position = await clickPosition(el, offsetX, offsetY);
+
           if (step.action === 'click') {
-            if (human && !force && mouseButton === 'left' && clickCount === 1) {
+            // The human-like path is only safe for a plain single left click with
+            // no geometry/modifier requirements; anything richer goes through
+            // Playwright directly so every option is actually honoured.
+            const plainClick = mouseButton === 'left' && clickCount === 1
+              && !position && modifiers.length === 0;
+            if (human && !force && plainClick) {
               await humanClick(context.page, el, { force, timeout });
             } else {
-              await el.click({ timeout, force, button: mouseButton, clickCount });
+              await el.click({
+                timeout, force, button: mouseButton, clickCount,
+                ...(modifiers.length ? { modifiers } : {}),
+                ...(position ? { position } : {}),
+              });
             }
           } else if (step.action === 'dblclick') {
-            if (human && !force) {
+            // dblclick/hover accept the same geometry + modifier options, so the
+            // NDV controls behave identically across the pointer actions.
+            const pointerOpts = {
+              timeout, force,
+              ...(modifiers.length ? { modifiers } : {}),
+              ...(position ? { position } : {}),
+            };
+            if (human && !force && !position && modifiers.length === 0) {
               const box = await el.boundingBox();
               if (box) {
                 await humanMouseMove(context.page, box.x + box.width / 2, box.y + box.height / 2);
                 await context.page!.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
               } else {
-                await el.dblclick({ timeout, force });
+                await el.dblclick(pointerOpts);
               }
             } else {
-              await el.dblclick({ timeout, force });
+              await el.dblclick(pointerOpts);
             }
           } else if (step.action === 'hover') {
-            if (human) {
+            const hoverOpts = {
+              timeout, force,
+              ...(modifiers.length ? { modifiers } : {}),
+              ...(position ? { position } : {}),
+            };
+            if (human && !position && modifiers.length === 0) {
               const box = await el.boundingBox();
               if (box) {
                 await humanMouseMove(context.page, box.x + box.width / 2, box.y + box.height / 2);
               } else {
-                await el.hover({ timeout, force });
+                await el.hover(hoverOpts);
               }
             } else {
-              await el.hover({ timeout, force });
+              await el.hover(hoverOpts);
             }
           } else if (step.action === 'focus') {
             await el.focus({ timeout });
@@ -1328,8 +1483,13 @@ export async function runPipeline(params: {
             step.action,
             true,
             step.action === 'click'
-              ? { clicked: true, selector, button: mouseButton, clickCount, human }
-              : { selector, human },
+              ? {
+                  clicked: true, selector, selectorType, button: mouseButton,
+                  clickCount, clickType: clickTypeRaw, human,
+                  ...(modifiers.length ? { modifiers } : {}),
+                  ...(position ? { position } : {}),
+                }
+              : { selector, selectorType, human },
             stepStartTime
           ));
           continue stepLoop;

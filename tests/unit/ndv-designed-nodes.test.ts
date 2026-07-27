@@ -54,6 +54,8 @@ interface Model {
   DESIGNED_NODES: Record<string, unknown>;
   CLICK_DEFAULTS: Record<string, unknown>;
   conditionSummary: (params: Record<string, unknown>, t?: (k: string) => string) => string;
+  clickPayloadPreview: (params: Record<string, unknown>) => Record<string, unknown>;
+  clickModifierList: (params: Record<string, unknown>) => string[];
 }
 
 let catalog: Catalog;
@@ -243,5 +245,78 @@ describe('condition summary shown on the canvas node card', () => {
 
   it('returns an empty string when there is nothing to summarise', () => {
     expect(NM.conditionSummary({}, (k) => k)).toBe('');
+  });
+});
+
+// The OUTPUT column of the click NDV shows a "representative result shape".
+// If it drifts from what src/pipeline.ts actually pushes, the modal promises a
+// payload the run never produces — invisible in the UI, confusing at runtime.
+// These tests read the real pipeline source so the two cannot silently diverge.
+describe('click OUTPUT preview matches the runtime payload', () => {
+  let pipelineSrc: string;
+
+  beforeAll(() => {
+    pipelineSrc = readFileSync(join(__dirname, '..', '..', 'src', 'pipeline.ts'), 'utf8');
+  });
+
+  it('every key the preview shows is emitted by the pipeline click branch', () => {
+    const preview = NM.clickPayloadPreview({
+      selector: '#next-button', modAlt: true, offsetX: 4, offsetY: -2,
+    });
+    // The click step output object in pipeline.ts.
+    const payloadBlock = pipelineSrc.slice(
+      pipelineSrc.indexOf('clicked: true'),
+      pipelineSrc.indexOf('stepStartTime', pipelineSrc.indexOf('clicked: true'))
+    );
+    expect(payloadBlock.length).toBeGreaterThan(0);
+    for (const key of Object.keys(preview)) {
+      expect(payloadBlock, `preview key "${key}" is not in the runtime payload`).toContain(key);
+    }
+  });
+
+  it('modifiers/position are omitted until they are actually configured', () => {
+    const plain = NM.clickPayloadPreview({ selector: '#a' });
+    expect(plain).not.toHaveProperty('modifiers');
+    expect(plain).not.toHaveProperty('position');
+    const rich = NM.clickPayloadPreview({ selector: '#a', modCtrl: true, offsetY: 6 });
+    expect(rich.modifiers).toEqual(['ControlOrMeta']);
+    expect(rich.position).toEqual({ x: 0, y: 6 });
+  });
+
+  it('maps Ctrl/Cmd to the same Playwright name the runtime uses', () => {
+    expect(NM.clickModifierList({ modCtrl: true })).toEqual(['ControlOrMeta']);
+    expect(NM.clickModifierList({ modAlt: true, modCtrl: true, modShift: true }))
+      .toEqual(['Alt', 'ControlOrMeta', 'Shift']);
+    // ControlOrMeta must be what pipeline.ts emits, not plain 'Control'.
+    expect(pipelineSrc).toContain("mods.push('ControlOrMeta')");
+  });
+
+  it('reflects clickType/clickCount consistency (double click never runs once)', () => {
+    const dbl = NM.clickPayloadPreview({ selector: '#a', clickType: 'double' });
+    expect(dbl.clickType).toBe('double');
+    expect(dbl.clickCount).toBe(2);
+    const triple = NM.clickPayloadPreview({ selector: '#a', clickType: 'triple' });
+    expect(triple.clickCount).toBe(3);
+  });
+});
+
+// Guards the other half of the "silent drop" problem: a param the runtime reads
+// but the catalog never declares is stripped by coerceParams() before it can
+// ever reach the engine.
+describe('every click param the runtime reads is declared in the catalog', () => {
+  it('pipeline.ts reads no finalParams key that the catalog omits', () => {
+    const src = readFileSync(join(__dirname, '..', '..', 'src', 'pipeline.ts'), 'utf8');
+    const start = src.indexOf("if (['click', 'dblclick', 'hover', 'focus'].includes(step.action))");
+    expect(start).toBeGreaterThan(-1);
+    const branch = src.slice(start, src.indexOf('continue stepLoop;', start));
+
+    const read = new Set<string>();
+    for (const m of branch.matchAll(/finalParams\.([A-Za-z0-9_]+)/g)) read.add(m[1]);
+    expect(read.size).toBeGreaterThan(10);
+
+    const declared = new Set(fieldKeys('click'));
+    for (const key of read) {
+      expect(declared.has(key), `pipeline reads finalParams.${key} but click's catalog does not declare it`).toBe(true);
+    }
   });
 });

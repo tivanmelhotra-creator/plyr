@@ -9,7 +9,9 @@
 
 NDV (Node Detail View) برای **دو نودی که پیش‌نمایش قفل‌شده دارند** (`click` و `if`/`while`)
 پیاده شده، همراه با «پایه‌ی دیزاین» مشترک و قواعد میان‌بخشی که از **هر شش** تصویر
-`docs/uiux/` استخراج شده. بک‌اند هنوز پارامترهای جدید را اجرا نمی‌کند (بخش ۵).
+`docs/uiux/` استخراج شده. **بک‌اند حالا کامل است**: هر پارامتری که UI ذخیره می‌کند
+واقعاً اجرا می‌شود (بخش ۵). کار باقی‌مانده فقط پرداخت‌های شل و «Run node» تک‌نود است
+(بخش ۵b).
 
 ---
 
@@ -129,40 +131,84 @@ public/js/flow-editor.js  ← شل + بوم + فال‌بک عمومی برای 
 
 ---
 
-## 5. ⚠️ کارهای باقی‌مانده (به ترتیب اولویت)
+## 5. ✅ اولویت ۱ و ۲ (بک‌اند) — در این جلسه انجام شد
 
-### اولویت ۱ — بک‌اند: پارامترهای جدید اجرا نمی‌شوند
-> این تنها **شکاف عملکردی** واقعی است. UI پارامترها را ذخیره و سریال می‌کند،
-> اما موتور نادیده‌شان می‌گیرد. یعنی کاربر تنظیم می‌کند و «هیچ اتفاقی نمی‌افتد».
+> شکاف عملکردی بسته شد: تمام پارامترهایی که UI ذخیره می‌کرد، حالا در موتور
+> **واقعاً اجرا** می‌شوند.
 
-**الف) `src/pipeline.ts`** (شاخه‌ی `click`، حدود خط 1259) فقط اینها را می‌فهمد:
-`timeout, force, human, button, clickCount, delayBeforeMs, scrollIntoView`.
-باید اضافه شود: `selectorType` (css/xpath/text)، `clickType` (single/double/triple)،
-`waitForSelector`، `visibleOnly`، `stableForMs`، `offsetX`/`offsetY`،
-`multipleMatches`، `highlightElement`، `modAlt`/`modCtrl`/`modShift`.
-نگاشت Playwright: `clickCount`، `modifiers: ['Alt','Control','Shift']`،
-`position: {x: offsetX, y: offsetY}`، `force`، `timeout`.
-**⚠️ CRLF این فایل را حفظ کن.**
+### 5.1 `src/pipeline.ts` — شاخه‌ی `click`/`dblclick`/`hover`/`focus`
 
-**ب) `src/core/ConditionEngine.ts`**: `SimpleCondition` فعلاً
-`{operator, value?, expected?, selector?}` است و برای مقدار چپ ابتدا `innerText`
-و سپس `inputValue` را می‌خواند. باید `source` و `attribute` را بفهمد:
+چهار هلپر خالص و **export شده** (تا بدون Redis/مرورگر تست‌پذیر باشند) بالای فایل
+کنار `sanitizeSelector` اضافه شد:
 
-| `source` | مقدار چپ |
+| هلپر | کنترل دیزاین | نگاشت |
+|---|---|---|
+| `buildEngineSelector(sel, type)` | `Selector type` | `css` بدون تغییر · `xpath=…` · `text=…` (بدون پیشوند دوباره، case-insensitive، فیلتر امنیتی حفظ شد) |
+| `clickModifiers(params)` | `Optional modifiers` | `modAlt→Alt` · `modCtrl→ControlOrMeta` · `modShift→Shift` (ترتیب ثابت) |
+| `waitForStableBox(el, ms, timeout)` | `Stable for (ms)` | نظرسنجی `boundingBox` تا وقتی برای بازه‌ی خواسته‌شده بی‌تغییر بماند؛ کران‌دار با deadline |
+| `clickPosition(el, dx, dy)` | `Offset X/Y (px)` | دیزاین **مرکز-محور** است، Playwright از **گوشه‌ی چپ-بالا** → تبدیل به `{x: w/2+dx, y: h/2+dy}` |
+
+نکات مهم پیاده‌سازی:
+- `clickType` و `clickCount` هم‌تراز می‌شوند: **مقدار مشخص‌تر برنده است**، پس
+  «double click» هرگز یک بار اجرا نمی‌شود (`Math.max(clickCount, typedCount)`).
+- `waitForSelector` و `visibleOnly` هر دو پیش‌فرض **true** هستند (رفتار قبلی
+  یک `waitFor({state:'visible'})` بی‌قید‌وشرط بود). `visibleOnly:false` →
+  `state:'attached'`.
+- **`multipleMatches` سازگار با گذشته**: کد قدیم همیشه روی `.first()` عمل می‌کرد.
+  پس فقط وقتی این فیلد **حاضر باشد و false باشد** حالت strict فعال می‌شود
+  (`strictSingleMatch`) و بیش از یک تطبیق خطای واضح می‌دهد. ورکفلوهای قدیمی که
+  این کلید را ندارند دست‌نخورده کار می‌کنند.
+- ترتیب اجرا: `count` → `waitFor` → `scrollIntoView` → **`waitForStableBox`** →
+  `highlight` → `delayBeforeMs` → `clickPosition` → کلیک.
+  (پایداری **بعد از** اسکرول سنجیده می‌شود، وگرنه خودِ اسکرول همان حرکتی است که
+  منتظرش هستیم.)
+- مسیر `humanClick` فقط برای کلیک چپ ساده‌ی تک‌باره **بدون** offset و modifier
+  استفاده می‌شود؛ هر چیز غنی‌تر مستقیم به Playwright می‌رود تا همه‌ی گزینه‌ها
+  واقعاً اعمال شوند.
+- `dblclick`/`hover` هم `modifiers`/`position` را می‌گیرند (`pointerOpts`/`hoverOpts`).
+- **payload خروجی گسترش یافت**: `selectorType`, `clickType`, و به‌شرط تنظیم‌شدن
+  `modifiers`/`position`.
+
+### 5.2 `src/core/ConditionEngine.ts` — `source` / `attribute`
+
+- تایپ جدید `ConditionSource` صادر شد و `SimpleCondition` دو فیلد اختیاری
+  `source?` و `attribute?` گرفت. ثابت `SOURCES` برای اعتبارسنجی.
+- دو متد خصوصی جدید:
+  - `readFromElement(selector, source, attribute)`:
+    | `source` | مقدار چپ |
+    |---|---|
+    | `text` (پیش‌فرض) | `innerText`، و اگر خالی بود **فال‌بک به `inputValue`** (سازگاری با گذشته) |
+    | `attribute` | `getAttribute(attribute)`؛ نام attribute هم `{{var}}` را می‌فهمد؛ نبودِ attribute → `''`؛ نام خالی → فال‌بک به text |
+    | `value` | `inputValue()` (حتی اگر عنصر متن داشته باشد) |
+    | `html` | `innerHTML` |
+  - `readVariable(raw)`: برای `source:'variable'` **بدون لمس DOM**. هم `status`
+    و هم `{{status}}` را می‌فهمد. **نام ناشناخته → `''`** (دقیقاً مثل توکن
+    ناشناخته)، تا یک غلط تایپی «خالی» خوانده شود نه مقایسه با نام متغیر.
+- عنصر پیدانشده برای هر source برابر `''` می‌شود (خطا پرت نمی‌شود) تا
+  `is_empty` پاس و `equals` رد شود.
+- `source` ناشناخته بی‌صدا به `text` تنزل می‌کند؛ اپراتورهای DOM-only
+  (`exists`/`visible`/…) اصلاً `source` را نمی‌خوانند.
+
+### 5.3 تست‌های بک‌اند (اولویت ۲)
+
+| فایل | تست‌ها |
 |---|---|
-| `text` (پیش‌فرض) | `innerText` |
-| `attribute` | `getAttribute(attribute)` |
-| `value` | `inputValue()` |
-| `html` | `innerHTML` |
-| `variable` | مقدار متغیر context |
+| `tests/unit/click-runtime.test.ts` (**جدید**) | **۱۶ تست** روی چهار هلپر: پیشوند موتور و ضد-پیشوندِ دوباره و فیلتر امنیتی · نگاشت ControlOrMeta و ترتیب ثابت و پذیرش فرم رشته‌ای · تبدیل offset مرکز→گوشه و فال‌بک بدون box · no-op بودن `stableForMs=0` و کران‌دار بودن با deadline |
+| `tests/unit/condition-engine.test.ts` (گسترش) | از ۱۹ به **۳۴** تست: هر پنج `source`، اینکه `attribute` متن عنصر را لو نمی‌دهد، `{{var}}` در نام attribute، `variable` که `page.locator` را **هرگز** صدا نمی‌زند، تنزل source ناشناخته، عنصر گم‌شده، و ترکیب سه source داخل یک `all` |
+| `tests/unit/ndv-designed-nodes.test.ts` (گسترش) | از ۱۳ به **۱۸** تست. دو گارد **ضد-واگرایی** که *سورس واقعی* `pipeline.ts` را می‌خوانند: (۱) هر کلیدی که پیش‌نمایش OUTPUT نشان می‌دهد باید در payload واقعی باشد و `ControlOrMeta` همان چیزی باشد که موتور می‌فرستد؛ (۲) **هر `finalParams.x` که pipeline می‌خواند باید در `actions.js#fields` اعلام شده باشد** — این همان دام «حذف بی‌صدا» است که حالا خودکار گرفته می‌شود |
 
-**⚠️ CRLF این فایل را حفظ کن.** بعد از هر دو: `npx tsc --noEmit` و `npm test`.
+### 5.4 دو اصلاح کوچک UI (هم‌خوان‌سازی با بک‌اند)
+- `ndv-model.js#clickPayloadPreview` بازنویسی شد تا **عیناً** شکل payload واقعی
+  runtime را نشان دهد + هلپر `clickModifierList` صادر شد.
+- `ndv-nodes.js` بخش `Behavior`: تاگل `Continue on fail` که spec §2.6 نشان می‌دهد
+  اضافه شد. **این یک پارامتر click نیست** — روی `node.errorPolicy` نوشته می‌شود
+  (همان منبعی که تب Error ویرایش می‌کند) تا داده دوجا ذخیره نشود.
 
-### اولویت ۲ — تست‌های بک‌اند
-`tests/unit/condition-engine.test.ts` را برای `source`/`attribute` گسترش بده؛
-یک تست برای پارامترهای جدید click اضافه کن.
+---
 
-### اولویت ۳ — پرداخت‌های میان‌بخشی باقی‌مانده (شل، خارج از دو NDV)
+## 5b. ⚠️ کارهای باقی‌مانده (به ترتیب اولویت)
+
+### اولویت ۱ — پرداخت‌های میان‌بخشی باقی‌مانده (شل، خارج از دو NDV)
 اینها در spec ها مستند شده‌اند ولی هنوز پیاده نشده‌اند. **قبل از شروع، از کاربر
 اولویت بگیر** — چون خارج از دامنه‌ی «دو نود طراحی‌شده» هستند:
 - **پنل Outline** — درخت شماره‌دار تودرتو (`1 Trigger`, `4 Condition` → `4.1.1 True`).
@@ -177,11 +223,16 @@ public/js/flow-editor.js  ← شل + بوم + فال‌بک عمومی برای 
   خط‌چین `+ Add Parameter` / `+ Add Header`. **توجه: این نود پیش‌نمایش قفل‌شده
   ندارد** — طبق قانون بخش ۱ نباید طراحی شود، فقط برای زمینه ذکر شده.
 
-### اولویت ۴ — «Run node» واقعی
+### اولویت ۲ — «Run node» واقعی
 دکمه‌ی `Run node` در هدر NDV فعلاً `#fe-run` را کلیک می‌کند یعنی **کل ورکفلو**
 را اجرا می‌کند، چون endpoint اجرای تک‌نود وجود ندارد. طبق
 `shell-editor-condition-ndv.md` §4 باید فقط زیرگراف همان نود را اجرا کند
 (در spec ها به‌عنوان سطح **B — Small add** علامت خورده).
+
+### اولویت ۳ — تست دود واقعی مرورگر (اختیاری)
+هلپرهای click حالا unit-test دارند، ولی مسیر انتها-به-انتها (Playwright روی یک
+صفحه‌ی محلی) تست نشده: کلیک با offset، کلیک با modifier، و `stableForMs` روی یک
+عنصر انیمیشن‌دار. برای این کار `playwright install chromium` لازم است.
 
 ---
 
@@ -189,11 +240,13 @@ public/js/flow-editor.js  ← شل + بوم + فال‌بک عمومی برای 
 
 ```
 npx tsc --noEmit   → پاس (بدون خروجی)
-npm test           → 28 فایل / 421 تست پاس (قبلاً 408 بود؛ +13 تست جدید)
+npm test           → 29 فایل / 457 تست پاس (قبلاً 421 بود؛ +36 تست جدید)
 node --check       → همه‌ی فایل‌های JS دست‌خورده پاس
 کنسول مرورگر       → صفر پیام روی #/editor (با PlaywrightConsoleCapture)
 خط‌پایان           → public/** همه LF · src/*.ts دست‌نخورده با CRLF
 ```
+
+تفکیک ۳۶ تست جدید: `click-runtime` ۱۶ · `condition-engine` +۱۵ · `ndv-designed-nodes` +۵.
 
 ---
 
@@ -212,9 +265,11 @@ node --check       → همه‌ی فایل‌های JS دست‌خورده پا
 | `public/js/views.js` | `renderEditor()` = تاپ‌بار + layout + نوار وضعیت |
 | `public/js/i18n.js` | `DEFAULT_LANG='en'` + فال‌بک en |
 | `public/css/styles.css` | همه‌ی استایل‌ها (~2400 خط) |
-| `src/pipeline.ts` | **نیاز به کار** — پارامترهای click (CRLF) |
-| `src/core/ConditionEngine.ts` | **نیاز به کار** — `source`/`attribute` (CRLF) |
-| `tests/unit/ndv-designed-nodes.test.ts` | ۱۳ تست قرارداد دیزاین↔سریالایزر |
+| `src/pipeline.ts` | ✅ پارامترهای غنی click + ۴ هلپر export شده (CRLF/LF مخلوط — دست نزن) |
+| `src/core/ConditionEngine.ts` | ✅ `source`/`attribute` + `readFromElement`/`readVariable` (CRLF) |
+| `tests/unit/ndv-designed-nodes.test.ts` | ۱۸ تست قرارداد دیزاین↔سریالایزر↔runtime |
+| `tests/unit/click-runtime.test.ts` | ۱۶ تست روی هلپرهای خالص click |
+| `tests/unit/condition-engine.test.ts` | ۳۴ تست، شامل هر پنج `source` |
 
 ---
 
@@ -231,3 +286,16 @@ node --check       → همه‌ی فایل‌های JS دست‌خورده پا
    `i18n.js` به `localStorage` نیاز دارد؛ در `node:vm` شیم بده.
 5. **رشته‌های fa** — دیکشنری fa را حذف نکن. فقط اضافه کردن کلید en کافی است،
    چون `t()` به en فال‌بک می‌کند.
+6. **`src/pipeline.ts` خط‌پایان مخلوط دارد** — شاخه‌ی `click` **LF** است و بقیه‌ی
+   فایل **CRLF**. با `file src/pipeline.ts` باید «with CRLF, LF line terminators»
+   ببینی. یکدست‌سازی = دیف چندهزارخطی؛ برای ویرایش دقیق از پچ بایتی (python)
+   استفاده کن نه ابزارهایی که خط‌پایان را نرمال می‌کنند.
+7. **پیش‌فرض‌های سازگار با گذشته** — پارامترهای گیت‌کننده‌ی جدید باید طوری
+   پیش‌فرض بگیرند که ورکفلوهای قدیمی (که آن کلید را ندارند) رفتارشان عوض نشود.
+   نمونه‌ی زنده: `multipleMatches` فقط وقتی **حاضر و false** باشد strict می‌شود؛
+   `undefined` = رفتار قدیمی `.first()`. اگر با `parseBoolean` مستقیم می‌گرفتیم،
+   هر ورکفلو قدیمی با سلکتور چندتطبیقی **می‌شکست**.
+8. **دو نمایش از یک payload** — پیش‌نمایش OUTPUT در `ndv-model.js` و payload
+   واقعی در `pipeline.ts` باید هم‌خوان بمانند. تست `ndv-designed-nodes` سورس
+   pipeline را می‌خواند و واگرایی را می‌گیرد؛ اگر آن تست شکست، **هر دو** را
+   به‌روز کن.

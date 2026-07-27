@@ -406,6 +406,19 @@
     s6.body.appendChild(ui.toggleRow(t('click.forceClick'), p.force,
       function (v) { set('force', v); },
       { info: t('help.forceClick'), help: t('help.forceClick') }).root);
+    // `Continue on fail` is listed in the design's Behavior group, but it is NOT
+    // a click param: the runtime reads it as a top-level AutomationStep field
+    // (node.errorPolicy -> graph-serialize.js). So it is mirrored here for
+    // discoverability while still writing to the single source of truth, which
+    // the Error tab also edits.
+    node.errorPolicy = node.errorPolicy || {};
+    s6.body.appendChild(ui.toggleRow(t('settings.continueOnFail'),
+      node.errorPolicy.continueOnFail === true,
+      function (v) {
+        node.errorPolicy.continueOnFail = v === true;
+        if (ctx.onParamsChange) ctx.onParamsChange();
+      },
+      { info: t('help.continueOnFail'), help: t('help.continueOnFail') }).root);
     col.appendChild(s6.root);
     return true;
   }
