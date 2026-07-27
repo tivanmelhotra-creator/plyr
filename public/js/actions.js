@@ -43,8 +43,17 @@
     ] },
 
     // ---- Mouse / interaction -----------------------------------------
+    // Rich Click Element node (Final ui-ux: ndv-click-element-final.md).
+    // Extra params are optional; backend pipeline maps them in the click case.
     { id: 'click', icon: '🖱️', cat: 'interaction', fields: [
-      { k: 'selector', label: 'p.selector', type: 'text', ph: 'button.submit' },
+      { k: 'selector', label: 'p.selector', type: 'text', ph: '#next-button', expr: true },
+      { k: 'button', label: 'p.mouseButton', type: 'options', options: ['left', 'right', 'middle'] },
+      { k: 'clickCount', label: 'p.clickCount', type: 'number', ph: '1', min: 1, max: 10 },
+      { k: 'delayBeforeMs', label: 'p.delayBefore', type: 'number', ph: '0', min: 0 },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '30000', min: 0 },
+      { k: 'scrollIntoView', label: 'p.scrollIntoView', type: 'boolean' },
+      { k: 'human', label: 'p.human', type: 'boolean', help: 'help.humanClick' },
+      { k: 'force', label: 'p.force', type: 'boolean', help: 'help.forceClick' },
     ] },
     { id: 'dblclick', icon: '🖱️', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '.row' },

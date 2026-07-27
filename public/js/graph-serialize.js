@@ -95,12 +95,92 @@
   }
 
   // -------- condition builder (matches ConditionEngine SimpleCondition) ------
-  function buildCondition(params) {
-    var cond = { operator: params.operator || 'exists' };
-    if (params.selector !== undefined && params.selector !== '') cond.selector = params.selector;
-    if (params.value !== undefined && params.value !== '') cond.value = params.value;
-    if (params.expected !== undefined && params.expected !== '') cond.expected = params.expected;
+  function buildSimpleCondition(row) {
+    var cond = { operator: (row && row.operator) || 'exists' };
+    if (row && row.selector !== undefined && row.selector !== '') cond.selector = row.selector;
+    if (row && row.value !== undefined && row.value !== '') cond.value = row.value;
+    if (row && row.expected !== undefined && row.expected !== '') cond.expected = row.expected;
     return cond;
+  }
+
+  // Final ui-ux Condition Builder (ndv-condition-final.md): the editor stores
+  // AND/OR groups on node.params.groups as a JSON string:
+  //   [ [ {selector,operator,expected,value}, ... ],   <- group 1 (AND inside)
+  //     [ ... ] ]                                      <- group 2 (OR between)
+  // Serialized to the backend ConditionEngine composite form:
+  //   1 group / 1 row  -> SimpleCondition
+  //   1 group / n rows -> { all: [...] }
+  //   n groups         -> { any: [ {all:[...]}, ... ] }
+  function parseGroups(raw) {
+    if (!raw) return null;
+    var g = raw;
+    if (typeof raw === 'string') {
+      try { g = JSON.parse(raw); } catch (e) { return null; }
+    }
+    if (!Array.isArray(g)) return null;
+    var groups = [];
+    g.forEach(function (rows) {
+      if (!Array.isArray(rows)) return;
+      var clean = rows.filter(function (r) { return r && typeof r === 'object' && r.operator; });
+      if (clean.length) groups.push(clean);
+    });
+    return groups.length ? groups : null;
+  }
+
+  function buildCondition(params) {
+    params = params || {};
+    var groups = parseGroups(params.groups);
+    if (groups) {
+      var groupConds = groups.map(function (rows) {
+        var conds = rows.map(buildSimpleCondition);
+        return conds.length === 1 ? conds[0] : { all: conds };
+      });
+      return groupConds.length === 1 ? groupConds[0] : { any: groupConds };
+    }
+    // Legacy single-condition form (params.operator/selector/value/expected).
+    return buildSimpleCondition(params);
+  }
+
+  // Reverse of buildCondition: reconstruct editor `groups` from a stored
+  // composite condition. Returns null when the condition is a plain simple
+  // condition (legacy editor fields are used instead).
+  function conditionToGroups(cond) {
+    if (!cond || typeof cond !== 'object') return null;
+    function simpleRow(c) {
+      var row = { operator: c.operator || 'exists' };
+      if (c.selector !== undefined) row.selector = String(c.selector);
+      if (c.value !== undefined) row.value = String(c.value);
+      if (c.expected !== undefined) row.expected = String(c.expected);
+      return row;
+    }
+    function groupRows(c) {
+      // one group: either {all:[simple...]} or a single simple condition
+      if (c && Array.isArray(c.all)) {
+        var rows = [];
+        for (var i = 0; i < c.all.length; i++) {
+          var s = c.all[i];
+          if (!s || typeof s !== 'object' || !('operator' in s)) return null; // nested beyond builder depth
+          rows.push(simpleRow(s));
+        }
+        return rows;
+      }
+      if (c && 'operator' in c) return [simpleRow(c)];
+      return null;
+    }
+    if (Array.isArray(cond.any)) {
+      var groups = [];
+      for (var i = 0; i < cond.any.length; i++) {
+        var rows = groupRows(cond.any[i]);
+        if (!rows) return null;
+        groups.push(rows);
+      }
+      return groups.length ? groups : null;
+    }
+    if (Array.isArray(cond.all)) {
+      var r = groupRows(cond);
+      return r ? [r] : null;
+    }
+    return null; // plain simple condition -> legacy fields
   }
 
   // Step 27: copy a node's error-handling settings onto its serialized step as
@@ -256,10 +336,16 @@
         // reconstruct editor-only fields from condition for if/while
         if ((s.action === 'if' || s.action === 'while') && s.condition && typeof s.condition === 'object') {
           var c = s.condition;
-          if (c.operator !== undefined) node.params.operator = String(c.operator);
-          if (c.selector !== undefined) node.params.selector = String(c.selector);
-          if (c.value !== undefined) node.params.value = String(c.value);
-          if (c.expected !== undefined) node.params.expected = String(c.expected);
+          var grp = conditionToGroups(c);
+          if (grp) {
+            // composite AND/OR condition -> Condition Builder groups
+            node.params.groups = JSON.stringify(grp);
+          } else {
+            if (c.operator !== undefined) node.params.operator = String(c.operator);
+            if (c.selector !== undefined) node.params.selector = String(c.selector);
+            if (c.value !== undefined) node.params.value = String(c.value);
+            if (c.expected !== undefined) node.params.expected = String(c.expected);
+          }
         }
         // Step 27: reconstruct the node's error-handling settings from the step.
         if (s.continueOnFail === true || s.retryOnFail === true) {
@@ -389,5 +475,6 @@
     // exported for tests / reuse
     coerceParams: coerceParams,
     buildCondition: buildCondition,
+    conditionToGroups: conditionToGroups,
   };
 })();
