@@ -140,3 +140,164 @@ describe('ConditionEngine — DOM operators (controllable locator)', () => {
     expect(await eng.evaluate({ operator: 'exists' })).toBe(false);
   });
 });
+
+// The Condition Builder NDV (docs/uiux/ndv-condition-final.md) adds a
+// "Left source" dropdown + "Attribute name" field to every row. They travel to
+// the engine as SimpleCondition.source / .attribute. Anything not covered here
+// would be a UI control the runtime silently ignores.
+describe('ConditionEngine — Left source (source / attribute)', () => {
+  function pageWithElement(parts: {
+    count?: number;
+    innerText?: string;
+    inputValue?: string;
+    innerHTML?: string;
+    attributes?: Record<string, string>;
+  }) {
+    const locator = {
+      first() { return this; },
+      count: vi.fn(async () => parts.count ?? 1),
+      isVisible: vi.fn(async () => true),
+      innerText: vi.fn(async () => parts.innerText ?? ''),
+      inputValue: vi.fn(async () => parts.inputValue ?? ''),
+      innerHTML: vi.fn(async () => parts.innerHTML ?? ''),
+      getAttribute: vi.fn(async (name: string) =>
+        parts.attributes && name in parts.attributes ? parts.attributes[name] : null),
+    };
+    return { page: { locator: vi.fn(() => locator) } as unknown as Partial<Page>, locator };
+  }
+
+  it('source omitted === text: reads innerText (legacy behaviour)', async () => {
+    const { page, locator } = pageWithElement({ innerText: 'Logged out' });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({ operator: 'equals', selector: '#s', expected: 'Logged out' })).toBe(true);
+    expect(locator.innerText).toHaveBeenCalled();
+    expect(locator.getAttribute).not.toHaveBeenCalled();
+  });
+
+  it("source 'text' still falls back to inputValue when there is no text", async () => {
+    const { page } = pageWithElement({ innerText: '', inputValue: 'typed@example.com' });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'equals', selector: 'input', source: 'text', expected: 'typed@example.com',
+    })).toBe(true);
+  });
+
+  it("source 'attribute' reads getAttribute(attribute) and NOT the text", async () => {
+    const { page, locator } = pageWithElement({
+      innerText: 'visible label', attributes: { 'data-state': 'ready', href: '/next' },
+    });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'equals', selector: '#s', source: 'attribute', attribute: 'data-state', expected: 'ready',
+    })).toBe(true);
+    expect(locator.getAttribute).toHaveBeenCalledWith('data-state');
+    // The element's text must not leak into the comparison.
+    expect(await eng.evaluate({
+      operator: 'equals', selector: '#s', source: 'attribute', attribute: 'data-state',
+      expected: 'visible label',
+    })).toBe(false);
+  });
+
+  it("source 'attribute' with a missing attribute compares as empty", async () => {
+    const { page } = pageWithElement({ innerText: 'hi', attributes: {} });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'is_empty', selector: '#s', source: 'attribute', attribute: 'data-missing',
+    })).toBe(true);
+  });
+
+  it("source 'attribute' with no attribute name falls back to text", async () => {
+    const { page } = pageWithElement({ innerText: 'fallback' });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'equals', selector: '#s', source: 'attribute', expected: 'fallback',
+    })).toBe(true);
+  });
+
+  it('the attribute name itself supports {{variable}} interpolation', async () => {
+    const { page, locator } = pageWithElement({ attributes: { 'data-role': 'admin' } });
+    const eng = makeEngine({ attr: 'data-role' }, page);
+    expect(await eng.evaluate({
+      operator: 'equals', selector: '#s', source: 'attribute', attribute: '{{attr}}', expected: 'admin',
+    })).toBe(true);
+    expect(locator.getAttribute).toHaveBeenCalledWith('data-role');
+  });
+
+  it("source 'value' reads inputValue even when the element has text", async () => {
+    const { page, locator } = pageWithElement({ innerText: 'placeholder text', inputValue: 'ada' });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'equals', selector: 'input', source: 'value', expected: 'ada',
+    })).toBe(true);
+    expect(locator.inputValue).toHaveBeenCalled();
+    expect(locator.innerText).not.toHaveBeenCalled();
+  });
+
+  it("source 'html' reads innerHTML so markup can be matched", async () => {
+    const { page } = pageWithElement({ innerText: 'Bold', innerHTML: '<b>Bold</b>' });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'contains', selector: '#s', source: 'html', expected: '<b>',
+    })).toBe(true);
+  });
+
+  it("source 'variable' reads the run context and never touches the DOM", async () => {
+    const { page } = pageWithElement({ innerText: 'from-dom' });
+    const eng = makeEngine({ status: 'ok' }, page);
+    expect(await eng.evaluate({
+      operator: 'equals', source: 'variable', value: 'status', expected: 'ok',
+    })).toBe(true);
+    expect(page.locator).not.toHaveBeenCalled();
+  });
+
+  it("source 'variable' also accepts the {{token}} form", async () => {
+    const eng = makeEngine({ count: 12 });
+    expect(await eng.evaluate({
+      operator: 'greater_than', source: 'variable', value: '{{count}}', expected: '10',
+    })).toBe(true);
+  });
+
+  it("source 'variable' with an unknown name compares as empty", async () => {
+    const eng = makeEngine({});
+    expect(await eng.evaluate({ operator: 'is_empty', source: 'variable', value: 'nope' })).toBe(true);
+  });
+
+  it('an unknown source value degrades to text instead of failing', async () => {
+    const { page } = pageWithElement({ innerText: 'safe' });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'equals', selector: '#s', source: 'bogus' as never, expected: 'safe',
+    })).toBe(true);
+  });
+
+  it('source is ignored by the DOM-only operators (exists/visible)', async () => {
+    const { page, locator } = pageWithElement({ count: 1 });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({
+      operator: 'exists', selector: '#s', source: 'attribute', attribute: 'href',
+    })).toBe(true);
+    expect(locator.getAttribute).not.toHaveBeenCalled();
+  });
+
+  it('a missing element yields empty for every source', async () => {
+    const { page } = pageWithElement({ count: 0, innerText: 'ignored' });
+    const eng = makeEngine({}, page);
+    for (const source of ['text', 'attribute', 'value', 'html'] as const) {
+      expect(await eng.evaluate({
+        operator: 'is_empty', selector: '#gone', source, attribute: 'href',
+      })).toBe(true);
+    }
+  });
+
+  it('source/attribute work inside a composite condition (AND of two sources)', async () => {
+    const { page } = pageWithElement({
+      innerText: 'Ready', inputValue: 'ada', attributes: { 'data-state': 'ready' },
+    });
+    const eng = makeEngine({}, page);
+    expect(await eng.evaluate({ all: [
+      { operator: 'equals', selector: '#s', expected: 'Ready' },
+      { operator: 'equals', selector: '#s', source: 'attribute', attribute: 'data-state', expected: 'ready' },
+      { operator: 'equals', selector: '#s', source: 'value', expected: 'ada' },
+    ] })).toBe(true);
+  });
+});

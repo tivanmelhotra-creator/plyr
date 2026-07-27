@@ -293,14 +293,41 @@
 
   // The canonical execution payload from the spec (§5). Used by tests + the
   // OUTPUT column's representative result shape.
+  //
+  // This MUST stay in step with what src/pipeline.ts actually pushes for a click
+  // step, otherwise the OUTPUT preview promises a shape the run never produces.
+  // Optional keys (modifiers / position) are only present when configured, which
+  // mirrors the runtime's conditional spread.
   function clickPayloadPreview(params) {
     var p = normalizeClickParams(params);
-    return {
+    var out = {
       clicked: true,
       selector: p.selector || '#next-button',
+      selectorType: p.selectorType,
       button: p.button,
       clickCount: p.clickCount,
+      clickType: p.clickType,
+      human: p.human,
     };
+    var mods = clickModifierList(p);
+    if (mods.length) out.modifiers = mods;
+    if (p.offsetX !== 0 || p.offsetY !== 0) {
+      // Runtime converts the design's center-relative offset into Playwright's
+      // top-left `position`; without a live element the raw offset is shown.
+      out.position = { x: p.offsetX, y: p.offsetY };
+    }
+    return out;
+  }
+
+  // Playwright modifier names, in the same order the runtime emits them.
+  // Ctrl/Cmd -> ControlOrMeta so one workflow behaves the same on every OS.
+  function clickModifierList(params) {
+    var p = normalizeClickParams(params);
+    var mods = [];
+    if (p.modAlt) mods.push('Alt');
+    if (p.modCtrl) mods.push('ControlOrMeta');
+    if (p.modShift) mods.push('Shift');
+    return mods;
   }
 
   // =========================================================================
@@ -340,6 +367,7 @@
     CLICK_BUTTONS: CLICK_BUTTONS,
     normalizeClickParams: normalizeClickParams,
     clickPayloadPreview: clickPayloadPreview,
+    clickModifierList: clickModifierList,
     // registry
     DESIGNED_NODES: DESIGNED_NODES,
     isDesigned: isDesigned,

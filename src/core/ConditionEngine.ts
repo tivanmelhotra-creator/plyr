@@ -21,11 +21,25 @@ export type ConditionOperator =
   | 'in_list' | 'not_in_list'
   | 'random';
 
+// Which part of the matched element provides the LEFT-hand value.
+// Mirrors the "Left source" dropdown in the Condition Builder NDV
+// (docs/uiux/ndv-condition-final.md) and NdvModel.CONDITION_SOURCES.
+//   text      -> innerText            (default; also the legacy behaviour)
+//   attribute -> getAttribute(attribute)
+//   value     -> inputValue()         (form controls)
+//   html      -> innerHTML
+//   variable  -> the context variable named by `value`
+export type ConditionSource = 'text' | 'attribute' | 'value' | 'html' | 'variable';
+
 export interface SimpleCondition {
   operator: ConditionOperator;
   value?: any;
   expected?: any;
   selector?: string;
+  /** Left-hand value source. Omitted === 'text' (engine default). */
+  source?: ConditionSource;
+  /** Attribute name to read when `source === 'attribute'`. */
+  attribute?: string;
 }
 
 export interface CompositeCondition {
@@ -37,6 +51,8 @@ export interface CompositeCondition {
 export type Condition = SimpleCondition | CompositeCondition;
 
 // === CONDITION ENGINE ===
+
+const SOURCES: ConditionSource[] = ['text', 'attribute', 'value', 'html', 'variable'];
 
 export class ConditionEngine {
   private page: Page;
@@ -82,7 +98,10 @@ export class ConditionEngine {
   }
 
   private async evaluateSimple(cond: SimpleCondition): Promise<boolean> {
-    const { operator, value, expected, selector } = cond;
+    const { operator, value, expected, selector, attribute } = cond;
+    const source: ConditionSource = SOURCES.includes(cond.source as ConditionSource)
+      ? (cond.source as ConditionSource)
+      : 'text';
 
     // Resolve variables
     const resolvedValue = this.resolveVariables(value);
@@ -116,19 +135,12 @@ export class ConditionEngine {
     // Get actual value (from selector or direct)
     let actualValue = resolvedValue;
 
-    if (selector) {
-      try {
-        const locator = this.page.locator(selector).first();
-        if (await locator.count() > 0) {
-          // Try innerText first, then inputValue
-          actualValue = await locator.innerText().catch(() => null);
-          if (actualValue === null || actualValue === '') {
-            actualValue = await locator.inputValue().catch(() => '');
-          }
-        }
-      } catch {
-        actualValue = '';
-      }
+    // `source: 'variable'` reads straight from the run context and never touches
+    // the DOM, so it also works in non-browser steps.
+    if (source === 'variable') {
+      actualValue = this.readVariable(value);
+    } else if (selector) {
+      actualValue = await this.readFromElement(selector, source, attribute);
     }
 
     // Convert to strings for comparison
@@ -193,6 +205,59 @@ export class ConditionEngine {
       default:
         return false;
     }
+  }
+
+  // Read the left-hand value out of the first element matching `selector`,
+  // honouring the "Left source" contract. A missing element / failed read
+  // yields '' so the comparison operators behave predictably (is_empty passes,
+  // equals fails) instead of throwing mid-workflow.
+  private async readFromElement(
+    selector: string,
+    source: ConditionSource,
+    attribute?: string
+  ): Promise<any> {
+    try {
+      const locator = this.page.locator(selector).first();
+      if (await locator.count() === 0) return '';
+
+      switch (source) {
+        case 'attribute': {
+          const name = String(this.resolveVariables(attribute) ?? '').trim();
+          // No attribute name configured yet: fall back to text rather than
+          // silently comparing against ''.
+          if (!name) return await locator.innerText().catch(() => '');
+          const attr = await locator.getAttribute(name).catch(() => null);
+          return attr === null ? '' : attr;
+        }
+        case 'value':
+          return await locator.inputValue().catch(() => '');
+        case 'html':
+          return await locator.innerHTML().catch(() => '');
+        case 'text':
+        default: {
+          // Legacy-compatible: prefer innerText, fall back to the form value so
+          // conditions written before the "Left source" control keep working.
+          const text = await locator.innerText().catch(() => null);
+          if (text !== null && text !== '') return text;
+          return await locator.inputValue().catch(() => '');
+        }
+      }
+    } catch {
+      return '';
+    }
+  }
+
+  // For `source: 'variable'` the row's own `value` field NAMES the variable.
+  // Both the bare `status` and the templated `{{status}}` / `count={{n}}` forms
+  // are accepted. An unknown bare name resolves to '' — the same way an unknown
+  // `{{token}}` does — so a typo reads as "empty" instead of silently comparing
+  // against the literal variable name.
+  private readVariable(raw: any): any {
+    if (typeof raw !== 'string') return raw;
+    const name = raw.trim();
+    if (name === '') return '';
+    if (/\{\{.+?\}\}/.test(name)) return this.resolveVariables(name);
+    return this.variables.has(name) ? this.variables.get(name) : '';
   }
 
   private safeRegexTest(pattern: string, input: string): boolean {
