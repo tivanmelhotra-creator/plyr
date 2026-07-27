@@ -11,6 +11,13 @@
 (function () {
   'use strict';
 
+  // Inline SVG icon helper (public/js/icons.js). Emoji glyphs were removed
+  // project-wide: the target font stack has no emoji coverage, so they rendered
+  // as empty boxes, and they could not be tinted with `currentColor`.
+  function BIC(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 16 }) : '';
+  }
+
   var API = window.API;
 
   function t(k) {
@@ -46,7 +53,7 @@
 
     root.innerHTML =
       '<div class="card">' +
-        '<h3 class="card-title">🖥️ ' + esc(t('bv.title')) + '</h3>' +
+        '<h3 class="card-title">' + BIC('frame') + ' ' + esc(t('bv.title')) + '</h3>' +
         '<p class="muted">' + esc(t('bv.subtitle')) + '</p>' +
         '<div class="form-row" style="display:flex;gap:.5rem;align-items:flex-end;flex-wrap:wrap;">' +
           '<div style="flex:1;min-width:220px;">' +
@@ -55,7 +62,7 @@
           '</div>' +
           '<button class="btn btn-primary" id="bv-connect">' + esc(t('bv.connect')) + '</button>' +
           '<button class="btn btn-ghost" id="bv-go" disabled>' + esc(t('bv.go')) + '</button>' +
-          '<button class="btn btn-ghost" id="bv-picker" disabled>🎯 ' + esc(t('bv.pick')) + '</button>' +
+          '<button class="btn btn-ghost" id="bv-picker" disabled>' + BIC('target', 14) + ' ' + esc(t('bv.pick')) + '</button>' +
           '<button class="btn btn-ghost" id="bv-disconnect" disabled>' + esc(t('bv.disconnect')) + '</button>' +
         '</div>' +
         '<div class="live-statusbar" style="margin-top:.6rem;">' +
@@ -75,7 +82,7 @@
       '</div>' +
 
       '<div class="card" id="bv-pickcard" style="margin-top:1rem;display:none;">' +
-        '<h4 class="card-title">🎯 ' + esc(t('bv.picked')) + '</h4>' +
+        '<h4 class="card-title">' + BIC('target') + ' ' + esc(t('bv.picked')) + '</h4>' +
         '<div class="form-row">' +
           '<label class="field" style="flex:1;">' +
             '<span class="field-label">CSS</span>' +

@@ -155,7 +155,12 @@ describe('action catalog — Step 32 backend/UI sync (Single Source of Truth)', 
     'http-request': ['http', 'fetch', 'api'],
     'mouse-move': ['mouse', 'move-mouse'],
     'drag-drop': ['drag', 'dragAndDrop'],
-    'close-browser': ['close_browser'],
+    'close-browser': ['close_browser', 'close'],
+    // Designed core nodes added alongside their pipeline handlers
+    // (docs/uiux/00-PROCESS-node-design.md). `launch` / `parse-json` accept
+    // snake+dash spellings; the rest are exact ids with no alternatives.
+    launch: ['launch-browser', 'launch_browser'],
+    'parse-json': ['parse_json', 'json-parse'],
     'close-tab': ['close_tab'],
     'switch-frame': ['switch_frame'],
     'switch-tab': ['switch_tab'],

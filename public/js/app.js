@@ -6,6 +6,13 @@
 (function () {
   'use strict';
 
+  // Inline SVG icon helper (public/js/icons.js). Emoji glyphs were removed
+  // project-wide: the target font stack has no emoji coverage, so they rendered
+  // as empty boxes, and they could not be tinted with `currentColor`.
+  function ICN(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 16 }) : '';
+  }
+
   var I18N = window.I18N;
   var API = window.API;
 
@@ -206,7 +213,7 @@
       .then(renderDashboardData)
       .catch(function () {
         el.content.innerHTML =
-          '<div class="placeholder">⚠️ ' + I18N.t('dash.loadError') +
+          '<div class="placeholder">' + ICN('alert-circle') + ' ' + I18N.t('dash.loadError') +
           ' <br><br><button class="btn btn-ghost btn-sm" id="dash-retry">' + I18N.t('dash.refresh') + '</button></div>';
         var r = document.getElementById('dash-retry');
         if (r) r.addEventListener('click', renderDashboardShell);
@@ -226,7 +233,7 @@
     // System card
     html +=
       '<div class="card">' +
-        '<h3 class="card-title">🩺 ' + I18N.t('dash.title') + '</h3>' +
+        '<h3 class="card-title">' + ICN('gauge') + ' ' + I18N.t('dash.title') + '</h3>' +
         '<dl class="kv">' +
           '<dt>' + I18N.t('dash.version') + '</dt><dd>v' + esc(data.version) + '</dd>' +
           '<dt>' + I18N.t('dash.uptime') + '</dt><dd>' + esc(formatUptime(data.uptime)) + '</dd>' +
@@ -242,7 +249,7 @@
     // Browsers card
     html +=
       '<div class="card">' +
-        '<h3 class="card-title">🌐 ' + I18N.t('dash.browsers') + '</h3>' +
+        '<h3 class="card-title">' + ICN('globe') + ' ' + I18N.t('dash.browsers') + '</h3>' +
         '<dl class="kv">' +
           '<dt>' + I18N.t('dash.vip') + '</dt><dd>' + num(b.vip) + '</dd>' +
           '<dt>' + I18N.t('dash.free') + '</dt><dd>' + num(b.free) + '</dd>' +
@@ -254,7 +261,7 @@
     // Features card
     html +=
       '<div class="card">' +
-        '<h3 class="card-title">⚙️ ' + I18N.t('dash.features') + '</h3>' +
+        '<h3 class="card-title">' + ICN('sliders') + ' ' + I18N.t('dash.features') + '</h3>' +
         '<dl class="kv">' +
           '<dt>' + I18N.t('feat.flattener') + '</dt><dd>' + boolBadge(f.flattenerEnabled) + '</dd>' +
           '<dt>' + I18N.t('feat.resourceBlocking') + '</dt><dd>' + boolBadge(f.resourceBlocking) + '</dd>' +
@@ -269,7 +276,7 @@
 
   function renderComingSoon() {
     el.content.innerHTML =
-      '<div class="placeholder">🚧 ' + I18N.t('common.comingSoon') + '</div>';
+      '<div class="placeholder">' + ICN('wand') + ' ' + I18N.t('common.comingSoon') + '</div>';
   }
 
   function esc(s) {

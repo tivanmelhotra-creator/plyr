@@ -23,14 +23,22 @@ rules (tokens, node cards, connectors, status bar, category-derived modal glow).
 
 | Stem | Role | Full | Lite | Spec | Implementation |
 |------|------|------|------|------|----------------|
-| `ndv-condition-final` | Condition NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend `source`/`attribute` pending |
-| `ndv-click-element-final` | Click Element NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend click extras pending |
-| `shell-editor-click-ndv` | Full shell + Click NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ node cards / ports / connectors / status bar done; Outline + Activity Log pending |
+| `ndv-condition-final` | Condition NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend `source`/`attribute` executed |
+| `ndv-click-element-final` | Click Element NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend click extras executed |
+| `shell-editor-click-ndv` | Full shell + Click NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ node cards / ports / connectors / status bar / **SVG icons** / **left-to-right pipeline layout** / **minimap header** / **floating canvas toolbar** done; Outline + Activity Log + top-bar chrome pending |
 | `shell-editor-condition-ndv` | Full shell + Condition NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ `True`/`False` edge pills + selection glow done; per-node Run pending |
-| `shell-add-node-palette` | Shell with add-node palette | `.webp` | `lite/*.jpg` | `.md` | ◐ category-derived modal glow + node context menu done; palette/group toolbar pending |
-| `state-empty-canvas` | Empty canvas state | `.webp` | `lite/*.jpg` | `.md` | ✅ empty-state card + dot grid built |
+| `shell-add-node-palette` | Shell with add-node palette | `.webp` | `lite/*.jpg` | `.md` | ◐ category-derived modal glow + node context menu (4 of 9 items) done; floating Add Node palette / group toolbar / full context menu pending |
+| `state-empty-canvas` | Empty canvas state | `.webp` | `lite/*.jpg` | `.md` | ✅ built · empty-state card + dot grid + **titled minimap (180×128, 24px inset)** + **floating canvas toolbar** (tools · zoom · Auto Layout · Focus Mode) |
 
-Remaining work per screen is tracked in `/HANDOFF_NEXT_SESSION.md` § 5.
+Remaining work per screen is tracked, with file/line anchors, in
+`/HANDOFF_2026-07-27_ICONS_LAYOUT.md` § 4 (items A-N, ordered by visual
+impact). `/HANDOFF_NEXT_SESSION.md` § 5 remains the NDV design-foundation
+reference.
+
+Every glyph in the UI is now an inline SVG served from `public/js/icons.js`
+(82 icons, `currentColor`, CSP-safe). Emoji are banned from shipped front-end
+code by `tests/unit/icons.test.ts`, and the generated node layout is locked to
+a left-to-right pipeline by `tests/unit/graph-serialize.test.ts`.
 
 ## Rename map (history)
 | Old name | New name |

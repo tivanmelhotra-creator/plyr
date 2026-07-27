@@ -1019,56 +1019,228 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   pointer-events: none;
 }
 
-/* Step 23: zoom controls (bottom-start corner of the canvas) */
-.fe-zoom-ctrl {
+/* ---- Item G: floating canvas toolbar (bottom-start corner) ----------------
+   The previews draw one rounded bar holding three groups separated by hairline
+   rules: pointer tools, the zoom cluster, then the view actions. `inset-*`
+   logical properties keep it correct in RTL without a mirrored rule. */
+.fe-zoom-ctrl,
+.fe-canvas-toolbar {
   position: absolute;
-  inset-block-end: 12px;
-  inset-inline-start: 12px;
+  inset-block-end: 24px;
+  inset-inline-start: 24px;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px;
+  padding: 5px 6px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 10px;
   box-shadow: var(--shadow);
   z-index: 5;
+  max-width: calc(100% - 48px);
+  flex-wrap: wrap;
+}
+.fe-tb-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.fe-tb-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 3px;
+  background: var(--border);
 }
 .fe-zbtn {
-  width: 26px; height: 26px;
+  width: 28px; height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border);
-  background: var(--bg-elev-2);
-  color: var(--text);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
   border-radius: 6px;
   cursor: pointer;
   font-size: 15px;
   line-height: 1;
+  transition: background var(--transition), color var(--transition),
+              border-color var(--transition);
 }
-.fe-zbtn:hover { border-color: var(--primary); color: var(--primary); }
+.fe-zbtn:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+/* Active pointer tool / engaged toggle: orange wash, matching node selection. */
+.fe-zbtn.is-active,
+.fe-tb-btn.is-active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.fe-zbtn:focus-visible,
+.fe-tb-btn:focus-visible,
+.fe-mm-btn:focus-visible,
+.fe-mm-restore:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+/* The 100% pill doubles as the reset-zoom button. */
 .fe-zoom-label {
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--text-dim);
-  min-width: 38px;
+  min-width: 44px;
+  height: 28px;
+  padding: 0 4px;
   text-align: center;
   user-select: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.fe-zoom-label:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+/* Labelled view actions (Auto Layout / Focus Mode) keep icon + text. */
+.fe-tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition),
+              border-color var(--transition);
+}
+.fe-tb-btn:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+  color: var(--text);
 }
 
-/* Step 23: minimap (bottom-end corner of the canvas) */
-.fe-minimap {
+/* Pointer-tool feedback on the canvas itself. */
+.fe-canvas.fe-tool-pan { cursor: grab; }
+.fe-canvas.fe-tool-pan:active { cursor: grabbing; }
+.fe-canvas.fe-locked .flow-node .fn-head { cursor: default; }
+/* Grid toggle: drop the dot pattern but keep the charcoal base colour. */
+.fe-canvas.fe-nogrid { background-image: none; }
+
+/* Focus Mode collapses the side panels so the graph owns the full width. */
+/* Collapse the palette column to zero width rather than `display: none`.
+   Removing the aside from the grid flow would shift the canvas up into the
+   now-0px first column, so the canvas measured 0px wide in Focus Mode.
+   Keeping the element in flow (just clipped) preserves the column mapping. */
+.fe-layout.fe-focus { grid-template-columns: 0 1fr; }
+.fe-layout.fe-focus > .fe-palette {
+  width: 0;
+  min-width: 0;
+  padding-inline: 0;
+  border-inline-end: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+/* ---- Item F: minimap with a titled header (bottom-end corner) -------------
+   Spec: 160x100 body, 24px inset from the canvas edges, subtle chrome that
+   "does not compete with the main graph". */
+.fe-minimap-wrap {
   position: absolute;
-  inset-block-end: 12px;
-  inset-inline-end: 12px;
-  width: 168px;
-  height: 112px;
+  inset-block-end: 24px;
+  inset-inline-end: 24px;
+  width: 180px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 10px;
   box-shadow: var(--shadow);
   overflow: hidden;
   z-index: 5;
+}
+.fe-minimap-wrap[hidden] { display: none; }
+.fe-mm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+}
+.fe-mm-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.fe-mm-actions { display: inline-flex; align-items: center; gap: 1px; }
+.fe-mm-btn {
+  width: 18px; height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+.fe-mm-btn:hover { background: var(--bg-elev-2); color: var(--text); }
+.fe-mm-close:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* Restore chip shown while the minimap is collapsed. */
+.fe-mm-restore {
+  position: absolute;
+  inset-block-end: 24px;
+  inset-inline-end: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  z-index: 5;
+}
+.fe-mm-restore[hidden] { display: none; }
+.fe-mm-restore:hover { border-color: var(--primary); color: var(--primary); }
+
+.fe-minimap {
+  position: relative;
+  width: 100%;
+  height: 100px;
+  background: var(--bg);
+  overflow: hidden;
   cursor: pointer;
 }
 .mm-node {
@@ -1090,7 +1262,15 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   .fe-layout { grid-template-columns: 1fr; height: auto; }
   .fe-palette { border-inline-end: 0; border-bottom: 1px solid var(--border); max-height: 200px; }
   .fe-canvas { height: 420px; }
-  .fe-minimap { display: none; }
+  /* Hide the whole minimap widget (header + body + restore chip) on narrow
+     canvases; the body alone is no longer the outermost element. */
+  .fe-minimap-wrap,
+  .fe-mm-restore { display: none; }
+  /* Keep the toolbar usable: drop the two text labels and tighten the insets
+     so the pointer tools + zoom cluster still fit a phone-width canvas. */
+  .fe-zoom-ctrl { inset-block-end: 12px; inset-inline-start: 12px; }
+  .fe-tb-btn > span { display: none; }
+  .fe-tb-btn { padding: 0 7px; }
 }
 
 /* Small text helper (used across views) */
@@ -2417,3 +2597,72 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 @media (max-width: 1000px) {
   .cb-results, .cb-foot { grid-template-columns: 1fr; }
 }
+
+/* ============================================
+   Inline SVG icon set (public/js/icons.js)
+   --------------------------------------------
+   Every glyph in the UI is now an inline <svg class="ic">, replacing the emoji
+   the previous build used. Emoji were a hard defect: on the target font stack
+   they rendered as empty boxes (visible in the reference screenshots), they
+   could not inherit `currentColor`, and their metrics differed per platform so
+   button heights jittered. These rules give the whole set one predictable box.
+   ============================================ */
+.ic {
+  display: inline-block;
+  flex: 0 0 auto;
+  /* NO width/height here on purpose. Every call site passes an explicit
+     `size`, which icons.js writes to the width/height attributes; a CSS
+     `1em` box would silently override that and make `size` a no-op (a 16px
+     request rendered at 13px). Contexts that need a different box set it
+     explicitly further down (e.g. .fe-empty-icon .ic). */
+  vertical-align: -0.15em;
+  /* icons always take the tone of the text/button around them */
+  color: inherit;
+  stroke: currentColor;
+  fill: none;
+  /* never let a drag gesture pick up the glyph instead of its button */
+  pointer-events: none;
+}
+/* Any control whose whole content is an icon centres it and keeps it square. */
+.icon-btn .ic,
+.fe-zbtn .ic,
+.fe-mm-btn .ic,
+.aria-iconbtn .ic,
+.fn-kebab .ic,
+.rp-pin .ic,
+.rp-toggle .ic {
+  vertical-align: middle;
+}
+/* Toolbar / minimap-header buttons that pair an icon with a text label. */
+.fe-tb-btn .ic,
+.fe-mm-title .ic,
+.fe-mm-restore .ic { vertical-align: -0.15em; }
+/* Buttons that mix an icon with a label: even optical gap, no baseline shift. */
+.btn .ic { vertical-align: -0.18em; margin-inline-end: 2px; }
+.card-title .ic { vertical-align: -0.16em; margin-inline-end: 4px; opacity: 0.9; }
+.nav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  color: var(--text-dim);
+}
+.nav-item.active .nav-icon,
+.nav-item:hover .nav-icon { color: var(--primary); }
+.login-logo,
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+}
+/* Node card / palette / NDV header icon tiles keep their category tint. */
+.fn-icon .ic,
+.pi-icon .ic,
+.ndv-head-icon .ic { color: inherit; }
+/* Status glyphs inherit the semantic tone of their row instead of a fixed hue. */
+.v-ok .ic { color: var(--success); }
+.v-dot .ic { color: inherit; }
+.fn-badge .ic { vertical-align: -0.1em; }
+/* The empty-canvas hero circle draws a larger, orange bolt. */
+.fe-empty-icon .ic { color: var(--primary); width: 28px; height: 28px; }

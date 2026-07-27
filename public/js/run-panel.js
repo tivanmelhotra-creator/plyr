@@ -26,6 +26,11 @@
   function t(k) { return U() ? U().t(k) : k; }
   function esc(s) { return U() ? U().esc(s) : String(s == null ? '' : s); }
 
+  // Inline SVG icons (public/js/icons.js) — emoji rendered as empty boxes.
+  function RIC(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 14 }) : '';
+  }
+
   var RS = window.RunState;
   var dom = null;       // { drawer, body, timeline, statusBadge, title, toggleBtn }
   var client = null;    // active LiveClient
@@ -62,7 +67,8 @@
 
   // ---- timeline rendering ---------------------------------------------------
   function statusIcon(st) {
-    return st === 'success' ? '✓' : st === 'error' ? '✕' : st === 'running' ? '◴' : '·';
+    return RIC(st === 'success' ? 'check' : st === 'error' ? 'x'
+      : st === 'running' ? 'clock' : 'dot', 13);
   }
 
   function renderTimeline() {
@@ -91,7 +97,7 @@
         '<span class="rp-step-action">' + esc(s.action) + '</span>' +
         '<span class="rp-step-meta">' + esc(metaStr + errStr) + '</span>' +
         '<button class="rp-pin' + (isPinned ? ' on' : '') + '" title="' +
-          esc(t('rp.pin')) + '">📌</button>';
+          esc(t('rp.pin')) + '">' + RIC('pin', 12) + '</button>';
       row.setAttribute('data-step', String(idx1));
       row.addEventListener('click', function () {
         var fe = FE();
@@ -113,7 +119,7 @@
     if (dom.title) {
       var dur = (state && state.durationMs != null) ? (' · ' + state.durationMs + 'ms') : '';
       dom.title.textContent = t('rp.title') + ' — ' +
-        c.success + '✓ ' + c.error + '✕ / ' + c.total + dur;
+        c.success + ' ok / ' + c.error + ' err / ' + c.total + dur;
     }
     if (dom.statusBadge) {
       var cls = 'badge', label = t('rp.idle');
@@ -229,8 +235,8 @@
   function getPins() { return pins; }
 
   // ---- drawer mount/teardown ------------------------------------------------
-  function open() { if (dom && dom.drawer) { dom.drawer.classList.add('open'); if (dom.toggleBtn) dom.toggleBtn.textContent = '▾'; } }
-  function close() { if (dom && dom.drawer) { dom.drawer.classList.remove('open'); if (dom.toggleBtn) dom.toggleBtn.textContent = '▸'; } }
+  function open() { if (dom && dom.drawer) { dom.drawer.classList.add('open'); if (dom.toggleBtn) dom.toggleBtn.innerHTML = RIC('chevron-down', 13); } }
+  function close() { if (dom && dom.drawer) { dom.drawer.classList.remove('open'); if (dom.toggleBtn) dom.toggleBtn.innerHTML = RIC('chevron-right', 13); } }
   function toggle() { if (dom && dom.drawer) { dom.drawer.classList.contains('open') ? close() : open(); } }
 
   function mount() {
@@ -240,7 +246,7 @@
     drawer.id = 'run-panel';
     drawer.innerHTML =
       '<div class="rp-head" id="rp-head">' +
-        '<button class="btn btn-ghost btn-sm rp-toggle" id="rp-toggle" title="' + esc(t('rp.toggle')) + '">▸</button>' +
+        '<button class="btn btn-ghost btn-sm rp-toggle" id="rp-toggle" title="' + esc(t('rp.toggle')) + '">' + RIC('chevron-right', 13) + '</button>' +
         '<span class="rp-title" id="rp-title">' + esc(t('rp.title')) + '</span>' +
         '<span class="rp-badges">' +
           '<span class="badge" id="rp-status">' + esc(t('rp.idle')) + '</span>' +
