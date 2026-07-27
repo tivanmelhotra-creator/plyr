@@ -881,29 +881,32 @@
       return;
     }
 
+    // Aria Automate editor shell: top bar (brand · workflow title · badge ·
+    // actions) above a joined palette+canvas panel (shell-*.md specs).
     root.innerHTML =
-      '<div class="card">' +
-        '<div class="card-head">' +
-          '<h2>🧩 ' + t('fe.title') + ' <span class="muted small" id="fe-wf-label"></span></h2>' +
-          '<div class="row-actions">' +
-            '<button class="btn btn-ghost btn-sm" id="fe-from-run">' + t('fe.fromRun') + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-load">' + t('fe.load') + '</button>' +
+      '<div class="fe-shell">' +
+        '<div class="fe-topbar">' +
+          '<span class="fe-brand"><span class="fe-brand-mark">A</span>' + t('fe.brand') + '</span>' +
+          '<span class="fe-crumb-sep">/</span>' +
+          '<span class="fe-wf-title" id="fe-wf-label"></span>' +
+          '<span id="fe-wf-badge"></span>' +
+          '<div class="fe-topbar-actions">' +
+            '<button class="btn btn-ghost btn-sm" id="fe-from-run" title="' + t('fe.fromRun') + '">📥</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-load" title="' + t('fe.load') + '">📂</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-json" title="' + t('fe.toJson') + '">{ }</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-clear" title="' + t('fe.clear') + '">🗑️</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-save">' + t('fe.save') + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-save-server">💾 ' + t('fe.saveServer') + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-clear">' + t('fe.clear') + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-json">' + t('fe.toJson') + '</button>' +
-            '<button class="btn btn-primary btn-sm" id="fe-run">▶️ ' + t('fe.run') + '</button>' +
+            '<button class="btn btn-primary btn-sm" id="fe-run">▶ ' + t('fe.testWorkflow') + '</button>' +
           '</div>' +
         '</div>' +
-        '<p class="muted small">' + t('fe.subtitle') + '</p>' +
         '<div class="fe-layout">' +
           '<aside class="fe-palette" id="fe-palette"></aside>' +
           '<div class="fe-canvas" id="fe-canvas">' +
             '<svg class="fe-svg" id="fe-svg"></svg>' +
             '<div class="fe-world" id="fe-world"></div>' +
           '</div>' +
-          '<aside class="fe-inspector"><div class="insp-head">' + t('fe.inspector') +
-            '</div><div id="fe-inspector"></div></aside>' +
+          '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
         '</div>' +
         '<div class="muted small fe-hint">' + t('fe.hint') + '</div>' +
         '<div id="fe-result"></div>' +
@@ -911,6 +914,7 @@
 
     var resultEl = root.querySelector('#fe-result');
     var wfLabel = root.querySelector('#fe-wf-label');
+    var wfBadge = root.querySelector('#fe-wf-badge');
 
     FE.mount({
       canvas: root.querySelector('#fe-canvas'),
@@ -939,9 +943,11 @@
     function refreshWfLabel() {
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
       if (cur && cur.id) {
-        wfLabel.textContent = '— ' + cur.name + ' (v' + cur.version + ')';
+        wfLabel.textContent = cur.name;
+        wfBadge.innerHTML = '<span class="fe-badge-saved">✓ v' + cur.version + '</span>';
       } else {
-        wfLabel.textContent = '— ' + t('fe.unsaved');
+        wfLabel.textContent = t('fe.untitled');
+        wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
       }
     }
     refreshWfLabel();

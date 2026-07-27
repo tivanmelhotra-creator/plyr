@@ -565,6 +565,12 @@
       selectNode(node.id);
     });
 
+    // Aria spec: double-click a node card to open its NDV modal.
+    card.addEventListener('dblclick', function (ev) {
+      ev.stopPropagation();
+      if (!isStart) openNdv(node.id);
+    });
+
     dom.world.appendChild(card);
   }
 
@@ -575,6 +581,35 @@
       if (c.parentNode === dom.world) dom.world.removeChild(c);
     });
     Object.keys(state.nodes).forEach(function (id) { renderNode(state.nodes[id]); });
+    renderEmptyState();
+  }
+
+  // Aria spec (state-empty-canvas.md): centered card with an orange icon
+  // circle + "Add First Node" CTA when the canvas only holds the start node.
+  function renderEmptyState() {
+    if (!dom || !dom.canvas) return;
+    var ex = dom.canvas.querySelector('.fe-empty-card');
+    if (Object.keys(state.nodes).length > 1) {
+      if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+      return;
+    }
+    if (ex) return;
+    var card = document.createElement('div');
+    card.className = 'fe-empty-card';
+    card.innerHTML =
+      '<div class="fe-empty-icon">⚡</div>' +
+      '<div class="fe-empty-title">' + esc(t('fe.emptyTitle')) + '</div>' +
+      '<div class="fe-empty-sub">' + esc(t('fe.emptySub')) + '</div>';
+    var cta = document.createElement('button');
+    cta.className = 'fe-empty-cta';
+    cta.textContent = '+ ' + t('fe.addFirstNode');
+    cta.addEventListener('click', function () {
+      var s = dom.palette && dom.palette.querySelector('.palette-search');
+      if (s) s.focus();
+    });
+    card.appendChild(cta);
+    card.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    dom.canvas.appendChild(card);
   }
 
   // Step 24: append a small validation summary (errors/warnings) to a box.
@@ -836,12 +871,13 @@
   // Re-evaluate every expression field's preview against the node's INPUT
   // sample, marking errors inline (never throws — uses mapParams semantics).
   function renderFieldFeedback() {
-    if (!dom || !dom.inspector) return;
-    var node = state.selected ? state.nodes[state.selected] : null;
+    var root = ndvRoot();
+    if (!root) return;
+    var node = ndvOpen ? state.nodes[ndvOpen] : null;
     if (!node) return;
     var sample = inputItemsFor(node.id);
     var ctx = { json: (sample[0] && sample[0].json) ? sample[0].json : (sample[0] || {}), index: 0 };
-    var previews = dom.inspector.querySelectorAll('.ndv-preview');
+    var previews = root.querySelectorAll('.ndv-preview');
     Array.prototype.forEach.call(previews, function (el) {
       var fk = el.dataset.fk;
       var raw = node.params[fk];
@@ -942,25 +978,254 @@
     return wrap;
   }
 
-  function renderInspector() {
-    var box = dom.inspector;
-    box.innerHTML = '';
-    var node = state.selected ? state.nodes[state.selected] : null;
-    if (!node || node.action === '__start__') {
-      box.innerHTML = '<div class="muted small">' + esc(t('fe.selectHint')) + '</div>';
-      appendValidation(box);
-      return;
+  // ---- Aria NDV modal: the Node Detail View opens as a centered modal over
+  // the canvas (spec: ndv-*-final.md) instead of the legacy side panel.
+  var ndvOpen = null; // nodeId whose NDV modal is open, or null
+
+  function ndvRoot() {
+    var b = document.querySelector('.ndv-backdrop .ndv-body');
+    return b || (dom && dom.inspector) || null;
+  }
+
+  function closeNdv() {
+    ndvOpen = null;
+    var b = document.querySelector('.ndv-backdrop');
+    if (b && b.parentNode) b.parentNode.removeChild(b);
+  }
+
+  function openNdv(id) {
+    if (!state || !state.nodes[id] || state.nodes[id].action === '__start__') return;
+    ndvOpen = id;
+    renderInspector();
+  }
+
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && ndvOpen) closeNdv();
+  });
+
+  function statusBadgeLabel(s) {
+    if (s === 'running') return t('ndv.statusRunning');
+    if (s === 'success') return t('ndv.statusSuccess');
+    if (s === 'error') return t('ndv.statusError');
+    return t('ndv.statusIdle');
+  }
+
+  // ---- Aria Condition Builder (ndv-condition-final.md) ---------------------
+  // AND rows within a group, OR between groups. Persisted on the node as
+  // params.groups = JSON [[row,...],[row,...]]; graph-serialize.js turns it
+  // into the backend's composite {any:[{all:[...]}]} condition.
+  var CB_OPERATORS = ['exists', 'not_exists', 'visible', 'hidden',
+    'equals', 'not_equals', 'contains', 'not_contains',
+    'starts_with', 'ends_with', 'matches_regex',
+    'greater_than', 'less_than', 'greater_equal', 'less_equal',
+    'is_empty', 'not_empty', 'is_true', 'is_false'];
+
+  function cbReadGroups(node) {
+    var g = null;
+    try { g = JSON.parse(node.params.groups); } catch (e) { g = null; }
+    if (!Array.isArray(g) || !g.length || !Array.isArray(g[0])) {
+      g = [[{
+        selector: node.params.selector || '',
+        operator: node.params.operator || 'exists',
+        value: node.params.value || '',
+        expected: node.params.expected || ''
+      }]];
     }
+    return g;
+  }
+
+  function cbWriteGroups(node, groups) {
+    node.params.groups = JSON.stringify(groups);
+    // mirror the first row into the legacy flat params so the node-card
+    // summary + single-condition fallback keep working
+    var r0 = (groups[0] && groups[0][0]) || {};
+    node.params.selector = r0.selector || '';
+    node.params.operator = r0.operator || 'exists';
+    node.params.value = r0.value || '';
+    node.params.expected = r0.expected || '';
+  }
+
+  function buildConditionBuilder(node) {
+    var wrap = document.createElement('div');
+    wrap.className = 'cb-wrap';
+    var groups = cbReadGroups(node);
+
+    function commit() { cbWriteGroups(node, groups); }
+    function rerender() {
+      commit();
+      var fresh = buildConditionBuilder(node);
+      if (wrap.parentNode) wrap.parentNode.replaceChild(fresh, wrap);
+    }
+
+    function inputCell(row, key, ph) {
+      var inp = document.createElement('input');
+      inp.type = 'text';
+      inp.className = 'field';
+      inp.placeholder = ph;
+      inp.value = row[key] || '';
+      inp.addEventListener('input', function () { row[key] = inp.value; commit(); });
+      return inp;
+    }
+
+    groups.forEach(function (rows, gi) {
+      if (gi > 0) {
+        var sep = document.createElement('div');
+        sep.className = 'cb-or-sep';
+        sep.innerHTML = '<span class="cb-or-pill">' + esc(t('cb.or')) + '</span>';
+        wrap.appendChild(sep);
+      }
+      var g = document.createElement('div');
+      g.className = 'cb-group';
+      var gh = document.createElement('div');
+      gh.className = 'cb-group-head';
+      var gt = document.createElement('span');
+      gt.textContent = t('cb.group') + ' ' + (gi + 1);
+      gh.appendChild(gt);
+      if (groups.length > 1) {
+        var gdel = document.createElement('button');
+        gdel.className = 'cb-group-del';
+        gdel.textContent = '✕';
+        gdel.title = t('cb.removeGroup');
+        gdel.addEventListener('click', function () { groups.splice(gi, 1); rerender(); });
+        gh.appendChild(gdel);
+      }
+      g.appendChild(gh);
+
+      rows.forEach(function (row, ri) {
+        if (ri > 0) {
+          var ap = document.createElement('span');
+          ap.className = 'cb-and-pill';
+          ap.textContent = t('cb.and');
+          g.appendChild(ap);
+        }
+        var r = document.createElement('div');
+        r.className = 'cb-row';
+        r.appendChild(inputCell(row, 'selector', t('p.selector')));
+        var sel = document.createElement('select');
+        sel.className = 'field';
+        CB_OPERATORS.forEach(function (op) {
+          var o = document.createElement('option');
+          o.value = op;
+          o.textContent = op;
+          if ((row.operator || 'exists') === op) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.addEventListener('change', function () { row.operator = sel.value; commit(); });
+        r.appendChild(sel);
+        r.appendChild(inputCell(row, 'value', t('p.value')));
+        r.appendChild(inputCell(row, 'expected', t('p.expected')));
+        var rdel = document.createElement('button');
+        rdel.className = 'cb-row-del';
+        rdel.title = t('cb.removeRow');
+        rdel.textContent = '×';
+        rdel.addEventListener('click', function () {
+          rows.splice(ri, 1);
+          if (!rows.length) groups.splice(gi, 1);
+          if (!groups.length) groups.push([{ operator: 'exists' }]);
+          rerender();
+        });
+        r.appendChild(rdel);
+        g.appendChild(r);
+      });
+
+      var addAndWrap = document.createElement('div');
+      addAndWrap.className = 'cb-add-row';
+      var addAnd = document.createElement('button');
+      addAnd.className = 'cb-btn';
+      addAnd.textContent = '+ ' + t('cb.addAnd');
+      addAnd.addEventListener('click', function () {
+        rows.push({ operator: 'exists' });
+        rerender();
+      });
+      addAndWrap.appendChild(addAnd);
+      g.appendChild(addAndWrap);
+      wrap.appendChild(g);
+    });
+
+    var addOrWrap = document.createElement('div');
+    addOrWrap.className = 'cb-add-row';
+    var addOr = document.createElement('button');
+    addOr.className = 'cb-btn';
+    addOr.textContent = '+ ' + t('cb.addOr');
+    addOr.addEventListener('click', function () {
+      groups.push([{ operator: 'exists' }]);
+      rerender();
+    });
+    addOrWrap.appendChild(addOr);
+    wrap.appendChild(addOrWrap);
+
+    // true/false result cards (routes to then/else or body/done ports)
+    var res = document.createElement('div');
+    res.className = 'cb-results';
+    var isIf = node.action === 'if';
+    res.innerHTML =
+      '<div class="cb-result-card true"><span class="cb-result-dot"></span>' +
+        esc(isIf ? t('cb.ifTrue') : t('cb.whileTrue')) + '</div>' +
+      '<div class="cb-result-card false"><span class="cb-result-dot"></span>' +
+        esc(isIf ? t('cb.ifFalse') : t('cb.whileFalse')) + '</div>';
+    wrap.appendChild(res);
+
+    commit();
+    return wrap;
+  }
+
+  function renderInspector() {
+    // legacy side panel stays empty (hidden by CSS); the NDV is a modal now
+    if (dom && dom.inspector) dom.inspector.innerHTML = '';
+    var node = ndvOpen && state ? state.nodes[ndvOpen] : null;
+    if (!node || node.action === '__start__') { closeNdv(); return; }
     var act = actionById(node.action);
+
+    var back = document.querySelector('.ndv-backdrop');
+    if (!back) {
+      back = document.createElement('div');
+      back.className = 'ndv-backdrop';
+      back.addEventListener('mousedown', function (ev) {
+        if (ev.target === back) closeNdv();
+      });
+      document.body.appendChild(back);
+    }
+    back.innerHTML = '';
+
+    var modal = document.createElement('div');
+    modal.className = 'ndv-modal';
+    back.appendChild(modal);
+
+    // ---- header: icon tile · title/subtitle · status badge · Run node · ×
+    var head = document.createElement('div');
+    head.className = 'ndv-head';
+    var cat = categoryOf(node.action) || { label: 'cat.other' };
+    var st = nodeStatus[node.id] || 'idle';
+    head.innerHTML =
+      '<span class="ndv-head-icon">' + (act ? act.icon : '⚙️') + '</span>' +
+      '<span class="ndv-head-titles">' +
+        '<div class="ndv-head-title">' + esc(nodeTitle(node)) + '</div>' +
+        '<div class="ndv-head-sub">' + esc(t(cat.label || 'cat.other')) + '</div>' +
+      '</span>' +
+      '<span class="ndv-status-badge ' + st + '">' + esc(statusBadgeLabel(st)) + '</span>';
+    var runBtn = document.createElement('button');
+    runBtn.className = 'ndv-run-btn';
+    runBtn.textContent = '▶ ' + t('ndv.runNode');
+    runBtn.addEventListener('click', function () {
+      closeNdv();
+      var r = document.getElementById('fe-run');
+      if (r) r.click();
+    });
+    head.appendChild(runBtn);
+    var closeBtn = document.createElement('button');
+    closeBtn.className = 'ndv-close';
+    closeBtn.title = t('ndv.close');
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', closeNdv);
+    head.appendChild(closeBtn);
+    modal.appendChild(head);
+
+    var body = document.createElement('div');
+    body.className = 'ndv-body';
+    modal.appendChild(body);
 
     var ndv = document.createElement('div');
     ndv.className = 'ndv';
-
-    // header
-    var h = document.createElement('div');
-    h.className = 'insp-title ndv-title';
-    h.textContent = nodeTitle(node);
-    ndv.appendChild(h);
 
     var cols = document.createElement('div');
     cols.className = 'ndv-cols';
@@ -976,7 +1241,15 @@
     pHead.textContent = t('ndv.parameters');
     paramCol.appendChild(pHead);
 
-    if (!act || act.fields.length === 0) {
+    if (node.action === 'if' || node.action === 'while') {
+      // condition nodes get the visual AND/OR condition builder; any extra
+      // non-condition fields (e.g. while.maxIterations) render below it
+      paramCol.appendChild(buildConditionBuilder(node));
+      if (act) act.fields.forEach(function (f) {
+        if (['selector', 'operator', 'value', 'expected'].indexOf(f.k) !== -1) return;
+        paramCol.appendChild(buildFieldRow(node, f));
+      });
+    } else if (!act || act.fields.length === 0) {
       var none = document.createElement('div');
       none.className = 'muted small ndv-empty';
       none.textContent = t('fe.noParams');
@@ -996,9 +1269,9 @@
     cols.appendChild(paramCol);
     cols.appendChild(outCol);
     ndv.appendChild(cols);
-    box.appendChild(ndv);
+    body.appendChild(ndv);
 
-    appendValidation(box);
+    appendValidation(body);
     renderFieldFeedback();
   }
 
@@ -1070,6 +1343,7 @@
 
   function removeNode(id) {
     if (id === 'start') return;
+    if (ndvOpen === id) closeNdv();
     delete state.nodes[id];
     delete nodeStatus[id];
     delete nodeMeta[id];
@@ -1515,6 +1789,7 @@
   }
 
   function unmount() {
+    closeNdv();
     offAll();
     drag = null;
     dom = null;
@@ -1547,7 +1822,7 @@
     setNodeResults: function (nodeId, res) {
       if (!nodeId) return;
       nodeResults[nodeId] = res || {};
-      if (dom && state && state.selected === nodeId) renderInspector();
+      if (dom && state && ndvOpen === nodeId) renderInspector();
     },
     clearResults: function () {
       nodeResults = {}; nodeMeta = {}; nodePins = {};

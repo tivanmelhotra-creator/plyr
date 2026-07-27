@@ -1267,17 +1267,33 @@ export async function runPipeline(params: {
           const timeout = parseInt(finalParams.timeout) || 30000;
           const force = parseBoolean(finalParams.force);
           const human = parseBoolean(finalParams.human);
+          // Rich click options (Final ui-ux click NDV): mouse button, click
+          // count, pre-click delay and scroll-into-view. All optional and
+          // backwards compatible with the plain { selector } form.
+          const mouseButton = (['left', 'right', 'middle'].includes(String(finalParams.button))
+            ? String(finalParams.button)
+            : 'left') as 'left' | 'right' | 'middle';
+          const clickCount = Math.min(Math.max(parseInt(finalParams.clickCount) || 1, 1), 10);
+          const delayBeforeMs = Math.min(Math.max(parseInt(finalParams.delayBeforeMs) || 0, 0), 60000);
+          const scrollIntoView = parseBoolean(finalParams.scrollIntoView);
 
           log(`[${step.action.toUpperCase()}] "${selector}" (human: ${human})`);
 
           const el = context.page!.locator(selector).first();
           await el.waitFor({ state: 'visible', timeout });
 
+          if (scrollIntoView) {
+            await el.scrollIntoViewIfNeeded({ timeout }).catch(() => { /* best-effort */ });
+          }
+          if (delayBeforeMs > 0) {
+            await new Promise((r) => setTimeout(r, delayBeforeMs));
+          }
+
           if (step.action === 'click') {
-            if (human && !force) {
+            if (human && !force && mouseButton === 'left' && clickCount === 1) {
               await humanClick(context.page, el, { force, timeout });
             } else {
-              await el.click({ timeout, force });
+              await el.click({ timeout, force, button: mouseButton, clickCount });
             }
           } else if (step.action === 'dblclick') {
             if (human && !force) {
@@ -1307,7 +1323,15 @@ export async function runPipeline(params: {
           }
 
           globalStepNumber++;
-          stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, { selector, human }, stepStartTime));
+          stepOutputs.push(createStepOutput(
+            globalStepNumber,
+            step.action,
+            true,
+            step.action === 'click'
+              ? { clicked: true, selector, button: mouseButton, clickCount, human }
+              : { selector, human },
+            stepStartTime
+          ));
           continue stepLoop;
         }
 
