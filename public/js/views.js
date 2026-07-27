@@ -140,7 +140,9 @@
         return '<option value="' + a.id + '"' + (a.id === step.action ? ' selected' : '') + '>' + a.id + '</option>';
       }).join('');
 
-      var params = act.fields.map(function (f) {
+      // `internal: true` fields (e.g. the Condition Builder's `groups` JSON blob)
+      // are edited by their bespoke NDV only — never as a raw text input here.
+      var params = act.fields.filter(function (f) { return !f.internal; }).map(function (f) {
         var val = step.params[f.k] != null ? String(step.params[f.k]) : '';
         if (f.type === 'select') {
           var o = f.options.map(function (op) {
@@ -908,6 +910,9 @@
           '</div>' +
           '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
         '</div>' +
+        // Status bar (shell previews): version · auto-save · last saved ·
+        // workflow id · environment. Read-only telemetry, no controls.
+        '<div class="fe-statusbar" id="fe-statusbar"></div>' +
         '<div class="muted small fe-hint">' + t('fe.hint') + '</div>' +
         '<div id="fe-result"></div>' +
       '</div>';
@@ -915,6 +920,7 @@
     var resultEl = root.querySelector('#fe-result');
     var wfLabel = root.querySelector('#fe-wf-label');
     var wfBadge = root.querySelector('#fe-wf-badge');
+    var statusBar = root.querySelector('#fe-statusbar');
 
     FE.mount({
       canvas: root.querySelector('#fe-canvas'),
@@ -940,6 +946,32 @@
       window.RunPanel.loadLastRun(cur0 && cur0.id ? cur0.id : null);
     }
 
+    // Status bar cells, matching the shell previews' reading order:
+    //   Version 1.3.7 · Auto-save enabled ● · Last saved: 10:24:32 ·
+    //   Workflow ID: wf_login_001 · Environment: Production ●
+    // Values are real (from the open workflow), never faked placeholders.
+    function statusCell(label, value, dot) {
+      return '<span class="fe-sb-cell">' +
+        (dot ? '<span class="fe-sb-dot tone-' + dot + '"></span>' : '') +
+        '<span class="fe-sb-label">' + esc(label) + '</span>' +
+        (value ? '<span class="fe-sb-val">' + esc(value) + '</span>' : '') +
+        '</span>';
+    }
+    function refreshStatusBar() {
+      if (!statusBar) return;
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      var saved = FE.getLastSavedAt && FE.getLastSavedAt();
+      var cells = [
+        statusCell(t('sb.version'), cur && cur.version ? 'v' + cur.version : t('sb.unsaved')),
+        statusCell(t('sb.autoSave'), t(cur && cur.id ? 'sb.on' : 'sb.off'),
+          cur && cur.id ? 'good' : 'idle'),
+        statusCell(t('sb.lastSaved'), saved || '—'),
+        statusCell(t('sb.workflowId'), cur && cur.id ? String(cur.id) : '—'),
+        statusCell(t('sb.environment'), t('sb.envDev'), 'good'),
+      ];
+      statusBar.innerHTML = cells.join('<span class="fe-sb-sep"></span>');
+    }
+
     function refreshWfLabel() {
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
       if (cur && cur.id) {
@@ -949,6 +981,7 @@
         wfLabel.textContent = t('fe.untitled');
         wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
       }
+      refreshStatusBar();
     }
     refreshWfLabel();
 

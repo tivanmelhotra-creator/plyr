@@ -45,15 +45,37 @@
     // ---- Mouse / interaction -----------------------------------------
     // Rich Click Element node (Final ui-ux: ndv-click-element-final.md).
     // Extra params are optional; backend pipeline maps them in the click case.
+    // `click` has a LOCKED bespoke NDV design (docs/uiux/ndv-click-element-final).
+    // Every control that design exposes MUST be declared here, because
+    // GraphSerialize.coerceParams() only copies keys present in `fields` — an
+    // undeclared param is silently dropped on save/run.
     { id: 'click', icon: '🖱️', cat: 'interaction', fields: [
+      // Selector
+      { k: 'selectorType', label: 'click.selectorType', type: 'options', options: ['css', 'xpath', 'text'] },
       { k: 'selector', label: 'p.selector', type: 'text', ph: '#next-button', expr: true },
+      // Click options
+      { k: 'clickType', label: 'click.clickType', type: 'options', options: ['single', 'double', 'triple'] },
       { k: 'button', label: 'p.mouseButton', type: 'options', options: ['left', 'right', 'middle'] },
       { k: 'clickCount', label: 'p.clickCount', type: 'number', ph: '1', min: 1, max: 10 },
       { k: 'delayBeforeMs', label: 'p.delayBefore', type: 'number', ph: '0', min: 0 },
-      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '30000', min: 0 },
+      // Selector options
+      { k: 'waitForSelector', label: 'click.waitForSelector', type: 'boolean' },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '10000', min: 0 },
       { k: 'scrollIntoView', label: 'p.scrollIntoView', type: 'boolean' },
-      { k: 'human', label: 'p.human', type: 'boolean', help: 'help.humanClick' },
-      { k: 'force', label: 'p.force', type: 'boolean', help: 'help.forceClick' },
+      { k: 'multipleMatches', label: 'click.multipleMatches', type: 'boolean' },
+      { k: 'highlightElement', label: 'click.highlightElement', type: 'boolean' },
+      { k: 'visibleOnly', label: 'click.visibleOnly', type: 'boolean' },
+      { k: 'stableForMs', label: 'click.stableFor', type: 'number', ph: '300', min: 0 },
+      // Position offsets
+      { k: 'offsetX', label: 'click.offsetX', type: 'number', ph: '0' },
+      { k: 'offsetY', label: 'click.offsetY', type: 'number', ph: '0' },
+      // Optional modifiers
+      { k: 'modAlt', label: 'click.modAlt', type: 'boolean' },
+      { k: 'modCtrl', label: 'click.modCtrl', type: 'boolean' },
+      { k: 'modShift', label: 'click.modShift', type: 'boolean' },
+      // Behavior
+      { k: 'human', label: 'click.humanLike', type: 'boolean', help: 'help.humanClick' },
+      { k: 'force', label: 'click.forceClick', type: 'boolean', help: 'help.forceClick' },
     ] },
     { id: 'dblclick', icon: '🖱️', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '.row' },
@@ -206,13 +228,25 @@
     // branch's nodes are serialised into a nested group on the backend
     // AutomationStep (then/else/steps/cases/catch/finally). A node WITHOUT
     // `branches` implicitly has a single 'next' port (the linear default).
+    // `if` has a LOCKED bespoke NDV design (docs/uiux/ndv-condition-final) — the
+    // Condition Builder. Every control that design exposes MUST be declared here,
+    // because GraphSerialize.coerceParams() only copies keys present in `fields`;
+    // an undeclared param is silently dropped on save/run. `groups` carries the
+    // whole builder (JSON [[row,...],[row,...]] = AND within, OR between) and is
+    // the authoritative source when present — the flat selector/operator/value/
+    // expected quartet remains for the legacy single-row form.
     { id: 'if', icon: '🔀', cat: 'flow',
       branches: [{ id: 'then', label: 'port.then' }, { id: 'else', label: 'port.else' }],
       fields: [
+        { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
+        { k: 'source', label: 'cb.leftSource', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable'] },
+        { k: 'attribute', label: 'cb.attributeName', type: 'string', ph: 'textContent' },
         { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
         { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
         { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
         { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
+        { k: 'maxDepth', label: 'cb.maxDepth', type: 'number', ph: '5', min: 1 },
+        { k: 'evaluateMode', label: 'cb.evaluateMode', type: 'options', options: ['first', 'all'] },
       ] },
     { id: 'switch', icon: '🔢', cat: 'flow',
       branches: [{ id: 'default', label: 'port.default' }],
@@ -232,13 +266,21 @@
         { k: 'items', label: 'p.items', type: 'string', ph: 'variable holding array', expr: true },
         { k: 'itemVar', label: 'p.itemVar', type: 'string', ph: 'item' },
       ] },
+    // `while` shares the Condition Builder NDV with `if` (same locked design,
+    // plus the "Loop guard" footer control) — so it declares the same condition
+    // params. See the note on `if` about coerceParams() dropping undeclared keys.
     { id: 'while', icon: '♾️', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
+        { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
+        { k: 'source', label: 'cb.leftSource', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable'] },
+        { k: 'attribute', label: 'cb.attributeName', type: 'string', ph: 'textContent' },
         { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
         { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'not_empty'] },
         { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
         { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
+        { k: 'maxDepth', label: 'cb.maxDepth', type: 'number', ph: '5', min: 1 },
+        { k: 'evaluateMode', label: 'cb.evaluateMode', type: 'options', options: ['first', 'all'] },
         { k: 'maxIterations', label: 'p.maxIterations', type: 'number', ph: '100', min: 1 },
       ] },
     { id: 'try', icon: '🛡️', cat: 'flow',
