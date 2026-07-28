@@ -601,6 +601,15 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
     try {
       const userId = sanitizeUserId(req.params.userId);
       const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+      // [Workspace] Optional attribution filter: the Executions tab asks for
+      // the runs of ONE workflow. Validated with the same id rule as the
+      // workflow routes so a junk value cannot silently return everything.
+      const wantWorkflow = typeof req.query.workflowId === 'string' && req.query.workflowId
+        ? String(req.query.workflowId)
+        : null;
+      if (wantWorkflow !== null && !isValidWorkflowId(wantWorkflow)) {
+        return res.status(400).json({ success: false, error: 'Invalid workflow id' });
+      }
 
       const jobs = await queue.getJobs(
         ['waiting', 'active', 'delayed', 'completed', 'failed'],
@@ -611,6 +620,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       const userJobs = jobs
         .filter(j => String(j.data?.userId) === userId)
+        .filter(j => wantWorkflow === null || String(j.data?.__workflowId || '') === wantWorkflow)
         .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
         .slice(0, limit);
 
@@ -621,7 +631,18 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         timestamp: j.timestamp ? new Date(j.timestamp).toISOString() : null,
         failedReason: j.failedReason,
         isScheduled: !!j.data.__scheduled,
-        scheduleName: j.data.__scheduleName || null
+        scheduleName: j.data.__scheduleName || null,
+        // [Workspace] Execution provenance + duration for the Executions tab.
+        // `__workflowId` is stamped by the workflow run endpoint; an ad-hoc
+        // /run job has none, and the UI labels those as one-off runs.
+        workflowId: j.data.__workflowId ? String(j.data.__workflowId) : null,
+        workflowVersion: typeof j.data.__workflowVersion === 'number' ? j.data.__workflowVersion : null,
+        trigger: j.data.__scheduled ? 'schedule' : (j.data.__workflowId ? 'workflow' : 'manual'),
+        startedAt: j.processedOn ? new Date(j.processedOn).toISOString() : null,
+        finishedAt: j.finishedOn ? new Date(j.finishedOn).toISOString() : null,
+        // Elapsed wall time of the RUN itself (not the queue wait), so a job
+        // that sat in the queue does not report an inflated duration.
+        durationMs: j.processedOn && j.finishedOn ? j.finishedOn - j.processedOn : null
       })));
 
       res.json({
