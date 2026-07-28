@@ -9,6 +9,13 @@
 (function () {
   'use strict';
 
+  // Inline SVG icon helper (public/js/icons.js). Emoji glyphs were removed
+  // project-wide: the target font stack has no emoji coverage, so they rendered
+  // as empty boxes, and they could not be tinted with `currentColor`.
+  function LVIC(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 16 }) : '';
+  }
+
   // ---- locate ids + auth from the path/query (no app login needed) ----
   function parseLocation() {
     var parts = location.pathname.split('/').filter(Boolean); // ["live","view",userId,jobId]
@@ -174,27 +181,27 @@
       case 'step.start': {
         var rec = ensureRow(d.index, d.action);
         rec.row.className = 'lv-step lv-step-running';
-        rec.state.textContent = '⏳';
+        rec.state.innerHTML = LVIC('clock', 13);
         break;
       }
       case 'step.retry': {
         var r2 = ensureRow(d.index, d.action);
         r2.row.className = 'lv-step lv-step-running';
-        r2.state.textContent = '↻ ' + (d.attempt || '') + '/' + (d.maxTries || '');
+        r2.state.innerHTML = LVIC('rotate-cw', 13) + ' ' + (d.attempt || '') + '/' + (d.maxTries || '');
         if (d.error) renderSample(r2.body, d);
         break;
       }
       case 'step.done': {
         var r3 = ensureRow(d.index, d.action);
         r3.row.className = 'lv-step ' + (d.success === false ? 'lv-step-error' : 'lv-step-done');
-        r3.state.textContent = d.success === false ? '✗' : '✓';
+        r3.state.innerHTML = LVIC(d.success === false ? 'x' : 'check', 13);
         renderSample(r3.body, d);
         break;
       }
       case 'step.error': {
         var r4 = ensureRow(d.index, d.action);
         r4.row.className = 'lv-step lv-step-error';
-        r4.state.textContent = '✗';
+        r4.state.innerHTML = LVIC('x', 13);
         renderSample(r4.body, d);
         break;
       }

@@ -315,8 +315,10 @@
   }
 
   // -------- steps[] -> graph (deserialize) -----------------------------------
-  // Rebuilds a laid-out graph from nested steps[]. Branch sub-chains are placed
-  // below+right of their parent so the canvas reads top-to-bottom.
+  // Rebuilds a laid-out graph from nested steps[]. The main chain runs
+  // left-to-right; each branch drops into its own lane on the next column, so
+  // the canvas reads as a pipeline (see docs/uiux). The Start node's y matches
+  // ORIGIN_Y in stepsToGraph so the trunk is one straight row.
   function newBlankGraph() {
     return {
       nodes: { start: { id: 'start', action: '__start__', params: {}, x: 60, y: 200 } },
@@ -333,17 +335,33 @@
     var ctr = { n: 0 };
     function mkId() { ctr.n += 1; graph.nextId = ctr.n; return 'n' + ctr.n; }
 
+    // ---- layout metrics -----------------------------------------------------
+    // The reference design (docs/uiux) reads a workflow as a LEFT-TO-RIGHT
+    // pipeline: sequential steps march along +X, and a branching node stacks
+    // its ports downward on the next column. The previous build advanced +Y per
+    // step at a fixed X, which produced the tall vertical stack visible in the
+    // screenshots. COL_W/ROW_H below are multiples of the editor's 20px grid so
+    // generated nodes land exactly on grid intersections.
+    var COL_W = 260;   // horizontal step pitch (NODE_W 190 + 70 gutter for the edge)
+    var ROW_H = 140;   // vertical pitch between sibling branch lanes
+    var ORIGIN_X = 280;
+    var ORIGIN_Y = 200;
+
     // Recursively lay out a linear group; returns the FIRST node id (or null).
-    // x,y are the top-left anchor for this group; depth indents branches.
+    // x,y are the top-left anchor: the group flows right from x, and any nested
+    // branches drop into lanes below y on the following column.
     function layoutGroup(group, x, y) {
       var firstId = null;
       var prevId = null;
       var prevPort = 'next';
-      var curY = y;
+      var curX = x;
+      // Bottom-most Y consumed by this group including its nested branches, so
+      // a caller can place the next sibling lane clear of it.
+      var maxY = y;
       (group || []).forEach(function (s) {
         if (!s || !s.action) return;
         var id = mkId();
-        var node = { id: id, action: s.action, params: {}, x: x, y: curY };
+        var node = { id: id, action: s.action, params: {}, x: curX, y: y };
         // copy scalar params back as strings (editor stores strings)
         if (s.params && typeof s.params === 'object') {
           Object.keys(s.params).forEach(function (k) {
@@ -387,44 +405,57 @@
           graph.edges.push({ from: prevId, to: id, port: prevPort });
         }
 
-        // lay out nested branches of this node (below, indented to the right)
-        var branchX = x + 240;
-        var branchY = curY + 70;
+        // Nested branches occupy the NEXT column, stacked into lanes that start
+        // one row below the parent so the parent's own row stays readable.
+        var branchX = curX + COL_W;
+        var branchY = y + ROW_H;
+        // How far right the widest branch reaches — the step that follows this
+        // branching node must clear it, otherwise the two would overlap.
+        var branchRight = curX;
+        function lane(sub, port) {
+          var r = layoutPort(sub, id, port, branchX, branchY);
+          branchY = r.nextY;
+          if (r.right > branchRight) branchRight = r.right;
+        }
         if (s.action === 'if') {
-          branchY = layoutPort(s.then, id, 'then', branchX, branchY);
-          branchY = layoutPort(s.else, id, 'else', branchX, branchY);
+          lane(s.then, 'then');
+          lane(s.else, 'else');
         } else if (s.action === 'switch' && s.cases && typeof s.cases === 'object') {
           Object.keys(s.cases).forEach(function (cv) {
-            var port = cv === 'default' ? 'default' : ('case:' + cv);
-            branchY = layoutPort(s.cases[cv], id, port, branchX, branchY);
+            lane(s.cases[cv], cv === 'default' ? 'default' : ('case:' + cv));
           });
         } else if (s.action === 'loop' || s.action === 'foreach' || s.action === 'while') {
-          branchY = layoutPort(s.steps, id, 'body', branchX, branchY);
+          lane(s.steps, 'body');
         } else if (s.action === 'try') {
-          branchY = layoutPort(s.steps, id, 'try', branchX, branchY);
-          branchY = layoutPort(s.catch, id, 'catch', branchX, branchY);
-          branchY = layoutPort(s.finally, id, 'finally', branchX, branchY);
+          lane(s.steps, 'try');
+          lane(s.catch, 'catch');
+          lane(s.finally, 'finally');
         }
-        curY = Math.max(curY + 120, branchY);
+        if (branchY - ROW_H > maxY) maxY = branchY - ROW_H;
+        // Advance at least one column; skip past any branch subtree.
+        curX = Math.max(curX + COL_W, branchRight + COL_W);
 
         prevId = id;
         // loop/foreach/while continue from 'done'; others from 'next'
         prevPort = (s.action === 'loop' || s.action === 'foreach' || s.action === 'while') ? 'done' : 'next';
       });
-      return firstId;
+      // `curX` sits one column past the last node, so the last node's own left
+      // edge is one column back.
+      return { firstId: firstId, right: curX - COL_W, bottom: maxY };
     }
 
     // Lays out a port's sub-group and links the parent->first via `port`.
-    // Returns the next free Y.
+    // Returns { nextY, right }: the first free lane below this sub-group, and
+    // how far right it extends.
     function layoutPort(group, parentId, port, x, y) {
-      if (!group || !group.length) return y;
-      var firstId = layoutGroup(group, x, y);
-      if (firstId) graph.edges.push({ from: parentId, to: firstId, port: port });
-      // advance Y by the group's vertical extent (rough estimate)
-      return y + group.length * 120 + 40;
+      if (!group || !group.length) return { nextY: y, right: x - COL_W };
+      var r = layoutGroup(group, x, y);
+      if (r.firstId) graph.edges.push({ from: parentId, to: r.firstId, port: port });
+      // Clear the sub-group's own nested lanes before starting the next one.
+      return { nextY: Math.max(y, r.bottom) + ROW_H, right: r.right };
     }
 
-    var topFirst = layoutGroup(steps, 280, 160);
+    var topFirst = layoutGroup(steps, ORIGIN_X, ORIGIN_Y).firstId;
     if (topFirst) graph.edges.push({ from: 'start', to: topFirst, port: 'next' });
     return graph;
   }

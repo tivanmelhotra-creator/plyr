@@ -1263,11 +1263,16 @@ export async function runPipeline(params: {
         // ════════════════════════════════════════════════════════════════
         // 17. EXTRACT / SCRAPE
         // ════════════════════════════════════════════════════════════════
-        if (step.action === 'extract' || step.action === 'scrape' || step.action === 'get-data') {
+        if (step.action === 'extract' || step.action === 'scrape' || step.action === 'get-data' || step.action === 'extract-data') {
           const selector = sanitizeSelector(String(finalParams.selector || ''));
           if (!selector) throw new Error('Selector required for extract');
 
-          const multiple = parseBoolean(finalParams.multiple || finalParams.all);
+          // `extract-data` (the designed "Extract Data" node) harvests a LIST by
+          // default; plain `extract` stays single-value unless asked otherwise.
+          const multipleRaw = finalParams.multiple !== undefined ? finalParams.multiple : finalParams.all;
+          const multiple = multipleRaw !== undefined
+            ? parseBoolean(multipleRaw)
+            : step.action === 'extract-data';
           const attribute = finalParams.attribute ? String(finalParams.attribute) : undefined;
           const property = finalParams.property ? String(finalParams.property) : undefined;
           const timeout = parseInt(finalParams.timeout) || 30000;
@@ -2302,9 +2307,97 @@ export async function runPipeline(params: {
         }
 
         // ════════════════════════════════════════════════════════════════
+        // 37b. LAUNCH BROWSER — explicit, idempotent browser bootstrap
+        // ────────────────────────────────────────────────────────────────
+        // The pipeline already opens a context before the step loop, so a
+        // `launch` node is normally a no-op that simply REPORTS the live
+        // browser. It becomes meaningful after a `close` step: the graph can
+        // re-open a fresh context and keep running. Optional `url` navigates
+        // straight away so "Launch Browser -> Open URL" collapses into one node.
+        // ════════════════════════════════════════════════════════════════
+        if (step.action === 'launch' || step.action === 'launch-browser' || step.action === 'launch_browser') {
+          let launchAction = 'reused';
+
+          if (!context.browserContext || !isPageValid(context.page, context)) {
+            log('[BROWSER] Launch requested — opening a fresh context');
+            if (isVip) {
+              await ensureVipBrowser(context);
+            } else {
+              await ensureFreeContext(context);
+            }
+            launchAction = 'launched';
+          } else {
+            log('[BROWSER] Launch requested — reusing the live context');
+          }
+
+          const launchUrl = finalParams.url ? String(finalParams.url) : '';
+          if (launchUrl) {
+            const timeout = parseInt(finalParams.timeout) || 60000;
+            const waitUntil = (finalParams.waitUntil || 'domcontentloaded') as 'load' | 'domcontentloaded' | 'networkidle';
+            log(`[BROWSER] Launch navigating to: ${launchUrl}`);
+            await context.page!.goto(launchUrl, { waitUntil, timeout });
+          }
+
+          const launchResult = {
+            action: launchAction,
+            headless: !!headless,
+            url: context.page ? context.page.url() : null,
+          };
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, launchResult, log);
+
+          globalStepNumber++;
+          stepOutputs.push(createStepOutput(globalStepNumber, 'launch', true, launchResult, stepStartTime));
+          continue stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // 37c. PARSE JSON — string -> structured value (+ optional path pick)
+        // ────────────────────────────────────────────────────────────────
+        // Reads the raw text from `json`/`value`/`text` (already expression-
+        // resolved), parses it, optionally drills into it with a dotted/indexed
+        // `path` (a.b[0].c) and stores the result under `saveAs`. `optional`
+        // downgrades a parse failure to a null result instead of failing the run.
+        // ════════════════════════════════════════════════════════════════
+        if (step.action === 'parse-json' || step.action === 'parse_json' || step.action === 'json-parse') {
+          const raw = finalParams.json != null ? finalParams.json
+            : finalParams.value != null ? finalParams.value
+              : finalParams.text;
+          const path = finalParams.path ? String(finalParams.path).trim() : '';
+          let parsed: any = null;
+          let ok = true;
+
+          try {
+            parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (parsed === undefined) throw new Error('No JSON input provided');
+          } catch (e: any) {
+            if (!parseBoolean(finalParams.optional)) {
+              throw new Error(`Parse JSON failed: ${e.message}`);
+            }
+            ok = false;
+            parsed = null;
+          }
+
+          if (ok && path) {
+            const segs = path.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
+            let cur: any = parsed;
+            for (const seg of segs) {
+              cur = (cur == null) ? undefined : cur[seg];
+            }
+            parsed = cur === undefined ? null : cur;
+          }
+
+          log(`[PARSE-JSON] ok=${ok}${path ? ` path=${path}` : ''}`);
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, parsed, log);
+
+          globalStepNumber++;
+          stepOutputs.push(createStepOutput(globalStepNumber, 'parse-json', true, parsed, stepStartTime));
+          continue stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
         // 38. CLOSE BROWSER
         // ════════════════════════════════════════════════════════════════
-        if (step.action === 'close-browser' || step.action === 'close_browser') {
+        if (step.action === 'close-browser' || step.action === 'close_browser' || step.action === 'close') {
           log('[BROWSER] Manual close requested');
 
           if (context.browserContext) {
@@ -2492,11 +2585,20 @@ export async function runPipeline(params: {
         // ════════════════════════════════════════════════════════════════
         // 42. WAIT
         // ════════════════════════════════════════════════════════════════
-        if (step.action === 'wait') {
+        // `wait-element` (Wait Element) and `delay` are first-class node ids in the
+        // designed palette (docs/uiux/00-PROCESS-node-design.md). They reuse this
+        // handler but PIN its mode, so the node's contract is unambiguous:
+        //   wait-element -> the selector branch is mandatory (throws when missing)
+        //   delay        -> always the plain timer branch, never selector/url/load
+        if (step.action === 'wait' || step.action === 'wait-element' || step.action === 'delay') {
+          if (step.action === 'wait-element' && !finalParams.selector) {
+            throw new Error('Selector required for wait-element');
+          }
+          const timerOnly = step.action === 'delay';
           let waitResult: any = {};
 
           try {
-            if (finalParams.selector) {
+            if (!timerOnly && finalParams.selector) {
               const timeout = parseInt(finalParams.timeout) || 30000;
               const state = (finalParams.state || 'visible') as 'visible' | 'attached' | 'hidden';
               const selector = sanitizeSelector(String(finalParams.selector));
@@ -2505,7 +2607,7 @@ export async function runPipeline(params: {
               await context.page!.waitForSelector(selector, { state, timeout });
               waitResult = { type: 'selector', found: true };
 
-            } else if (finalParams.url || finalParams.urlContains) {
+            } else if (!timerOnly && (finalParams.url || finalParams.urlContains)) {
               const timeout = parseInt(finalParams.timeout) || 30000;
 
               if (finalParams.url) {
@@ -2515,12 +2617,12 @@ export async function runPipeline(params: {
               }
               waitResult = { type: 'url' };
 
-            } else if (finalParams.load) {
+            } else if (!timerOnly && finalParams.load) {
               const timeout = parseInt(finalParams.timeout) || 30000;
               await context.page!.waitForLoadState(finalParams.load, { timeout });
               waitResult = { type: 'load', state: finalParams.load };
 
-            } else if (finalParams.fn || finalParams.function) {
+            } else if (!timerOnly && (finalParams.fn || finalParams.function)) {
               const timeout = parseInt(finalParams.timeout) || 30000;
               await context.page!.waitForFunction(
                 String(finalParams.fn || finalParams.function),
@@ -2537,14 +2639,14 @@ export async function runPipeline(params: {
             }
 
             globalStepNumber++;
-            stepOutputs.push(createStepOutput(globalStepNumber, 'wait', true, waitResult, stepStartTime));
+            stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, waitResult, stepStartTime));
 
           } catch (e: any) {
             if (parseBoolean(finalParams.optional) && e.message?.includes('Timeout')) {
               globalStepNumber++;
               stepOutputs.push(createStepOutput(
                 globalStepNumber,
-                'wait',
+                step.action,
                 true,
                 { ...waitResult, timedOut: true },
                 stepStartTime

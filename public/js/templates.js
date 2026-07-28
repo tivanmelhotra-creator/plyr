@@ -24,7 +24,7 @@
       id: 'price-scrape',
       name: 'tpl.priceScrape.name',
       description: 'tpl.priceScrape.desc',
-      icon: '🏷️',
+      icon: 'tag',
       headless: true,
       steps: [
         { action: 'goto', params: { url: 'https://example.com/product/123' } },
@@ -38,7 +38,7 @@
       id: 'login-form',
       name: 'tpl.loginForm.name',
       description: 'tpl.loginForm.desc',
-      icon: '🔐',
+      icon: 'lock',
       headless: true,
       steps: [
         { action: 'goto', params: { url: 'https://example.com/login' } },
@@ -53,7 +53,7 @@
       id: 'scheduled-screenshot',
       name: 'tpl.screenshot.name',
       description: 'tpl.screenshot.desc',
-      icon: '📸',
+      icon: 'camera',
       headless: true,
       steps: [
         // A schedule trigger turns this into a recurring job when saved &

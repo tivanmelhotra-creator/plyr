@@ -9,6 +9,13 @@
 (function () {
   'use strict';
 
+  // Inline SVG icon helper (public/js/icons.js). Emoji glyphs were removed
+  // project-wide: the target font stack has no emoji coverage, so they rendered
+  // as empty boxes, and they could not be tinted with `currentColor`.
+  function LIC(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 16 }) : '';
+  }
+
   var API = window.API;
 
   // ---------------------------------------------
@@ -150,13 +157,13 @@
   }
 
   var EVENT_META = {
-    'job.start':  { i18n: 'live.evt.jobStart',  cls: 'live-info',  icon: '🚀' },
-    'job.done':   { i18n: 'live.evt.jobDone',   cls: 'live-ok',    icon: '✅' },
-    'job.error':  { i18n: 'live.evt.jobError',  cls: 'live-err',   icon: '⛔' },
-    'step.start': { i18n: 'live.evt.stepStart', cls: 'live-step',  icon: '▶️' },
-    'step.done':  { i18n: 'live.evt.stepDone',  cls: 'live-ok',    icon: '☑️' },
-    'step.error': { i18n: 'live.evt.stepError', cls: 'live-err',   icon: '⚠️' },
-    'log':        { i18n: 'live.evt.log',       cls: 'live-log',   icon: '📝' }
+    'job.start':  { i18n: 'live.evt.jobStart',  cls: 'live-info',  icon: 'rocket' },
+    'job.done':   { i18n: 'live.evt.jobDone',   cls: 'live-ok',    icon: 'check-circle' },
+    'job.error':  { i18n: 'live.evt.jobError',  cls: 'live-err',   icon: 'x-circle' },
+    'step.start': { i18n: 'live.evt.stepStart', cls: 'live-step',  icon: 'play' },
+    'step.done':  { i18n: 'live.evt.stepDone',  cls: 'live-ok',    icon: 'square-check' },
+    'step.error': { i18n: 'live.evt.stepError', cls: 'live-err',   icon: 'alert-circle' },
+    'log':        { i18n: 'live.evt.log',       cls: 'live-log',   icon: 'file-text' }
   };
 
   function fmtTime(iso) {
@@ -173,7 +180,7 @@
       return '#' + (d.index != null ? d.index : '?') + ' · ' + (d.action || '');
     }
     if (ev.type === 'step.done') {
-      var ok = d.success ? '✓' : '✗';
+      var ok = d.success ? '+' : '-';
       var dur = d.durationMs != null ? (' · ' + d.durationMs + 'ms') : '';
       return '#' + (d.index != null ? d.index : '?') + ' · ' + (d.action || '') + ' ' + ok + dur;
     }
@@ -197,7 +204,7 @@
 
     var html =
       '<div class="card">' +
-        '<h3 class="card-title">📡 ' + esc(t('live.title')) + '</h3>' +
+        '<h3 class="card-title">' + LIC('terminal') + ' ' + esc(t('live.title')) + '</h3>' +
         '<p class="muted">' + esc(t('live.subtitle')) + '</p>' +
         '<div class="form-row" style="display:flex;gap:.5rem;align-items:flex-end;flex-wrap:wrap;">' +
           '<div style="flex:1;min-width:180px;">' +
@@ -266,7 +273,7 @@
 
       var icon = document.createElement('span');
       icon.style.marginInlineEnd = '.35rem';
-      icon.textContent = meta.icon;
+      icon.innerHTML = LIC(meta.icon, 14);
 
       var label = document.createElement('strong');
       label.style.marginInlineEnd = '.5rem';

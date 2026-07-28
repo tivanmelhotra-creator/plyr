@@ -39,6 +39,13 @@
   function t(k) { return U().t(k); }
   function esc(s) { return U().esc(s); }
 
+  // Inline SVG icons (public/js/icons.js). IC() is for chrome glyphs, ICON() for
+  // ACTION_CATALOG actions. Emoji were replaced project-wide because the target
+  // font stack has no emoji coverage — they rendered as empty boxes (□).
+  function IC(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 16 }) : '';
+  }
+
   function effectiveUserId() {
     var uid = API.getUserId();
     // env_root (admin key) is not a real automation user; default to "0".
@@ -73,7 +80,7 @@
 
     root.innerHTML =
       '<div class="card">' +
-        '<h3 class="card-title">▶️ ' + t('run.title') + '</h3>' +
+        '<h3 class="card-title">' + IC('play') + ' ' + t('run.title') + '</h3>' +
         '<div class="form-row">' +
           '<label class="field">' +
             '<span class="field-label">' + t('run.userId') + '</span>' +
@@ -163,9 +170,9 @@
             '<span class="step-index">' + (idx + 1) + '</span>' +
             '<select class="field-input" data-action="' + idx + '">' + opts + '</select>' +
             '<span class="spacer"></span>' +
-            '<button class="icon-btn" data-up="' + idx + '" title="' + t('run.moveUp') + '">↑</button>' +
-            '<button class="icon-btn" data-down="' + idx + '" title="' + t('run.moveDown') + '">↓</button>' +
-            '<button class="icon-btn" data-del="' + idx + '" title="' + t('run.removeStep') + '">🗑️</button>' +
+            '<button class="icon-btn" data-up="' + idx + '" title="' + t('run.moveUp') + '">' + IC('arrow-up', 14) + '</button>' +
+            '<button class="icon-btn" data-down="' + idx + '" title="' + t('run.moveDown') + '">' + IC('arrow-down', 14) + '</button>' +
+            '<button class="icon-btn" data-del="' + idx + '" title="' + t('run.removeStep') + '">' + IC('trash', 14) + '</button>' +
           '</div>' +
           (params ? '<div class="step-params">' + params + '</div>' : '') +
         '</div>';
@@ -252,7 +259,7 @@
     API.runFlow(payload)
       .then(function (data) {
         resultEl.innerHTML =
-          '<div class="result-banner ok">✅ ' + t('run.queued') +
+          '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('run.queued') +
           ' &nbsp; ' + t('run.jobId') + ': <code>' + esc(data.jobId) + '</code> ' +
           '<button class="btn btn-ghost btn-sm" id="goto-job" data-job="' + esc(data.jobId) +
           '">' + t('run.viewJob') + '</button></div>';
@@ -262,7 +269,7 @@
         });
       })
       .catch(function (err) {
-        resultEl.innerHTML = '<div class="result-banner err">⚠️ ' + esc(err.message) + '</div>';
+        resultEl.innerHTML = '<div class="result-banner err">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
       })
       .finally(function () {
         btn.disabled = false;
@@ -304,7 +311,7 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">🗂️ ' + t('jobs.title') + '</h3>' +
+          '<h3 class="card-title" style="margin:0">' + IC('layers') + ' ' + t('jobs.title') + '</h3>' +
           '<span class="spacer"></span>' +
           '<input id="jobs-uid" class="field-input" style="max-width:160px" value="' + esc(uid) + '" />' +
           '<button class="btn btn-ghost btn-sm" id="jobs-refresh">' + t('jobs.refresh') + '</button>' +
@@ -353,7 +360,7 @@
           });
         })
         .catch(function (err) {
-          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
         });
     }
 
@@ -366,9 +373,9 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">📄 ' + t('jobs.detail') + '</h3>' +
+          '<h3 class="card-title" style="margin:0">' + IC('file-text') + ' ' + t('jobs.detail') + '</h3>' +
           '<span class="spacer"></span>' +
-          '<button class="btn btn-ghost btn-sm" id="job-back">← ' + t('jobs.back') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" id="job-back">' + IC('chevron-left', 14) + ' ' + t('jobs.back') + '</button>' +
         '</div>' +
         '<div id="job-body"><div class="placeholder"><span class="spinner"></span> ' + t('common.loading') + '</div></div>' +
       '</div>';
@@ -393,7 +400,7 @@
               (data.durationMs != null ? '<dt>' + t('jobs.duration') + '</dt><dd>' + (Math.round(data.durationMs / 100) / 10) + 's</dd>' : '') +
             '</dl>';
 
-          var liveNote = live ? '<div class="result-banner ok">⏳ ' + t('jobs.live') + '</div>' : '';
+          var liveNote = live ? '<div class="result-banner ok">' + IC('clock') + ' ' + t('jobs.live') + '</div>' : '';
 
           var outHtml;
           if (!outputs || outputs.length === 0) {
@@ -415,7 +422,7 @@
           if (!live) stopAll();
         })
         .catch(function (err) {
-          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
         });
     }
 
@@ -431,7 +438,7 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">📈 ' + t('quota.title') + '</h3>' +
+          '<h3 class="card-title" style="margin:0">' + IC('gauge') + ' ' + t('quota.title') + '</h3>' +
           '<span class="spacer"></span>' +
           '<input id="q-uid" class="field-input" style="max-width:160px" value="' + esc(uid) + '" />' +
           '<button class="btn btn-ghost btn-sm" id="q-refresh">' + t('common.refresh') + '</button>' +
@@ -467,7 +474,7 @@
             '</div>';
         })
         .catch(function (err) {
-          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
         });
     }
     root.querySelector('#q-refresh').addEventListener('click', load);
@@ -482,7 +489,7 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">⏰ ' + t('sched.title') + '</h3>' +
+          '<h3 class="card-title" style="margin:0">' + IC('calendar') + ' ' + t('sched.title') + '</h3>' +
           '<span class="spacer"></span>' +
           '<input id="s-uid" class="field-input" style="max-width:160px" value="' + esc(uid) + '" />' +
           '<button class="btn btn-ghost btn-sm" id="s-refresh">' + t('common.refresh') + '</button>' +
@@ -527,7 +534,7 @@
           });
         })
         .catch(function (err) {
-          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
         });
     }
     root.querySelector('#s-refresh').addEventListener('click', load);
@@ -547,10 +554,10 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">📚 ' + t('wf.title') + '</h3>' +
+          '<h3 class="card-title" style="margin:0">' + IC('book-open') + ' ' + t('wf.title') + '</h3>' +
           '<span class="spacer"></span>' +
           '<button class="btn btn-primary btn-sm" id="wf-new">＋ ' + t('wf.new') + '</button>' +
-          '<button class="btn btn-ghost btn-sm" id="wf-templates">🧩 ' + t('wf.templates') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" id="wf-templates">' + IC('sitemap', 14) + ' ' + t('wf.templates') + '</button>' +
           '<button class="btn btn-ghost btn-sm" id="wf-refresh">' + t('common.refresh') + '</button>' +
         '</div>' +
         '<p class="muted small">' + t('wf.subtitle') + '</p>' +
@@ -587,12 +594,12 @@
                 '<span>' + esc(t('wf.updated')) + ': ' + esc(fmtTime(wf.updatedAt)) + '</span>' +
               '</div>' +
               '<div class="wf-actions">' +
-                '<button class="btn btn-primary btn-sm" data-open="' + esc(wf.id) + '">✏️ ' + t('wf.open') + '</button>' +
-                '<button class="btn btn-ghost btn-sm" data-run="' + esc(wf.id) + '">▶️ ' + t('wf.run') + '</button>' +
+                '<button class="btn btn-primary btn-sm" data-open="' + esc(wf.id) + '">' + IC('pencil', 14) + ' ' + t('wf.open') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-run="' + esc(wf.id) + '">' + IC('play', 14) + ' ' + t('wf.run') + '</button>' +
                 '<button class="btn btn-ghost btn-sm" data-rename="' + esc(wf.id) + '">' + t('wf.rename') + '</button>' +
                 '<button class="btn btn-ghost btn-sm" data-dup="' + esc(wf.id) + '">' + t('wf.duplicate') + '</button>' +
-                '<button class="btn btn-ghost btn-sm" data-versions="' + esc(wf.id) + '">🕘 ' + t('wf.versions') + '</button>' +
-                '<button class="btn btn-ghost btn-sm" data-del="' + esc(wf.id) + '">🗑️ ' + t('common.delete') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-versions="' + esc(wf.id) + '">' + IC('history', 14) + ' ' + t('wf.versions') + '</button>' +
+                '<button class="btn btn-ghost btn-sm" data-del="' + esc(wf.id) + '">' + IC('trash', 14) + ' ' + t('common.delete') + '</button>' +
               '</div>' +
               '<div class="wf-versions" id="wf-ver-' + esc(wf.id) + '" hidden></div>' +
             '</div>';
@@ -699,12 +706,12 @@
                     });
                   });
                 })
-                .catch(function (err) { box.innerHTML = '<div class="muted small">⚠️ ' + esc(err.message) + '</div>'; });
+                .catch(function (err) { box.innerHTML = '<div class="muted small">' + IC('alert-circle', 13) + ' ' + esc(err.message) + '</div>'; });
             });
           });
         })
         .catch(function (err) {
-          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
         });
     }
 
@@ -721,7 +728,7 @@
         var n = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
         return '<div class="wf-card" data-tpl="' + esc(tpl.id) + '">' +
           '<div class="wf-card-head">' +
-            '<span class="wf-name">' + esc(tpl.icon || '🧩') + ' ' + esc(t(tpl.name)) + '</span>' +
+            '<span class="wf-name">' + IC(tpl.icon || 'sitemap', 14) + ' ' + esc(t(tpl.name)) + '</span>' +
             '<span class="badge">' + n + ' ' + t('wf.steps') + '</span>' +
           '</div>' +
           '<div class="wf-desc muted small">' + esc(t(tpl.description)) + '</div>' +
@@ -784,7 +791,7 @@
   function renderAdminLogin(root) {
     root.innerHTML =
       '<div class="card" style="max-width:460px">' +
-        '<h3 class="card-title">🛡️ ' + t('admin.title') + '</h3>' +
+        '<h3 class="card-title">' + IC('shield') + ' ' + t('admin.title') + '</h3>' +
         '<p class="muted" style="margin-top:0">' + t('admin.hint') + '</p>' +
         '<label class="field"><span class="field-label">' + t('admin.tokenLabel') + '</span>' +
           '<input id="admin-token" type="password" class="field-input" /></label>' +
@@ -813,7 +820,7 @@
     root.innerHTML =
       '<div class="card">' +
         '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">🛡️ ' + t('admin.stats') + '</h3>' +
+          '<h3 class="card-title" style="margin:0">' + IC('shield') + ' ' + t('admin.stats') + '</h3>' +
           '<span class="spacer"></span>' +
           '<button class="btn btn-ghost btn-sm" id="admin-refresh">' + t('common.refresh') + '</button>' +
           '<button class="btn btn-ghost btn-sm" id="admin-logout">' + t('admin.disconnect') + '</button>' +
@@ -859,7 +866,7 @@
         })
         .catch(function (err) {
           if (err.status === 403) { API.setAdminToken(''); renderAdminLogin(root); return; }
-          body.innerHTML = '<div class="placeholder">⚠️ ' + esc(err.message) + '</div>';
+          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
         });
     }
 
@@ -879,7 +886,7 @@
   function renderEditor(root) {
     var FE = window.FlowEditor;
     if (!FE) {
-      root.innerHTML = '<div class="placeholder">⚠️ flow-editor.js not loaded</div>';
+      root.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' flow-editor.js not loaded</div>';
       return;
     }
 
@@ -893,13 +900,13 @@
           '<span class="fe-wf-title" id="fe-wf-label"></span>' +
           '<span id="fe-wf-badge"></span>' +
           '<div class="fe-topbar-actions">' +
-            '<button class="btn btn-ghost btn-sm" id="fe-from-run" title="' + t('fe.fromRun') + '">📥</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-load" title="' + t('fe.load') + '">📂</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-from-run" title="' + t('fe.fromRun') + '">' + IC('upload', 15) + '</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-load" title="' + t('fe.load') + '">' + IC('folder', 15) + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-json" title="' + t('fe.toJson') + '">{ }</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-clear" title="' + t('fe.clear') + '">🗑️</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-clear" title="' + t('fe.clear') + '">' + IC('trash', 15) + '</button>' +
             '<button class="btn btn-ghost btn-sm" id="fe-save">' + t('fe.save') + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-save-server">💾 ' + t('fe.saveServer') + '</button>' +
-            '<button class="btn btn-primary btn-sm" id="fe-run">▶ ' + t('fe.testWorkflow') + '</button>' +
+            '<button class="btn btn-ghost btn-sm" id="fe-save-server">' + IC('save', 14) + ' ' + t('fe.saveServer') + '</button>' +
+            '<button class="btn btn-primary btn-sm" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
           '</div>' +
         '</div>' +
         '<div class="fe-layout">' +
@@ -976,7 +983,7 @@
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
       if (cur && cur.id) {
         wfLabel.textContent = cur.name;
-        wfBadge.innerHTML = '<span class="fe-badge-saved">✓ v' + cur.version + '</span>';
+        wfBadge.innerHTML = '<span class="fe-badge-saved">' + IC('check', 12) + ' v' + cur.version + '</span>';
       } else {
         wfLabel.textContent = t('fe.untitled');
         wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
@@ -1064,7 +1071,7 @@
       API.runFlow({ userId: uid, steps: steps, headless: true })
         .then(function (data) {
           resultEl.innerHTML =
-            '<div class="result-banner ok">✅ ' + t('fe.queued') +
+            '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('fe.queued') +
             ' <code>' + esc(data.jobId) + '</code> ' +
             '<button class="btn btn-ghost btn-sm" id="fe-goto-job" data-job="' +
             esc(data.jobId) + '">' + t('run.viewJob') + '</button> ' +
@@ -1087,7 +1094,7 @@
           }
         })
         .catch(function (err) {
-          resultEl.innerHTML = '<div class="result-banner err">❌ ' +
+          resultEl.innerHTML = '<div class="result-banner err">' + IC('x-circle') + ' ' +
             esc(err && err.message ? err.message : String(err)) + '</div>';
         })
         .then(function () { btn.disabled = false; btn.textContent = label; });
@@ -1095,6 +1102,11 @@
   }
 
   function render(route, root) {
+    // Views may emit `data-icon="name"` placeholders; hydrate them into inline
+    // SVG right after the route paints (Icons.hydrate is idempotent).
+    if (window.Icons) {
+      setTimeout(function () { window.Icons.hydrate(root); }, 0);
+    }
     switch (route) {
       case 'run': return renderRun(root);
       case 'workflows': return renderWorkflows(root);
@@ -1104,19 +1116,19 @@
         if (window.BrowserView && typeof window.BrowserView.render === 'function') {
           return window.BrowserView.render(root);
         }
-        root.innerHTML = '<div class="placeholder">🚧 ' + t('common.comingSoon') + '</div>';
+        root.innerHTML = '<div class="placeholder">' + IC('wand') + ' ' + t('common.comingSoon') + '</div>';
         return;
       case 'live':
         if (window.LiveView && typeof window.LiveView.render === 'function') {
           return window.LiveView.render(root);
         }
-        root.innerHTML = '<div class="placeholder">🚧 ' + t('common.comingSoon') + '</div>';
+        root.innerHTML = '<div class="placeholder">' + IC('wand') + ' ' + t('common.comingSoon') + '</div>';
         return;
       case 'quota': return renderQuota(root);
       case 'schedules': return renderSchedules(root);
       case 'admin': return renderAdmin(root);
       default:
-        root.innerHTML = '<div class="placeholder">🚧 ' + t('common.comingSoon') + '</div>';
+        root.innerHTML = '<div class="placeholder">' + IC('wand') + ' ' + t('common.comingSoon') + '</div>';
     }
   }
 

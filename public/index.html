@@ -15,7 +15,7 @@
   <!-- ============================================ -->
   <div id="login-screen" class="login-screen">
     <div class="login-card">
-      <div class="login-logo">🤖</div>
+      <div class="login-logo" data-icon="zap" data-icon-size="30"></div>
       <h1 class="login-title" data-i18n="app.title">Automation Backend</h1>
       <p class="login-subtitle" data-i18n="login.subtitle">برای ورود کلید API خود را وارد کنید</p>
 
@@ -32,7 +32,7 @@
               spellcheck="false"
               required
             />
-            <button type="button" id="toggle-key" class="icon-btn" aria-label="toggle">👁️</button>
+            <button type="button" id="toggle-key" class="icon-btn" aria-label="toggle" data-icon="eye"></button>
           </div>
         </label>
 
@@ -62,49 +62,49 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-logo">🤖</span>
+        <span class="brand-logo" data-icon="zap" data-icon-size="18"></span>
         <span class="brand-text" data-i18n="app.title">Automation Backend</span>
       </div>
 
       <nav class="sidebar-nav">
         <a href="#/dashboard" class="nav-item" data-route="dashboard">
-          <span class="nav-icon">📊</span>
+          <span class="nav-icon" data-icon="gauge"></span>
           <span class="nav-label" data-i18n="nav.dashboard">داشبورد</span>
         </a>
         <a href="#/run" class="nav-item" data-route="run">
-          <span class="nav-icon">▶️</span>
+          <span class="nav-icon" data-icon="play"></span>
           <span class="nav-label" data-i18n="nav.run">اجرای Flow</span>
         </a>
         <a href="#/workflows" class="nav-item" data-route="workflows">
-          <span class="nav-icon">📚</span>
+          <span class="nav-icon" data-icon="book-open"></span>
           <span class="nav-label" data-i18n="nav.workflows">ورکفلوها</span>
         </a>
         <a href="#/editor" class="nav-item" data-route="editor">
-          <span class="nav-icon">🧩</span>
+          <span class="nav-icon" data-icon="sitemap"></span>
           <span class="nav-label" data-i18n="nav.editor">ادیتور بصری</span>
         </a>
         <a href="#/jobs" class="nav-item" data-route="jobs">
-          <span class="nav-icon">🗂️</span>
+          <span class="nav-icon" data-icon="layers"></span>
           <span class="nav-label" data-i18n="nav.jobs">جاب‌ها</span>
         </a>
         <a href="#/live" class="nav-item" data-route="live">
-          <span class="nav-icon">📡</span>
+          <span class="nav-icon" data-icon="terminal"></span>
           <span class="nav-label" data-i18n="nav.live">نمایش زنده</span>
         </a>
         <a href="#/browser" class="nav-item" data-route="browser">
-          <span class="nav-icon">🖥️</span>
+          <span class="nav-icon" data-icon="frame"></span>
           <span class="nav-label" data-i18n="nav.browser">مرورگر زنده</span>
         </a>
         <a href="#/schedules" class="nav-item" data-route="schedules">
-          <span class="nav-icon">⏰</span>
+          <span class="nav-icon" data-icon="calendar"></span>
           <span class="nav-label" data-i18n="nav.schedules">زمان‌بندی‌ها</span>
         </a>
         <a href="#/quota" class="nav-item" data-route="quota">
-          <span class="nav-icon">📈</span>
+          <span class="nav-icon" data-icon="gauge"></span>
           <span class="nav-label" data-i18n="nav.quota">سهمیه</span>
         </a>
         <a href="#/admin" class="nav-item" data-route="admin">
-          <span class="nav-icon">🛡️</span>
+          <span class="nav-icon" data-icon="shield"></span>
           <span class="nav-label" data-i18n="nav.admin">پنل ادمین</span>
         </a>
       </nav>
@@ -120,11 +120,11 @@
     <!-- Main -->
     <div class="main">
       <header class="topbar">
-        <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="menu">☰</button>
+        <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="menu" data-icon="panel-left"></button>
         <h2 class="page-title" id="page-title" data-i18n="nav.dashboard">داشبورد</h2>
         <div class="topbar-actions">
-          <button class="icon-btn" id="lang-toggle" title="Language">🌐</button>
-          <button class="icon-btn" id="theme-toggle" title="Theme">🌓</button>
+          <button class="icon-btn" id="lang-toggle" title="Language" data-icon="globe"></button>
+          <button class="icon-btn" id="theme-toggle" title="Theme" data-icon="sparkles"></button>
           <button class="btn btn-ghost btn-sm" id="logout-btn" data-i18n="nav.logout">خروج</button>
         </div>
       </header>
@@ -138,6 +138,11 @@
   <!-- Toast container -->
   <div id="toast-container" class="toast-container"></div>
 
+  <!-- icons.js must load first: it is the inline-SVG icon registry every other
+       module (actions catalog, editor shell, panels) draws its glyphs from.
+       It replaces the old emoji glyphs, which rendered as empty boxes wherever
+       the platform font stack has no emoji coverage. -->
+  <script src="/js/icons.js"></script>
   <script src="/js/actions.js"></script>
   <script src="/js/templates.js"></script>
   <script src="/js/i18n.js"></script>

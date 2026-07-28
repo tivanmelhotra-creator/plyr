@@ -34,12 +34,32 @@
 
   var ACTIONS = [
     // ---- Navigation & timing -----------------------------------------
-    { id: 'goto', icon: '🌐', cat: 'navigation', fields: [
+    { id: 'goto', icon: 'globe', cat: 'navigation', fields: [
       { k: 'url', label: 'p.url', type: 'string', ph: 'https://example.com', expr: true, help: 'help.url' },
     ] },
-    { id: 'wait', icon: '⏳', cat: 'navigation', fields: [
+    { id: 'wait', icon: 'clock', cat: 'navigation', fields: [
       { k: 'ms', label: 'p.ms', type: 'number', ph: '1000', min: 0, expr: true, help: 'help.ms' },
       { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) #ready', help: 'help.waitSelector' },
+    ] },
+
+    // The designed core-node set (docs/uiux/00-PROCESS-node-design.md) names
+    // `Launch Browser`, `Wait Element`, `Delay`, `Close Browser` and `Parse JSON`
+    // as first-class nodes. They were missing from this catalog, so any graph
+    // that used them failed validation with "Unknown action" (visible in the
+    // reference screenshots). Each id below is dispatched by src/pipeline.ts.
+    { id: 'launch', icon: 'rocket', cat: 'navigation', fields: [
+      { k: 'url', label: 'p.url', type: 'string', ph: '(optional) https://example.com', expr: true, help: 'help.launchUrl' },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '60000', min: 0 },
+      { k: 'waitUntil', label: 'p.waitUntil', type: 'options', options: ['domcontentloaded', 'load', 'networkidle'] },
+    ] },
+    { id: 'wait-element', icon: 'eye', cat: 'navigation', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '#ready', expr: true, help: 'help.waitSelector' },
+      { k: 'state', label: 'p.waitState', type: 'options', options: ['visible', 'attached', 'hidden'] },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '30000', min: 0 },
+      { k: 'optional', label: 'p.optional', type: 'boolean', help: 'help.waitOptional' },
+    ] },
+    { id: 'delay', icon: 'hourglass', cat: 'navigation', fields: [
+      { k: 'ms', label: 'p.ms', type: 'number', ph: '1000', min: 0, expr: true, help: 'help.ms' },
     ] },
 
     // ---- Mouse / interaction -----------------------------------------
@@ -49,7 +69,7 @@
     // Every control that design exposes MUST be declared here, because
     // GraphSerialize.coerceParams() only copies keys present in `fields` — an
     // undeclared param is silently dropped on save/run.
-    { id: 'click', icon: '🖱️', cat: 'interaction', fields: [
+    { id: 'click', icon: 'mouse-pointer', cat: 'interaction', fields: [
       // Selector
       { k: 'selectorType', label: 'click.selectorType', type: 'options', options: ['css', 'xpath', 'text'] },
       { k: 'selector', label: 'p.selector', type: 'text', ph: '#next-button', expr: true },
@@ -77,79 +97,94 @@
       { k: 'human', label: 'click.humanLike', type: 'boolean', help: 'help.humanClick' },
       { k: 'force', label: 'click.forceClick', type: 'boolean', help: 'help.forceClick' },
     ] },
-    { id: 'dblclick', icon: '🖱️', cat: 'interaction', fields: [
+    { id: 'dblclick', icon: 'mouse-pointer-2', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '.row' },
     ] },
-    { id: 'hover', icon: '👆', cat: 'interaction', fields: [
+    { id: 'hover', icon: 'hand', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: '.menu' },
     ] },
-    { id: 'focus', icon: '🎯', cat: 'interaction', fields: [
+    { id: 'focus', icon: 'target', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[name=q]' },
     ] },
-    { id: 'mouse-move', icon: '🖲️', cat: 'interaction', fields: [
+    { id: 'mouse-move', icon: 'move', cat: 'interaction', fields: [
       { k: 'x', label: 'p.x', type: 'number', ph: '100', expr: true },
       { k: 'y', label: 'p.y', type: 'number', ph: '200', expr: true },
       { k: 'human', label: 'p.human', type: 'boolean' },
     ] },
-    { id: 'drag-drop', icon: '🤏', cat: 'interaction', fields: [
+    { id: 'drag-drop', icon: 'grab', cat: 'interaction', fields: [
       { k: 'source', label: 'p.source', type: 'string', ph: '.draggable' },
       { k: 'target', label: 'p.target', type: 'string', ph: '.dropzone' },
     ] },
-    { id: 'scroll', icon: '🧭', cat: 'interaction', fields: [
+    { id: 'scroll', icon: 'arrows-vertical', cat: 'interaction', fields: [
       { k: 'direction', label: 'p.direction', type: 'select', options: ['bottom', 'top'] },
     ] },
 
     // ---- Forms / keyboard --------------------------------------------
-    { id: 'fill', icon: '✏️', cat: 'interaction', fields: [
+    { id: 'fill', icon: 'pencil', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[name=q]' },
       { k: 'text', label: 'p.text', type: 'string', ph: 'hello', expr: true, help: 'help.fillText' },
     ] },
-    { id: 'type', icon: '⌨️', cat: 'interaction', fields: [
+    { id: 'type', icon: 'keyboard', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[name=q]' },
       { k: 'text', label: 'p.text', type: 'string', ph: 'hello', expr: true, help: 'help.fillText' },
     ] },
-    { id: 'press', icon: '↩️', cat: 'interaction', fields: [
+    { id: 'press', icon: 'corner-down-left', cat: 'interaction', fields: [
       { k: 'text', label: 'p.key', type: 'text', ph: 'Enter' },
     ] },
-    { id: 'select', icon: '🔽', cat: 'interaction', fields: [
+    { id: 'select', icon: 'chevron-down', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'select#country' },
       { k: 'value', label: 'p.value', type: 'text', ph: 'IR' },
     ] },
-    { id: 'check', icon: '☑️', cat: 'interaction', fields: [
+    { id: 'check', icon: 'square-check', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[type=checkbox]' },
     ] },
-    { id: 'uncheck', icon: '⬜', cat: 'interaction', fields: [
+    { id: 'uncheck', icon: 'square', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'input[type=checkbox]' },
     ] },
-    { id: 'upload', icon: '📎', cat: 'interaction', fields: [
+    { id: 'upload', icon: 'paperclip', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'text', ph: 'input[type=file]' },
       { k: 'path', label: 'p.value', type: 'text', ph: 'uploads/file.pdf' },
     ] },
 
     // ---- Data extraction & export ------------------------------------
-    { id: 'extract', icon: '📤', cat: 'data', fields: [
+    { id: 'extract', icon: 'download', cat: 'data', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '.price' },
       { k: 'name', label: 'p.name', type: 'string', ph: 'price', help: 'help.saveAs' },
     ] },
-    { id: 'export-data', icon: '💾', cat: 'data', fields: [
+    // `extract-data` is the designed name for a multi-field harvest (aliased to
+    // the `extract` handler in src/pipeline.ts, with `multiple` on by default).
+    { id: 'extract-data', icon: 'database', cat: 'data', fields: [
+      { k: 'selector', label: 'p.selector', type: 'string', ph: '.row', expr: true },
+      { k: 'multiple', label: 'p.multiple', type: 'boolean', help: 'help.extractMultiple' },
+      { k: 'attribute', label: 'p.attribute', type: 'string', ph: '(optional) href' },
+      { k: 'property', label: 'p.property', type: 'string', ph: '(optional) textContent' },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '30000', min: 0 },
+      { k: 'optional', label: 'p.optional', type: 'boolean' },
+    ] },
+    { id: 'parse-json', icon: 'braces', cat: 'data', fields: [
+      { k: 'json', label: 'p.jsonInput', type: 'multiline', ph: '{{ $json.body }}', expr: true, help: 'help.parseJson' },
+      { k: 'path', label: 'p.jsonPath', type: 'string', ph: '(optional) data.items[0].id', help: 'help.jsonPath' },
+      { k: 'optional', label: 'p.optional', type: 'boolean', help: 'help.parseJsonOptional' },
+    ] },
+    { id: 'export-data', icon: 'save', cat: 'data', fields: [
       { k: 'format', label: 'p.format', type: 'options', options: ['json', 'csv'] },
       { k: 'from', label: 'p.from', type: 'string', ph: '(optional) variable name' },
       { k: 'filename', label: 'p.filename', type: 'string', ph: 'export', expr: true },
     ] },
-    { id: 'screenshot', icon: '📸', cat: 'data', fields: [] },
-    { id: 'download', icon: '⬇️', cat: 'data', fields: [
+    { id: 'screenshot', icon: 'camera', cat: 'data', fields: [] },
+    { id: 'download', icon: 'arrow-down', cat: 'data', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'a.download' },
       { k: 'fileName', label: 'p.filename', type: 'string', ph: '(optional) report.pdf', expr: true },
       { k: 'timeout', label: 'p.timeout', type: 'number', ph: '60000', min: 0 },
     ] },
-    { id: 'attribute', icon: '🏷️', cat: 'data', fields: [
+    { id: 'attribute', icon: 'tag', cat: 'data', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'a.link' },
       { k: 'attribute', label: 'p.attribute', type: 'string', ph: 'href' },
       { k: 'name', label: 'p.name', type: 'string', ph: 'link', help: 'help.saveAs' },
     ] },
 
     // ---- Variables (Automa-style transforms) -------------------------
-    { id: 'variable', icon: '🔢', cat: 'data', fields: [
+    { id: 'variable', icon: 'variable', cat: 'data', fields: [
       { k: 'op', label: 'p.op', type: 'options', options: ['set', 'regex', 'replace', 'slice', 'split', 'join', 'sort'] },
       { k: 'name', label: 'p.name', type: 'string', ph: 'result' },
       { k: 'from', label: 'p.from', type: 'string', ph: '(optional) source variable' },
@@ -165,29 +200,29 @@
     ] },
 
     // ---- Cookies & clipboard -----------------------------------------
-    { id: 'cookie', icon: '🍪', cat: 'integration', fields: [
+    { id: 'cookie', icon: 'cookie', cat: 'integration', fields: [
       { k: 'op', label: 'p.op', type: 'options', options: ['getAll', 'get', 'set', 'clear'] },
       { k: 'name', label: 'p.name', type: 'string', ph: 'session_id' },
       { k: 'value', label: 'p.value', type: 'string', ph: 'set op only', expr: true },
       { k: 'domain', label: 'p.domain', type: 'string', ph: '(optional) .example.com' },
       { k: 'expires', label: 'p.expires', type: 'number', ph: '(optional) unix ts' },
     ] },
-    { id: 'clipboard', icon: '📋', cat: 'integration', fields: [
+    { id: 'clipboard', icon: 'clipboard', cat: 'integration', fields: [
       { k: 'action', label: 'p.op', type: 'options', options: ['get', 'set', 'copy', 'paste'] },
       { k: 'text', label: 'p.text', type: 'string', ph: 'set op', expr: true },
       { k: 'selector', label: 'p.selector', type: 'string', ph: 'copy/paste op' },
     ] },
 
     // ---- Notification & logging --------------------------------------
-    { id: 'notification', icon: '🔔', cat: 'integration', fields: [
+    { id: 'notification', icon: 'bell', cat: 'integration', fields: [
       { k: 'title', label: 'p.title', type: 'string', ph: 'Done', expr: true },
       { k: 'message', label: 'p.message', type: 'multiline', ph: 'workflow finished', expr: true },
       { k: 'level', label: 'p.level', type: 'options', options: ['info', 'success', 'warn', 'error'] },
     ] },
-    { id: 'log', icon: '📝', cat: 'integration', fields: [
+    { id: 'log', icon: 'file-text', cat: 'integration', fields: [
       { k: 'message', label: 'p.message', type: 'multiline', ph: 'checkpoint', expr: true },
     ] },
-    { id: 'http-request', icon: '🌍', cat: 'integration', fields: [
+    { id: 'http-request', icon: 'globe', cat: 'integration', fields: [
       { k: 'url', label: 'p.url', type: 'string', ph: 'https://api.example.com/x', expr: true, help: 'help.url' },
       { k: 'method', label: 'p.httpMethod', type: 'options', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
       { k: 'headers', label: 'p.headers', type: 'json', ph: '{ "Authorization": "Bearer …" }', expr: true },
@@ -198,27 +233,27 @@
     ] },
 
     // ---- DOM mutation -------------------------------------------------
-    { id: 'remove-element', icon: '🗑️', cat: 'interaction', fields: [
+    { id: 'remove-element', icon: 'trash', cat: 'interaction', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '.ad, .popup' },
     ] },
-    { id: 'add-style', icon: '🎨', cat: 'interaction', fields: [
+    { id: 'add-style', icon: 'palette', cat: 'interaction', fields: [
       { k: 'css', label: 'p.css', type: 'multiline', ph: 'body { filter: grayscale(1); }' },
     ] },
 
     // ---- Frames / tabs / dialogs / session ---------------------------
-    { id: 'switch-frame', icon: '🖼️', cat: 'navigation', fields: [
+    { id: 'switch-frame', icon: 'image-frame', cat: 'navigation', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '(empty = main frame) iframe#x' },
     ] },
-    { id: 'switch-tab', icon: '🗂️', cat: 'navigation', fields: [
+    { id: 'switch-tab', icon: 'layers', cat: 'navigation', fields: [
       { k: 'index', label: 'p.index', type: 'number', ph: '0', min: 0, expr: true },
       { k: 'urlContains', label: 'p.urlContains', type: 'string', ph: '(optional) match by url' },
       { k: 'newTabUrl', label: 'p.newTabUrl', type: 'string', ph: '(optional) open new tab url' },
     ] },
-    { id: 'close-tab', icon: '❎', cat: 'navigation', fields: [
+    { id: 'close-tab', icon: 'square-x', cat: 'navigation', fields: [
       { k: 'index', label: 'p.index', type: 'number', ph: '(optional) tab index', min: 0 },
     ] },
-    { id: 'close-browser', icon: '🚪', cat: 'navigation', fields: [] },
-    { id: 'handle-dialog', icon: '💬', cat: 'navigation', fields: [
+    { id: 'close-browser', icon: 'power', cat: 'navigation', fields: [] },
+    { id: 'handle-dialog', icon: 'message-square', cat: 'navigation', fields: [
       { k: 'action', label: 'p.op', type: 'options', options: ['accept', 'dismiss'] },
       { k: 'promptText', label: 'p.promptText', type: 'string', ph: '(optional) text for prompt' },
     ] },
@@ -235,7 +270,7 @@
     // whole builder (JSON [[row,...],[row,...]] = AND within, OR between) and is
     // the authoritative source when present — the flat selector/operator/value/
     // expected quartet remains for the legacy single-row form.
-    { id: 'if', icon: '🔀', cat: 'flow',
+    { id: 'if', icon: 'git-branch', cat: 'flow',
       branches: [{ id: 'then', label: 'port.then' }, { id: 'else', label: 'port.else' }],
       fields: [
         { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
@@ -248,19 +283,19 @@
         { k: 'maxDepth', label: 'cb.maxDepth', type: 'number', ph: '5', min: 1 },
         { k: 'evaluateMode', label: 'cb.evaluateMode', type: 'options', options: ['first', 'all'] },
       ] },
-    { id: 'switch', icon: '🔢', cat: 'flow',
+    { id: 'switch', icon: 'shuffle', cat: 'flow',
       branches: [{ id: 'default', label: 'port.default' }],
       dynamicBranches: 'cases',
       fields: [
         { k: 'variable', label: 'p.variable', type: 'string', ph: 'status', expr: true },
         { k: 'casesList', label: 'p.cases', type: 'string', ph: 'a, b, c (comma list)' },
       ] },
-    { id: 'loop', icon: '🔁', cat: 'flow',
+    { id: 'loop', icon: 'rotate-cw', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
         { k: 'count', label: 'p.count', type: 'number', ph: '3', min: 0, expr: true },
       ] },
-    { id: 'foreach', icon: '🔂', cat: 'flow',
+    { id: 'foreach', icon: 'repeat', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
         { k: 'items', label: 'p.items', type: 'string', ph: 'variable holding array', expr: true },
@@ -269,7 +304,7 @@
     // `while` shares the Condition Builder NDV with `if` (same locked design,
     // plus the "Loop guard" footer control) — so it declares the same condition
     // params. See the note on `if` about coerceParams() dropping undeclared keys.
-    { id: 'while', icon: '♾️', cat: 'flow',
+    { id: 'while', icon: 'infinity', cat: 'flow',
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
         { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
@@ -283,11 +318,11 @@
         { k: 'evaluateMode', label: 'cb.evaluateMode', type: 'options', options: ['first', 'all'] },
         { k: 'maxIterations', label: 'p.maxIterations', type: 'number', ph: '100', min: 1 },
       ] },
-    { id: 'try', icon: '🛡️', cat: 'flow',
+    { id: 'try', icon: 'shield', cat: 'flow',
       branches: [{ id: 'try', label: 'port.try' }, { id: 'catch', label: 'port.catch' }, { id: 'finally', label: 'port.finally' }],
       fields: [] },
     // Step 27: deliberate, conditional failure (n8n "Stop And Error").
-    { id: 'stop_and_error', icon: '🛑', cat: 'flow', fields: [
+    { id: 'stop_and_error', icon: 'octagon-alert', cat: 'flow', fields: [
       { k: 'message', label: 'p.message', type: 'string', ph: 'Why this stops', expr: true, help: 'help.stopError' },
     ] },
 
@@ -295,19 +330,19 @@
     // Trigger nodes describe HOW a saved workflow is activated. They produce
     // the first node's input items (manual data / webhook body / schedule
     // context). The backend treats them as configuration, not browser steps.
-    { id: 'trigger_manual', icon: '▶️', cat: 'trigger', fields: [
+    { id: 'trigger_manual', icon: 'play-circle', cat: 'trigger', fields: [
       { k: 'data', label: 'p.triggerData', type: 'json', ph: '{ "key": "value" }', expr: true, help: 'help.triggerManualData' },
     ] },
-    { id: 'trigger_webhook', icon: '🪝', cat: 'trigger', fields: [
+    { id: 'trigger_webhook', icon: 'webhook', cat: 'trigger', fields: [
       { k: 'method', label: 'p.httpMethod', type: 'options', options: ['*', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE'], help: 'help.triggerMethod' },
       { k: 'path', label: 'p.webhookPath', type: 'string', ph: 'my-hook', help: 'help.triggerPath' },
       { k: 'secret', label: 'p.webhookSecret', type: 'password', ph: '(optional) HMAC secret', help: 'help.triggerSecret' },
     ] },
-    { id: 'trigger_schedule', icon: '⏰', cat: 'trigger', fields: [
+    { id: 'trigger_schedule', icon: 'calendar', cat: 'trigger', fields: [
       { k: 'cron', label: 'p.cron', type: 'string', ph: '*/5 * * * *', help: 'help.triggerCron' },
       { k: 'timezone', label: 'p.timezone', type: 'string', ph: 'UTC', help: 'help.triggerTimezone' },
     ] },
-    { id: 'trigger_telegram', icon: '✈️', cat: 'trigger', fields: [
+    { id: 'trigger_telegram', icon: 'send', cat: 'trigger', fields: [
       { k: 'botToken', label: 'p.botToken', type: 'password', ph: '123456:ABC-DEF...', help: 'help.triggerBotToken' },
       { k: 'chatId', label: 'p.chatId', type: 'string', ph: '(optional) filter chat id', help: 'help.triggerChatId' },
     ] },

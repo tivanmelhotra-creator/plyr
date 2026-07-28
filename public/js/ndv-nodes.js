@@ -60,7 +60,7 @@
         preview.textContent = '= ' + (typeof v === 'object' ? JSON.stringify(v) : String(v)).slice(0, 90);
       } catch (e) {
         preview.classList.add('err');
-        preview.textContent = '⚠ ' + (e && e.message ? e.message : t('expr.invalid'));
+        preview.textContent = '! ' + (e && e.message ? e.message : t('expr.invalid'));
       }
     }
 
@@ -121,7 +121,7 @@
   // A target-picker button: hands the selector field over to the live Element
   // Picker when the browser view is available, otherwise explains why not.
   function pickerBtn(onPicked) {
-    return UI().iconBtn('◎', t('ndv.pickElement'), 'is-picker', function () {
+    return UI().iconBtn('target', t('ndv.pickElement'), 'is-picker', function () {
       if (window.BrowserView && typeof window.BrowserView.requestPick === 'function') {
         window.BrowserView.requestPick(onPicked);
         return;
@@ -480,7 +480,7 @@
       gh.appendChild(ui.el('span', 'cb-group-badge', GROUP_LETTERS[gi] || String(gi + 1)));
       gh.appendChild(ui.el('span', 'cb-group-label', t('cb.allMustMatch')));
       if (groups.length > 1) {
-        gh.appendChild(ui.iconBtn('🗑', t('cb.removeGroup'), 'is-danger', function () {
+        gh.appendChild(ui.iconBtn('trash', t('cb.removeGroup'), 'is-danger', function () {
           groups.splice(gi, 1); restructure();
         }));
       }
@@ -561,7 +561,8 @@
   function resultCard(isTrue, isIf) {
     var ui = UI();
     var card = ui.el('div', 'cb-result-card ' + (isTrue ? 'true' : 'false'));
-    var icon = ui.el('span', 'cb-result-icon', isTrue ? '✓' : '✕');
+    var icon = ui.el('span', 'cb-result-icon');
+    icon.innerHTML = window.Icons ? window.Icons.svg(isTrue ? 'check' : 'x', { size: 14 }) : '';
     card.appendChild(icon);
     var texts = ui.el('div', 'cb-result-texts');
     texts.appendChild(ui.el('div', 'cb-result-title',
@@ -596,9 +597,9 @@
     });
     head.appendChild(chips);
     var acts = ui.el('div', 'cb-row-acts');
-    acts.appendChild(ui.iconBtn('⧉', t('cb.cloneRow'), '', o.onClone));
-    acts.appendChild(ui.iconBtn('🗑', t('cb.removeRow'), 'is-danger', o.onDelete));
-    acts.appendChild(ui.iconBtn(row.collapsed ? '⌄' : '⌃',
+    acts.appendChild(ui.iconBtn('copy', t('cb.cloneRow'), '', o.onClone));
+    acts.appendChild(ui.iconBtn('trash', t('cb.removeRow'), 'is-danger', o.onDelete));
+    acts.appendChild(ui.iconBtn(row.collapsed ? 'chevron-down' : 'chevron-up',
       row.collapsed ? t('cb.expandRow') : t('cb.collapseRow'), 'is-collapse', o.onToggleCollapse));
     head.appendChild(acts);
     head.addEventListener('click', function (ev) {

@@ -30,6 +30,18 @@
   function t(k) { return U() ? U().t(k) : k; }
   function esc(s) { return U() ? U().esc(s) : String(s == null ? '' : s); }
 
+  // ---- Icons (public/js/icons.js) -------------------------------------------
+  // IC(name)      -> inline SVG for a chrome icon (chevron, trash, plus, …)
+  // ICON(actionId)-> inline SVG for an ACTION_CATALOG action
+  // Both degrade to an empty string when icons.js is absent, so the editor still
+  // renders text-only rather than throwing.
+  function IC(name, size) {
+    return window.Icons ? window.Icons.svg(name, { size: size || 16 }) : '';
+  }
+  function ICON(actionId, size) {
+    return window.Icons ? window.Icons.action(actionId, { size: size || 16 }) : '';
+  }
+
   // ---- Action catalog (mirrors views.js so a node == an action) -------------
   // Each action defines its editable params (fields). `branches` lists the
   // output ports of a node; default is a single 'next' port. Condition/loop
@@ -66,6 +78,19 @@
   var nodeResults = {};  // Step 25: { nodeId: { input:[...], output:[...] } } per-node items for the NDV INPUT/OUTPUT columns (populated by the live runner in Step 26)
   var nodeMeta = {};     // Step 26: { nodeId: { outputItemCount, inputItemCount, durationMs, status, error } } drives the on-node success/error badge + tooltip
   var nodePins = {};     // Step 26: { nodeId: true } pinned nodes (show a 📌 indicator on the card)
+
+  // Canvas chrome state (items F + G of the uiux gap list).
+  // `tool` mirrors the floating toolbar's active pointer mode:
+  //   'select' — default; background drag = pan, Shift+drag = box-select
+  //   'pan'    — background drag always pans (Shift still box-selects)
+  // `locked` freezes node positions (cards stay clickable/openable).
+  // `grid`/`minimapOpen` are pure view preferences. All four live outside
+  // `state` on purpose: they are workspace chrome, not graph data, so they
+  // must never reach serialize()/saveLocal() or the steps[] round-trip.
+  var canvasTool = 'select';
+  var canvasLocked = false;
+  var gridVisible = true;
+  var minimapOpen = true;
 
   // Status bar "Last saved: HH:MM:SS" (shell previews). null until a save
   // actually succeeds — the bar shows an em-dash rather than a fake time.
@@ -524,7 +549,9 @@
     card.style.width = nodeW() + 'px';
 
     var act = actionById(node.action);
-    var icon = isStart ? '🚩' : (act ? act.icon : '⚙️');
+    // Inline SVG (window.Icons) — emoji glyphs rendered as empty boxes wherever
+    // the platform font stack lacks emoji coverage, and could not be tinted.
+    var icon = ICON(isStart ? '__start__' : node.action);
 
     // Category accent bar (left) — colour-codes the node by category.
     var cat = isStart ? { color: '#34d399' } : categoryOf(node.action);
@@ -547,14 +574,14 @@
         badge.className = 'fn-badge ' + (ok ? 'ok' : 'bad');
         var parts = [];
         if (ok) {
-          parts.push('✓');
+          parts.push(IC('check', 11));
           if (meta.outputItemCount != null) parts.push(meta.outputItemCount + ' ' + t('rp.items'));
           if (meta.durationMs != null) parts.push(meta.durationMs + 'ms');
         } else {
-          parts.push('✕');
+          parts.push(IC('x', 11));
           if (meta.error) parts.push(String(meta.error).slice(0, 24));
         }
-        badge.textContent = parts.join(' ');
+        badge.innerHTML = parts.join(' ');
         var tip = ok
           ? (t('rp.done') + ' · ' + (meta.outputItemCount != null ? meta.outputItemCount + ' ' + t('rp.items') : '') +
              (meta.durationMs != null ? ' · ' + meta.durationMs + 'ms' : ''))
@@ -565,7 +592,7 @@
       if (nodePins[node.id]) {
         var pinmark = document.createElement('div');
         pinmark.className = 'fn-pin';
-        pinmark.textContent = '📌';
+        pinmark.innerHTML = IC('pin', 11);
         pinmark.title = t('rp.pinned');
         card.appendChild(pinmark);
       }
@@ -585,7 +612,7 @@
       var kebab = document.createElement('button');
       kebab.className = 'flow-node-kebab';
       kebab.title = t('fe.nodeMenu');
-      kebab.textContent = '⋮';
+      kebab.innerHTML = IC('more-vertical', 14);
       kebab.addEventListener('click', function (ev) {
         ev.stopPropagation();
         var r = kebab.getBoundingClientRect();
@@ -649,6 +676,9 @@
       // If this node is part of an existing multi-selection, drag the whole set.
       if (!state.selSet[node.id]) { state.selSet = {}; }
       selectNode(node.id);
+      // Canvas lock (toolbar item G) freezes geometry only — selecting a node,
+      // opening its NDV and editing params all stay available.
+      if (canvasLocked) return;
       var wp = worldPoint(ev.clientX, ev.clientY);
       // capture per-node offsets for group move
       var group = activeSelection();
@@ -699,19 +729,19 @@
     var menu = document.createElement('div');
     menu.className = 'fe-ctxmenu';
     var items = [
-      { icon: '⧉', label: t('fe.cloneNode'), fn: function () {
+      { icon: 'copy', label: t('fe.cloneNode'), fn: function () {
         state.selSet = {}; state.selSet[nodeId] = true; state.selected = nodeId;
         copySelection(); pasteClipboard();
       } },
-      { icon: '⚙', label: t('ndv.open'), fn: function () { openNdv(nodeId); } },
-      { icon: nodePins[nodeId] ? '📌' : '📍',
+      { icon: 'sliders', label: t('ndv.open'), fn: function () { openNdv(nodeId); } },
+      { icon: 'pin',
         label: nodePins[nodeId] ? t('fe.unpinNode') : t('fe.pinNode'),
         fn: function () {
           if (nodePins[nodeId]) delete nodePins[nodeId]; else nodePins[nodeId] = true;
           renderNodes();
         } },
       { sep: true },
-      { icon: '🗑', label: t('fe.deleteNode'), danger: true,
+      { icon: 'trash', label: t('fe.deleteNode'), danger: true,
         fn: function () { removeNode(nodeId); } },
     ];
 
@@ -724,7 +754,7 @@
       }
       var b = document.createElement('button');
       b.className = 'fe-ctxitem' + (it.danger ? ' is-danger' : '');
-      b.innerHTML = '<span class="fe-ctxicon">' + it.icon + '</span>' +
+      b.innerHTML = '<span class="fe-ctxicon">' + IC(it.icon) + '</span>' +
         '<span>' + esc(it.label) + '</span>';
       b.addEventListener('click', function (ev) {
         ev.stopPropagation();
@@ -768,7 +798,7 @@
     var card = document.createElement('div');
     card.className = 'fe-empty-card';
     card.innerHTML =
-      '<div class="fe-empty-icon">⚡</div>' +
+      '<div class="fe-empty-icon">' + IC('zap', 28) + '</div>' +
       '<div class="fe-empty-title">' + esc(t('fe.emptyTitle')) + '</div>' +
       '<div class="fe-empty-sub">' + esc(t('fe.emptySub')) + '</div>';
     var cta = document.createElement('button');
@@ -791,7 +821,7 @@
     var items = (res.errors || []).map(function (e) { return { kind: 'error', it: e }; })
       .concat((res.warnings || []).map(function (w) { return { kind: 'warn', it: w }; }));
     if (!items.length) {
-      wrap.innerHTML = '<span class="v-ok">✓ ' + esc(t('val.ok')) + '</span>';
+      wrap.innerHTML = '<span class="v-ok">' + IC('check', 13) + ' ' + esc(t('val.ok')) + '</span>';
       box.appendChild(wrap);
       return;
     }
@@ -800,7 +830,8 @@
       row.className = 'v-item v-' + entry.kind;
       var name = entry.it.nodeId && state.nodes[entry.it.nodeId]
         ? (state.nodes[entry.it.nodeId].action + ': ') : '';
-      row.innerHTML = '<span class="v-dot">' + (entry.kind === 'error' ? '✕' : '!') + '</span>' +
+      row.innerHTML = '<span class="v-dot">' +
+        IC(entry.kind === 'error' ? 'x-circle' : 'alert-circle', 13) + '</span>' +
         '<span>' + esc(name + t(entry.it.message)) + '</span>';
       wrap.appendChild(row);
     });
@@ -1061,7 +1092,7 @@
         el.textContent = '= ' + (typeof v === 'object' ? JSON.stringify(v) : String(v)).slice(0, 80);
       } catch (e) {
         el.classList.add('err');
-        el.textContent = '⚠ ' + (e && e.message ? e.message : t('expr.invalid'));
+        el.textContent = '! ' + (e && e.message ? e.message : t('expr.invalid'));
       }
     });
   }
@@ -1196,7 +1227,24 @@
   }
 
   // Display title: designed nodes get a human name instead of the raw action id.
-  var NODE_DISPLAY_NAMES = { click: 'nk.clickElement', if: 'nk.condition', while: 'nk.whileLoop' };
+  // Human node names for the canvas card + NDV header, so both agree with the
+  // designed screens (docs/uiux). Anything absent falls back to the raw action id.
+  var NODE_DISPLAY_NAMES = {
+    click: 'nk.clickElement',
+    if: 'nk.condition',
+    while: 'nk.whileLoop',
+    launch: 'nk.launchBrowser',
+    'wait-element': 'nk.waitElement',
+    delay: 'nk.delay',
+    'close-browser': 'nk.closeBrowser',
+    'extract-data': 'nk.extractData',
+    'parse-json': 'nk.parseJson',
+    goto: 'nk.openUrl',
+    'http-request': 'nk.httpRequest',
+    trigger_webhook: 'nk.webhookTrigger',
+    trigger_manual: 'nk.manualTrigger',
+    trigger_schedule: 'nk.scheduleTrigger',
+  };
   function ndvTitle(node) {
     var key = NODE_DISPLAY_NAMES[node.action];
     return key ? t(key) : nodeTitle(node);
@@ -1259,7 +1307,7 @@
     var cat = categoryOf(node.action) || { color: '#6b7280' };
     var st = nodeStatus[node.id] || 'idle';
     head.innerHTML =
-      '<span class="ndv-head-icon">' + (act ? act.icon : '⚙️') + '</span>' +
+      '<span class="ndv-head-icon">' + ICON(node.action, 18) + '</span>' +
       '<span class="ndv-head-titles">' +
         '<div class="ndv-head-title">' + esc(ndvTitle(node)) + '</div>' +
         '<div class="ndv-head-sub">' + esc(ndvSubtitle(node)) + '</div>' +
@@ -1269,7 +1317,7 @@
     head.querySelector('.ndv-head-icon').style.setProperty('--cat-color', cat.color || '#FF8A1F');
     var runBtn = document.createElement('button');
     runBtn.className = 'ndv-run-btn';
-    runBtn.innerHTML = '<span class="ndv-run-play">▶</span>' + esc(t('ndv.runNode'));
+    runBtn.innerHTML = '<span class="ndv-run-play">' + IC('play', 12) + '</span>' + esc(t('ndv.runNode'));
     runBtn.addEventListener('click', function () {
       closeNdv();
       var r = document.getElementById('fe-run');
@@ -1633,7 +1681,7 @@
     item.setAttribute('draggable', 'true');
     item.style.setProperty('--cat-color', cat.color);
     item.innerHTML = '<span class="pi-dot" aria-hidden="true"></span>' +
-      '<span class="pi-icon">' + a.icon + '</span>' +
+      '<span class="pi-icon">' + ICON(a.id) + '</span>' +
       '<span class="pi-label">' + esc(a.id) + '</span>';
     item.addEventListener('click', function () { placeNewNode(a.id); });
     // HTML5 drag-and-drop onto the canvas
@@ -1722,6 +1770,8 @@
     on(dom.canvas, 'mousedown', function (ev) {
       if (ev.button !== 0) return;
       if (ev.target !== dom.canvas && ev.target !== dom.svg && ev.target !== dom.world) return;
+      // Shift always box-selects, even while the Pan tool is active, so the
+      // pan mode never traps the user out of making a selection.
       if (ev.shiftKey) {
         var wp = worldPoint(ev.clientX, ev.clientY);
         drag = { type: 'box', x0: wp.x, y0: wp.y, x1: wp.x, y1: wp.y };
@@ -1856,6 +1906,12 @@
           if (id !== 'start') state.selSet[id] = true;
         });
         renderNodes();
+      } else if (!meta && (ev.key === 'v' || ev.key === 'V')) {
+        // bare V / H are the tool shortcuts advertised in the toolbar tooltips.
+        // Guarded on !meta so Ctrl/Cmd+V above still pastes.
+        setTool('select');
+      } else if (!meta && (ev.key === 'h' || ev.key === 'H')) {
+        setTool('pan');
       }
     });
   }
@@ -1896,34 +1952,131 @@
     if (ex) ex.parentNode.removeChild(ex);
   }
 
-  // ---- Canvas overlay: zoom controls + minimap (Step 23) --------------------
+  // ---- Canvas overlay: floating toolbar + minimap ----------------------------
+  // Items F + G of the uiux gap list. The previews show TWO distinct clusters
+  // pinned to the bottom of the canvas:
+  //   * bottom-start — a floating toolbar: pointer tools (select / pan / lock /
+  //     grid), then the zoom cluster ([-] 100% [+] fit), then the view actions
+  //     (fullscreen, Auto Layout, Focus Mode).
+  //   * bottom-end   — the minimap, now with a real titled header ("MINIMAP"),
+  //     its own [+]/[-]/Fit buttons and a close [x] that collapses it to a
+  //     single restore chip (spec: `state-empty-canvas.md` §2.D, 160x100 @24px
+  //     inset; `shell-editor-click-ndv.md` §2 "Minimap").
   function buildOverlay(canvas) {
-    // zoom controls (bottom-start corner)
+    // ---- G: floating canvas toolbar (bottom-start corner) -------------------
     var ctrl = document.createElement('div');
-    ctrl.className = 'fe-zoom-ctrl';
+    ctrl.className = 'fe-zoom-ctrl fe-canvas-toolbar';
+    ctrl.setAttribute('role', 'toolbar');
+    ctrl.setAttribute('aria-label', esc(t('fe.canvasTools')));
     ctrl.innerHTML =
-      '<button class="fe-zbtn" data-z="in" title="' + esc(t('fe.zoomIn')) + '">＋</button>' +
-      '<button class="fe-zbtn" data-z="out" title="' + esc(t('fe.zoomOut')) + '">－</button>' +
-      '<button class="fe-zbtn" data-z="fit" title="' + esc(t('fe.fit')) + '">⤢</button>' +
-      '<span class="fe-zoom-label">100%</span>';
+      // pointer tools — radio-like group, so aria-pressed is the right state
+      '<div class="fe-tb-group" role="group">' +
+        '<button class="fe-zbtn fe-tool" data-tool="select" aria-pressed="true"' +
+          ' title="' + esc(t('fe.toolSelect')) + '">' + IC('mouse-pointer-2') + '</button>' +
+        '<button class="fe-zbtn fe-tool" data-tool="pan" aria-pressed="false"' +
+          ' title="' + esc(t('fe.toolPan')) + '">' + IC('hand') + '</button>' +
+        '<button class="fe-zbtn fe-tool" data-tool="lock" aria-pressed="false"' +
+          ' title="' + esc(t('fe.toolLock')) + '">' + IC('lock') + '</button>' +
+        '<button class="fe-zbtn fe-tool" data-tool="grid" aria-pressed="true"' +
+          ' title="' + esc(t('fe.toolFrame')) + '">' + IC('frame') + '</button>' +
+      '</div>' +
+      '<span class="fe-tb-sep" aria-hidden="true"></span>' +
+      // zoom cluster
+      '<div class="fe-tb-group" role="group">' +
+        '<button class="fe-zbtn" data-z="out" title="' + esc(t('fe.zoomOut')) + '">' + IC('minus') + '</button>' +
+        '<button class="fe-zoom-label" data-z="reset" title="' + esc(t('fe.zoomReset')) + '">100%</button>' +
+        '<button class="fe-zbtn" data-z="in" title="' + esc(t('fe.zoomIn')) + '">' + IC('plus') + '</button>' +
+        '<button class="fe-zbtn" data-z="fit" title="' + esc(t('fe.fit')) + '">' + IC('maximize') + '</button>' +
+      '</div>' +
+      '<span class="fe-tb-sep" aria-hidden="true"></span>' +
+      // view actions — the two labelled ones stay text+icon like the previews
+      '<div class="fe-tb-group" role="group">' +
+        '<button class="fe-zbtn" data-view="fullscreen" title="' + esc(t('fe.fullscreen')) + '">' + IC('maximize') + '</button>' +
+        '<button class="fe-tb-btn" data-view="autolayout" title="' + esc(t('fe.autoLayoutHint')) + '">' +
+          IC('layout') + '<span>' + esc(t('fe.autoLayout')) + '</span></button>' +
+        '<button class="fe-tb-btn" data-view="focus" aria-pressed="false"' +
+          ' title="' + esc(t('fe.focusModeHint')) + '">' +
+          IC('target') + '<span>' + esc(t('fe.focusMode')) + '</span></button>' +
+      '</div>' +
+      '';
     canvas.appendChild(ctrl);
     var zoomLabel = ctrl.querySelector('.fe-zoom-label');
-    ctrl.querySelectorAll('.fe-zbtn').forEach(function (b) {
+
+    // zoom cluster + the icon-only view action share the .fe-zbtn class, so
+    // bind by the attribute that is actually present rather than by class.
+    ctrl.querySelectorAll('[data-z]').forEach(function (b) {
       b.addEventListener('click', function (ev) {
         ev.stopPropagation();
         var z = b.getAttribute('data-z');
         if (z === 'in') zoomBy(1.2);
         else if (z === 'out') zoomBy(1 / 1.2);
+        else if (z === 'reset') resetZoom();
         else fitToScreen();
       });
-      // prevent the canvas pan handler from firing
       b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
     });
 
-    // minimap (bottom-end corner)
-    var mm = document.createElement('div');
-    mm.className = 'fe-minimap';
-    canvas.appendChild(mm);
+    ctrl.querySelectorAll('.fe-tool').forEach(function (b) {
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        setTool(b.getAttribute('data-tool'));
+      });
+      b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    });
+
+    ctrl.querySelectorAll('[data-view]').forEach(function (b) {
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var v = b.getAttribute('data-view');
+        if (v === 'autolayout') autoLayout();
+        else if (v === 'focus') toggleFocusMode();
+        else toggleFullscreen();
+      });
+      b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    });
+
+    // ---- F: minimap with a real header (bottom-end corner) -----------------
+    var wrap = document.createElement('div');
+    wrap.className = 'fe-minimap-wrap';
+    wrap.innerHTML =
+      '<div class="fe-mm-head">' +
+        '<span class="fe-mm-title">' + IC('map') + '<span>' + esc(t('fe.minimap')) + '</span></span>' +
+        '<span class="fe-mm-actions">' +
+          '<button class="fe-mm-btn" data-mm="out" title="' + esc(t('fe.zoomOut')) + '">' + IC('minus', 12) + '</button>' +
+          '<button class="fe-mm-btn" data-mm="in" title="' + esc(t('fe.zoomIn')) + '">' + IC('plus', 12) + '</button>' +
+          '<button class="fe-mm-btn" data-mm="fit" title="' + esc(t('fe.fit')) + '">' + IC('maximize', 12) + '</button>' +
+          '<button class="fe-mm-btn fe-mm-close" data-mm="close" title="' + esc(t('fe.minimapHide')) + '">' + IC('x', 12) + '</button>' +
+        '</span>' +
+      '</div>' +
+      '<div class="fe-minimap"></div>';
+    canvas.appendChild(wrap);
+
+    // collapsed restore chip — hidden until the minimap is closed
+    var chip = document.createElement('button');
+    chip.className = 'fe-mm-restore';
+    chip.setAttribute('hidden', 'hidden');
+    chip.setAttribute('title', esc(t('fe.minimapShow')));
+    chip.innerHTML = IC('map') + '<span>' + esc(t('fe.minimap')) + '</span>';
+    canvas.appendChild(chip);
+
+    wrap.querySelectorAll('[data-mm]').forEach(function (b) {
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var a = b.getAttribute('data-mm');
+        if (a === 'in') zoomBy(1.2);
+        else if (a === 'out') zoomBy(1 / 1.2);
+        else if (a === 'fit') fitToScreen();
+        else setMinimapOpen(false);
+      });
+      b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    });
+    chip.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setMinimapOpen(true);
+    });
+    chip.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+
+    var mm = wrap.querySelector('.fe-minimap');
     mm.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
     // click minimap to recentre the viewport on that world point
     mm.addEventListener('click', function (ev) {
@@ -1941,7 +2094,139 @@
       applyViewTransform();
     });
 
-    return { zoomLabel: zoomLabel, minimap: mm, zoomCtrl: ctrl };
+    return { zoomLabel: zoomLabel, minimap: mm, zoomCtrl: ctrl,
+      minimapWrap: wrap, minimapRestore: chip, toolbar: ctrl };
+  }
+
+  // ---- Canvas chrome behaviour (items F + G) --------------------------------
+  // Pointer tool. 'lock'/'grid' are toggles that live in the same visual group
+  // as the two real pointer modes (that is how the previews draw them), so the
+  // handler splits them apart rather than treating all four as radios.
+  function setTool(tool) {
+    if (tool === 'lock') { canvasLocked = !canvasLocked; }
+    else if (tool === 'grid') { gridVisible = !gridVisible; }
+    else { canvasTool = (tool === 'pan') ? 'pan' : 'select'; }
+    syncChrome();
+  }
+
+  // Reflect all four chrome flags onto the DOM. Cheap enough to call on every
+  // toggle, and keeps aria-pressed honest for screen readers.
+  function syncChrome() {
+    if (!dom || !dom.toolbar) return;
+    dom.toolbar.querySelectorAll('.fe-tool').forEach(function (b) {
+      var tl = b.getAttribute('data-tool');
+      var on = tl === 'lock' ? canvasLocked
+        : tl === 'grid' ? gridVisible
+        : canvasTool === tl;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.classList.toggle('is-active', !!on);
+      if (tl === 'lock') b.title = t(canvasLocked ? 'fe.toolLockOff' : 'fe.toolLock');
+    });
+    if (dom.canvas) {
+      dom.canvas.classList.toggle('fe-tool-pan', canvasTool === 'pan');
+      dom.canvas.classList.toggle('fe-locked', canvasLocked);
+      dom.canvas.classList.toggle('fe-nogrid', !gridVisible);
+    }
+  }
+
+  function setMinimapOpen(open) {
+    minimapOpen = !!open;
+    if (!dom) return;
+    if (dom.minimapWrap) dom.minimapWrap.hidden = !minimapOpen;
+    if (dom.minimapRestore) dom.minimapRestore.hidden = minimapOpen;
+    if (minimapOpen) renderMinimap();
+  }
+
+  // Zoom back to exactly 100% about the canvas centre (the previews make the
+  // "100%" pill itself the reset affordance).
+  function resetZoom() {
+    if (!dom) return;
+    zoomBy(1 / state.view.scale);
+  }
+
+  // Auto Layout: hand the graph to the serializer's own left-to-right layout so
+  // the canvas matches exactly what a saved-then-reloaded workflow looks like.
+  // Round-tripping through steps[] is deliberate — one layout implementation,
+  // not two that can drift. Nodes unreachable from `start` are not part of
+  // steps[], so they are re-parked in a tidy row underneath instead of lost.
+  function autoLayout() {
+    if (!dom || !GS()) return;
+    var before = Object.keys(state.nodes).length;
+    var steps = toSteps();
+    var laid = GS().stepsToGraph(steps || []);
+    if (!laid || !laid.nodes || !laid.nodes.start) return;
+
+    // carry the pre-layout selection over by position in the main chain
+    var keepSel = state.selected;
+    var view = state.view;
+
+    // orphans: nodes the serializer never saw (no path from start)
+    var reachable = {};
+    (function walk(id, guard) {
+      if (!id || reachable[id] || guard > 5000) return;
+      reachable[id] = true;
+      state.edges.forEach(function (e) {
+        if (e.from === id) walk(e.to, guard + 1);
+      });
+    })('start', 0);
+    var orphans = Object.keys(state.nodes).filter(function (id) {
+      return id !== 'start' && !reachable[id];
+    }).map(function (id) { return state.nodes[id]; });
+
+    state.nodes = laid.nodes;
+    state.edges = laid.edges;
+    state.nextId = laid.nextId || before + orphans.length;
+    state.view = view;
+    state.selected = state.nodes[keepSel] ? keepSel : null;
+    state.selSet = {};
+
+    if (orphans.length) {
+      var bb = nodesBBox();
+      var ox = 280;
+      var oy = snap((bb ? bb.maxY : 200) + 120);
+      orphans.forEach(function (n) {
+        state.nodes[n.id] = n;
+        n.x = snap(ox); n.y = oy;
+        ox += 260;
+      });
+    }
+
+    renderAll();
+    fitToScreen();
+    saveLocal();
+  }
+
+  // Focus Mode collapses the palette + inspector so the graph gets the full
+  // width. The class goes on the shell (`.fe-layout`), which owns the grid
+  // template; CSS does the rest so there is no layout maths here.
+  function toggleFocusMode() {
+    if (!dom) return;
+    var shell = dom.canvas.closest ? dom.canvas.closest('.fe-layout') : null;
+    if (!shell) return;
+    var on = !shell.classList.contains('fe-focus');
+    shell.classList.toggle('fe-focus', on);
+    var btn = dom.toolbar && dom.toolbar.querySelector('[data-view="focus"]');
+    if (btn) {
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.classList.toggle('is-active', on);
+    }
+    // the canvas box changed size, so the minimap viewport rect is now stale
+    renderMinimap();
+  }
+
+  // Fullscreen is best-effort: the Fullscreen API is unavailable in some
+  // embedded/iframe contexts, so a rejection must not break the toolbar.
+  function toggleFullscreen() {
+    if (!dom) return;
+    var el = (dom.canvas.closest && dom.canvas.closest('.fe-layout')) || dom.canvas;
+    try {
+      if (document.fullscreenElement) {
+        if (document.exitFullscreen) document.exitFullscreen();
+      } else if (el.requestFullscreen) {
+        var p = el.requestFullscreen();
+        if (p && typeof p.catch === 'function') p.catch(function () {});
+      }
+    } catch (e) { /* not available — ignore */ }
   }
 
   // ---- Public mount / unmount ----------------------------------------------
@@ -1958,15 +2243,25 @@
       inspector: refs.inspector,
     };
 
-    // remove any stale overlay from a previous mount, then build a fresh one
-    var stale = refs.canvas.querySelectorAll('.fe-zoom-ctrl, .fe-minimap');
-    Array.prototype.forEach.call(stale, function (el) { el.parentNode.removeChild(el); });
+    // remove any stale overlay from a previous mount, then build a fresh one.
+    // `.fe-minimap` is now nested inside `.fe-minimap-wrap`, so the wrapper and
+    // the restore chip have to be swept too or they pile up on every re-mount.
+    var stale = refs.canvas.querySelectorAll(
+      '.fe-zoom-ctrl, .fe-canvas-toolbar, .fe-minimap-wrap, .fe-minimap, .fe-mm-restore');
+    Array.prototype.forEach.call(stale, function (el) {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
     var ov = buildOverlay(refs.canvas);
     dom.zoomLabel = ov.zoomLabel;
     dom.minimap = ov.minimap;
+    dom.minimapWrap = ov.minimapWrap;
+    dom.minimapRestore = ov.minimapRestore;
+    dom.toolbar = ov.toolbar;
 
     renderPalette();
     attachCanvasHandlers();
+    syncChrome();
+    setMinimapOpen(minimapOpen);
     renderAll();
   }
 

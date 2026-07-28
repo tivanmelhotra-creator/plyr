@@ -386,3 +386,158 @@ describe('graph-serialize — Step 27 error policy', () => {
     expect('retryOnFail' in back[1]).toBe(false);
   });
 });
+
+/**
+ * Layout is part of the product surface, not an implementation detail: the
+ * reference design (docs/uiux) reads a workflow as a LEFT-TO-RIGHT pipeline.
+ * An earlier build advanced +Y per step at a fixed X, which produced the tall
+ * vertical stack visible in the shipped screenshots. These tests lock the
+ * pipeline geometry so it cannot silently regress.
+ */
+describe('graph-serialize — stepsToGraph pipeline layout', () => {
+  const NODE_W = 190; // flow-editor.js card width
+  const NODE_H = 64;  // flow-editor.js NODE_H_MIN
+
+  /** Every generated node except the implicit Start. */
+  function laidOut(steps: Step[]): Node[] {
+    const g = GS.stepsToGraph(steps);
+    return Object.values(g.nodes).filter((n) => n.id !== 'start');
+  }
+
+  const linear: Step[] = [
+    { action: 'launch', params: {} },
+    { action: 'goto', params: { url: 'https://example.com' } },
+    { action: 'click', params: { selector: '#submit' } },
+    { action: 'close-browser', params: {} },
+  ];
+
+  it('lays a linear workflow out as one horizontal row', () => {
+    const ns = laidOut(linear);
+    expect(ns).toHaveLength(4);
+    const ys = new Set(ns.map((n) => n.y));
+    expect(ys.size, 'a linear chain must stay on a single row').toBe(1);
+  });
+
+  it('advances strictly rightwards, one node per column', () => {
+    const xs = laidOut(linear).map((n) => n.x as number).sort((a, b) => a - b);
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i] - xs[i - 1], 'column pitch must clear the card width').toBeGreaterThanOrEqual(NODE_W);
+    }
+    expect(new Set(xs).size, 'no two sequential nodes share a column').toBe(xs.length);
+  });
+
+  it('starts the chain to the right of the Start node, on its row', () => {
+    const g = GS.stepsToGraph(linear);
+    const start = g.nodes.start;
+    const first = Object.values(g.nodes).filter((n) => n.id !== 'start')
+      .sort((a, b) => (a.x as number) - (b.x as number))[0];
+    expect(first.x as number).toBeGreaterThan(start.x as number);
+    expect(first.y, 'the trunk is one straight row through Start').toBe(start.y);
+  });
+
+  it('drops if/else branches into separate lanes below the parent', () => {
+    const g = GS.stepsToGraph([
+      { action: 'goto', params: { url: 'u' } },
+      {
+        action: 'if',
+        condition: { operator: 'exists', selector: '#ok' },
+        then: [{ action: 'log', params: { message: 'yes' } }],
+        else: [{ action: 'log', params: { message: 'no' } }],
+      },
+    ]);
+    const byMsg = (m: string) => Object.values(g.nodes)
+      .find((n) => n.params && (n.params as any).message === m)!;
+    const ifNode = Object.values(g.nodes).find((n) => n.action === 'if')!;
+    const yes = byMsg('yes');
+    const no = byMsg('no');
+
+    // both branches live one column right of the parent...
+    expect(yes.x as number).toBeGreaterThan(ifNode.x as number);
+    expect(no.x as number).toBeGreaterThan(ifNode.x as number);
+    // ...on their own lanes, below it, and never on top of each other
+    expect(yes.y as number).toBeGreaterThan(ifNode.y as number);
+    expect(no.y as number).toBeGreaterThan(yes.y as number);
+  });
+
+  it('places the step after a branch clear of the whole subtree', () => {
+    const g = GS.stepsToGraph([
+      {
+        action: 'if',
+        condition: { operator: 'exists', selector: '#a' },
+        then: [
+          { action: 'log', params: { message: 'a' } },
+          { action: 'log', params: { message: 'b' } },
+        ],
+        else: [{ action: 'log', params: { message: 'c' } }],
+      },
+      { action: 'close-browser', params: {} },
+    ]);
+    const nodes = Object.values(g.nodes);
+    const after = nodes.find((n) => n.action === 'close-browser')!;
+    const branchNodes = nodes.filter((n) => n.action === 'log');
+    const rightmostBranch = Math.max(...branchNodes.map((n) => n.x as number));
+    expect(after.x as number,
+      'the continuation must not sit on top of the branch subtree')
+      .toBeGreaterThan(rightmostBranch);
+  });
+
+  it('never overlaps two node cards, even with nested branches', () => {
+    const ns = laidOut([
+      { action: 'goto', params: { url: 'u' } },
+      {
+        action: 'if',
+        condition: { operator: 'exists', selector: '#a' },
+        then: [
+          {
+            action: 'if',
+            condition: { operator: 'exists', selector: '#b' },
+            then: [{ action: 'log', params: { message: 'deep' } }],
+            else: [{ action: 'log', params: { message: 'deep2' } }],
+          },
+          { action: 'click', params: { selector: '.after' } },
+        ],
+        else: [{ action: 'log', params: { message: 'e' } }],
+      },
+      { action: 'while', condition: { operator: 'exists', selector: '#w' }, steps: [{ action: 'click', params: { selector: '.n' } }] },
+      { action: 'close-browser', params: {} },
+    ]);
+    const clashes: string[] = [];
+    for (let i = 0; i < ns.length; i++) {
+      for (let j = i + 1; j < ns.length; j++) {
+        const a = ns[i]; const b = ns[j];
+        if (Math.abs((a.x as number) - (b.x as number)) < NODE_W
+          && Math.abs((a.y as number) - (b.y as number)) < NODE_H) {
+          clashes.push(`${a.action}@${a.x},${a.y} vs ${b.action}@${b.x},${b.y}`);
+        }
+      }
+    }
+    expect(clashes, 'overlapping node cards').toEqual([]);
+  });
+
+  it('snaps every generated node onto the editor 20px grid', () => {
+    const offGrid = laidOut([
+      { action: 'goto', params: { url: 'u' } },
+      {
+        action: 'if',
+        condition: { operator: 'exists', selector: '#a' },
+        then: [{ action: 'log', params: { message: 'x' } }],
+        else: [{ action: 'log', params: { message: 'y' } }],
+      },
+      { action: 'close-browser', params: {} },
+    ]).filter((n) => (n.x as number) % 20 !== 0 || (n.y as number) % 20 !== 0);
+    expect(offGrid.map((n) => `${n.action}@${n.x},${n.y}`)).toEqual([]);
+  });
+
+  it('keeps the structural round-trip intact after re-layout', () => {
+    const original: Step[] = [
+      { action: 'goto', params: { url: 'https://example.com' } },
+      {
+        action: 'if',
+        condition: { operator: 'exists', selector: '#ok' },
+        then: [{ action: 'click', params: { selector: '.a' } }],
+        else: [{ action: 'click', params: { selector: '.b' } }],
+      },
+    ];
+    expect(GS.graphToSteps(GS.stepsToGraph(original))).toEqual(original);
+  });
+});

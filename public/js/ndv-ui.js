@@ -82,7 +82,9 @@
   // ---- search field ---------------------------------------------------------
   function searchField(placeholder, onInput) {
     var wrap = el('div', 'aria-search');
-    wrap.appendChild(el('span', 'aria-search-icon', '⌕'));
+    var searchIcon = el('span', 'aria-search-icon');
+    searchIcon.innerHTML = window.Icons ? window.Icons.svg('search', { size: 14 }) : '';
+    wrap.appendChild(searchIcon);
     var inp = el('input', 'aria-search-input');
     inp.type = 'text';
     inp.placeholder = placeholder || '';
@@ -117,7 +119,8 @@
   // Attach a small ⓘ info dot with a tooltip to a label row.
   function withInfo(labelEl, tip) {
     if (!tip) return labelEl;
-    var dot = el('span', 'aria-info', 'ⓘ');
+    var dot = el('span', 'aria-info');
+    dot.innerHTML = window.Icons ? window.Icons.svg('help-circle', { size: 13 }) : '?';
     dot.title = tip;
     labelEl.appendChild(dot);
     return labelEl;
@@ -209,8 +212,13 @@
   }
 
   // ---- square icon button (fx / picker / clone / delete / collapse) --------
+  // `glyph` may be either literal text or a name from the inline SVG registry
+  // (public/js/icons.js). Registry names win, so callers pass semantic names
+  // ('trash', 'copy', 'chevron-down') instead of emoji that render as boxes.
   function iconBtn(glyph, title, cls, onClick) {
-    var b = el('button', 'aria-iconbtn' + (cls ? ' ' + cls : ''), glyph);
+    var useSvg = !!(window.Icons && window.Icons.has(glyph));
+    var b = el('button', 'aria-iconbtn' + (cls ? ' ' + cls : ''), useSvg ? '' : glyph);
+    if (useSvg) b.innerHTML = window.Icons.svg(glyph, { size: 14 });
     b.type = 'button';
     if (title) b.title = title;
     if (onClick) b.addEventListener('click', function (ev) { ev.stopPropagation(); onClick(ev); });
@@ -265,7 +273,9 @@
         var row = el('div', 'aria-tree-row' + (isGroup ? ' is-group' : ''));
         row.style.setProperty('--depth', String(depth));
         if (isGroup) {
-          row.appendChild(el('span', 'aria-tree-caret', '▾'));
+          var caret = el('span', 'aria-tree-caret');
+    caret.innerHTML = window.Icons ? window.Icons.svg('chevron-down', { size: 13 }) : '';
+    row.appendChild(caret);
         } else {
           row.appendChild(el('span', 'aria-tree-caret is-leaf', ''));
         }
@@ -294,7 +304,8 @@
           row.addEventListener('click', function () {
             var open = kids.style.display !== 'none';
             kids.style.display = open ? 'none' : '';
-            row.querySelector('.aria-tree-caret').textContent = open ? '▸' : '▾';
+            row.querySelector('.aria-tree-caret').innerHTML =
+        window.Icons ? window.Icons.svg(open ? 'chevron-right' : 'chevron-down', { size: 13 }) : '';
           });
         }
       });
