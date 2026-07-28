@@ -1177,7 +1177,62 @@
   ];
 
   // Survives re-render (language switch, refresh) but not a page reload.
-  var wsState = { tab: 'workflows', search: '', sort: 'updated', page: 1, perPage: 10, compact: false };
+  // `filters` is a separate sub-object so "clear filters" is one assignment and
+  // the active-filter count is one comparison against WS_FILTER_DEFAULTS.
+  var WS_FILTER_DEFAULTS = { status: 'all', live: 'all', scheduled: false, failing: false };
+  var wsState = {
+    tab: 'workflows', search: '', sort: 'updated', page: 1, perPage: 10, compact: false,
+    filters: Object.assign({}, WS_FILTER_DEFAULTS),
+    // Executions tab: which workflow's runs to show ('' = every run) and
+    // whether the 8 s poll is running.
+    execWorkflow: '', execAuto: true,
+  };
+
+  /** How many filters differ from their default — drives the button's badge. */
+  function wsActiveFilterCount() {
+    var n = 0;
+    var f = wsState.filters;
+    for (var k in WS_FILTER_DEFAULTS) {
+      if (Object.prototype.hasOwnProperty.call(WS_FILTER_DEFAULTS, k) && f[k] !== WS_FILTER_DEFAULTS[k]) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Does a workflow survive the filter panel?
+   * Kept a pure function of (workflow, its stat row, filters) so the guard test
+   * can reason about it and so search/sort/paging stay independent of it.
+   */
+  function wsPassesFilters(wf, st, f) {
+    var active = wf.active !== false;
+    if (f.status === 'active' && !active) return false;
+    if (f.status === 'inactive' && active) return false;
+    var lb = wf.liveBrowser === true;
+    if (f.live === 'on' && !lb) return false;
+    if (f.live === 'off' && lb) return false;
+    if (f.scheduled && !(st && st.scheduleCount > 0)) return false;
+    // "Failing" means it HAS a measured rate that is poor. A workflow that never
+    // ran has no evidence of failure and must not be accused of one.
+    if (f.failing && !(st && st.successRate != null && st.successRate < 80)) return false;
+    return true;
+  }
+
+  /** Trigger label for an execution row (server sends 'manual'|'schedule'|'workflow'). */
+  function wsTriggerLabel(trigger) {
+    var known = { manual: 1, schedule: 1, workflow: 1 };
+    return t('ws.exec.trigger.' + (known[trigger] ? trigger : 'manual'));
+  }
+
+  /** Compact duration: an in-flight run has no duration yet, so it says so. */
+  function wsDuration(ms) {
+    if (ms == null) return '—';
+    if (ms < 1000) return ms + 'ms';
+    var s = ms / 1000;
+    if (s < 60) return (Math.round(s * 10) / 10) + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + Math.round(s % 60) + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  }
 
   /** Success-rate fill tone: >=95% green, 80-95% amber, <80% red (spec § 3F). */
   function wsSuccessTone(pct) {
@@ -1271,8 +1326,13 @@
               ' value="' + esc(wsState.search) + '" />' +
             '</label>' +
             '<select class="ws-select" id="ws-sort" aria-label="' + esc(t('ws.sortBy')) + '"></select>' +
-            '<button type="button" class="ws-icon-btn" id="ws-filter" title="' + esc(t('ws.filter')) + '"' +
-              ' aria-label="' + esc(t('ws.filter')) + '">' + IC('filter', 15) + '</button>' +
+            '<div class="ws-filter-wrap">' +
+              '<button type="button" class="ws-icon-btn" id="ws-filter" title="' + esc(t('ws.filter')) + '"' +
+                ' aria-label="' + esc(t('ws.filter')) + '" aria-haspopup="dialog" aria-expanded="false">' +
+                IC('filter', 15) + '<span class="ws-filter-badge" id="ws-filter-badge" hidden></span></button>' +
+              '<div class="ws-filter-panel" id="ws-filter-panel" role="dialog"' +
+                ' aria-label="' + esc(t('ws.filterTitle')) + '" hidden></div>' +
+            '</div>' +
             '<button type="button" class="ws-icon-btn" id="ws-layout" title="' + esc(t('ws.layout')) + '"' +
               ' aria-label="' + esc(t('ws.layout')) + '" aria-pressed="false">' + IC('layout', 15) + '</button>' +
           '</div>' +
@@ -1348,6 +1408,7 @@
     function visibleWorkflows() {
       var q = wsState.search.trim().toLowerCase();
       var list = workflows.filter(function (w) {
+        if (!wsPassesFilters(w, statsByWf[w.id], wsState.filters)) return false;
         if (!q) return true;
         return String(w.name || '').toLowerCase().indexOf(q) !== -1 ||
           String(w.description || '').toLowerCase().indexOf(q) !== -1;
@@ -1488,19 +1549,14 @@
 
     // ---- panels per tab ---------------------------------------------------
     function paintPanel() {
+      // Leaving the Executions tab must stop its poll, or a background timer
+      // keeps hitting /jobs for a panel nobody is looking at.
+      if (wsState.tab !== 'executions') stopExecPoll();
       if (wsState.tab === 'workflows') { paintWorkflowsTab(); return; }
       if (wsState.tab === 'schedules') { paintSchedulesTab(); return; }
       if (wsState.tab === 'templates') { paintTemplatesTab(); return; }
-      var key = wsState.tab === 'executions' ? 'ws.executionsEmpty' : 'ws.connectionsEmpty';
-      var icon = wsState.tab === 'executions' ? 'history' : 'git-branch';
-      elPanel.innerHTML =
-        '<div class="ws-empty">' +
-          '<span class="ws-empty-icon">' + IC(icon, 22) + '</span>' +
-          '<p>' + t(key) + '</p>' +
-          (wsState.tab === 'executions'
-            ? '<a class="btn btn-ghost btn-sm" href="#/jobs">' + t('ws.goToJobs') + '</a>'
-            : '') +
-        '</div>';
+      if (wsState.tab === 'executions') { paintExecutionsTab(); return; }
+      paintConnectionsTab();
     }
 
     function pageChips(pages) {
@@ -1716,6 +1772,219 @@
       renderSchedules(elPanel.querySelector('#ws-sched-host'));
     }
 
+    // ---- Executions tab ---------------------------------------------------
+    // Real run history, scoped to this workspace. The rows come from
+    // GET /jobs/:userId (now carrying workflowId / trigger / duration), so a run
+    // can be attributed to the workflow that produced it instead of the tab
+    // being a link to the global Jobs page.
+    var execTimer = null;
+
+    function stopExecPoll() {
+      if (execTimer) { clearInterval(execTimer); execTimer = null; }
+    }
+
+    function execStateTone(state) {
+      if (state === 'completed') return 'green';
+      if (state === 'failed') return 'red';
+      if (state === 'active' || state === 'waiting' || state === 'delayed') return 'amber';
+      return 'muted';
+    }
+
+    function execRow(j) {
+      var wf = j.workflowId ? findWf(j.workflowId) : null;
+      var flowLabel = j.workflowId
+        ? (wf ? wf.name : t('ws.exec.deletedFlow'))
+        : t('ws.exec.adhoc');
+      var live = ['waiting', 'delayed', 'active'].indexOf(j.state) !== -1;
+      return '<tr>' +
+        '<td><span class="ws-run"><span class="ws-run-dot tone-' + execStateTone(j.state) + '"></span>' +
+          (live ? t('ws.exec.running') : stateBadge(j.state)) + '</span></td>' +
+        '<td class="mono ws-exec-id">' + esc(j.jobId) + '</td>' +
+        '<td>' +
+          '<span class="ws-exec-flow' + (j.workflowId && !wf ? ' ws-muted' : '') + '">' + esc(flowLabel) + '</span>' +
+          (j.workflowVersion != null
+            ? '<span class="ws-exec-ver">' + esc(fill(t('ws.exec.version'), { n: j.workflowVersion })) + '</span>'
+            : '') +
+        '</td>' +
+        '<td><span class="ws-exec-trigger">' + esc(wsTriggerLabel(j.trigger)) +
+          (j.scheduleName ? ' · ' + esc(j.scheduleName) : '') + '</span></td>' +
+        '<td class="mono">' + esc(wsDuration(j.durationMs)) + '</td>' +
+        '<td>' + esc(j.startedAt ? fmtRel(j.startedAt) : fmtRel(j.timestamp)) + '</td>' +
+        '<td class="ws-actions-cell"><div class="row-actions">' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-exec-view="' + esc(j.jobId) + '">' +
+            t('ws.exec.view') + '</button>' +
+          (live
+            ? '<button type="button" class="btn btn-ghost btn-sm" data-exec-cancel="' + esc(j.jobId) + '">' +
+                t('ws.exec.cancel') + '</button>'
+            : '') +
+        '</div></td>' +
+      '</tr>';
+    }
+
+    function paintExecutionsTab() {
+      var cols = ['status', 'runId', 'workflow', 'trigger', 'duration', 'startedAt', 'actions'];
+      elPanel.innerHTML =
+        '<div class="ws-exec-bar">' +
+          '<select class="ws-select" id="ws-exec-flow" aria-label="' + esc(t('ws.exec.workflow')) + '">' +
+            '<option value="">' + esc(t('ws.exec.allFlows')) + '</option>' +
+            workflows.map(function (w) {
+              return '<option value="' + esc(w.id) + '"' +
+                (wsState.execWorkflow === w.id ? ' selected' : '') + '>' + esc(w.name) + '</option>';
+            }).join('') +
+          '</select>' +
+          '<label class="ws-exec-auto">' +
+            '<input type="checkbox" id="ws-exec-auto"' + (wsState.execAuto ? ' checked' : '') + ' /> ' +
+            esc(t('ws.exec.autoRefresh')) +
+          '</label>' +
+          '<span class="spacer"></span>' +
+          '<button type="button" class="ws-icon-btn" id="ws-exec-refresh" title="' + esc(t('jobs.refresh')) + '"' +
+            ' aria-label="' + esc(t('jobs.refresh')) + '">' + IC('rotate-cw', 15) + '</button>' +
+        '</div>' +
+        '<div id="ws-exec-body"><div class="placeholder"><span class="spinner"></span> ' +
+          t('common.loading') + '</div></div>';
+
+      var body = elPanel.querySelector('#ws-exec-body');
+
+      function paintRows(jobs) {
+        if (!jobs.length) {
+          body.innerHTML =
+            '<div class="ws-empty">' +
+              '<span class="ws-empty-icon">' + IC('history', 22) + '</span>' +
+              '<p>' + t('ws.executionsEmpty') + '</p>' +
+              '<a class="btn btn-ghost btn-sm" href="#/jobs">' + t('ws.goToJobs') + '</a>' +
+            '</div>';
+          if (window.Icons) window.Icons.hydrate(body);
+          return;
+        }
+        body.innerHTML =
+          '<div class="ws-table-wrap' + (wsState.compact ? ' compact' : '') + '">' +
+            '<table class="ws-table"><thead><tr>' +
+              cols.map(function (c) { return '<th scope="col">' + t('ws.exec.' + c) + '</th>'; }).join('') +
+            '</tr></thead><tbody>' + jobs.map(execRow).join('') + '</tbody></table>' +
+          '</div>';
+        body.querySelectorAll('[data-exec-view]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            location.hash = '#/jobs?job=' + encodeURIComponent(b.getAttribute('data-exec-view')) +
+              '&user=' + encodeURIComponent(uid);
+          });
+        });
+        body.querySelectorAll('[data-exec-cancel]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            b.disabled = true;
+            API.cancelJob(uid, b.getAttribute('data-exec-cancel'))
+              .then(function () { U().toast(t('ws.exec.cancelled'), 'success'); loadExecutions(); })
+              .catch(function (err) { U().toast(err.message, 'error'); b.disabled = false; });
+          });
+        });
+        if (window.Icons) window.Icons.hydrate(body);
+      }
+
+      function loadExecutions() {
+        return API.listJobs(uid, 50, wsState.execWorkflow || null)
+          .then(function (data) {
+            // A late response for a tab the user already left must not paint.
+            if (wsState.tab !== 'executions') return;
+            paintRows(data.jobs || []);
+          })
+          .catch(function (err) {
+            if (wsState.tab !== 'executions') return;
+            body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
+            if (window.Icons) window.Icons.hydrate(body);
+          });
+      }
+
+      function syncPoll() {
+        stopExecPoll();
+        // Registered through track() as well, so leaving the whole view tears
+        // the timer down even if paintPanel() is never called again.
+        if (wsState.execAuto) execTimer = track(setInterval(loadExecutions, 8000));
+      }
+
+      elPanel.querySelector('#ws-exec-flow').addEventListener('change', function (ev) {
+        wsState.execWorkflow = ev.target.value || '';
+        loadExecutions();
+      });
+      elPanel.querySelector('#ws-exec-auto').addEventListener('change', function (ev) {
+        wsState.execAuto = !!ev.target.checked;
+        syncPoll();
+      });
+      elPanel.querySelector('#ws-exec-refresh').addEventListener('click', loadExecutions);
+
+      if (window.Icons) window.Icons.hydrate(elPanel);
+      loadExecutions();
+      syncPoll();
+    }
+
+    // ---- Connections tab --------------------------------------------------
+    // A workflow's "connections" are the edges it has to the outside world: the
+    // outgoing webhook it reports to, and the trigger that starts it. Both are
+    // owned by the editor, so this tab READS them and links there — it does not
+    // become a second, competing editor for the same data.
+    function connChips(wf) {
+      var chips = [];
+      if (wf.webhookUrl) {
+        chips.push('<span class="ws-conn-chip tone-blue">' + IC('webhook', 13) + ' ' +
+          esc(t('ws.conn.webhookOut')) + '<span class="ws-conn-url mono">' +
+          esc(String(wf.webhookUrl)) + '</span></span>');
+      }
+      var trig = null;
+      var steps = Array.isArray(wf.steps) ? wf.steps : [];
+      for (var i = 0; i < steps.length; i++) {
+        var a = steps[i] && steps[i].action;
+        if (a === 'trigger' || a === 'webhook-trigger' || a === 'schedule-trigger' || a === 'telegram-trigger') {
+          trig = a; break;
+        }
+      }
+      if (trig) {
+        chips.push('<span class="ws-conn-chip tone-violet">' + IC('zap', 13) + ' ' +
+          esc(t('ws.conn.trigger')) + '<span class="ws-conn-url mono">' + esc(trig) + '</span></span>');
+      }
+      chips.push('<span class="ws-conn-chip tone-muted">' +
+        IC(wf.headless === false ? 'eye' : 'eye-off', 13) + ' ' +
+        esc(t(wf.headless === false ? 'ws.conn.visible' : 'ws.conn.headless')) + '</span>');
+      return chips;
+    }
+
+    function paintConnectionsTab() {
+      if (!workflows.length) {
+        elPanel.innerHTML =
+          '<div class="ws-empty">' +
+            '<span class="ws-empty-icon">' + IC('git-branch', 22) + '</span>' +
+            '<p>' + t('ws.connectionsEmpty') + '</p>' +
+          '</div>';
+        if (window.Icons) window.Icons.hydrate(elPanel);
+        return;
+      }
+      elPanel.innerHTML = '<div class="ws-conn-grid">' + workflows.map(function (wf) {
+        var chips = connChips(wf);
+        // The headless chip is always present, so "no real connection" means
+        // fewer than two chips — do not count the informational one as one.
+        var real = chips.length - 1;
+        return '<div class="ws-conn-card">' +
+          '<div class="ws-conn-head">' +
+            '<span class="ws-wf-icon">' + IC('sitemap', 15) + '</span>' +
+            '<span class="ws-conn-name">' + esc(wf.name) + '</span>' +
+            '<span class="badge">' + esc(real === 1 ? t('ws.conn.countOne')
+              : fill(t('ws.conn.count'), { n: real })) + '</span>' +
+          '</div>' +
+          (real ? '<div class="ws-conn-chips">' + chips.join('') + '</div>'
+                : '<div class="ws-conn-chips">' + chips.join('') +
+                  '<p class="ws-conn-hint">' + t('ws.conn.noneHint') + '</p></div>') +
+          '<div class="ws-conn-foot">' +
+            '<button type="button" class="btn btn-ghost btn-sm" data-conn="' + esc(wf.id) + '">' +
+              IC('pencil', 13) + ' ' + t('ws.conn.configure') + '</button>' +
+          '</div>' +
+        '</div>';
+      }).join('') + '</div>';
+      elPanel.querySelectorAll('[data-conn]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var wf = findWf(b.getAttribute('data-conn'));
+          if (wf) openInEditorFromWorkspace(wf);
+        });
+      });
+      if (window.Icons) window.Icons.hydrate(elPanel);
+    }
+
     function paintTemplatesTab() {
       var T = window.TEMPLATES;
       if (!T) {
@@ -1771,9 +2040,113 @@
       wsState.sort = ev.target.value;
       if (wsState.tab === 'workflows') paintWorkflowsTab();
     });
-    root.querySelector('#ws-filter').addEventListener('click', function () {
-      searchInput.focus();
+    // ---- filter panel -----------------------------------------------------
+    // The locked image shows a filter button next to search; this makes it real.
+    // Filters live in `wsState.filters` and are applied inside visibleWorkflows()
+    // — never by removing rows from `workflows`, so clearing a filter cannot
+    // require a refetch.
+    var filterBtn = root.querySelector('#ws-filter');
+    var filterPanel = root.querySelector('#ws-filter-panel');
+    var filterBadge = root.querySelector('#ws-filter-badge');
+
+    var WS_FILTER_GROUPS = [
+      {
+        key: 'status', label: 'ws.filterStatus', options: [
+          { v: 'all', label: 'ws.filterAll' },
+          { v: 'active', label: 'ws.filterActiveOnly' },
+          { v: 'inactive', label: 'ws.filterInactiveOnly' },
+        ],
+      },
+      {
+        key: 'live', label: 'ws.filterLive', options: [
+          { v: 'all', label: 'ws.filterAll' },
+          { v: 'on', label: 'ws.filterLiveOn' },
+          { v: 'off', label: 'ws.filterLiveOff' },
+        ],
+      },
+    ];
+    var WS_FILTER_CHECKS = [
+      { key: 'scheduled', label: 'ws.filterScheduled' },
+      { key: 'failing', label: 'ws.filterFailing' },
+    ];
+
+    function paintFilterBadge() {
+      var n = wsActiveFilterCount();
+      filterBadge.hidden = n === 0;
+      filterBadge.textContent = n ? String(n) : '';
+      filterBtn.setAttribute('title', n
+        ? fill(t('ws.filterActiveCount'), { n: n })
+        : t('ws.filter'));
+    }
+
+    function paintFilterPanel() {
+      filterPanel.innerHTML =
+        '<p class="ws-filter-title">' + t('ws.filterTitle') + '</p>' +
+        WS_FILTER_GROUPS.map(function (g) {
+          return '<div class="ws-filter-group">' +
+            '<span class="ws-filter-label">' + t(g.label) + '</span>' +
+            '<div class="ws-filter-seg" role="group" aria-label="' + esc(t(g.label)) + '">' +
+              g.options.map(function (o) {
+                var on = wsState.filters[g.key] === o.v;
+                return '<button type="button" class="ws-filter-opt' + (on ? ' active' : '') + '"' +
+                  ' aria-pressed="' + (on ? 'true' : 'false') + '"' +
+                  ' data-fkey="' + g.key + '" data-fval="' + o.v + '">' + t(o.label) + '</button>';
+              }).join('') +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        WS_FILTER_CHECKS.map(function (c) {
+          return '<label class="ws-filter-check">' +
+            '<input type="checkbox" data-fcheck="' + c.key + '"' +
+            (wsState.filters[c.key] ? ' checked' : '') + ' /> ' + t(c.label) +
+          '</label>';
+        }).join('') +
+        '<button type="button" class="btn btn-ghost btn-sm ws-filter-reset" id="ws-filter-reset">' +
+          t('ws.filterReset') + '</button>';
+
+      filterPanel.querySelectorAll('[data-fkey]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          wsState.filters[b.getAttribute('data-fkey')] = b.getAttribute('data-fval');
+          applyFilters();
+        });
+      });
+      filterPanel.querySelectorAll('[data-fcheck]').forEach(function (c) {
+        c.addEventListener('change', function () {
+          wsState.filters[c.getAttribute('data-fcheck')] = !!c.checked;
+          applyFilters();
+        });
+      });
+      filterPanel.querySelector('#ws-filter-reset').addEventListener('click', function () {
+        wsState.filters = Object.assign({}, WS_FILTER_DEFAULTS);
+        applyFilters();
+      });
+    }
+
+    function applyFilters() {
+      wsState.page = 1;
+      paintFilterBadge();
+      paintFilterPanel();
+      // Filters only narrow the workflow table; other tabs are unaffected.
+      if (wsState.tab === 'workflows') paintWorkflowsTab();
+    }
+
+    function closeFilterPanel() {
+      filterPanel.hidden = true;
+      filterBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    filterBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      var open = filterPanel.hidden;
+      filterPanel.hidden = !open;
+      filterBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) paintFilterPanel();
     });
+    filterPanel.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    filterPanel.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') { closeFilterPanel(); filterBtn.focus(); }
+    });
+    paintFilterBadge();
     root.querySelector('#ws-layout').addEventListener('click', function (ev) {
       // The column chooser is deferred (spec § 6C); the button toggles density.
       wsState.compact = !wsState.compact;
@@ -1805,10 +2178,11 @@
         }
       });
     });
-    // One document-level closer for both popovers, so a stray click never
+    // One document-level closer for every popover, so a stray click never
     // leaves a menu floating over the table.
     document.addEventListener('click', function () {
       if (caretMenu) { caretMenu.hidden = true; caret.setAttribute('aria-expanded', 'false'); }
+      if (filterPanel && filterPanel.isConnected) closeFilterPanel();
       if (elPanel && elPanel.isConnected) closeRowMenus();
     });
 

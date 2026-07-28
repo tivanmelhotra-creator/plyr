@@ -133,8 +133,17 @@
   function runFlow(payload) {
     return post('/run', payload);
   }
-  function listJobs(userId, limit) {
-    return get('/jobs/' + encodeURIComponent(userId) + '?limit=' + (limit || 20));
+  /**
+   * List a user's jobs, newest first.
+   * `workflowId` is optional and narrows the list to the runs of ONE saved
+   * workflow — that is what the Workspace "Executions" tab asks for. Filtering
+   * server-side matters: the queue holds every user's runs, so paging a
+   * client-side filter would silently drop rows past the limit.
+   */
+  function listJobs(userId, limit, workflowId) {
+    var q = '?limit=' + (limit || 20);
+    if (workflowId) q += '&workflowId=' + encodeURIComponent(workflowId);
+    return get('/jobs/' + encodeURIComponent(userId) + q);
   }
   function getJob(userId, jobId) {
     return get('/job/' + encodeURIComponent(userId) + '/' + encodeURIComponent(jobId));
