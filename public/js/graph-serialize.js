@@ -522,14 +522,114 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings };
   }
 
+  // -------- OUTLINE tree (docs/uiux/shell-editor-click-ndv.md § 2) -----------
+  // The locked design shows the workflow as a NUMBERED NESTED TREE in a left
+  // panel: `1 Trigger` → `1.1 Webhook`, `4 Condition` → `4.1.1 True` →
+  // `4.1.1.1 Extract Data`. The spec is explicit that the outline is a
+  // "navigational mirror, not a separate model" (§ 4), so it is DERIVED from
+  // the same graph the canvas draws — never stored, never edited here.
+  //
+  // Shape of each row:
+  //   { nodeId, action, port, num, depth, kind }
+  //     nodeId — canvas node to select when the row is clicked ('' for a port
+  //              row, which is a label on its owner node, not a node itself)
+  //     port   — for kind 'port', the owner node's port id ('then'/'else'/…)
+  //     num    — dotted section number as a STRING ('4.1.1.1')
+  //     depth  — 0-based indentation level (== num segments - 1)
+  //     kind   — 'node' | 'port'
+  //
+  // Being DOM-free keeps it unit-testable (the flow-editor is not), and keeps
+  // one implementation of the numbering rule for both the panel and any future
+  // consumer (e.g. an exported document outline).
+  var OUTLINE_MAX_ROWS = 2000;   // hard stop: a cyclic graph must not hang the UI
+
+  function outlineTree(graph) {
+    var rows = [];
+    if (!graph || !graph.nodes || !Array.isArray(graph.edges)) return rows;
+
+    // A node reached from two different ports would otherwise be emitted twice
+    // (and an actual cycle would never terminate). First visit wins, which
+    // matches how graphToSteps() serialises the same graph.
+    var seen = {};
+
+    function walk(fromId, port, prefix) {
+      var id = portTarget(graph, fromId, port);
+      var index = 0;
+      var guard = 0;
+      while (id && guard < OUTLINE_MAX_ROWS) {
+        guard += 1;
+        if (seen[id]) break;
+        var node = graph.nodes[id];
+        if (!node) break;
+        seen[id] = true;
+        index += 1;
+        var num = prefix ? prefix + '.' + index : String(index);
+        rows.push({
+          nodeId: id,
+          action: node.action,
+          port: '',
+          num: num,
+          depth: num.split('.').length - 1,
+          kind: 'node',
+        });
+        if (rows.length >= OUTLINE_MAX_ROWS) return;
+
+        // Branch ports become their own labelled rows, so `True` / `False`
+        // read as sections that own their children (exactly as pictured).
+        var ports = CAT.branchesOf ? CAT.branchesOf(node.action) : [{ id: 'next' }];
+        var branchPorts = [];
+        for (var i = 0; i < ports.length; i++) {
+          if (ports[i] && ports[i].id !== 'next') branchPorts.push(ports[i]);
+        }
+        // `switch` fans out through dynamic `case:<value>` ports, which are not
+        // declared in the catalog — read them off the edges instead.
+        if (node.action === 'switch') {
+          var es = edgesFrom(graph, id);
+          for (var e = 0; e < es.length; e++) {
+            var p = es[e].port || 'next';
+            if (p.indexOf('case:') === 0) branchPorts.push({ id: p, label: 'port.case' });
+          }
+        }
+        var sub = 0;
+        for (var b = 0; b < branchPorts.length; b++) {
+          var bp = branchPorts[b];
+          if (!portTarget(graph, id, bp.id)) continue;   // empty port: no row
+          sub += 1;
+          var bnum = num + '.' + sub;
+          rows.push({
+            nodeId: id,
+            action: node.action,
+            port: bp.id,
+            num: bnum,
+            depth: bnum.split('.').length - 1,
+            kind: 'port',
+          });
+          if (rows.length >= OUTLINE_MAX_ROWS) return;
+          walk(id, bp.id, bnum);
+          if (rows.length >= OUTLINE_MAX_ROWS) return;
+        }
+
+        // Continue the chain: branching nodes carry on via 'next' (if/switch/
+        // try) or 'done' (loop/foreach/while) — same rule as buildNode().
+        var contPort = DONE_PORT[node.action] ? 'done' : 'next';
+        id = portTarget(graph, id, contPort);
+      }
+    }
+
+    walk('start', 'next', '');
+    return rows;
+  }
+
   window.GraphSerialize = {
     graphToSteps: graphToSteps,
     stepsToGraph: stepsToGraph,
     validateGraph: validateGraph,
+    outlineTree: outlineTree,
     // exported for tests / reuse
     coerceParams: coerceParams,
     buildCondition: buildCondition,
     conditionToGroups: conditionToGroups,
     CONDITION_ONLY_PARAMS: CONDITION_ONLY_PARAMS,
+    OUTLINE_MAX_ROWS: OUTLINE_MAX_ROWS,
   };
 })();
