@@ -77,6 +77,9 @@
   function put(path, body, opts) {
     return request(path, Object.assign({ method: 'PUT', body: body }, opts || {}));
   }
+  function patch(path, body, opts) {
+    return request(path, Object.assign({ method: 'PATCH', body: body }, opts || {}));
+  }
   function del(path, opts) {
     return request(path, Object.assign({ method: 'DELETE' }, opts || {}));
   }
@@ -178,6 +181,21 @@
     return post(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/run', body || {});
   }
 
+  /**
+   * Flip the Workspace row switches without touching the workflow design.
+   * state: { active?: boolean, liveBrowser?: boolean } — at least one required.
+   * The server never bumps Workflow.version for a state change (see
+   * docs/uiux/workspace-overview.md section 6).
+   */
+  function setWorkflowState(userId, workflowId, state) {
+    return patch(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/state', state || {});
+  }
+
+  /** Aggregated Workspace counters + per-workflow run stats. */
+  function workspaceStats(userId) {
+    return get('/workspace/' + encodeURIComponent(userId) + '/stats');
+  }
+
   /** Admin stats (requires admin token). */
   function adminStats() {
     return get('/admin/stats', { admin: true });
@@ -217,12 +235,15 @@
     deleteWorkflow: deleteWorkflow,
     listWorkflowVersions: listWorkflowVersions,
     runWorkflow: runWorkflow,
+    setWorkflowState: setWorkflowState,
+    workspaceStats: workspaceStats,
     adminStats: adminStats,
     validateAdminToken: validateAdminToken,
     request: request,
     get: get,
     post: post,
     put: put,
+    patch: patch,
     del: del,
     health: health,
     validateKey: validateKey,

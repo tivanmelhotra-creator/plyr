@@ -230,6 +230,7 @@ app.use('/jobs', asyncAuthMiddleware);
 app.use('/quota', asyncAuthMiddleware);
 app.use('/me', asyncAuthMiddleware);
 app.use('/workflows', asyncAuthMiddleware);
+app.use('/workspace', asyncAuthMiddleware);
 
 // Block check
 const blockCheck = asyncBlockCheck(connection);
@@ -240,6 +241,7 @@ app.use('/jobs', blockCheck);
 app.use('/quota', blockCheck);
 app.use('/me', blockCheck);
 app.use('/workflows', blockCheck);
+app.use('/workspace', blockCheck);
 
 // ============================================
 // INITIALIZATION

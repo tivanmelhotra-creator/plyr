@@ -66,46 +66,35 @@
         <span class="brand-text" data-i18n="app.title">Automation Backend</span>
       </div>
 
+      <!-- EXACTLY six entries — the locked information architecture
+           (docs/uiux/workspace-overview.md § 3A). `Live View`, `Live Browser`,
+           `Schedules` and `Active Flow` are NOT places in the product: they are
+           capabilities of one workflow and are reachable from a workflow row or
+           from the editor. Do not re-add them here. -->
       <nav class="sidebar-nav">
+        <a href="#/home" class="nav-item" data-route="home">
+          <span class="nav-icon" data-icon="home"></span>
+          <span class="nav-label" data-i18n="nav.home">خانه</span>
+        </a>
+        <a href="#/workspace" class="nav-item" data-route="workspace">
+          <span class="nav-icon" data-icon="layout"></span>
+          <span class="nav-label" data-i18n="nav.workspace">فضای کاری</span>
+        </a>
         <a href="#/dashboard" class="nav-item" data-route="dashboard">
-          <span class="nav-icon" data-icon="gauge"></span>
+          <span class="nav-icon" data-icon="bar-chart"></span>
           <span class="nav-label" data-i18n="nav.dashboard">داشبورد</span>
-        </a>
-        <a href="#/run" class="nav-item" data-route="run">
-          <span class="nav-icon" data-icon="play"></span>
-          <span class="nav-label" data-i18n="nav.run">اجرای Flow</span>
-        </a>
-        <a href="#/workflows" class="nav-item" data-route="workflows">
-          <span class="nav-icon" data-icon="book-open"></span>
-          <span class="nav-label" data-i18n="nav.workflows">ورکفلوها</span>
-        </a>
-        <a href="#/editor" class="nav-item" data-route="editor">
-          <span class="nav-icon" data-icon="sitemap"></span>
-          <span class="nav-label" data-i18n="nav.editor">ادیتور بصری</span>
         </a>
         <a href="#/jobs" class="nav-item" data-route="jobs">
           <span class="nav-icon" data-icon="layers"></span>
           <span class="nav-label" data-i18n="nav.jobs">جاب‌ها</span>
         </a>
-        <a href="#/live" class="nav-item" data-route="live">
-          <span class="nav-icon" data-icon="terminal"></span>
-          <span class="nav-label" data-i18n="nav.live">نمایش زنده</span>
-        </a>
-        <a href="#/browser" class="nav-item" data-route="browser">
-          <span class="nav-icon" data-icon="frame"></span>
-          <span class="nav-label" data-i18n="nav.browser">مرورگر زنده</span>
-        </a>
-        <a href="#/schedules" class="nav-item" data-route="schedules">
-          <span class="nav-icon" data-icon="calendar"></span>
-          <span class="nav-label" data-i18n="nav.schedules">زمان‌بندی‌ها</span>
-        </a>
-        <a href="#/quota" class="nav-item" data-route="quota">
-          <span class="nav-icon" data-icon="gauge"></span>
-          <span class="nav-label" data-i18n="nav.quota">سهمیه</span>
-        </a>
         <a href="#/admin" class="nav-item" data-route="admin">
           <span class="nav-icon" data-icon="shield"></span>
           <span class="nav-label" data-i18n="nav.admin">پنل ادمین</span>
+        </a>
+        <a href="#/settings" class="nav-item" data-route="settings">
+          <span class="nav-icon" data-icon="settings"></span>
+          <span class="nav-label" data-i18n="nav.settings">تنظیمات</span>
         </a>
       </nav>
 
@@ -121,7 +110,54 @@
     <div class="main">
       <header class="topbar">
         <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="menu" data-icon="panel-left"></button>
-        <h2 class="page-title" id="page-title" data-i18n="nav.dashboard">داشبورد</h2>
+
+        <!-- App Launcher (docs/uiux/shell-editor-launcher-menu.md § 2).
+             The header carries NO nav links: the same six product areas live
+             behind this one 2x2-grid button, so the chrome never grows with
+             the feature set. The panel is app-level (shell), because the
+             editor screen uses the identical component. -->
+        <div class="launcher" id="launcher">
+          <button
+            class="launcher-btn"
+            id="launcher-btn"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="launcher-menu"
+            aria-label="Open app launcher"
+            title="Apps"
+            data-icon="grid"
+            data-icon-size="18"
+          ></button>
+          <div class="launcher-menu" id="launcher-menu" role="menu" aria-label="Product areas" hidden>
+            <button class="launcher-item" type="button" role="menuitem" data-route="home">
+              <span class="launcher-item-icon" data-icon="home"></span>
+              <span data-i18n="nav.home">خانه</span>
+            </button>
+            <button class="launcher-item" type="button" role="menuitem" data-route="workspace">
+              <span class="launcher-item-icon" data-icon="layout"></span>
+              <span data-i18n="nav.workspace">فضای کاری</span>
+            </button>
+            <button class="launcher-item" type="button" role="menuitem" data-route="dashboard">
+              <span class="launcher-item-icon" data-icon="bar-chart"></span>
+              <span data-i18n="nav.dashboard">داشبورد</span>
+            </button>
+            <button class="launcher-item" type="button" role="menuitem" data-route="jobs">
+              <span class="launcher-item-icon" data-icon="layers"></span>
+              <span data-i18n="nav.jobs">جاب‌ها</span>
+            </button>
+            <button class="launcher-item" type="button" role="menuitem" data-route="admin">
+              <span class="launcher-item-icon" data-icon="shield"></span>
+              <span data-i18n="nav.admin">پنل ادمین</span>
+            </button>
+            <button class="launcher-item" type="button" role="menuitem" data-route="settings">
+              <span class="launcher-item-icon" data-icon="settings"></span>
+              <span data-i18n="nav.settings">تنظیمات</span>
+            </button>
+          </div>
+        </div>
+
+        <h2 class="page-title" id="page-title" data-i18n="nav.workspace">فضای کاری</h2>
         <div class="topbar-actions">
           <button class="icon-btn" id="lang-toggle" title="Language" data-icon="globe"></button>
           <button class="icon-btn" id="theme-toggle" title="Theme" data-icon="sparkles"></button>

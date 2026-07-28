@@ -15,14 +15,42 @@
 
 See also `00-PROCESS-node-design.md`.
 
+## Product architecture (locked 2026-07-28)
+
+The navigation was restructured so that **Workspace is the workflow-management
+hub** and everything scoped to a single workflow lives on that workflow instead
+of in the global menu:
+
+```
+Sidebar = Home · Workspace · Dashboard · Jobs · Admin · Settings   (six, final)
+Header  = brand + [⊞ App Launcher] → the same six areas in a floating menu
+Removed from navigation: Live View · Live Browser · Schedules · Active Flow
+        → they are now per-workflow capabilities (row toggles + ⋮ menu + editor)
+```
+
+The requirement of record is `01-REPORT-ui-architecture-update.md` (verbatim
+product report). Its two locked screens are `workspace-overview` and
+`shell-editor-launcher-menu`. Where report and image disagree, **the image
+wins** — the only such case is the stat-card order, documented in
+`workspace-overview.md` § 3D.
+
+**Implementation status, open items and pick-up instructions live in
+`02-HANDOFF-workspace-architecture.md`.** Read that file before touching the
+Workspace hub, the App Launcher, or the `active` / `liveBrowser` workflow flags —
+it records what is intentionally deferred (integration tests, placeholder tabs,
+inert filter button) so those are not mistaken for bugs.
+
 ## Index (locked / reviewed)
 
-All six screens have been READ. Only the two `ndv-*-final` screens are in scope
-for *node design* — the four shell/state screens are read for their cross-cutting
-rules (tokens, node cards, connectors, status bar, category-derived modal glow).
+All eight screens have been READ. Only the two `ndv-*-final` screens are in scope
+for *node design* — the shell/state screens are read for their cross-cutting
+rules (tokens, node cards, connectors, status bar, category-derived modal glow),
+and the two 2026-07-28 screens define the product-level navigation.
 
 | Stem | Role | Full | Lite | Spec | Implementation |
 |------|------|------|------|------|----------------|
+| `workspace-overview` | Workspace = workflow hub (7 stat cards, table, toggles) | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`views.js` → `renderWorkspace`) · backend `active`/`liveBrowser` + `/workspace/:userId/stats` executed |
+| `shell-editor-launcher-menu` | Header App Launcher + six-area menu | `.webp` | `lite/*.jpg` | `.md` | ◐ launcher + menu + six-item sidebar done; workflow tab strip / Export-Save split menus pending |
 | `ndv-condition-final` | Condition NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend `source`/`attribute` executed |
 | `ndv-click-element-final` | Click Element NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend click extras executed |
 | `shell-editor-click-ndv` | Full shell + Click NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ node cards / ports / connectors / status bar / **SVG icons** / **left-to-right pipeline layout** / **minimap header** / **floating canvas toolbar** done; Outline + Activity Log + top-bar chrome pending |

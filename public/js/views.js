@@ -1101,6 +1101,780 @@
     });
   }
 
+  // =============================================
+  // WORKSPACE — the workflow-management hub
+  // (locked design: docs/uiux/workspace-overview.md + .webp)
+  //
+  // WHY THIS VIEW EXISTS
+  // --------------------
+  // `Live View`, `Live Browser`, `Schedules` and `Active Flow` used to be
+  // sidebar entries, which forced the user to know *which* workflow a global
+  // "Live Browser" page was talking about. They are capabilities of ONE
+  // workflow, so they live on that workflow's row here (toggles, eye button,
+  // schedules cell, per-row menu) and the sidebar shrinks to six real areas.
+  // =============================================
+
+  /** Replace `{token}` placeholders in a translated string. */
+  function fill(str, map) {
+    return String(str).replace(/\{(\w+)\}/g, function (m, k) {
+      return map[k] == null ? m : String(map[k]);
+    });
+  }
+
+  /** Coarse relative time — the table wants "2h ago", not a full timestamp. */
+  function fmtRel(iso) {
+    if (!iso) return t('ws.never');
+    var ts = Date.parse(iso);
+    if (isNaN(ts)) return '—';
+    var s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return t('ws.justNow');
+    if (s < 3600) return fill(t('ws.minsAgo'), { n: Math.floor(s / 60) });
+    if (s < 86400) return fill(t('ws.hoursAgo'), { n: Math.floor(s / 3600) });
+    return fill(t('ws.daysAgo'), { n: Math.floor(s / 86400) });
+  }
+
+  /**
+   * The seven stat cards, in the order LOCKED BY THE IMAGE (the written report
+   * lists Total Flows first; the approved artefact puts Active Schedules
+   * first — the image wins). `key` indexes the /workspace/:userId/stats payload.
+   */
+  var WS_CARDS = [
+    { key: 'activeSchedules', icon: 'calendar', tone: 'violet', title: 'ws.card.activeSchedules', sub: 'ws.sub.activeSchedules' },
+    { key: 'totalFlows', icon: 'sitemap', tone: 'blue', title: 'ws.card.totalFlows', sub: 'ws.sub.totalFlows' },
+    { key: 'activeFlows', icon: 'check-circle', tone: 'green', title: 'ws.card.activeFlows', sub: 'ws.sub.activeFlows' },
+    { key: 'successRate', icon: 'target', tone: 'green', title: 'ws.card.successRate', sub: 'ws.sub.successRate', pct: true },
+    { key: 'failures', icon: 'alert-triangle', tone: 'red', title: 'ws.card.failures', sub: 'ws.sub.failures' },
+    { key: 'activeJobs', icon: 'briefcase', tone: 'amber', title: 'ws.card.activeJobs', sub: 'ws.sub.activeJobs' },
+    { key: 'liveBrowsers', icon: 'globe', tone: 'blue', title: 'ws.card.liveBrowsers', sub: 'ws.sub.liveBrowsers' },
+  ];
+
+  var WS_TABS = [
+    { id: 'workflows', label: 'ws.tab.workflows' },
+    { id: 'templates', label: 'ws.tab.templates' },
+    { id: 'executions', label: 'ws.tab.executions' },
+    { id: 'schedules', label: 'ws.tab.schedules' },
+    { id: 'connections', label: 'ws.tab.connections' },
+  ];
+
+  var WS_SORTS = [
+    { id: 'updated', label: 'ws.sort.updated' },
+    { id: 'name', label: 'ws.sort.name' },
+    { id: 'rate', label: 'ws.sort.rate' },
+    { id: 'lastRun', label: 'ws.sort.lastRun' },
+  ];
+
+  /** Per-workflow actions menu — exactly the entries the sidebar gave up. */
+  var WS_ROW_MENU = [
+    { id: 'editor', icon: 'pencil', label: 'ws.menu.openEditor' },
+    { id: 'live', icon: 'eye', label: 'ws.menu.liveBrowser' },
+    { id: 'schedules', icon: 'calendar', label: 'ws.menu.schedules' },
+    { id: 'executions', icon: 'history', label: 'ws.menu.executions' },
+    { id: 'connections', icon: 'git-branch', label: 'ws.menu.connections' },
+    { id: 'settings', icon: 'settings', label: 'ws.menu.settings' },
+    { id: 'duplicate', icon: 'copy', label: 'ws.menu.duplicate' },
+    { id: 'export', icon: 'download', label: 'ws.menu.export' },
+    { id: 'delete', icon: 'trash', label: 'ws.menu.delete', danger: true },
+  ];
+
+  // Survives re-render (language switch, refresh) but not a page reload.
+  var wsState = { tab: 'workflows', search: '', sort: 'updated', page: 1, perPage: 10, compact: false };
+
+  /** Success-rate fill tone: >=95% green, 80-95% amber, <80% red (spec § 3F). */
+  function wsSuccessTone(pct) {
+    if (pct == null) return 'muted';
+    if (pct >= 95) return 'green';
+    if (pct >= 80) return 'amber';
+    return 'red';
+  }
+
+  /** Hand a workflow to the editor view (same channel the old card list used). */
+  function openInEditorFromWorkspace(wf) {
+    pendingWorkflowToOpen = wf;
+    location.hash = '#/editor';
+  }
+
+  /** Import a workflow JSON file produced by the row menu's Export entry. */
+  function importWorkflowJson(uid, done) {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.addEventListener('change', function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var body;
+        try { body = JSON.parse(String(reader.result)); }
+        catch (e) { U().toast(t('ws.importInvalid'), 'error'); return; }
+        if (!body || !Array.isArray(body.steps)) { U().toast(t('ws.importInvalid'), 'error'); return; }
+        API.createWorkflow(uid, {
+          name: body.name || 'Imported workflow',
+          description: body.description || null,
+          steps: body.steps,
+          headless: body.headless,
+          webhookUrl: body.webhookUrl,
+        })
+          .then(function () { U().toast(t('ws.imported'), 'success'); if (done) done(); })
+          .catch(function (err) { U().toast(err.message, 'error'); });
+      };
+      reader.readAsText(file);
+    });
+    input.click();
+  }
+
+  /** Download a workflow as JSON (row menu → Export). */
+  function exportWorkflowJson(wf) {
+    var payload = JSON.stringify({
+      name: wf.name, description: wf.description || null, steps: wf.steps,
+      headless: wf.headless, webhookUrl: wf.webhookUrl,
+      active: wf.active !== false, liveBrowser: wf.liveBrowser === true,
+    }, null, 2);
+    var blob = new Blob([payload], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = String(wf.name || 'workflow').replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
+    U().toast(t('ws.exported'), 'success');
+  }
+
+  function renderWorkspace(root) {
+    var uid = effectiveUserId();
+    var workflows = [];
+    var statsByWf = {};
+
+    root.innerHTML =
+      '<section class="ws">' +
+        '<header class="page-head">' +
+          '<div>' +
+            '<h1 class="page-h1">' + t('ws.title') + '</h1>' +
+            '<p class="page-sub">' + t('ws.subtitle') + '</p>' +
+          '</div>' +
+          '<div class="split-btn" id="ws-create">' +
+            '<button type="button" class="split-main" id="ws-new">' + IC('plus', 15) + ' ' + t('ws.new') + '</button>' +
+            '<button type="button" class="split-caret" id="ws-new-caret" aria-haspopup="menu"' +
+              ' aria-expanded="false" aria-label="' + esc(t('ws.newMenu')) + '">' + IC('chevron-down', 14) + '</button>' +
+            '<div class="split-menu" id="ws-new-menu" role="menu" hidden>' +
+              '<button type="button" role="menuitem" data-create="template">' + IC('sitemap', 14) + ' ' + t('ws.fromTemplate') + '</button>' +
+              '<button type="button" role="menuitem" data-create="import">' + IC('upload', 14) + ' ' + t('ws.importJson') + '</button>' +
+            '</div>' +
+          '</div>' +
+        '</header>' +
+        '<div class="ws-cards" id="ws-cards"></div>' +
+        '<div class="ws-strip">' +
+          '<div class="ws-tabs" role="tablist" id="ws-tabs"></div>' +
+          '<div class="ws-controls">' +
+            '<label class="ws-search">' + IC('search', 14) +
+              '<input type="search" id="ws-search" placeholder="' + esc(t('ws.search')) + '"' +
+              ' value="' + esc(wsState.search) + '" />' +
+            '</label>' +
+            '<select class="ws-select" id="ws-sort" aria-label="' + esc(t('ws.sortBy')) + '"></select>' +
+            '<button type="button" class="ws-icon-btn" id="ws-filter" title="' + esc(t('ws.filter')) + '"' +
+              ' aria-label="' + esc(t('ws.filter')) + '">' + IC('filter', 15) + '</button>' +
+            '<button type="button" class="ws-icon-btn" id="ws-layout" title="' + esc(t('ws.layout')) + '"' +
+              ' aria-label="' + esc(t('ws.layout')) + '" aria-pressed="false">' + IC('layout', 15) + '</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="ws-panel"><div class="placeholder"><span class="spinner"></span> ' + t('common.loading') + '</div></div>' +
+      '</section>';
+
+    var elCards = root.querySelector('#ws-cards');
+    var elPanel = root.querySelector('#ws-panel');
+
+    // ---- stat cards (7, order locked by the image) ------------------------
+    function paintCards(stats) {
+      elCards.innerHTML = WS_CARDS.map(function (c) {
+        var raw = stats ? stats[c.key] : null;
+        var val = raw == null ? '—' : (c.pct ? raw + '%' : U().num(raw));
+        return '<div class="ws-card tone-' + c.tone + '">' +
+          '<div class="ws-card-head">' +
+            '<span class="ws-card-icon">' + IC(c.icon, 16) + '</span>' +
+            '<span class="ws-card-title">' + t(c.title) + '</span>' +
+          '</div>' +
+          '<div class="ws-card-value">' + esc(val) + '</div>' +
+          '<div class="ws-card-foot"><span class="ws-dot"></span>' + t(c.sub) + '</div>' +
+        '</div>';
+      }).join('');
+    }
+    paintCards(null);
+
+    // ---- tabs + sort select ----------------------------------------------
+    function paintTabs() {
+      root.querySelector('#ws-tabs').innerHTML = WS_TABS.map(function (tab) {
+        var on = wsState.tab === tab.id;
+        return '<button type="button" class="ws-tab' + (on ? ' active' : '') + '" role="tab"' +
+          ' aria-selected="' + (on ? 'true' : 'false') + '" data-tab="' + tab.id + '">' +
+          t(tab.label) + '</button>';
+      }).join('');
+      root.querySelectorAll('[data-tab]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          wsState.tab = b.getAttribute('data-tab');
+          wsState.page = 1;
+          paintTabs();
+          paintPanel();
+        });
+      });
+    }
+    root.querySelector('#ws-sort').innerHTML = WS_SORTS.map(function (s) {
+      return '<option value="' + s.id + '"' + (wsState.sort === s.id ? ' selected' : '') + '>' +
+        esc(t('ws.sortBy') + ': ' + t(s.label)) + '</option>';
+    }).join('');
+    paintTabs();
+
+    // ---- data ------------------------------------------------------------
+    function load() {
+      return Promise.all([
+        API.listWorkflows(uid),
+        API.workspaceStats(uid).catch(function () { return null; }),
+      ]).then(function (res) {
+        workflows = (res[0] && res[0].workflows) || [];
+        statsByWf = {};
+        var stats = res[1] && res[1].stats ? res[1].stats : null;
+        ((res[1] && res[1].perWorkflow) || []).forEach(function (p) { statsByWf[p.workflowId] = p; });
+        // Fall back to what the workflow list alone can prove, so the cards are
+        // never blank just because the aggregate endpoint is unavailable.
+        paintCards(stats || {
+          totalFlows: workflows.length,
+          activeFlows: workflows.filter(function (w) { return w.active !== false; }).length,
+        });
+        paintPanel();
+      }).catch(function (err) {
+        elPanel.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
+      });
+    }
+
+    function visibleWorkflows() {
+      var q = wsState.search.trim().toLowerCase();
+      var list = workflows.filter(function (w) {
+        if (!q) return true;
+        return String(w.name || '').toLowerCase().indexOf(q) !== -1 ||
+          String(w.description || '').toLowerCase().indexOf(q) !== -1;
+      });
+      var s = wsState.sort;
+      return list.sort(function (a, b) {
+        if (s === 'name') return String(a.name).localeCompare(String(b.name));
+        if (s === 'rate') {
+          var ra = (statsByWf[a.id] && statsByWf[a.id].successRate) || 0;
+          var rb = (statsByWf[b.id] && statsByWf[b.id].successRate) || 0;
+          return rb - ra;
+        }
+        if (s === 'lastRun') {
+          var la = Date.parse((statsByWf[a.id] && statsByWf[a.id].lastRunAt) || 0) || 0;
+          var lb = Date.parse((statsByWf[b.id] && statsByWf[b.id].lastRunAt) || 0) || 0;
+          return lb - la;
+        }
+        return (Date.parse(b.updatedAt || 0) || 0) - (Date.parse(a.updatedAt || 0) || 0);
+      });
+    }
+
+    function findWf(id) {
+      for (var i = 0; i < workflows.length; i++) if (workflows[i].id === id) return workflows[i];
+      return null;
+    }
+
+    // ---- cells -----------------------------------------------------------
+    function lastRunCell(st) {
+      if (!st || !st.lastRunAt) return '<span class="ws-muted">' + t('ws.never') + '</span>';
+      var map = {
+        completed: { tone: 'green', label: 'ws.success' },
+        failed: { tone: 'red', label: 'ws.failed' },
+        active: { tone: 'amber', label: 'ws.running' },
+        waiting: { tone: 'amber', label: 'ws.queued' },
+        delayed: { tone: 'amber', label: 'ws.queued' },
+      };
+      var m = map[st.lastRunState] || { tone: 'muted', label: 'ws.unknownRun' };
+      return '<span class="ws-run"><span class="ws-run-dot tone-' + m.tone + '"></span>' +
+        esc(fmtRel(st.lastRunAt)) + '</span>' +
+        '<span class="ws-run-outcome tone-' + m.tone + '">' + t(m.label) + '</span>';
+    }
+
+    function rateCell(st) {
+      var pct = st ? st.successRate : null;
+      var w = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+      return '<span class="ws-rate-num">' + (pct == null ? '—' : pct + '%') + '</span>' +
+        '<span class="ws-rate-track"><span class="ws-rate-fill tone-' + wsSuccessTone(pct) + '"' +
+        ' style="width:' + w + '%"></span></span>';
+    }
+
+    /**
+     * Live Browser is a per-workflow capability, and a browser session can only
+     * exist while the workflow is allowed to run — hence the three locked states
+     * (docs/uiux/workspace-overview.md § 4):
+     *   active   + on  -> eye enabled (a session exists / will exist)
+     *   inactive + on  -> toggle rendered gray, eye disabled (intent remembered)
+     *   active   + off -> eye disabled (user opted out of streaming)
+     */
+    function liveCell(wf) {
+      var active = wf.active !== false;
+      var on = wf.liveBrowser === true;
+      var watchable = active && on;
+      var tip = watchable ? t('ws.watchBrowser')
+        : (!active ? t('ws.watchDisabledInactive') : t('ws.watchDisabledOff'));
+      return '<div class="ws-live">' +
+        '<button type="button" class="ws-switch' + (on ? ' on' : '') + (on && !active ? ' muted-on' : '') + '"' +
+          ' role="switch" aria-checked="' + (on ? 'true' : 'false') + '"' +
+          ' data-lb="' + esc(wf.id) + '" aria-label="' + esc(t('ws.col.liveBrowser')) + '">' +
+          '<span class="ws-switch-knob"></span>' +
+        '</button>' +
+        '<button type="button" class="ws-eye' + (watchable ? '' : ' disabled') + '"' +
+          ' data-watch="' + esc(wf.id) + '"' + (watchable ? '' : ' aria-disabled="true"') +
+          ' title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' +
+          IC(watchable ? 'eye' : 'eye-off', 15) +
+        '</button>' +
+      '</div>';
+    }
+
+    function ownerCell(wf) {
+      var team = wf.owner === 'team';
+      return '<span class="ws-owner">' + IC(team ? 'users' : 'user', 13) + ' ' +
+        t(team ? 'ws.owner.team' : 'ws.owner.personal') + '</span>';
+    }
+
+    function rowMenu(wf) {
+      return '<div class="ws-row-menu" id="ws-menu-' + cssId(wf.id) + '" role="menu" hidden>' +
+        WS_ROW_MENU.map(function (m) {
+          var dis = m.id === 'live' && !(wf.active !== false && wf.liveBrowser === true);
+          return '<button type="button" role="menuitem" class="' + (m.danger ? 'danger' : '') + '"' +
+            ' data-act="' + m.id + '" data-id="' + esc(wf.id) + '"' +
+            (dis ? ' aria-disabled="true" disabled' : '') + '>' +
+            IC(m.icon, 14) + ' ' + t(m.label) + '</button>';
+        }).join('') +
+      '</div>';
+    }
+
+    function workflowRow(wf) {
+      var st = statsByWf[wf.id];
+      var active = wf.active !== false;
+      var n = st ? st.scheduleCount : 0;
+      return '<tr data-row="' + esc(wf.id) + '">' +
+        '<td>' +
+          '<div class="ws-wf">' +
+            '<span class="ws-wf-icon">' + IC('sitemap', 15) + '</span>' +
+            '<span class="ws-wf-text">' +
+              '<span class="ws-wf-name">' + esc(wf.name) + '</span>' +
+              '<span class="ws-wf-desc">' + esc(wf.description || t('ws.noDescription')) + '</span>' +
+            '</span>' +
+          '</div>' +
+        '</td>' +
+        '<td>' + ownerCell(wf) + '</td>' +
+        '<td>' + lastRunCell(st) + '</td>' +
+        '<td>' + rateCell(st) + '</td>' +
+        '<td>' +
+          '<div class="ws-status">' +
+            '<button type="button" class="ws-switch' + (active ? ' on' : '') + '" role="switch"' +
+              ' aria-checked="' + (active ? 'true' : 'false') + '" data-active="' + esc(wf.id) + '"' +
+              ' aria-label="' + esc(t('ws.col.status')) + '"><span class="ws-switch-knob"></span></button>' +
+            '<span class="ws-status-label' + (active ? ' on' : '') + '">' +
+              t(active ? 'ws.active' : 'ws.inactive') + '</span>' +
+          '</div>' +
+        '</td>' +
+        '<td>' + liveCell(wf) + '</td>' +
+        '<td>' +
+          '<button type="button" class="ws-sched" data-sched="' + esc(wf.id) + '">' +
+            IC('calendar', 14) + ' ' +
+            (n === 1 ? t('ws.scheduleOne') : fill(t('ws.schedulesCount'), { n: n })) +
+          '</button>' +
+        '</td>' +
+        '<td class="ws-actions-cell">' +
+          '<button type="button" class="ws-icon-btn ws-kebab" data-menu="' + esc(wf.id) + '"' +
+            ' aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(t('ws.col.actions')) + '">' +
+            IC('more-vertical', 16) + '</button>' +
+          rowMenu(wf) +
+        '</td>' +
+      '</tr>';
+    }
+
+    // ---- panels per tab ---------------------------------------------------
+    function paintPanel() {
+      if (wsState.tab === 'workflows') { paintWorkflowsTab(); return; }
+      if (wsState.tab === 'schedules') { paintSchedulesTab(); return; }
+      if (wsState.tab === 'templates') { paintTemplatesTab(); return; }
+      var key = wsState.tab === 'executions' ? 'ws.executionsEmpty' : 'ws.connectionsEmpty';
+      var icon = wsState.tab === 'executions' ? 'history' : 'git-branch';
+      elPanel.innerHTML =
+        '<div class="ws-empty">' +
+          '<span class="ws-empty-icon">' + IC(icon, 22) + '</span>' +
+          '<p>' + t(key) + '</p>' +
+          (wsState.tab === 'executions'
+            ? '<a class="btn btn-ghost btn-sm" href="#/jobs">' + t('ws.goToJobs') + '</a>'
+            : '') +
+        '</div>';
+    }
+
+    function pageChips(pages) {
+      var out = [];
+      var GAP = '<span class="ws-page-gap">…</span>';
+      for (var i = 1; i <= pages; i++) {
+        if (pages > 7 && i > 3 && i < pages && Math.abs(i - wsState.page) > 1) {
+          if (out[out.length - 1] !== GAP) out.push(GAP);
+          continue;
+        }
+        out.push('<button type="button" class="ws-page-btn' + (i === wsState.page ? ' active' : '') +
+          '" data-goto="' + i + '">' + i + '</button>');
+      }
+      return out.join('');
+    }
+
+    function paintWorkflowsTab() {
+      var list = visibleWorkflows();
+      if (!workflows.length) {
+        elPanel.innerHTML =
+          '<div class="ws-empty">' +
+            '<span class="ws-empty-icon">' + IC('sitemap', 22) + '</span>' +
+            '<p>' + t('ws.empty') + '</p>' +
+            '<p class="ws-empty-hint">' + t('ws.emptyHint') + '</p>' +
+          '</div>';
+        return;
+      }
+      if (!list.length) {
+        elPanel.innerHTML = '<div class="ws-empty"><span class="ws-empty-icon">' +
+          IC('search', 22) + '</span><p>' + t('ws.noResults') + '</p></div>';
+        return;
+      }
+
+      var pages = Math.max(1, Math.ceil(list.length / wsState.perPage));
+      if (wsState.page > pages) wsState.page = pages;
+      var from = (wsState.page - 1) * wsState.perPage;
+      var slice = list.slice(from, from + wsState.perPage);
+
+      var cols = ['workflow', 'owner', 'lastRun', 'successRate', 'status', 'liveBrowser', 'schedules', 'actions'];
+      elPanel.innerHTML =
+        '<div class="ws-table-wrap' + (wsState.compact ? ' compact' : '') + '">' +
+          '<table class="ws-table"><thead><tr>' +
+            cols.map(function (c) { return '<th scope="col">' + t('ws.col.' + c) + '</th>'; }).join('') +
+          '</tr></thead><tbody>' + slice.map(workflowRow).join('') + '</tbody></table>' +
+        '</div>' +
+        '<div class="ws-foot">' +
+          '<span class="ws-foot-count">' + esc(fill(t('ws.showing'), {
+            from: list.length ? from + 1 : 0,
+            to: from + slice.length,
+            total: list.length,
+          })) + '</span>' +
+          '<div class="ws-pager">' +
+            '<button type="button" class="ws-page-btn" data-page="prev"' +
+              (wsState.page === 1 ? ' disabled' : '') + ' aria-label="' + esc(t('ws.prevPage')) + '">' +
+              IC('chevron-left', 14) + '</button>' +
+            pageChips(pages) +
+            '<button type="button" class="ws-page-btn" data-page="next"' +
+              (wsState.page === pages ? ' disabled' : '') + ' aria-label="' + esc(t('ws.nextPage')) + '">' +
+              IC('chevron-right', 14) + '</button>' +
+            '<select class="ws-select ws-perpage" id="ws-perpage" aria-label="' + esc(t('ws.perPage')) + '">' +
+              [10, 25, 50, 100].map(function (n) {
+                return '<option value="' + n + '"' + (wsState.perPage === n ? ' selected' : '') + '>' +
+                  n + ' / ' + esc(t('ws.perPage')) + '</option>';
+              }).join('') +
+            '</select>' +
+          '</div>' +
+        '</div>';
+
+      bindWorkflowRows();
+    }
+
+    function closeRowMenus() {
+      elPanel.querySelectorAll('.ws-row-menu').forEach(function (m) { m.hidden = true; });
+      elPanel.querySelectorAll('[data-menu]').forEach(function (b) {
+        b.setAttribute('aria-expanded', 'false');
+      });
+    }
+
+    /**
+     * Flip `active` / `liveBrowser` through the toggle-only endpoint. PATCH is
+     * used on purpose: PUT would bump `Workflow.version` and write a history
+     * snapshot, and flipping a switch is not a new design of the automation.
+     */
+    function setState(id, patch, btn) {
+      if (btn) btn.disabled = true;
+      return API.setWorkflowState(uid, id, patch)
+        .then(function (data) {
+          var wf = findWf(id);
+          if (wf && data && data.workflow) {
+            wf.active = data.workflow.active;
+            wf.liveBrowser = data.workflow.liveBrowser;
+          }
+          var msgKey = Object.prototype.hasOwnProperty.call(patch, 'active')
+            ? (patch.active ? 'ws.activated' : 'ws.deactivated')
+            : (patch.liveBrowser ? 'ws.lbOn' : 'ws.lbOff');
+          U().toast(t(msgKey), 'success');
+          paintWorkflowsTab();
+        })
+        .catch(function (err) {
+          U().toast(err.message || t('ws.stateFailed'), 'error');
+          if (btn) btn.disabled = false;
+        });
+    }
+
+    function runRowAction(act, wf) {
+      if (act === 'editor' || act === 'connections' || act === 'settings') {
+        // All three open the editor: it is the only place that owns a
+        // workflow's graph, its node connections and its per-flow settings.
+        openInEditorFromWorkspace(wf);
+        return;
+      }
+      if (act === 'live') { location.hash = '#/browser'; return; }
+      if (act === 'schedules') { location.hash = '#/schedules'; return; }
+      if (act === 'executions') { location.hash = '#/jobs'; return; }
+      if (act === 'duplicate') {
+        API.createWorkflow(uid, {
+          name: wf.name + ' ' + t('wf.copySuffix'),
+          description: wf.description || null,
+          steps: wf.steps, headless: wf.headless, webhookUrl: wf.webhookUrl,
+        })
+          .then(function () { U().toast(t('wf.duplicated'), 'success'); load(); })
+          .catch(function (err) { U().toast(err.message, 'error'); });
+        return;
+      }
+      if (act === 'export') { exportWorkflowJson(wf); return; }
+      if (act === 'delete') {
+        if (!confirm(t('wf.confirmDelete'))) return;
+        API.deleteWorkflow(uid, wf.id)
+          .then(function () { U().toast(t('wf.deleted'), 'success'); load(); })
+          .catch(function (err) { U().toast(err.message, 'error'); });
+      }
+    }
+
+    function bindWorkflowRows() {
+      elPanel.querySelectorAll('[data-active]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var wf = findWf(b.getAttribute('data-active'));
+          if (wf) setState(wf.id, { active: !(wf.active !== false) }, b);
+        });
+      });
+      elPanel.querySelectorAll('[data-lb]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var wf = findWf(b.getAttribute('data-lb'));
+          if (wf) setState(wf.id, { liveBrowser: !(wf.liveBrowser === true) }, b);
+        });
+      });
+      elPanel.querySelectorAll('[data-watch]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var wf = findWf(b.getAttribute('data-watch'));
+          if (!wf) return;
+          // The server enforces this too: an inactive workflow refuses to run,
+          // so there is nothing to watch. The disabled eye is convenience only.
+          if (wf.active === false || wf.liveBrowser !== true) {
+            U().toast(t(wf.active === false ? 'ws.watchDisabledInactive' : 'ws.watchDisabledOff'), 'error');
+            return;
+          }
+          location.hash = '#/browser';
+        });
+      });
+      elPanel.querySelectorAll('[data-sched]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          wsState.tab = 'schedules';
+          paintTabs();
+          paintPanel();
+        });
+      });
+      elPanel.querySelectorAll('[data-menu]').forEach(function (b) {
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var id = b.getAttribute('data-menu');
+          var menu = elPanel.querySelector('#ws-menu-' + cssId(id));
+          var wasOpen = menu && !menu.hidden;
+          closeRowMenus();
+          if (menu && !wasOpen) {
+            menu.hidden = false;
+            b.setAttribute('aria-expanded', 'true');
+          }
+        });
+      });
+      elPanel.querySelectorAll('[data-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var wf = findWf(b.getAttribute('data-id'));
+          closeRowMenus();
+          if (wf) runRowAction(b.getAttribute('data-act'), wf);
+        });
+      });
+      elPanel.querySelectorAll('[data-goto]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          wsState.page = parseInt(b.getAttribute('data-goto'), 10) || 1;
+          paintWorkflowsTab();
+        });
+      });
+      elPanel.querySelectorAll('[data-page]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          wsState.page += b.getAttribute('data-page') === 'next' ? 1 : -1;
+          if (wsState.page < 1) wsState.page = 1;
+          paintWorkflowsTab();
+        });
+      });
+      var pp = elPanel.querySelector('#ws-perpage');
+      if (pp) {
+        pp.addEventListener('change', function () {
+          wsState.perPage = parseInt(pp.value, 10) || 10;
+          wsState.page = 1;
+          paintWorkflowsTab();
+        });
+      }
+      if (window.Icons) window.Icons.hydrate(elPanel);
+    }
+
+    function paintSchedulesTab() {
+      elPanel.innerHTML = '<div id="ws-sched-host"></div>';
+      renderSchedules(elPanel.querySelector('#ws-sched-host'));
+    }
+
+    function paintTemplatesTab() {
+      var T = window.TEMPLATES;
+      if (!T) {
+        elPanel.innerHTML = '<div class="ws-empty"><p>' + t('ws.templatesUnavailable') + '</p></div>';
+        return;
+      }
+      elPanel.innerHTML = '<div class="wf-grid">' + T.list().map(function (tpl) {
+        var n = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
+        return '<div class="wf-card">' +
+          '<div class="wf-card-head">' +
+            '<span class="wf-name">' + IC(tpl.icon || 'sitemap', 14) + ' ' + esc(t(tpl.name)) + '</span>' +
+            '<span class="badge">' + n + ' ' + t('wf.steps') + '</span>' +
+          '</div>' +
+          '<div class="wf-desc muted small">' + esc(t(tpl.description)) + '</div>' +
+          '<div class="wf-actions">' +
+            '<button type="button" class="btn btn-primary btn-sm" data-usetpl="' + esc(tpl.id) + '">' +
+              IC('plus', 13) + ' ' + t('wf.useTemplate') + '</button>' +
+          '</div>' +
+        '</div>';
+      }).join('') + '</div>';
+      elPanel.querySelectorAll('[data-usetpl]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var tpl = T.byId(b.getAttribute('data-usetpl'));
+          if (!tpl) return;
+          var body = T.toWorkflowBody(tpl.id, t(tpl.name));
+          if (!body) return;
+          b.disabled = true;
+          API.createWorkflow(uid, body)
+            .then(function () {
+              U().toast(t('wf.templateCreated'), 'success');
+              wsState.tab = 'workflows';
+              paintTabs();
+              load();
+            })
+            .catch(function (err) { U().toast(err.message, 'error'); })
+            .then(function () { b.disabled = false; });
+        });
+      });
+    }
+
+    // ---- header / control wiring -----------------------------------------
+    var searchInput = root.querySelector('#ws-search');
+    var searchTimer = null;
+    searchInput.addEventListener('input', function () {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () {
+        wsState.search = searchInput.value || '';
+        wsState.page = 1;
+        if (wsState.tab === 'workflows') paintWorkflowsTab();
+      }, 180);
+    });
+    root.querySelector('#ws-sort').addEventListener('change', function (ev) {
+      wsState.sort = ev.target.value;
+      if (wsState.tab === 'workflows') paintWorkflowsTab();
+    });
+    root.querySelector('#ws-filter').addEventListener('click', function () {
+      searchInput.focus();
+    });
+    root.querySelector('#ws-layout').addEventListener('click', function (ev) {
+      // The column chooser is deferred (spec § 6C); the button toggles density.
+      wsState.compact = !wsState.compact;
+      ev.currentTarget.setAttribute('aria-pressed', wsState.compact ? 'true' : 'false');
+      if (wsState.tab === 'workflows') paintWorkflowsTab();
+    });
+    root.querySelector('#ws-new').addEventListener('click', function () {
+      if (window.FlowEditor) window.FlowEditor.newWorkflow();
+      pendingWorkflowToOpen = null;
+      location.hash = '#/editor';
+    });
+    var caret = root.querySelector('#ws-new-caret');
+    var caretMenu = root.querySelector('#ws-new-menu');
+    caret.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      caretMenu.hidden = !caretMenu.hidden;
+      caret.setAttribute('aria-expanded', caretMenu.hidden ? 'false' : 'true');
+    });
+    caretMenu.querySelectorAll('[data-create]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        caretMenu.hidden = true;
+        caret.setAttribute('aria-expanded', 'false');
+        if (b.getAttribute('data-create') === 'template') {
+          wsState.tab = 'templates';
+          paintTabs();
+          paintPanel();
+        } else {
+          importWorkflowJson(uid, load);
+        }
+      });
+    });
+    // One document-level closer for both popovers, so a stray click never
+    // leaves a menu floating over the table.
+    document.addEventListener('click', function () {
+      if (caretMenu) { caretMenu.hidden = true; caret.setAttribute('aria-expanded', 'false'); }
+      if (elPanel && elPanel.isConnected) closeRowMenus();
+    });
+
+    load();
+    // The cards mix live queue counters with browser counts, so a slow poll
+    // keeps them honest without the user reaching for a refresh button.
+    track(setInterval(function () {
+      if (location.hash.indexOf('workspace') === -1) return;
+      API.workspaceStats(uid)
+        .then(function (d) { if (d && d.stats) paintCards(d.stats); })
+        .catch(function () {});
+    }, 15000));
+  }
+
+  // =============================================
+  // SETTINGS — the sixth product area.
+  // Holds what the sidebar shed: the account/API key, appearance, and Quota
+  // (a property of the account, not a place of its own).
+  // =============================================
+  function renderSettings(root) {
+    var uid = effectiveUserId();
+    var key = API.getKey() || '';
+    var masked = key ? key.replace(/.(?=.{4})/g, '\u2022') : '—';
+    root.innerHTML =
+      '<section class="settings">' +
+        '<header class="page-head">' +
+          '<div>' +
+            '<h1 class="page-h1">' + t('settings.title') + '</h1>' +
+            '<p class="page-sub">' + t('settings.subtitle') + '</p>' +
+          '</div>' +
+        '</header>' +
+        '<div class="grid grid-cards">' +
+          '<div class="card">' +
+            '<h3 class="card-title">' + IC('user') + ' ' + t('settings.account') + '</h3>' +
+            '<dl class="kv">' +
+              '<dt>' + t('settings.userId') + '</dt><dd class="mono">' + esc(uid) + '</dd>' +
+              '<dt>' + t('settings.apiKey') + '</dt><dd class="mono">' + esc(masked) + '</dd>' +
+            '</dl>' +
+            '<div class="wf-actions">' +
+              '<a class="btn btn-ghost btn-sm" href="#/quota">' + IC('gauge', 14) + ' ' +
+                t('settings.openQuota') + '</a>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<h3 class="card-title">' + IC('palette') + ' ' + t('settings.appearance') + '</h3>' +
+            '<p class="muted small">' + t('settings.appearanceHint') + '</p>' +
+            '<div class="wf-actions">' +
+              '<button type="button" class="btn btn-ghost btn-sm" id="set-lang">' +
+                IC('globe', 14) + ' ' + t('settings.language') + '</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<h3 class="card-title">' + IC('shield') + ' ' + t('settings.admin') + '</h3>' +
+            '<p class="muted small">' + t('settings.adminHint') + '</p>' +
+            '<div class="wf-actions">' +
+              '<a class="btn btn-ghost btn-sm" href="#/admin">' + IC('shield', 14) + ' ' + t('nav.admin') + '</a>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</section>';
+
+    root.querySelector('#set-lang').addEventListener('click', function () {
+      if (window.I18N) window.I18N.toggle();
+    });
+  }
+
   function render(route, root) {
     // Views may emit `data-icon="name"` placeholders; hydrate them into inline
     // SVG right after the route paints (Icons.hydrate is idempotent).
@@ -1108,7 +1882,11 @@
       setTimeout(function () { window.Icons.hydrate(root); }, 0);
     }
     switch (route) {
+      case 'workspace': return renderWorkspace(root);
+      case 'settings': return renderSettings(root);
       case 'run': return renderRun(root);
+      // Legacy library view: still reachable at #/workflows, but Workspace is
+      // the hub the sidebar points at now.
       case 'workflows': return renderWorkflows(root);
       case 'editor': return renderEditor(root);
       case 'jobs': return renderJobs(root);
