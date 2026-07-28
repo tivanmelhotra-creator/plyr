@@ -256,6 +256,104 @@
     } catch (e) { return false; }
   }
 
+  // ---- Undo / redo (item A: the top bar's ↶ ↷ pair) -------------------------
+  // The locked shell shows undo/redo left of `Export`. A COMMAND stack would
+  // need every mutation path to describe its own inverse; the editor has many
+  // (drag, connect, paste, NDV field edits, Auto Layout, …) and any that forgot
+  // would corrupt the graph silently. So this is a SNAPSHOT stack of the same
+  // JSON `serialize()` already writes to localStorage — one implementation, and
+  // a path that cannot desynchronise from what is actually persisted.
+  //
+  // Snapshots deliberately exclude `selected`/`selSet`: undo restores the
+  // GRAPH, not the cursor. They also exclude run results (nodeResults/nodeMeta/
+  // nodePins), which belong to an execution and not to the document.
+  var HISTORY_LIMIT = 60;        // ~60 snapshots of a few KB — bounded memory
+  var undoStack = [];
+  var redoStack = [];
+  var historySuspended = false;  // true while APPLYING a snapshot (no re-record)
+  var chromeListeners = [];      // shell subscribers (outline, undo/redo state)
+
+  /** Subscribe to graph changes. Returns an unsubscribe function. */
+  function onChange(fn) {
+    if (typeof fn !== 'function') return function () {};
+    chromeListeners.push(fn);
+    return function () {
+      var i = chromeListeners.indexOf(fn);
+      if (i !== -1) chromeListeners.splice(i, 1);
+    };
+  }
+  function emitChange() {
+    for (var i = 0; i < chromeListeners.length; i++) {
+      try { chromeListeners[i](); } catch (e) { /* a bad subscriber must not break the editor */ }
+    }
+  }
+
+  /**
+   * Record the CURRENT graph as an undo point. Call BEFORE mutating, so the
+   * stack holds the state to go back TO. Consecutive identical snapshots are
+   * collapsed, so a no-op mutation never costs an undo press.
+   */
+  function pushHistory() {
+    if (historySuspended || !state) return;
+    var snap = serialize();
+    if (undoStack.length && undoStack[undoStack.length - 1] === snap) return;
+    undoStack.push(snap);
+    if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+    redoStack = [];   // a new edit invalidates the redo branch
+  }
+
+  function applySnapshot(json) {
+    var data;
+    try { data = JSON.parse(json); } catch (e) { return false; }
+    if (!data || !data.nodes || !data.nodes.start) return false;
+    historySuspended = true;
+    state.nodes = data.nodes;
+    state.edges = Array.isArray(data.edges) ? data.edges : [];
+    state.nextId = data.nextId || 0;
+    state.view = data.view || { x: 0, y: 0, scale: 1 };
+    // A node the snapshot does not contain must not stay selected, or the NDV
+    // would render a node that no longer exists.
+    if (state.selected && !state.nodes[state.selected]) state.selected = null;
+    var keep = {};
+    Object.keys(state.selSet || {}).forEach(function (id) {
+      if (state.nodes[id]) keep[id] = true;
+    });
+    state.selSet = keep;
+    if (ndvOpen && !state.nodes[ndvOpen]) closeNdv();
+    historySuspended = false;
+    return true;
+  }
+
+  function undo() {
+    if (!undoStack.length) return false;
+    var current = serialize();
+    var prev = undoStack.pop();
+    if (!applySnapshot(prev)) return false;
+    redoStack.push(current);
+    if (redoStack.length > HISTORY_LIMIT) redoStack.shift();
+    // renderAll() already notifies subscribers; emit directly when unmounted so
+    // a headless undo still updates whatever is listening.
+    if (dom) renderAll(); else emitChange();
+    return true;
+  }
+
+  function redo() {
+    if (!redoStack.length) return false;
+    var current = serialize();
+    var next = redoStack.pop();
+    if (!applySnapshot(next)) return false;
+    undoStack.push(current);
+    if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+    // renderAll() already notifies subscribers; emit directly when unmounted so
+    // a headless undo still updates whatever is listening.
+    if (dom) renderAll(); else emitChange();
+    return true;
+  }
+
+  function canUndo() { return undoStack.length > 0; }
+  function canRedo() { return redoStack.length > 0; }
+  function clearHistory() { undoStack = []; redoStack = []; }
+
   // ---- Geometry helpers -----------------------------------------------------
   // Node card metrics come from the shell previews (docs/uiux/shell-editor-*.md):
   // cards measure ~190x64, radius 8, with ports centred on the left/right edges.
@@ -378,6 +476,25 @@
     applyViewTransform();
   }
 
+  /**
+   * Pan (never zoom) so that `nodeId`'s centre lands at the canvas centre.
+   * Used by revealNode() so the OUTLINE panel can act as a navigator: clicking a
+   * row must bring the node into view without changing the user's zoom level.
+   */
+  function centerOnNode(nodeId) {
+    if (!dom || !state || !state.nodes[nodeId]) return false;
+    var n = state.nodes[nodeId];
+    var rect = dom.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return false;   // hidden canvas: nothing to do
+    var s = state.view.scale || 1;
+    var cx = n.x + nodeW() / 2;            // node centre in world coords
+    var cy = n.y + nodeH(n) / 2;
+    state.view.x = rect.width / 2 - cx * s;
+    state.view.y = rect.height / 2 - cy * s;
+    applyViewTransform();
+    return true;
+  }
+
   // ---- Minimap --------------------------------------------------------------
   function renderMinimap() {
     if (!dom || !dom.minimap) return;
@@ -472,6 +589,7 @@
       // click an edge to delete it
       path.addEventListener('click', function (ev) {
         ev.stopPropagation();
+        pushHistory();
         state.edges.splice(idx, 1);
         renderAll();
       });
@@ -683,6 +801,10 @@
       // capture per-node offsets for group move
       var group = activeSelection();
       drag = { type: 'move', nodeId: node.id, sx: wp.x, sy: wp.y,
+        // Undo point for the move, captured BEFORE the first pixel travels but
+        // only COMMITTED once the pointer actually moves (see mousemove). A
+        // mousedown that never becomes a drag must not cost an undo press.
+        snapshot: serialize(), snapshotPushed: false,
         origins: group.map(function (nid) {
           var nn = state.nodes[nid];
           return { id: nid, x: nn.x, y: nn.y };
@@ -967,9 +1089,14 @@
     row.appendChild(labelWrap);
 
     function commit(v) {
+      // One undo point per DISTINCT value: typing fires `input` per keystroke,
+      // and pushHistory() collapses identical consecutive snapshots, so a burst
+      // of keystrokes still leaves a usable (not per-character) undo stack.
+      if (node.params[f.k] !== v) pushHistory();
       node.params[f.k] = v;
       renderNodes();
       renderFieldFeedback();
+      emitChange();   // the OUTLINE row summary can depend on a param
     }
 
     var input;
@@ -1504,6 +1631,10 @@
     renderNodes();
     renderInspector();
     renderMinimap();
+    // The shell (OUTLINE panel, undo/redo button state) mirrors the graph, so it
+    // re-reads on every full render rather than being pushed to from each call
+    // site — one subscription instead of N notifications to keep in sync.
+    emitChange();
   }
 
   // ---- Step 23: visual node status (idle / running / success / error) -------
@@ -1566,6 +1697,7 @@
 
   function removeNode(id) {
     if (id === 'start') return;
+    pushHistory();
     if (ndvOpen === id) closeNdv();
     delete state.nodes[id];
     delete nodeStatus[id];
@@ -1584,6 +1716,7 @@
   function removeSelection() {
     var ids = activeSelection();
     if (!ids.length) return;
+    pushHistory();
     ids.forEach(function (id) {
       delete state.nodes[id];
       delete nodeStatus[id];
@@ -1620,6 +1753,7 @@
 
   function pasteClipboard() {
     if (!clipboard || !clipboard.nodes.length) return;
+    pushHistory();
     var newIds = [];
     state.selSet = {};
     clipboard.nodes.forEach(function (c) {
@@ -1642,6 +1776,7 @@
   function addNode(actionId, x, y) {
     var act = actionById(actionId);
     if (!act) return;
+    pushHistory();
     var id = uid('n');
     state.nodes[id] = { id: id, action: actionId, params: {},
       x: typeof x === 'number' ? x : 320, y: typeof y === 'number' ? y : 220 };
@@ -1655,6 +1790,7 @@
   function connect(fromId, toId, port) {
     if (fromId === toId) return;
     if (toId === 'start') return; // nothing connects into start
+    pushHistory();
     var p = port || 'next';
     state.edges = state.edges.filter(function (e) {
       return !(e.from === fromId && (e.port || 'next') === p);
@@ -1815,6 +1951,16 @@
         var wp = worldPoint(ev.clientX, ev.clientY);
         var ddx = wp.x - drag.sx;
         var ddy = wp.y - drag.sy;
+        // Commit the pre-drag snapshot on the first real movement, so ONE undo
+        // press restores the whole drag (not one press per mousemove event).
+        if (!drag.snapshotPushed && (ddx || ddy)) {
+          drag.snapshotPushed = true;
+          if (!historySuspended) {
+            undoStack.push(drag.snapshot);
+            if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+            redoStack = [];
+          }
+        }
         var doSnap = !(ev.altKey); // hold Alt for free (un-snapped) movement
         drag.origins.forEach(function (o) {
           var node = state.nodes[o.id];
@@ -2155,6 +2301,9 @@
     var steps = toSteps();
     var laid = GS().stepsToGraph(steps || []);
     if (!laid || !laid.nodes || !laid.nodes.start) return;
+    // Auto Layout rewrites every coordinate at once — the single most valuable
+    // thing to be able to undo, so record before touching anything.
+    pushHistory();
 
     // carry the pre-layout selection over by position in the main chain
     var keepSel = state.selected;
@@ -2271,6 +2420,9 @@
     offAll();
     drag = null;
     dom = null;
+    // The shell that subscribed is being torn down with the view; keeping its
+    // callbacks would leak a closure over dead DOM on every navigation.
+    chromeListeners = [];
     // keep `state` so re-entering the view keeps the graph in memory too
   }
 
@@ -2280,10 +2432,44 @@
     toSteps: toSteps,
     loadSteps: loadSteps,
     saveLocal: saveLocal,
-    loadLocal: function () { var ok = loadLocal(); if (dom) renderAll(); return ok; },
-    reset: function () { state = newGraph(); if (dom) renderAll(); },
+    loadLocal: function () { var ok = loadLocal(); clearHistory(); if (dom) renderAll(); return ok; },
+    reset: function () { state = newGraph(); clearHistory(); if (dom) renderAll(); },
     getState: function () { return state; },
     ACTIONS: ACTIONS,
+
+    // ---- Item A: undo / redo + shell subscription -------------------------
+    // History is a bounded stack of the SAME serialized JSON that saveLocal()
+    // writes, so undo can never restore a shape the editor cannot load. It is
+    // cleared whenever the DOCUMENT changes identity (open / new / reset /
+    // loadLocal): undoing across two different workflows would silently paste
+    // one workflow's nodes into another.
+    undo: undo,
+    redo: redo,
+    canUndo: canUndo,
+    canRedo: canRedo,
+    /** Subscribe to graph changes (OUTLINE panel, undo/redo enablement). */
+    onChange: onChange,
+    /**
+     * The numbered nested OUTLINE rows for the current graph
+     * (docs/uiux/shell-editor-click-ndv.md § 2). Derived, never stored.
+     */
+    outline: function () {
+      return GS() && GS().outlineTree ? GS().outlineTree(state) : [];
+    },
+    /** Human title of a node id — the outline renders the same label as the card. */
+    nodeLabel: function (nodeId) {
+      var n = state && state.nodes ? state.nodes[nodeId] : null;
+      return n ? nodeTitle(n) : '';
+    },
+    /** Selected node id, so the outline can mirror the canvas selection. */
+    getSelected: function () { return state ? state.selected : null; },
+    /** Select a node AND bring it into view — the outline is a navigator (§ 6). */
+    revealNode: function (nodeId) {
+      if (!state || !state.nodes[nodeId]) return false;
+      selectNode(nodeId);
+      if (dom) centerOnNode(nodeId);
+      return true;
+    },
 
     // ---- Step 23: viewport + visual node status ---------------------------
     fitToScreen: function () { fitToScreen(); },
