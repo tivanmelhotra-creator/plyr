@@ -313,6 +313,18 @@ export interface Workflow {
   version: number;
   createdAt: string;
   updatedAt: string;
+  // ── Workspace runtime state (docs/uiux/workspace-overview.md § 4) ──
+  // These are NOT part of the automation's design, they are switches on its
+  // row in the Workspace table, so they are toggled through
+  // PATCH /workflows/:userId/:workflowId/state and never bump `version`.
+  //
+  // active=false means: does not execute, creates no Jobs, and its Live Browser
+  // is not viewable however `liveBrowser` is set. Enforced server-side by the
+  // run endpoints, not merely by a disabled button.
+  active: boolean;
+  // Whether the user wants this workflow's Playwright session streamed to the
+  // Live Browser viewer. Only observable while `active` is true.
+  liveBrowser: boolean;
 }
 
 // A point-in-time snapshot kept in the version history of a workflow.
@@ -324,4 +336,37 @@ export interface WorkflowVersionSnapshot {
   headless?: boolean | string | number | null;
   webhookUrl?: string | null;
   savedAt: string;
+  // Recorded for auditability. Restoring a snapshot restores the design; the
+  // live switches are deliberately re-applied from the current record.
+  active?: boolean;
+  liveBrowser?: boolean;
+}
+
+// ============================================
+// Workspace aggregate statistics (docs/uiux/workspace-overview.md § 3D/§ 6)
+// One payload backing the seven stat cards plus the per-row rollups the
+// workflow table needs, so the Workspace screen costs a single request.
+// ============================================
+export interface WorkspaceWorkflowStat {
+  workflowId: string;
+  // Newest run of this workflow: ISO timestamp + terminal state, or null when
+  // it has never run.
+  lastRunAt: string | null;
+  lastRunState: 'completed' | 'failed' | 'active' | 'waiting' | 'delayed' | null;
+  completed: number;
+  failed: number;
+  // completed / (completed + failed) as a 0-100 number, null when never run.
+  successRate: number | null;
+  scheduleCount: number;
+}
+
+export interface WorkspaceStats {
+  totalFlows: number;
+  activeSchedules: number;
+  activeFlows: number;
+  successRate: number | null;
+  failures: number;
+  activeJobs: number;
+  liveBrowsers: number;
+  perWorkflow: WorkspaceWorkflowStat[];
 }

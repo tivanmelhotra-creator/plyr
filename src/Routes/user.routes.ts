@@ -12,7 +12,13 @@ import {
   validateWebhookUrl,
   validateHeadless
 } from '../validation';
-import { runBodySchema, scheduleBodySchema, workflowBodySchema, parseBody } from '../schemas';
+import {
+  runBodySchema,
+  scheduleBodySchema,
+  workflowBodySchema,
+  workflowStateSchema,
+  parseBody
+} from '../schemas';
 import { isVipUser } from '../utils/helpers';
 import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValidWorkflowId } from '../utils/redis-keys';
 import { readJobFile, readPartialJobFile } from '../services/job.service';
@@ -860,6 +866,20 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const wf = await workflowService.get(userId, workflowId);
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
 
+      // [Workspace] An INACTIVE workflow must not execute and must not create a
+      // Job (docs/uiux/workspace-overview.md section 4). Enforced here, on the
+      // server, so a disabled UI toggle is a convenience and not the guarantee:
+      // schedules, the n8n node and the Chrome extension all hit this same path.
+      if (wf.active === false) {
+        return res.status(409).json({
+          success: false,
+          error: 'Workflow is inactive',
+          workflowId,
+          active: false,
+          hint: 'Enable the workflow in Workspace (Status toggle) before running it.'
+        });
+      }
+
       // Re-validate the stored steps against the CURRENT plan (plan limits may
       // have changed since the workflow was saved). Request body may optionally
       // override headless/webhookUrl for this run only.
@@ -988,5 +1008,163 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       res.status(400).json({ success: false, error: error.message });
     }
   });
+
+  // PATCH /workflows/:userId/:workflowId/state - flip the Workspace row
+  // switches (`active`, `liveBrowser`) WITHOUT bumping the version and without
+  // writing a history snapshot: a toggle is not a new design of the automation
+  // (docs/uiux/workspace-overview.md section 4 + section 6, B2).
+  router.patch('/workflows/:userId/:workflowId/state', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const workflowId = req.params.workflowId;
+      if (!isValidWorkflowId(workflowId)) {
+        return res.status(400).json({ success: false, error: 'Invalid workflow id' });
+      }
+      const body = parseBody(workflowStateSchema, req.body, res);
+      if (!body) return;
+
+      const wf = await workflowService.setState(userId, workflowId, {
+        active: body.active,
+        liveBrowser: body.liveBrowser,
+      });
+      if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+
+      // A workflow that cannot run has no browser to watch, so state 2 of the
+      // spec's truth table is reported explicitly: `liveBrowser` keeps the
+      // user's intent, `liveBrowserViewable` is what the eye button obeys.
+      return res.json({
+        success: true,
+        workflow: wf,
+        liveBrowserViewable: wf.active && wf.liveBrowser,
+      });
+    } catch (e: unknown) {
+      const error = e as Error;
+      res.status(400).json({ success: false, error: error.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════
+  // WORKSPACE STATISTICS (docs/uiux/workspace-overview.md section 3D/section 6)
+  // GET /workspace/:userId/stats
+  //
+  // ONE request backing the seven stat cards plus the per-row rollups the
+  // workflow table needs (last run, outcome, success rate, schedule count).
+  // Rendering the table used to need 1 + 3N requests; the Workspace screen is
+  // the app's landing page, so that fan-out is the difference between an
+  // instant page and a visibly stuttering one.
+  // ══════════════════════════════════════════════════════════
+  router.get('/workspace/:userId/stats', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+
+      const workflows = await workflowService.list(userId);
+
+      // ── Schedules: repeatable jobs are keyed `sched:<userId>:<ts>:<name>`, and
+      // the UI names a workflow's schedules after the workflow, so the name
+      // segment is what attributes a schedule to a row.
+      const repeatables = await queue.getRepeatableJobs();
+      const userSchedules = repeatables.filter(
+        (j) => j.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
+      );
+      const scheduleNames = userSchedules.map((j) => (j.id?.split(':')[3] || '').toLowerCase());
+
+      // ── Jobs: one queue sweep, then bucket per workflow. Jobs carry
+      // `__workflowId` when they were started from a saved workflow (see the
+      // run endpoint above); ad-hoc /run jobs have none and only feed the
+      // global counters.
+      const jobs = await queue.getJobs(
+        ['waiting', 'active', 'delayed', 'completed', 'failed'],
+        0,
+        1000,
+        true
+      );
+      const userJobs = jobs.filter((j) => String(j.data?.userId) === userId);
+
+      type Bucket = {
+        completed: number;
+        failed: number;
+        lastRunAt: string | null;
+        lastRunState: string | null;
+        lastTs: number;
+      };
+      const buckets = new Map<string, Bucket>();
+      const bucketFor = (id: string): Bucket => {
+        let b = buckets.get(id);
+        if (!b) {
+          b = { completed: 0, failed: 0, lastRunAt: null, lastRunState: null, lastTs: 0 };
+          buckets.set(id, b);
+        }
+        return b;
+      };
+
+      let completedTotal = 0;
+      let failedTotal = 0;
+      let activeJobs = 0;
+
+      for (const j of userJobs) {
+        const state = await j.getState();
+        if (state === 'completed') completedTotal += 1;
+        else if (state === 'failed') failedTotal += 1;
+        else if (state === 'waiting' || state === 'active' || state === 'delayed') activeJobs += 1;
+
+        const wfId = j.data?.__workflowId ? String(j.data.__workflowId) : null;
+        if (!wfId) continue;
+        const b = bucketFor(wfId);
+        if (state === 'completed') b.completed += 1;
+        else if (state === 'failed') b.failed += 1;
+        const ts = j.timestamp || 0;
+        if (ts >= b.lastTs) {
+          b.lastTs = ts;
+          b.lastRunAt = ts ? new Date(ts).toISOString() : null;
+          b.lastRunState = state;
+        }
+      }
+
+      // Percentage over TERMINAL runs only: pending work is not yet evidence of
+      // success or failure, and counting it would make the number drift while a
+      // run is in flight. `null` (rendered as an em dash) when nothing ran yet.
+      const rate = (ok: number, bad: number): number | null => {
+        const total = ok + bad;
+        if (total === 0) return null;
+        return Math.round((ok / total) * 1000) / 10;
+      };
+
+      const perWorkflow = workflows.map((wf) => {
+        const b = buckets.get(wf.id);
+        const needle = wf.name.toLowerCase();
+        return {
+          workflowId: wf.id,
+          lastRunAt: b?.lastRunAt ?? null,
+          lastRunState: b?.lastRunState ?? null,
+          completed: b?.completed ?? 0,
+          failed: b?.failed ?? 0,
+          successRate: rate(b?.completed ?? 0, b?.failed ?? 0),
+          scheduleCount: scheduleNames.filter((n) => n === needle).length,
+        };
+      });
+
+      const globalBrowsers = profileManager.getActiveBrowserCount();
+
+      return res.json({
+        success: true,
+        userId,
+        stats: {
+          // Card order is locked by the image, not by this object's key order.
+          activeSchedules: userSchedules.length,
+          totalFlows: workflows.length,
+          activeFlows: workflows.filter((wf) => wf.active !== false).length,
+          successRate: rate(completedTotal, failedTotal),
+          failures: failedTotal,
+          activeJobs,
+          liveBrowsers: globalBrowsers,
+        },
+        perWorkflow,
+      });
+    } catch (e: unknown) {
+      const error = e as Error;
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   return router;
 };

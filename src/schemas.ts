@@ -84,9 +84,25 @@ export const workflowBodySchema = z.object({
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
 });
 
+// [Workspace] PATCH /workflows/:userId/:workflowId/state - the two row switches
+// from docs/uiux/workspace-overview.md section 4. Strict booleans (a toggle is
+// never "maybe"), both optional so one switch can be flipped alone, and
+// `.strict()` so a client that mistakenly PATCHes `steps` here gets a clear
+// error instead of silently not saving its design.
+export const workflowStateSchema = z
+  .object({
+    active: z.boolean({ invalid_type_error: 'active must be a boolean' }).optional(),
+    liveBrowser: z.boolean({ invalid_type_error: 'liveBrowser must be a boolean' }).optional(),
+  })
+  .strict()
+  .refine((b) => b.active !== undefined || b.liveBrowser !== undefined, {
+    message: 'Provide at least one of: active, liveBrowser',
+  });
+
 export type RunBody = z.infer<typeof runBodySchema>;
 export type ScheduleBody = z.infer<typeof scheduleBodySchema>;
 export type WorkflowBody = z.infer<typeof workflowBodySchema>;
+export type WorkflowStateBody = z.infer<typeof workflowStateSchema>;
 
 // Flatten a ZodError into a single readable message + structured field list.
 export const formatZodError = (err: z.ZodError): { error: string; details: { path: string; message: string }[] } => {

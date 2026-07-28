@@ -27,7 +27,24 @@ export interface WorkflowInput {
   steps: unknown[];
   headless?: boolean | string | number | null;
   webhookUrl?: string | null;
+  // Optional on create (defaults below). On UPDATE they are ignored: the
+  // Workspace switches are owned by setState(), so saving a new design in the
+  // editor can never silently re-enable a workflow the user disabled.
+  active?: boolean | null;
+  liveBrowser?: boolean | null;
 }
+
+// The two Workspace row switches (docs/uiux/workspace-overview.md section 4).
+// Both are optional so a caller may flip only one of them.
+export interface WorkflowStateInput {
+  active?: boolean;
+  liveBrowser?: boolean;
+}
+
+// A brand-new workflow is runnable immediately (that is what creating it means),
+// but its browser is NOT streamed until the user opts in.
+const DEFAULT_ACTIVE = true;
+const DEFAULT_LIVE_BROWSER = false;
 
 // Generate a short, URL-safe, collision-resistant workflow id (16 hex chars).
 const generateWorkflowId = (): string => `wf_${randomBytes(8).toString('hex')}`;
@@ -51,6 +68,25 @@ export class WorkflowService {
       headless: wf.headless,
       webhookUrl: wf.webhookUrl,
       savedAt: wf.updatedAt,
+      active: wf.active,
+      liveBrowser: wf.liveBrowser,
+    };
+  }
+
+  /**
+   * Normalise a record read back from Redis.
+   *
+   * `active` / `liveBrowser` were introduced after workflows had already been
+   * persisted, so stored JSON may not carry them. Rather than migrate Redis we
+   * default them on read: an existing workflow keeps working (active), and
+   * nothing starts streaming a browser behind the user's back.
+   */
+  private static hydrate(wf: Workflow): Workflow {
+    return {
+      ...wf,
+      active: typeof wf.active === 'boolean' ? wf.active : DEFAULT_ACTIVE,
+      liveBrowser:
+        typeof wf.liveBrowser === 'boolean' ? wf.liveBrowser : DEFAULT_LIVE_BROWSER,
     };
   }
 
@@ -97,6 +133,9 @@ export class WorkflowService {
       version: 1,
       createdAt: ts,
       updatedAt: ts,
+      active: typeof input.active === 'boolean' ? input.active : DEFAULT_ACTIVE,
+      liveBrowser:
+        typeof input.liveBrowser === 'boolean' ? input.liveBrowser : DEFAULT_LIVE_BROWSER,
     };
     await this.redis.set(getWorkflowKey(userId, id), JSON.stringify(wf));
     await this.redis.sadd(getUserWorkflowsKey(userId), id);
@@ -109,7 +148,7 @@ export class WorkflowService {
     const raw = await this.redis.get(getWorkflowKey(userId, workflowId));
     if (!raw) return null;
     try {
-      return JSON.parse(raw) as Workflow;
+      return WorkflowService.hydrate(JSON.parse(raw) as Workflow);
     } catch {
       return null;
     }
@@ -147,9 +186,38 @@ export class WorkflowService {
       webhookUrl: input.webhookUrl ?? undefined,
       version: existing.version + 1,
       updatedAt: nowIso(),
+      // Design edits never touch the Workspace switches (see WorkflowInput).
+      active: existing.active,
+      liveBrowser: existing.liveBrowser,
     };
     await this.redis.set(getWorkflowKey(userId, workflowId), JSON.stringify(updated));
     await this.saveVersion(updated);
+    return updated;
+  }
+
+  /**
+   * Flip the Workspace row switches WITHOUT bumping the version and WITHOUT
+   * writing a history snapshot - toggling a switch is not a new design of the
+   * automation (docs/uiux/workspace-overview.md section 6, B2). `updatedAt` is
+   * still refreshed so the Workspace list keeps sorting by real activity.
+   *
+   * Returns the updated record, or null if it does not exist for this user.
+   */
+  async setState(
+    userId: string,
+    workflowId: string,
+    state: WorkflowStateInput
+  ): Promise<Workflow | null> {
+    const existing = await this.get(userId, workflowId);
+    if (!existing) return null;
+    const updated: Workflow = {
+      ...existing,
+      active: typeof state.active === 'boolean' ? state.active : existing.active,
+      liveBrowser:
+        typeof state.liveBrowser === 'boolean' ? state.liveBrowser : existing.liveBrowser,
+      updatedAt: nowIso(),
+    };
+    await this.redis.set(getWorkflowKey(userId, workflowId), JSON.stringify(updated));
     return updated;
   }
 

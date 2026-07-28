@@ -31,6 +31,9 @@
     content: document.getElementById('content'),
     pageTitle: document.getElementById('page-title'),
     menuToggle: document.getElementById('menu-toggle'),
+    launcher: document.getElementById('launcher'),
+    launcherBtn: document.getElementById('launcher-btn'),
+    launcherMenu: document.getElementById('launcher-menu'),
     langToggle: document.getElementById('lang-toggle'),
     themeToggle: document.getElementById('theme-toggle'),
     logoutBtn: document.getElementById('logout-btn'),
@@ -191,11 +194,46 @@
   // ---------------------------------------------
   // Views
   // ---------------------------------------------
-  var ROUTES = ['dashboard', 'run', 'workflows', 'editor', 'jobs', 'live', 'browser', 'schedules', 'quota', 'admin'];
+  // The six product areas — and ONLY these six — appear in the sidebar and in
+  // the App Launcher (docs/uiux/workspace-overview.md § 3A).
+  var NAV_ROUTES = ['home', 'workspace', 'dashboard', 'jobs', 'admin', 'settings'];
+
+  /**
+   * Deep routes: still addressable, but deliberately absent from the chrome.
+   * They are opened FROM something (a workflow row, the editor, Settings), so
+   * putting them in the sidebar was the clutter this change removes.
+   */
+  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'quota'];
+
+  var ROUTES = NAV_ROUTES.concat(DEEP_ROUTES);
+
+  /**
+   * Which sidebar entry lights up for a deep route. A user standing in the
+   * editor is still "in" the Workspace area; Quota is a Settings sub-page.
+   */
+  var ROUTE_PARENT = {
+    workflows: 'workspace',
+    editor: 'workspace',
+    run: 'workspace',
+    live: 'workspace',
+    browser: 'workspace',
+    schedules: 'workspace',
+    quota: 'settings',
+  };
+
+  // Legacy hashes kept working so bookmarks and in-app links from before the
+  // architecture change do not 404 into the default route.
+  var ROUTE_ALIAS = { flows: 'workspace', library: 'workspace', account: 'settings' };
+
+  var DEFAULT_ROUTE = 'workspace';
 
   function currentRoute() {
     var hash = (location.hash || '').replace(/^#\//, '');
-    return ROUTES.indexOf(hash) !== -1 ? hash : 'dashboard';
+    // strip any `?a=b` query the deep views append (jobs?job=…, editor?wf=…)
+    var q = hash.indexOf('?');
+    if (q !== -1) hash = hash.substring(0, q);
+    if (ROUTE_ALIAS[hash]) hash = ROUTE_ALIAS[hash];
+    return ROUTES.indexOf(hash) !== -1 ? hash : DEFAULT_ROUTE;
   }
 
   function boolBadge(val) {
@@ -274,6 +312,48 @@
     el.content.innerHTML = '<div class="grid grid-cards">' + html + '</div>';
   }
 
+  /**
+   * HOME — the landing area of the six-item architecture.
+   *
+   * Deliberately thin: it is a set of doors into the real areas plus the live
+   * system pulse. Everything operational lives in Workspace (workflows) or
+   * Dashboard (system internals); duplicating them here is how landing pages
+   * rot.
+   */
+  var HOME_TILES = [
+    { route: 'workspace', icon: 'layout', title: 'nav.workspace', desc: 'home.workspaceDesc' },
+    { route: 'dashboard', icon: 'bar-chart', title: 'nav.dashboard', desc: 'home.dashboardDesc' },
+    { route: 'jobs', icon: 'layers', title: 'nav.jobs', desc: 'home.jobsDesc' },
+    { route: 'admin', icon: 'shield', title: 'nav.admin', desc: 'home.adminDesc' },
+    { route: 'settings', icon: 'settings', title: 'nav.settings', desc: 'home.settingsDesc' },
+  ];
+
+  function renderHome() {
+    var tiles = HOME_TILES.map(function (tile) {
+      return '<a class="home-tile" href="#/' + tile.route + '">' +
+        '<span class="home-tile-icon">' + ICN(tile.icon, 18) + '</span>' +
+        '<span class="home-tile-body">' +
+          '<span class="home-tile-title">' + esc(I18N.t(tile.title)) + '</span>' +
+          '<span class="home-tile-desc">' + esc(I18N.t(tile.desc)) + '</span>' +
+        '</span>' +
+        '<span class="home-tile-go">' + ICN('chevron-right', 16) + '</span>' +
+      '</a>';
+    }).join('');
+
+    el.content.innerHTML =
+      '<section class="home">' +
+        '<header class="page-head">' +
+          '<div>' +
+            '<h1 class="page-h1">' + esc(I18N.t('home.title')) + '</h1>' +
+            '<p class="page-sub">' + esc(I18N.t('home.subtitle')) + '</p>' +
+          '</div>' +
+          '<a class="btn btn-primary" href="#/workspace">' + ICN('layout', 15) + ' ' +
+            esc(I18N.t('home.openWorkspace')) + '</a>' +
+        '</header>' +
+        '<div class="home-grid">' + tiles + '</div>' +
+      '</section>';
+  }
+
   function renderComingSoon() {
     el.content.innerHTML =
       '<div class="placeholder">' + ICN('wand') + ' ' + I18N.t('common.comingSoon') + '</div>';
@@ -294,18 +374,23 @@
   function handleRoute() {
     if (el.app.hidden) return;
     var route = currentRoute();
+    var area = ROUTE_PARENT[route] || route;
 
-    // highlight nav
+    // highlight nav: a deep route lights up the AREA it belongs to, so the
+    // sidebar never looks "nowhere" while you are inside the editor.
     var items = el.sidebar.querySelectorAll('.nav-item');
     for (var i = 0; i < items.length; i++) {
-      items[i].classList.toggle('active', items[i].getAttribute('data-route') === route);
+      items[i].classList.toggle('active', items[i].getAttribute('data-route') === area);
     }
+    markLauncherCurrent(area);
+
     // page title
     el.pageTitle.setAttribute('data-i18n', 'nav.' + route);
     el.pageTitle.textContent = I18N.t('nav.' + route);
 
-    // close mobile sidebar
+    // close mobile sidebar + the launcher panel
     el.sidebar.classList.remove('open');
+    closeLauncher();
     removeOverlay();
 
     // stop any per-view polling from the previous view
@@ -314,12 +399,108 @@
     }
 
     if (route === 'dashboard') { renderDashboardShell(); return; }
+    if (route === 'home') { renderHome(); return; }
 
     if (window.Views && typeof window.Views.render === 'function') {
       window.Views.render(route, el.content);
     } else {
       renderComingSoon();
     }
+  }
+
+  // ---------------------------------------------
+  // App Launcher (docs/uiux/shell-editor-launcher-menu.md § 2)
+  //
+  // Lives in the shell, not in a view: the Workspace header and the editor
+  // header show the SAME component, so duplicating it per view would guarantee
+  // the two drift apart.
+  // ---------------------------------------------
+  function launcherItems() {
+    if (!el.launcherMenu) return [];
+    return Array.prototype.slice.call(el.launcherMenu.querySelectorAll('.launcher-item'));
+  }
+
+  function launcherOpen() {
+    return !!(el.launcherMenu && !el.launcherMenu.hidden);
+  }
+
+  function markLauncherCurrent(area) {
+    launcherItems().forEach(function (btn) {
+      var on = btn.getAttribute('data-route') === area;
+      btn.classList.toggle('current', on);
+      if (on) btn.setAttribute('aria-current', 'page');
+      else btn.removeAttribute('aria-current');
+    });
+  }
+
+  function openLauncher() {
+    if (!el.launcherMenu || launcherOpen()) return;
+    el.launcherMenu.hidden = false;
+    el.launcherBtn.setAttribute('aria-expanded', 'true');
+    el.launcherBtn.classList.add('open');
+    var items = launcherItems();
+    if (items.length) items[0].focus();
+  }
+
+  function closeLauncher(restoreFocus) {
+    if (!el.launcherMenu || !launcherOpen()) return;
+    el.launcherMenu.hidden = true;
+    el.launcherBtn.setAttribute('aria-expanded', 'false');
+    el.launcherBtn.classList.remove('open');
+    if (restoreFocus) el.launcherBtn.focus();
+  }
+
+  function toggleLauncher() {
+    if (launcherOpen()) closeLauncher(true);
+    else openLauncher();
+  }
+
+  function moveLauncherFocus(delta) {
+    var items = launcherItems();
+    if (!items.length) return;
+    var idx = items.indexOf(document.activeElement);
+    var next = idx === -1 ? 0 : (idx + delta + items.length) % items.length;
+    items[next].focus();
+  }
+
+  function bindLauncher() {
+    if (!el.launcherBtn || !el.launcherMenu) return;
+
+    el.launcherBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleLauncher();
+    });
+
+    launcherItems().forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var route = btn.getAttribute('data-route');
+        closeLauncher();
+        location.hash = '#/' + route;
+      });
+    });
+
+    // Keyboard model: arrows cycle, Home/End jump, Esc closes and gives focus
+    // back to the button, Tab is NOT trapped (it closes and moves on).
+    el.launcherMenu.addEventListener('keydown', function (ev) {
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); moveLauncherFocus(1); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); moveLauncherFocus(-1); }
+      else if (ev.key === 'Home') { ev.preventDefault(); launcherItems()[0].focus(); }
+      else if (ev.key === 'End') {
+        ev.preventDefault();
+        var items = launcherItems();
+        items[items.length - 1].focus();
+      } else if (ev.key === 'Tab') { closeLauncher(); }
+    });
+
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && launcherOpen()) closeLauncher(true);
+    });
+    document.addEventListener('click', function (ev) {
+      if (!launcherOpen()) return;
+      if (el.launcher && el.launcher.contains(ev.target)) return;
+      closeLauncher();
+    });
+    window.addEventListener('blur', function () { closeLauncher(); });
   }
 
   // ---------------------------------------------
@@ -357,6 +538,7 @@
     el.langToggle.addEventListener('click', function () { I18N.toggle(); });
     el.themeToggle.addEventListener('click', toggleTheme);
     el.menuToggle.addEventListener('click', toggleSidebar);
+    bindLauncher();
 
     window.addEventListener('hashchange', handleRoute);
 
