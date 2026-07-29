@@ -890,23 +890,76 @@
       return;
     }
 
-    // Aria Automate editor shell: top bar (brand · workflow title · badge ·
-    // actions) above a joined palette+canvas panel (shell-*.md specs).
+    // ---------------------------------------------------------------------
+    // Aria Automate editor shell — TOP BAR (item A / B of the uiux gap list).
+    //
+    // Locked by `docs/uiux/state-empty-canvas.webp` (refreshed 2026-07-29 —
+    // that file no longer shows an empty canvas, it shows the FULL editor with
+    // the Export ▾ and Save ▾ menus open) and by
+    // `docs/uiux/shell-editor-launcher-menu.webp`. Reading order:
+    //
+    //   [◉ Aria Automate] [⊞] │ Home │ Workspace ▾ │ ( Login Flow ● )( … )
+    //     ( + New Workflow ) │ ⟲ ⟳ │ [⤓ Export ▾] [▤ Save ▾] [■ Stop] 🔔 ⚙ (avatar)
+    //
+    // Every one of the seven legacy button ids is still emitted (some inside
+    // the split menus) because their listeners below are unguarded — dropping
+    // an id would throw and blank the whole editor view.
+    // ---------------------------------------------------------------------
     root.innerHTML =
       '<div class="fe-shell">' +
         '<div class="fe-topbar">' +
           '<span class="fe-brand"><span class="fe-brand-mark">A</span>' + t('fe.brand') + '</span>' +
-          '<span class="fe-crumb-sep">/</span>' +
-          '<span class="fe-wf-title" id="fe-wf-label"></span>' +
-          '<span id="fe-wf-badge"></span>' +
+          // Editor-local App Launcher: the SAME six areas as the header/sidebar.
+          '<div class="fe-nav">' +
+            '<button class="fe-navlink" id="fe-nav-home" data-route="#/">' +
+              IC('home', 15) + '<span>' + esc(t('sh.home')) + '</span></button>' +
+            '<button class="fe-navlink" id="fe-nav-ws" data-route="#/workspace">' +
+              IC('layout', 15) + '<span>' + esc(t('sh.workspace')) + '</span>' + IC('chevron-down', 13) + '</button>' +
+          '</div>' +
+          // Workflow tab strip — real, from API.listWorkflows(); never faked.
+          '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
           '<div class="fe-topbar-actions">' +
-            '<button class="btn btn-ghost btn-sm" id="fe-from-run" title="' + t('fe.fromRun') + '">' + IC('upload', 15) + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-load" title="' + t('fe.load') + '">' + IC('folder', 15) + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-json" title="' + t('fe.toJson') + '">{ }</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-clear" title="' + t('fe.clear') + '">' + IC('trash', 15) + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-save">' + t('fe.save') + '</button>' +
-            '<button class="btn btn-ghost btn-sm" id="fe-save-server">' + IC('save', 14) + ' ' + t('fe.saveServer') + '</button>' +
-            '<button class="btn btn-primary btn-sm" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
+            '<div class="fe-hist" role="group">' +
+              '<button class="fe-icobtn" id="fe-undo" title="' + esc(t('sh.undo')) + '" aria-label="' + esc(t('sh.undo')) + '">' + IC('rotate-ccw', 15) + '</button>' +
+              '<button class="fe-icobtn" id="fe-redo" title="' + esc(t('sh.redo')) + '" aria-label="' + esc(t('sh.redo')) + '">' + IC('rotate-cw', 15) + '</button>' +
+            '</div>' +
+            // Export ▾ — five items, divider before the last two (item B).
+            '<div class="fe-split" id="fe-export-wrap">' +
+              '<button class="fe-splitbtn" id="fe-export-btn" aria-haspopup="menu" aria-expanded="false">' +
+                IC('download', 14) + '<span>' + esc(t('sh.export')) + '</span>' + IC('chevron-down', 13) + '</button>' +
+              '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
+            '</div>' +
+            // Save ▾ — two actions + Version History list + Auto Save toggle.
+            '<div class="fe-split" id="fe-save-wrap">' +
+              '<button class="fe-splitbtn" id="fe-save-btn" aria-haspopup="menu" aria-expanded="false">' +
+                IC('save', 14) + '<span>' + esc(t('sh.save')) + '</span>' + IC('chevron-down', 13) + '</button>' +
+              '<div class="fe-menu fe-menu-wide" id="fe-save-menu" role="menu" hidden></div>' +
+            '</div>' +
+            // ONE slot, TWO states: orange ▶ Test Workflow while idle, solid
+            // red ■ Stop while a run is live (that is why the two reference
+            // images disagree about this button — they show the two states).
+            '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
+            '<button class="fe-icobtn" id="fe-bell" title="' + esc(t('sh.notifications')) + '" aria-label="' + esc(t('sh.notifications')) + '">' + IC('bell', 15) + '</button>' +
+            '<button class="fe-icobtn" id="fe-gear" title="' + esc(t('sh.settings')) + '" aria-label="' + esc(t('sh.settings')) + '">' + IC('settings', 15) + '</button>' +
+            '<span class="fe-avatar" id="fe-avatar" title="' + esc(t('sh.account')) + '">' + IC('user', 15) +
+              '<span class="fe-avatar-dot" aria-hidden="true"></span></span>' +
+          '</div>' +
+          // Breadcrumb + badge moved to a hairline second line so the tab strip
+          // owns row one (the images never wrap the bar to two tall rows).
+          '<div class="fe-crumbline">' +
+            '<span class="fe-crumb-sep">/</span>' +
+            '<span class="fe-wf-title" id="fe-wf-label"></span>' +
+            '<span id="fe-wf-badge"></span>' +
+            // Legacy low-traffic actions keep their ids alive here; the split
+            // menus above drive the same handlers.
+            '<span class="fe-legacy" hidden>' +
+              '<button id="fe-from-run" title="' + t('fe.fromRun') + '"></button>' +
+              '<button id="fe-load" title="' + t('fe.load') + '"></button>' +
+              '<button id="fe-json" title="' + t('fe.toJson') + '"></button>' +
+              '<button id="fe-clear" title="' + t('fe.clear') + '"></button>' +
+              '<button id="fe-save">' + t('fe.save') + '</button>' +
+              '<button id="fe-save-server">' + t('fe.saveServer') + '</button>' +
+            '</span>' +
           '</div>' +
         '</div>' +
         '<div class="fe-layout">' +
@@ -914,6 +967,24 @@
           '<div class="fe-canvas" id="fe-canvas">' +
             '<svg class="fe-svg" id="fe-svg"></svg>' +
             '<div class="fe-world" id="fe-world"></div>' +
+            // Run-info strip (top-start of the canvas in the refreshed image):
+            //   Last Run: Success · Duration: 342 ms · Variables: 3
+            '<div class="fe-runinfo" id="fe-runinfo" hidden></div>' +
+            // OUTLINE overlay (item C) — an absolutely positioned panel INSIDE
+            // the canvas, exactly like the minimap; NOT a third grid column
+            // (.fe-layout is `240px 1fr` and .fe-focus would fight a third one).
+            '<div class="fe-outline" id="fe-outline">' +
+              '<div class="fe-ol-head">' +
+                '<span class="fe-ol-title">' + esc(t('ol.title')) + '</span>' +
+                '<button class="fe-ol-close" id="fe-ol-close" title="' + esc(t('ol.close')) + '"' +
+                  ' aria-label="' + esc(t('ol.close')) + '">' + IC('x', 13) + '</button>' +
+              '</div>' +
+              '<div class="fe-ol-body" id="fe-ol-body" role="tree"></div>' +
+            '</div>' +
+            // Collapsed state: a vertical "OUTLINE" tab hugging the canvas edge
+            // (the launcher-menu image shows exactly this affordance).
+            '<button class="fe-ol-tab" id="fe-ol-tab" hidden title="' + esc(t('ol.open')) + '">' +
+              '<span>' + esc(t('ol.title')) + '</span>' + IC('chevron-right', 12) + '</button>' +
           '</div>' +
           '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
         '</div>' +
@@ -1099,6 +1170,453 @@
         })
         .then(function () { btn.disabled = false; btn.textContent = label; });
     });
+
+    // =====================================================================
+    // ITEM A/B/C — top-bar chrome, split menus and the OUTLINE panel.
+    //
+    // Locked by `docs/uiux/state-empty-canvas.webp` (refreshed 2026-07-29) and
+    // `docs/uiux/shell-editor-launcher-menu.webp`. Everything below is a
+    // RENDERING exercise: the graph algorithms it needs already exist as
+    // `FE.outline()` / `FE.onChange()` / `FE.revealNode()` / `FE.canUndo()`.
+    // =====================================================================
+
+    // ---- Router-backed nav links (never fake buttons) -------------------
+    root.querySelectorAll('.fe-navlink').forEach(function (b) {
+      b.addEventListener('click', function () {
+        location.hash = b.getAttribute('data-route') || '#/';
+      });
+    });
+    // The bell / gear / avatar reuse the shell's real destinations rather than
+    // inventing editor-local ones.
+    var gearBtn = root.querySelector('#fe-gear');
+    if (gearBtn) gearBtn.addEventListener('click', function () { location.hash = '#/settings'; });
+    var bellBtn = root.querySelector('#fe-bell');
+    if (bellBtn) bellBtn.addEventListener('click', function () { location.hash = '#/jobs'; });
+
+    // ---- Undo / redo (item A) -------------------------------------------
+    var undoBtn = root.querySelector('#fe-undo');
+    var redoBtn = root.querySelector('#fe-redo');
+    if (undoBtn) undoBtn.addEventListener('click', function () { FE.undo(); });
+    if (redoBtn) redoBtn.addEventListener('click', function () { FE.redo(); });
+    function refreshHistoryBtns() {
+      // The image draws redo dimmer than undo — i.e. they reflect REAL stack
+      // state, so they are driven off canUndo()/canRedo(), never left enabled.
+      if (undoBtn) undoBtn.disabled = !(FE.canUndo && FE.canUndo());
+      if (redoBtn) redoBtn.disabled = !(FE.canRedo && FE.canRedo());
+    }
+
+    // ---- One shared dropdown idiom (copied from the Workspace kebab) -----
+    // Two menus, one open/close/outside-click/Escape implementation. Adding a
+    // third bespoke dropdown is how keyboard behaviour drifts apart.
+    var openMenu = null;
+    function closeMenus(restoreFocus) {
+      if (!openMenu) return;
+      var m = openMenu;
+      openMenu = null;
+      m.panel.hidden = true;
+      m.btn.setAttribute('aria-expanded', 'false');
+      m.btn.classList.remove('open');
+      if (restoreFocus) m.btn.focus();
+    }
+    function bindMenu(btn, panel, render) {
+      if (!btn || !panel) return;
+      btn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var wasOpen = openMenu && openMenu.panel === panel;
+        closeMenus(false);
+        if (wasOpen) return;
+        render();
+        panel.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        btn.classList.add('open');
+        openMenu = { btn: btn, panel: panel };
+        var first = panel.querySelector('[role="menuitem"]:not([disabled])');
+        if (first) first.focus();
+      });
+      panel.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') { ev.preventDefault(); closeMenus(true); return; }
+        var items = Array.prototype.slice.call(
+          panel.querySelectorAll('[role="menuitem"]:not([disabled])'));
+        if (!items.length) return;
+        var i = items.indexOf(document.activeElement);
+        if (ev.key === 'ArrowDown') { ev.preventDefault(); items[(i + 1) % items.length].focus(); }
+        else if (ev.key === 'ArrowUp') { ev.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+        else if (ev.key === 'Home') { ev.preventDefault(); items[0].focus(); }
+        else if (ev.key === 'End') { ev.preventDefault(); items[items.length - 1].focus(); }
+      });
+    }
+    // Outside click / Escape / route change all close. Tracked so `unmount`
+    // cannot leak a closure over dead DOM.
+    var shellListeners = [];
+    function onDoc(type, fn) {
+      document.addEventListener(type, fn);
+      shellListeners.push([type, fn]);
+    }
+    onDoc('click', function () { closeMenus(false); });
+    onDoc('keydown', function (ev) { if (ev.key === 'Escape') closeMenus(true); });
+
+    /**
+     * One menu row. `disabled` items are VISIBLY disabled with a tooltip —
+     * never silently inert and never fake-successful (the house rule for
+     * anything the backend cannot do yet).
+     */
+    function menuItem(label, icon, opts) {
+      opts = opts || {};
+      return '<button type="button" role="menuitem" class="fe-mi' +
+        (opts.danger ? ' danger' : '') + '"' +
+        (opts.disabled ? ' disabled title="' + esc(t('sh.notAvailable')) + '"' : '') +
+        (opts.act ? ' data-act="' + esc(opts.act) + '"' : '') + '>' +
+        (icon ? '<span class="fe-mi-ic">' + IC(icon, 14) + '</span>' : '') +
+        '<span class="fe-mi-label">' + esc(label) + '</span>' +
+        (opts.badge ? '<span class="fe-mi-badge">' + esc(opts.badge) + '</span>' : '') +
+        (opts.tail ? '<span class="fe-mi-tail">' + opts.tail + '</span>' : '') +
+        '</button>';
+    }
+
+    // ---- Export ▾ (item B) — labels verbatim from the image --------------
+    var exportBtn = root.querySelector('#fe-export-btn');
+    var exportMenu = root.querySelector('#fe-export-menu');
+    function renderExportMenu() {
+      exportMenu.innerHTML =
+        menuItem(t('sh.exportJson'), 'braces', { act: 'json' }) +
+        menuItem(t('sh.exportTemplate'), 'file-text', { act: 'template' }) +
+        // No PDF renderer, no share-link service, no template registry yet.
+        menuItem(t('sh.exportPdf'), 'download', { disabled: true }) +
+        '<div class="fe-mi-sep" role="separator"></div>' +
+        menuItem(t('sh.shareLink'), 'paperclip', { disabled: true }) +
+        menuItem(t('sh.publishTemplate'), 'upload', { disabled: true });
+      exportMenu.querySelectorAll('[data-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var a = b.getAttribute('data-act');
+          closeMenus(false);
+          if (a === 'json') {
+            // Same behaviour the legacy `#fe-json` button had.
+            var steps = FE.toSteps();
+            resultEl.innerHTML = '<pre class="json-block">' +
+              esc(JSON.stringify({ steps: steps }, null, 2)) + '</pre>';
+          } else if (a === 'template') {
+            var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+            resultEl.innerHTML = '<pre class="json-block">' +
+              esc(JSON.stringify({
+                name: (cur && cur.name) || t('fe.untitled'),
+                description: (cur && cur.description) || '',
+                steps: FE.toSteps(),
+              }, null, 2)) + '</pre>';
+          }
+        });
+      });
+    }
+    bindMenu(exportBtn, exportMenu, renderExportMenu);
+
+    // ---- Save ▾ (item B) -------------------------------------------------
+    // Structure locked by the image: two actions · divider · "Version
+    // History:" header + the version rows (newest carries the orange
+    // `Current` badge) · divider · the `Auto Save:` toggle row.
+    var saveMenuBtn = root.querySelector('#fe-save-btn');
+    var saveMenu = root.querySelector('#fe-save-menu');
+    // Auto-save is only meaningful once the workflow has a server identity —
+    // there is nothing to auto-save a draft *to*.
+    var autoSaveOn = true;
+    function renderSaveMenu() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      var v = cur && cur.version ? Number(cur.version) : 0;
+      var rows = '';
+      if (v > 0) {
+        // Real versions only: v, v-1, v-2 — never invent history entries.
+        for (var i = 0; i < 3 && v - i > 0; i++) {
+          var n = v - i;
+          rows += '<button type="button" role="menuitem" class="fe-mi fe-mi-ver"' +
+            ' data-ver="' + n + '">' +
+            '<span class="fe-mi-label mono">v' + n + '</span>' +
+            (i === 0 ? '<span class="fe-mi-badge cur">' + esc(t('sh.versionCurrent')) + '</span>' : '') +
+            '</button>';
+        }
+      } else {
+        rows = '<div class="fe-mi-note">' + esc(t('sh.noVersions')) + '</div>';
+      }
+      saveMenu.innerHTML =
+        menuItem(t('sh.saveChanges'), 'save', { act: 'save' }) +
+        menuItem(t('sh.saveAsVersion'), 'copy', { act: 'version' }) +
+        '<div class="fe-mi-sep" role="separator"></div>' +
+        '<div class="fe-mi-head">' + esc(t('sh.versionHistory')) + '</div>' +
+        rows +
+        '<div class="fe-mi-sep" role="separator"></div>' +
+        '<button type="button" role="menuitem" class="fe-mi fe-mi-toggle" data-act="autosave"' +
+          ' aria-pressed="' + (autoSaveOn ? 'true' : 'false') + '">' +
+          '<span class="fe-mi-label">' + esc(t('sh.autoSave')) + '</span>' +
+          '<span class="fe-sw' + (autoSaveOn ? ' on' : '') + '" aria-hidden="true"><i></i></span>' +
+          '<span class="fe-mi-state' + (autoSaveOn ? ' on' : '') + '">' +
+            esc(t(autoSaveOn ? 'sh.on' : 'sh.off')) + '</span>' +
+        '</button>';
+      saveMenu.querySelectorAll('[data-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var a = b.getAttribute('data-act');
+          if (a === 'autosave') {
+            // Stay open: a toggle is not a navigation, and closing the panel
+            // would hide the state change the user just made.
+            autoSaveOn = !autoSaveOn;
+            renderSaveMenu();
+            refreshStatusBar();
+            var again = saveMenu.querySelector('[data-act="autosave"]');
+            if (again) again.focus();
+            return;
+          }
+          closeMenus(false);
+          // Reuse the legacy handlers verbatim — one code path per action.
+          if (a === 'save') {
+            var lb = root.querySelector('#fe-save');
+            if (lb) lb.click();
+          } else if (a === 'version') {
+            var sb = root.querySelector('#fe-save-server');
+            if (sb) sb.click();
+          }
+        });
+      });
+      // Clicking a version row loads the local snapshot (the `#fe-load` path);
+      // true per-version restore needs a backend endpoint we do not have.
+      saveMenu.querySelectorAll('[data-ver]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          closeMenus(false);
+          var lb = root.querySelector('#fe-load');
+          if (lb) lb.click();
+        });
+      });
+    }
+    bindMenu(saveMenuBtn, saveMenu, renderSaveMenu);
+
+    // ---- Workflow tab strip (item A) ------------------------------------
+    // Real data only: the mock names in the reference image (Login Flow /
+    // Payment Flow / Instagram Bot / Scraper) must NEVER be hardcoded.
+    var tabStrip = root.querySelector('#fe-wftabs');
+    var wfList = [];
+    function renderTabs() {
+      if (!tabStrip) return;
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      var html = '';
+      if (!wfList.length) {
+        // No API key / no saved workflows: show only the live draft tab, so the
+        // strip is honest rather than empty-looking.
+        html += '<button type="button" role="tab" class="fe-wftab is-active"' +
+          ' aria-selected="true">' +
+          '<span>' + esc((cur && cur.name) || t('fe.untitled')) + '</span>' +
+          '<span class="fe-wftab-dot" aria-hidden="true"></span></button>';
+      } else {
+        wfList.forEach(function (wf) {
+          var active = !!(cur && String(cur.id) === String(wf.id));
+          html += '<button type="button" role="tab" class="fe-wftab' +
+            (active ? ' is-active' : '') + '" aria-selected="' + (active ? 'true' : 'false') +
+            '" data-wf="' + esc(String(wf.id)) + '" title="' + esc(wf.name) + '">' +
+            '<span>' + esc(wf.name) + '</span>' +
+            (active ? '<span class="fe-wftab-dot" aria-hidden="true"></span>' : '') +
+            '</button>';
+        });
+      }
+      html += '<button type="button" class="fe-wftab fe-wftab-new" id="fe-wf-new">' +
+        IC('plus', 13) + '<span>' + esc(t('sh.newWorkflow')) + '</span></button>';
+      tabStrip.innerHTML = html;
+      tabStrip.querySelectorAll('[data-wf]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var wf = null;
+          for (var i = 0; i < wfList.length; i++) {
+            if (String(wfList[i].id) === b.getAttribute('data-wf')) { wf = wfList[i]; break; }
+          }
+          if (!wf) return;
+          // Same path the Workspace view uses to open a workflow.
+          FE.openWorkflow(wf, wf.steps || []);
+          refreshWfLabel();
+          renderTabs();
+          if (window.RunPanel) window.RunPanel.loadLastRun(wf.id);
+        });
+      });
+      var newBtn = tabStrip.querySelector('#fe-wf-new');
+      if (newBtn) newBtn.addEventListener('click', function () {
+        if (FE.newWorkflow) FE.newWorkflow(); else FE.reset();
+        refreshWfLabel();
+        renderTabs();
+      });
+    }
+    renderTabs();
+    (function loadTabs() {
+      var uid = effectiveUserId();
+      if (!uid || !API.listWorkflows) return;
+      API.listWorkflows(uid)
+        .then(function (data) {
+          wfList = (data && data.workflows) || [];
+          renderTabs();
+        })
+        .catch(function () { /* offline / no key — the draft tab already shows */ });
+    })();
+
+    // ---- OUTLINE panel (item C) -----------------------------------------
+    // Pure rendering: `FE.outline()` owns the numbering, `FE.onChange()` keeps
+    // it in sync, `FE.revealNode()` does select+centre. No polling, and NO
+    // second copy of the tree — the graph stays the single source of truth.
+    var olPanel = root.querySelector('#fe-outline');
+    var olBody = root.querySelector('#fe-ol-body');
+    var olTab = root.querySelector('#fe-ol-tab');
+    var olOpen = true;
+    var olCollapsed = {};   // { 'nodeId|port': true } — pure view state
+
+    function olPortLabel(row) {
+      if (row.port && row.port.indexOf('case:') === 0) {
+        return t('port.case') + ' ' + row.port.slice(5);
+      }
+      return t('port.' + row.port);
+    }
+    function olTone(action) {
+      var CAT = window.ACTION_CATALOG;
+      if (!CAT || !CAT.actionById) return '';
+      var act = CAT.actionById(action);
+      var cat = act && CAT.categoryById ? CAT.categoryById(act.cat) : null;
+      return cat && cat.color ? cat.color : '';
+    }
+    function renderOutline() {
+      if (!olBody) return;
+      var rows = (FE.outline && FE.outline()) || [];
+      if (!rows.length) {
+        olBody.innerHTML = '<div class="fe-ol-empty">' + esc(t('ol.empty')) + '</div>';
+        return;
+      }
+      var sel = FE.getSelected && FE.getSelected();
+      // A collapsed port row hides every DEEPER row until the tree returns to
+      // that row's own depth — one pass, no recursion needed.
+      var hideBelow = null;
+      var html = '';
+      rows.forEach(function (r) {
+        if (hideBelow != null) {
+          if (r.depth > hideBelow) return;
+          hideBelow = null;
+        }
+        var isPort = r.kind === 'port';
+        var key = r.nodeId + '|' + r.port;
+        var collapsed = isPort && !!olCollapsed[key];
+        if (collapsed) hideBelow = r.depth;
+        var label = isPort ? olPortLabel(r) : (FE.nodeLabel ? FE.nodeLabel(r.nodeId) : r.action);
+        var tone = isPort ? '' : olTone(r.action);
+        var active = !isPort && sel && sel === r.nodeId;
+        html += '<div class="fe-ol-row' + (isPort ? ' is-port' : '') +
+          (active ? ' is-active' : '') + '" role="treeitem"' +
+          ' data-depth="' + r.depth + '"' +
+          (isPort ? ' data-port-key="' + esc(key) + '" aria-expanded="' + (collapsed ? 'false' : 'true') + '"'
+                  : ' data-node="' + esc(r.nodeId) + '"') +
+          ' style="--ol-indent:' + (r.depth * 16) + 'px">' +
+          (isPort
+            ? '<span class="fe-ol-caret">' + IC(collapsed ? 'chevron-right' : 'chevron-down', 12) + '</span>'
+            : '<span class="fe-ol-caret" aria-hidden="true"></span>') +
+          '<span class="fe-ol-num' + (r.depth === 0 ? ' is-top' : '') + '"' +
+            (tone && r.depth === 0 ? ' style="color:' + esc(tone) + '"' : '') + '>' +
+            esc(r.num) + '</span>' +
+          (isPort ? '' : '<span class="fe-ol-ic"' +
+            (tone ? ' style="color:' + esc(tone) + ';background:' + esc(tone) + '1f"' : '') + '>' +
+            (window.Icons ? window.Icons.action(r.action, { size: 12 }) : '') + '</span>') +
+          '<span class="fe-ol-label">' + esc(label) + '</span>' +
+        '</div>';
+      });
+      olBody.innerHTML = html;
+      olBody.querySelectorAll('[data-node]').forEach(function (el) {
+        el.addEventListener('click', function () {
+          if (FE.revealNode) FE.revealNode(el.getAttribute('data-node'));
+        });
+      });
+      olBody.querySelectorAll('[data-port-key]').forEach(function (el) {
+        el.addEventListener('click', function () {
+          var k = el.getAttribute('data-port-key');
+          if (olCollapsed[k]) delete olCollapsed[k]; else olCollapsed[k] = true;
+          renderOutline();
+        });
+      });
+    }
+    var olCanvas = root.querySelector('#fe-canvas');
+    function setOutlineOpen(open) {
+      olOpen = !!open;
+      if (olPanel) olPanel.hidden = !olOpen;
+      if (olTab) olTab.hidden = olOpen;
+      // The rail occupies real canvas width on the START edge, so the canvas
+      // publishes its width as `--fe-ol-w`; the run-info strip and any other
+      // start-anchored overlay offset off that instead of hardcoding a gap.
+      if (olCanvas) olCanvas.classList.toggle('fe-ol-closed', !olOpen);
+      if (olOpen) renderOutline();
+    }
+    var olCloseBtn = root.querySelector('#fe-ol-close');
+    if (olCloseBtn) olCloseBtn.addEventListener('click', function () { setOutlineOpen(false); });
+    if (olTab) olTab.addEventListener('click', function () { setOutlineOpen(true); });
+
+    // ---- Canvas run-info strip ------------------------------------------
+    //   Last Run: Success · Duration: 342 ms · Variables: 3
+    // Only rendered when there IS a run to describe — an empty canvas must not
+    // claim a last run.
+    var runInfo = root.querySelector('#fe-runinfo');
+    function refreshRunInfo() {
+      if (!runInfo) return;
+      var rs = window.RunPanel && window.RunPanel.getSummary
+        ? window.RunPanel.getSummary() : null;
+      if (!rs || !rs.total) { runInfo.hidden = true; runInfo.innerHTML = ''; return; }
+      var tone = rs.phase === 'error' ? 'red' : rs.phase === 'running' ? 'amber' : 'green';
+      var word = rs.phase === 'error' ? t('ndv.statusError')
+        : rs.phase === 'running' ? t('ndv.statusRunning') : t('ndv.statusSuccess');
+      runInfo.hidden = false;
+      runInfo.innerHTML =
+        '<span class="fe-ri-cell"><span class="fe-ri-label">' + esc(t('sh.lastRun')) + '</span>' +
+          '<span class="fe-ri-val tone-' + tone + '">' + esc(word) + '</span></span>' +
+        '<span class="fe-ri-cell"><span class="fe-ri-label">' + esc(t('sh.duration')) + '</span>' +
+          '<span class="fe-ri-val">' + esc(rs.durationMs != null ? rs.durationMs + ' ms' : '—') + '</span></span>' +
+        '<span class="fe-ri-cell"><span class="fe-ri-label">' + esc(t('sh.variables')) + '</span>' +
+          '<span class="fe-ri-val">' + esc(String(rs.variables || 0)) + '</span></span>';
+    }
+
+    // ---- Run / Stop: ONE slot, TWO states -------------------------------
+    // This is why the two reference images disagree about the button: the
+    // launcher screen was captured mid-run (solid red Stop), the other while
+    // idle (orange Test Workflow).
+    var runSlot = root.querySelector('#fe-run');
+    function refreshRunSlot() {
+      if (!runSlot) return;
+      var rs = window.RunPanel && window.RunPanel.getSummary
+        ? window.RunPanel.getSummary() : null;
+      var live = !!(rs && rs.phase === 'running');
+      runSlot.classList.toggle('is-stop', live);
+      runSlot.classList.toggle('btn-primary', !live);
+      if (live) {
+        runSlot.innerHTML = IC('stop-circle', 14) + ' ' + esc(t('sh.stop'));
+        runSlot.setAttribute('data-mode', 'stop');
+      } else {
+        runSlot.innerHTML = IC('play', 14) + ' ' + esc(t('fe.testWorkflow'));
+        runSlot.setAttribute('data-mode', 'run');
+      }
+    }
+    // Capture phase so the Stop intent wins before the (bubbling) run handler.
+    runSlot.addEventListener('click', function (ev) {
+      if (runSlot.getAttribute('data-mode') !== 'stop') return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (window.RunPanel && window.RunPanel.stop) window.RunPanel.stop();
+      refreshRunSlot();
+    }, true);
+
+    // ---- One subscription drives every derived surface ------------------
+    function refreshShell() {
+      refreshHistoryBtns();
+      if (olOpen) renderOutline();
+      refreshRunInfo();
+      refreshRunSlot();
+    }
+    var offChange = FE.onChange ? FE.onChange(refreshShell) : null;
+    // The run panel republishes its state whenever a live event lands, so the
+    // run-info strip and the Run/Stop slot follow the run without polling.
+    var offRun = (window.RunPanel && window.RunPanel.onUpdate)
+      ? window.RunPanel.onUpdate(function () { refreshRunInfo(); refreshRunSlot(); })
+      : null;
+    setOutlineOpen(true);
+    refreshShell();
+
+    // Tear-down: the editor view is re-rendered on every language switch and
+    // route change, so a leaked document listener would stack up.
+    root.__feShellCleanup = function () {
+      if (offChange) offChange();
+      if (offRun) offRun();
+      shellListeners.forEach(function (p) { document.removeEventListener(p[0], p[1]); });
+      shellListeners = [];
+    };
   }
 
   // =============================================
@@ -1234,6 +1752,50 @@
     return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
   }
 
+  /**
+   * Job state -> colour tone. Module scope on purpose: BOTH the Workspace
+   * Executions table and the editor's ACTIVITY LOG render run rows, and if
+   * they each owned a copy they could disagree about what "Success" means.
+   */
+  function execStateTone(state) {
+    if (state === 'completed') return 'green';
+    if (state === 'failed') return 'red';
+    if (state === 'active' || state === 'waiting' || state === 'delayed') return 'amber';
+    return 'muted';
+  }
+
+  /**
+   * ACTIVITY LOG duration — seconds with exactly 2 decimals (`12.45s`), which
+   * is what the reference images show. Deliberately NOT `wsDuration()`: the
+   * Workspace table wants the compact `1m 4s` form, the editor log wants the
+   * fixed-precision one. Two formats, two functions, one source each.
+   */
+  function alDuration(ms) {
+    if (ms == null) return '—';
+    return (ms / 1000).toFixed(2) + 's';
+  }
+
+  var AL_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  /**
+   * ACTIVITY LOG "Finished At" — an ABSOLUTE long timestamp
+   * (`May 12, 2025 10:24:31 AM`), not the relative `fmtRel()` the Workspace
+   * table uses. The image is explicit about this, and a log you scroll while
+   * debugging needs wall-clock times, not "2 min ago".
+   */
+  function alStamp(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    var h = d.getHours();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (h === 0) h = 12;
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return AL_MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() +
+      ' ' + h + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) + ' ' + ampm;
+  }
+
   /** Success-rate fill tone: >=95% green, 80-95% amber, <80% red (spec § 3F). */
   function wsSuccessTone(pct) {
     if (pct == null) return 'muted';
@@ -1299,6 +1861,18 @@
     var uid = effectiveUserId();
     var workflows = [];
     var statsByWf = {};
+
+    // Deep-link into a specific tab: `#/workspace?tab=templates`. The editor's
+    // blocks palette links here (its `Templates` / `Connections` footer entries
+    // have no view of their own), so without this the link would open Workspace
+    // on whatever tab was last used — a link that looks like it worked and did
+    // not. Only ids that really exist in WS_TABS are honoured.
+    (function applyTabQuery() {
+      var want = parseHashQuery().tab;
+      if (!want) return;
+      var ok = WS_TABS.some(function (x) { return x.id === want; });
+      if (ok) wsState.tab = want;
+    })();
 
     root.innerHTML =
       '<section class="ws">' +
@@ -1783,12 +2357,8 @@
       if (execTimer) { clearInterval(execTimer); execTimer = null; }
     }
 
-    function execStateTone(state) {
-      if (state === 'completed') return 'green';
-      if (state === 'failed') return 'red';
-      if (state === 'active' || state === 'waiting' || state === 'delayed') return 'amber';
-      return 'muted';
-    }
+    // `execStateTone` is module scope now (shared with the editor's ACTIVITY
+    // LOG) — see the helper block near `wsDuration`.
 
     function execRow(j) {
       var wf = j.workflowId ? findWf(j.workflowId) : null;

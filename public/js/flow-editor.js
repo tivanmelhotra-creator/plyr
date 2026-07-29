@@ -42,6 +42,16 @@
     return window.Icons ? window.Icons.action(actionId, { size: size || 16 }) : '';
   }
 
+  // Platform modifier key for the palette's search hint. The image shows the
+  // Mac glyph; on Windows/Linux the same shortcut is Ctrl, so the hint has to
+  // follow the actual platform rather than hardcode one of them.
+  var MOD_KEY = (function () {
+    try {
+      var p = (navigator.platform || navigator.userAgent || '');
+      return /Mac|iPhone|iPad|iPod/i.test(p) ? '\u2318' : 'Ctrl';
+    } catch (e) { return 'Ctrl'; }
+  })();
+
   // ---- Action catalog (mirrors views.js so a node == an action) -------------
   // Each action defines its editable params (fields). `branches` lists the
   // output ports of a node; default is a single 'next' port. Condition/loop
@@ -75,6 +85,26 @@
   var clipboard = null; // Step 23: copied nodes (for paste)
   var nodeStatus = {};  // Step 23: { nodeId: 'idle'|'running'|'success'|'error' }
   var paletteQuery = ''; // Step 23: palette search text
+
+  // ---- BLOCKS palette view state (item D) -----------------------------------
+  // All four are pure VIEW preferences, deliberately module-level and never on
+  // `state`, so they can never leak into saveLocal()/serialize()/steps[].
+  var PAL_FAV_KEY = 'ab_palette_favs';
+  var paletteFavs = {};      // { actionId: true } — starred blocks
+  var paletteOpen = {};      // { groupId: true } — expanded category rows
+  var paletteCollapsed = false;  // the `Collapse` control at the footer
+
+  function loadPaletteFavs() {
+    try {
+      var raw = localStorage.getItem(PAL_FAV_KEY);
+      paletteFavs = raw ? (JSON.parse(raw) || {}) : {};
+    } catch (e) { paletteFavs = {}; }
+  }
+  function savePaletteFavs() {
+    try { localStorage.setItem(PAL_FAV_KEY, JSON.stringify(paletteFavs)); }
+    catch (e) { /* quota — favourites are a convenience, not data */ }
+  }
+  function favCount() { return Object.keys(paletteFavs).length; }
   var nodeResults = {};  // Step 25: { nodeId: { input:[...], output:[...] } } per-node items for the NDV INPUT/OUTPUT columns (populated by the live runner in Step 26)
   var nodeMeta = {};     // Step 26: { nodeId: { outputItemCount, inputItemCount, durationMs, status, error } } drives the on-node success/error badge + tooltip
   var nodePins = {};     // Step 26: { nodeId: true } pinned nodes (show a 📌 indicator on the card)
@@ -1811,15 +1841,32 @@
 
   function paletteItem(a) {
     var cat = categoryOf(a.id);
-    var item = document.createElement('button');
+    var item = document.createElement('div');
     item.className = 'palette-item';
     item.setAttribute('data-action', a.id);
     item.setAttribute('draggable', 'true');
     item.style.setProperty('--cat-color', cat.color);
+    var starred = !!paletteFavs[a.id];
+    // The row is a button-like surface plus its own star toggle, so the star
+    // is a real nested <button> rather than a click-position heuristic.
     item.innerHTML = '<span class="pi-dot" aria-hidden="true"></span>' +
       '<span class="pi-icon">' + ICON(a.id) + '</span>' +
-      '<span class="pi-label">' + esc(a.id) + '</span>';
-    item.addEventListener('click', function () { placeNewNode(a.id); });
+      '<span class="pi-label">' + esc(a.id) + '</span>' +
+      '<button type="button" class="pi-star' + (starred ? ' on' : '') + '"' +
+        ' aria-pressed="' + (starred ? 'true' : 'false') +
+        '" title="' + esc(t(starred ? 'pl.unfav' : 'pl.fav')) + '">' +
+        IC('star', 12) + '</button>';
+    item.addEventListener('click', function (ev) {
+      if (ev.target && ev.target.closest && ev.target.closest('.pi-star')) return;
+      placeNewNode(a.id);
+    });
+    var star = item.querySelector('.pi-star');
+    if (star) star.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (paletteFavs[a.id]) delete paletteFavs[a.id]; else paletteFavs[a.id] = true;
+      savePaletteFavs();
+      renderPaletteList();
+    });
     // HTML5 drag-and-drop onto the canvas
     item.addEventListener('dragstart', function (ev) {
       ev.dataTransfer.setData('text/ab-action', a.id);
@@ -1828,21 +1875,97 @@
     return item;
   }
 
+  // ---- BLOCKS palette: presentational grouping (item D) ----------------------
+  //
+  // THE 6-vs-7 DECISION (written down so it is not re-litigated).
+  //
+  // `shell-editor-launcher-menu.webp` shows SEVEN collapsible rows with counts:
+  //   General 14 · Browser 18 · Web Interaction 24 · Elements 20 ·
+  //   Flow Control 16 · Online Services 22 · Data 14        (= 128 blocks)
+  //
+  // The real catalog (`public/js/actions.js`) has SIX categories and FIFTY
+  // actions: navigation 10 · interaction 16 · data 8 · flow 7 · integration 5 ·
+  // trigger 4. The image's rows and counts are therefore MOCK.
+  //
+  // Resolution: the mismatch is treated as PRESENTATIONAL. `ACTION_CATALOG`
+  // stays the single source of truth — no invented categories, no renamed `cat`
+  // ids, no padded action list (that would corrupt every node's colour, the
+  // NDV, and `graphToSteps`). Instead this table maps catalog categories onto
+  // the image's row vocabulary, and every count is COMPUTED from the real
+  // members. So the palette matches the image's SHAPE (search + ⌘K, Favorites,
+  // a `BLOCKS` header, collapsible rows with count badges, a footer group, a
+  // Collapse control) while telling the truth about its contents.
+  //
+  //   image row          <- catalog category      real count
+  //   -------------------------------------------------------
+  //   Triggers           <- trigger                    4
+  //   Browser            <- navigation                10
+  //   Web Interaction    <- interaction               16
+  //   Flow Control       <- flow                       7
+  //   Online Services    <- integration                5
+  //   Data               <- data                       8
+  //
+  // Six rows, not seven: the image's `General` and `Elements` rows have no
+  // catalog members at all, and rendering an empty row with a fake count is
+  // exactly the "fake-successful UI" the house rules forbid. `Triggers` takes
+  // the leading slot because triggers are what a flow starts with.
+  var PALETTE_GROUPS = [
+    { id: 'trigger',     icon: 'zap' },
+    { id: 'navigation',  icon: 'globe' },
+    { id: 'interaction', icon: 'mouse-pointer' },
+    { id: 'flow',        icon: 'git-branch' },
+    { id: 'integration', icon: 'layers' },
+    { id: 'data',        icon: 'database' },
+  ];
+
+  // Footer group — the image lists `Templates`, `Variables`, `Connections`,
+  // `Settings`, `Help & Docs`, plus `Collapse`.
+  //
+  // EVERY entry here must land somewhere that EXISTS. `app.js` accepts exactly
+  //   home workspace dashboard jobs admin settings          (nav)
+  //   workflows editor run live browser schedules quota     (deep)
+  // and `currentRoute()` SILENTLY rewrites anything else to `#/workspace` — so a
+  // plausible-looking `#/templates` would not 404, it would quietly dump the
+  // user on the Workspace with no explanation. That is the "fake-successful UI"
+  // the house rules forbid, so the invented hashes are gone:
+  //
+  //   Templates    -> `#/workspace?tab=templates`   (a real WS_TABS tab)
+  //   Variables    -> no route at all; the workflow's variables live in the
+  //                   ACTIVITY LOG, so this one calls `RunPanel.showTab()`
+  //   Connections  -> `#/workspace?tab=connections` (a real WS_TABS tab)
+  //   Settings     -> `#/settings`                  (a real nav route)
+  //   Help & Docs  -> nothing ships a docs view yet, so it renders DISABLED
+  //                   with a tooltip saying so, instead of pretending.
+  var PALETTE_LINKS = [
+    { key: 'pl.templates',   icon: 'grid',        route: '#/workspace?tab=templates' },
+    { key: 'pl.variables',   icon: 'sliders',     act: 'variables' },
+    { key: 'pl.connections', icon: 'link',        route: '#/workspace?tab=connections' },
+    { key: 'pl.settings',    icon: 'settings',    route: '#/settings' },
+    { key: 'pl.help',        icon: 'help-circle', disabled: 'pl.helpSoon' },
+  ];
+
   function renderPalette() {
     var p = dom.palette;
     p.innerHTML = '';
+    loadPaletteFavs();
+    // Every group starts expanded on the first mount so the palette is not an
+    // opaque wall of closed rows.
+    if (!Object.keys(paletteOpen).length) {
+      PALETTE_GROUPS.forEach(function (g) { paletteOpen[g.id] = true; });
+    }
 
-    var title = document.createElement('div');
-    title.className = 'palette-title';
-    title.textContent = t('fe.palette');
-    p.appendChild(title);
-
-    // search box
-    var search = document.createElement('input');
-    search.type = 'text';
-    search.className = 'field palette-search';
-    search.placeholder = t('fe.searchNode');
+    // ---- search row: input + the ⌘K hint the image shows -------------------
+    var searchRow = document.createElement('div');
+    searchRow.className = 'palette-searchrow';
+    searchRow.innerHTML =
+      '<span class="ps-ic" aria-hidden="true">' + IC('search', 13) + '</span>' +
+      '<input type="text" class="palette-search" />' +
+      '<span class="ps-kbd" aria-hidden="true"><kbd>' + esc(MOD_KEY) + '</kbd>' +
+        '<kbd>' + esc(t('pl.shortcut')) + '</kbd></span>';
+    var search = searchRow.querySelector('.palette-search');
+    search.placeholder = t('pl.search');
     search.value = paletteQuery;
+    search.setAttribute('aria-label', t('pl.search'));
     search.addEventListener('input', function () {
       paletteQuery = search.value;
       renderPaletteList();
@@ -1850,13 +1973,73 @@
       var el = dom.palette.querySelector('.palette-search');
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
     });
-    p.appendChild(search);
+    p.appendChild(searchRow);
 
     var listWrap = document.createElement('div');
     listWrap.className = 'palette-list';
     p.appendChild(listWrap);
 
+    // ---- footer: destinations, Collapse, and the real app version ----------
+    var foot = document.createElement('div');
+    foot.className = 'palette-foot';
+    var linksHtml = PALETTE_LINKS.map(function (l) {
+      var attrs = '';
+      if (l.route) attrs = ' data-route="' + esc(l.route) + '"';
+      else if (l.act) attrs = ' data-pl="' + esc(l.act) + '"';
+      if (l.disabled) {
+        // Disabled AND explained. A greyed control with a reason is honest; a
+        // live-looking one that goes nowhere is not.
+        attrs += ' disabled aria-disabled="true" title="' + esc(t(l.disabled)) + '"';
+      }
+      return '<button type="button" class="pl-link"' + attrs + '>' +
+        '<span class="pl-link-ic">' + IC(l.icon, 13) + '</span>' +
+        '<span>' + esc(t(l.key)) + '</span></button>';
+    }).join('');
+    foot.innerHTML = linksHtml +
+      '<button type="button" class="pl-link pl-collapse" data-pl="collapse">' +
+        '<span class="pl-link-ic">' + IC('panel-left', 13) + '</span>' +
+        '<span>' + esc(t('pl.collapse')) + '</span></button>';
+    p.appendChild(foot);
+    foot.querySelectorAll('[data-route]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        location.hash = b.getAttribute('data-route');
+      });
+    });
+    var varBtn = foot.querySelector('[data-pl="variables"]');
+    if (varBtn) {
+      varBtn.addEventListener('click', function () {
+        var RP = window.RunPanel;
+        // If the drawer is not mounted there is nothing to show, and saying so
+        // beats a click that appears to do nothing.
+        if (RP && RP.showTab && RP.showTab('variables')) return;
+        U().toast(t('pl.varsUnavailable'), 'info');
+      });
+    }
+    var colBtn = foot.querySelector('[data-pl="collapse"]');
+    if (colBtn) colBtn.addEventListener('click', function () { setPaletteCollapsed(true); });
+
     renderPaletteList();
+    applyPaletteCollapsed();
+  }
+
+  /** One collapsible row: icon · label · count badge · chevron. */
+  function paletteGroupHead(g, cat, count, open) {
+    var gh = document.createElement('button');
+    gh.type = 'button';
+    gh.className = 'palette-group-head' + (open ? ' is-open' : '');
+    gh.setAttribute('aria-expanded', open ? 'true' : 'false');
+    gh.setAttribute('data-group', g.id);
+    gh.style.setProperty('--cat-color', cat.color);
+    gh.innerHTML =
+      '<span class="pg-ic">' + IC(g.icon, 14) + '</span>' +
+      '<span class="pg-label">' + esc(t(cat.label)) + '</span>' +
+      '<span class="pg-count">' + count + '</span>' +
+      '<span class="pg-caret">' + IC(open ? 'chevron-up' : 'chevron-down', 12) + '</span>';
+    gh.addEventListener('click', function () {
+      if (paletteOpen[g.id]) delete paletteOpen[g.id]; else paletteOpen[g.id] = true;
+      renderPaletteList();
+    });
+    return gh;
   }
 
   function renderPaletteList() {
@@ -1864,40 +2047,124 @@
     if (!wrap) return;
     wrap.innerHTML = '';
     var q = (paletteQuery || '').trim().toLowerCase();
+    function matches(a) { return !q || a.id.toLowerCase().indexOf(q) !== -1; }
 
-    // group actions by category, in CATEGORIES order, then any leftovers.
-    var order = CATEGORIES.map(function (c) { return c.id; });
-    var groups = {};
-    ACTIONS.forEach(function (a) {
-      if (q && a.id.toLowerCase().indexOf(q) === -1) return;
-      var cid = a.cat || 'other';
-      (groups[cid] = groups[cid] || []).push(a);
+    // ---- Favorites row (count is REAL: the number of starred blocks) -------
+    var favIds = Object.keys(paletteFavs);
+    var favActions = ACTIONS.filter(function (a) {
+      return paletteFavs[a.id] && matches(a);
     });
-    var seenCats = order.filter(function (c) { return groups[c]; });
-    Object.keys(groups).forEach(function (c) {
-      if (seenCats.indexOf(c) === -1) seenCats.push(c);
+    var favOpen = !!paletteOpen.__fav;
+    var favHead = document.createElement('button');
+    favHead.type = 'button';
+    favHead.className = 'palette-group-head pg-fav' + (favOpen ? ' is-open' : '');
+    favHead.setAttribute('aria-expanded', favOpen ? 'true' : 'false');
+    favHead.innerHTML =
+      '<span class="pg-ic pg-star">' + IC('star', 14) + '</span>' +
+      '<span class="pg-label">' + esc(t('pl.favorites')) + '</span>' +
+      '<span class="pg-count">' + favIds.length + '</span>' +
+      '<span class="pg-caret">' + IC(favOpen ? 'chevron-up' : 'chevron-down', 12) + '</span>';
+    favHead.addEventListener('click', function () {
+      if (paletteOpen.__fav) delete paletteOpen.__fav; else paletteOpen.__fav = true;
+      renderPaletteList();
     });
-
-    if (!seenCats.length) {
-      var none = document.createElement('div');
-      none.className = 'muted small';
-      none.textContent = t('fe.noNodes');
-      wrap.appendChild(none);
-      return;
+    wrap.appendChild(favHead);
+    if (favOpen) {
+      var favBody = document.createElement('div');
+      favBody.className = 'palette-group-body';
+      if (!favActions.length) {
+        favBody.innerHTML = '<div class="pg-empty">' + esc(t('pl.noFav')) + '</div>';
+      } else {
+        favActions.forEach(function (a) { favBody.appendChild(paletteItem(a)); });
+      }
+      wrap.appendChild(favBody);
     }
 
-    seenCats.forEach(function (cid) {
-      var cat = CAT.categoryById ? CAT.categoryById(cid) : { color: '#6b7280', label: 'cat.other' };
-      var grp = document.createElement('div');
-      grp.className = 'palette-group';
-      var gh = document.createElement('div');
-      gh.className = 'palette-group-head';
-      gh.innerHTML = '<span class="pg-dot" style="background:' + cat.color + '"></span>' +
-        '<span>' + esc(t(cat.label)) + '</span>';
-      grp.appendChild(gh);
-      groups[cid].forEach(function (a) { grp.appendChild(paletteItem(a)); });
-      wrap.appendChild(grp);
+    // ---- BLOCKS header ----------------------------------------------------
+    var hdr = document.createElement('div');
+    hdr.className = 'palette-title';
+    hdr.textContent = t('pl.blocks');
+    wrap.appendChild(hdr);
+
+    // ---- the six real category rows ---------------------------------------
+    var shown = 0;
+    PALETTE_GROUPS.forEach(function (g) {
+      var members = ACTIONS.filter(function (a) { return (a.cat || 'other') === g.id; });
+      if (!members.length) return;     // never render an empty row with a count
+      var hits = members.filter(matches);
+      // While searching, hide rows with no hits rather than showing "0".
+      if (q && !hits.length) return;
+      shown += hits.length;
+      var cat = (CAT.categoryById && CAT.categoryById(g.id)) ||
+        { color: '#6b7280', label: 'cat.other' };
+      // A search implicitly expands the matching rows, otherwise results hide.
+      var open = q ? true : !!paletteOpen[g.id];
+      wrap.appendChild(paletteGroupHead(g, cat, members.length, open));
+      if (!open) return;
+      var body = document.createElement('div');
+      body.className = 'palette-group-body';
+      hits.forEach(function (a) { body.appendChild(paletteItem(a)); });
+      wrap.appendChild(body);
     });
+
+    // Any catalog category missing from PALETTE_GROUPS would silently vanish,
+    // so sweep the leftovers into a final row instead of dropping them.
+    var mapped = PALETTE_GROUPS.map(function (g) { return g.id; });
+    var leftovers = {};
+    ACTIONS.forEach(function (a) {
+      var cid = a.cat || 'other';
+      if (mapped.indexOf(cid) === -1) (leftovers[cid] = leftovers[cid] || []).push(a);
+    });
+    Object.keys(leftovers).forEach(function (cid) {
+      var members = leftovers[cid];
+      var hits = members.filter(matches);
+      if (q && !hits.length) return;
+      shown += hits.length;
+      var cat = (CAT.categoryById && CAT.categoryById(cid)) ||
+        { color: '#6b7280', label: 'cat.other' };
+      var open = q ? true : !!paletteOpen[cid];
+      wrap.appendChild(paletteGroupHead({ id: cid, icon: 'grid' }, cat, members.length, open));
+      if (!open) return;
+      var b2 = document.createElement('div');
+      b2.className = 'palette-group-body';
+      hits.forEach(function (a) { b2.appendChild(paletteItem(a)); });
+      wrap.appendChild(b2);
+    });
+
+    if (q && !shown) {
+      var none = document.createElement('div');
+      none.className = 'muted small pg-empty';
+      none.textContent = t('fe.noNodes');
+      wrap.appendChild(none);
+    }
+  }
+
+  // ---- palette collapse (the footer `Collapse` control) ---------------------
+  function applyPaletteCollapsed() {
+    if (!dom || !dom.palette) return;
+    var shell = dom.palette.closest ? dom.palette.closest('.fe-layout') : null;
+    if (shell) shell.classList.toggle('fe-pal-collapsed', paletteCollapsed);
+    // A collapsed rail keeps ONE affordance: the restore button. Rebuilding the
+    // whole palette would lose the search text and the open-group set.
+    var chip = dom.palette.querySelector('.pl-restore');
+    if (paletteCollapsed && !chip) {
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'pl-restore';
+      chip.title = t('pl.expand');
+      chip.setAttribute('aria-label', t('pl.expand'));
+      chip.innerHTML = IC('panel-left', 14);
+      chip.addEventListener('click', function () { setPaletteCollapsed(false); });
+      dom.palette.appendChild(chip);
+    } else if (!paletteCollapsed && chip) {
+      chip.parentNode.removeChild(chip);
+    }
+  }
+  function setPaletteCollapsed(on) {
+    paletteCollapsed = !!on;
+    applyPaletteCollapsed();
+    // the canvas box changed width, so the minimap viewport rect is now stale
+    renderMinimap();
   }
 
   // ---- Canvas-level interactions (pan, box-select, drop, connection) --------
@@ -2035,6 +2302,16 @@
     on(window, 'keydown', function (ev) {
       if (!dom) return;
       if (ev.key === 'Escape') closeNodeMenu();
+      // Cmd/Ctrl+K focuses the blocks search — the shortcut the palette
+      // advertises. Handled BEFORE the "ignore while typing" guard below, so it
+      // still works from inside another field (which is the whole point of it).
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'k' || ev.key === 'K')) {
+        ev.preventDefault();
+        if (paletteCollapsed) setPaletteCollapsed(false);
+        var box = dom.palette && dom.palette.querySelector('.palette-search');
+        if (box) { box.focus(); box.select(); }
+        return;
+      }
       // ignore when typing in a field
       var tag = (ev.target && ev.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
@@ -2098,18 +2375,42 @@
     if (ex) ex.parentNode.removeChild(ex);
   }
 
-  // ---- Canvas overlay: floating toolbar + minimap ----------------------------
-  // Items F + G of the uiux gap list. The previews show TWO distinct clusters
-  // pinned to the bottom of the canvas:
-  //   * bottom-start — a floating toolbar: pointer tools (select / pan / lock /
-  //     grid), then the zoom cluster ([-] 100% [+] fit), then the view actions
-  //     (fullscreen, Auto Layout, Focus Mode).
-  //   * bottom-end   — the minimap, now with a real titled header ("MINIMAP"),
-  //     its own [+]/[-]/Fit buttons and a close [x] that collapses it to a
-  //     single restore chip (spec: `state-empty-canvas.md` §2.D, 160x100 @24px
-  //     inset; `shell-editor-click-ndv.md` §2 "Minimap").
+  // ---- Canvas overlay: view-action pills + floating toolbar + minimap --------
+  // Items F + G of the uiux gap list.
+  //
+  // CORRECTED 2026-07-29 against the refreshed `docs/uiux/state-empty-canvas.webp`
+  // (1672x941) and re-checked against `shell-editor-launcher-menu.webp`. BOTH
+  // images place the tool/zoom cluster at the TOP-END of the canvas, not the
+  // bottom-start the older spec described, and the refreshed image shows the two
+  // LABELLED view actions as their own pill row sitting ABOVE that cluster:
+  //
+  //   ( Auto Layout )( Focus Mode )        <- row 1, top-end
+  //   [ ✋ ][ ⛶ ] │ [-] 100% [+]            <- row 2, directly beneath
+  //
+  // So there are now THREE clusters:
+  //   * top-end    — `.fe-view-pills`, the two labelled pills.
+  //   * top-end    — `.fe-canvas-toolbar`, pointer tools + zoom cluster.
+  //   * bottom-end — the minimap, with a real titled header ("MINIMAP"), its own
+  //     [+]/[-]/Fit buttons and a close [x] that collapses it to a restore chip.
+  //
+  // `data-view` handlers are bound once over the whole canvas overlay, so moving
+  // a button between clusters cannot silently unbind it.
   function buildOverlay(canvas) {
-    // ---- G: floating canvas toolbar (bottom-start corner) -------------------
+    // ---- Row 1: labelled view actions (top-end) -----------------------------
+    var pills = document.createElement('div');
+    pills.className = 'fe-view-pills';
+    pills.setAttribute('role', 'group');
+    pills.setAttribute('aria-label', esc(t('fe.canvasTools')));
+    pills.innerHTML =
+      '<button class="fe-tb-btn fe-view-pill" data-view="autolayout" title="' +
+        esc(t('fe.autoLayoutHint')) + '">' +
+        IC('layout') + '<span>' + esc(t('fe.autoLayout')) + '</span></button>' +
+      '<button class="fe-tb-btn fe-view-pill" data-view="focus" aria-pressed="false"' +
+        ' title="' + esc(t('fe.focusModeHint')) + '">' +
+        IC('target') + '<span>' + esc(t('fe.focusMode')) + '</span></button>';
+    canvas.appendChild(pills);
+
+    // ---- Row 2: G, floating canvas toolbar (top-end, below the pills) -------
     var ctrl = document.createElement('div');
     ctrl.className = 'fe-zoom-ctrl fe-canvas-toolbar';
     ctrl.setAttribute('role', 'toolbar');
@@ -2125,6 +2426,9 @@
           ' title="' + esc(t('fe.toolLock')) + '">' + IC('lock') + '</button>' +
         '<button class="fe-zbtn fe-tool" data-tool="grid" aria-pressed="true"' +
           ' title="' + esc(t('fe.toolFrame')) + '">' + IC('frame') + '</button>' +
+        // Fullscreen stays with the icon-only tools (it has no label in either
+        // image); the labelled pills above own Auto Layout / Focus Mode.
+        '<button class="fe-zbtn" data-view="fullscreen" title="' + esc(t('fe.fullscreen')) + '">' + IC('maximize') + '</button>' +
       '</div>' +
       '<span class="fe-tb-sep" aria-hidden="true"></span>' +
       // zoom cluster
@@ -2133,16 +2437,6 @@
         '<button class="fe-zoom-label" data-z="reset" title="' + esc(t('fe.zoomReset')) + '">100%</button>' +
         '<button class="fe-zbtn" data-z="in" title="' + esc(t('fe.zoomIn')) + '">' + IC('plus') + '</button>' +
         '<button class="fe-zbtn" data-z="fit" title="' + esc(t('fe.fit')) + '">' + IC('maximize') + '</button>' +
-      '</div>' +
-      '<span class="fe-tb-sep" aria-hidden="true"></span>' +
-      // view actions — the two labelled ones stay text+icon like the previews
-      '<div class="fe-tb-group" role="group">' +
-        '<button class="fe-zbtn" data-view="fullscreen" title="' + esc(t('fe.fullscreen')) + '">' + IC('maximize') + '</button>' +
-        '<button class="fe-tb-btn" data-view="autolayout" title="' + esc(t('fe.autoLayoutHint')) + '">' +
-          IC('layout') + '<span>' + esc(t('fe.autoLayout')) + '</span></button>' +
-        '<button class="fe-tb-btn" data-view="focus" aria-pressed="false"' +
-          ' title="' + esc(t('fe.focusModeHint')) + '">' +
-          IC('target') + '<span>' + esc(t('fe.focusMode')) + '</span></button>' +
       '</div>' +
       '';
     canvas.appendChild(ctrl);
@@ -2170,15 +2464,20 @@
       b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
     });
 
-    ctrl.querySelectorAll('[data-view]').forEach(function (b) {
-      b.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        var v = b.getAttribute('data-view');
-        if (v === 'autolayout') autoLayout();
-        else if (v === 'focus') toggleFocusMode();
-        else toggleFullscreen();
+    // View actions now live in TWO clusters (the labelled pills row and the
+    // icon-only toolbar), so bind across both rather than inside `ctrl` only —
+    // otherwise Auto Layout / Focus Mode would render but do nothing.
+    [pills, ctrl].forEach(function (host) {
+      host.querySelectorAll('[data-view]').forEach(function (b) {
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var v = b.getAttribute('data-view');
+          if (v === 'autolayout') autoLayout();
+          else if (v === 'focus') toggleFocusMode();
+          else toggleFullscreen();
+        });
+        b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
       });
-      b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
     });
 
     // ---- F: minimap with a real header (bottom-end corner) -----------------
@@ -2241,7 +2540,8 @@
     });
 
     return { zoomLabel: zoomLabel, minimap: mm, zoomCtrl: ctrl,
-      minimapWrap: wrap, minimapRestore: chip, toolbar: ctrl };
+      minimapWrap: wrap, minimapRestore: chip, toolbar: ctrl,
+      viewPills: pills };
   }
 
   // ---- Canvas chrome behaviour (items F + G) --------------------------------
@@ -2354,7 +2654,11 @@
     if (!shell) return;
     var on = !shell.classList.contains('fe-focus');
     shell.classList.toggle('fe-focus', on);
-    var btn = dom.toolbar && dom.toolbar.querySelector('[data-view="focus"]');
+    // The Focus pill moved out of `dom.toolbar` into the labelled pills row, so
+    // look in both — scoping to the toolbar alone would silently stop updating
+    // the pressed state.
+    var btn = (dom.viewPills && dom.viewPills.querySelector('[data-view="focus"]')) ||
+      (dom.toolbar && dom.toolbar.querySelector('[data-view="focus"]'));
     if (btn) {
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
       btn.classList.toggle('is-active', on);
@@ -2396,7 +2700,8 @@
     // `.fe-minimap` is now nested inside `.fe-minimap-wrap`, so the wrapper and
     // the restore chip have to be swept too or they pile up on every re-mount.
     var stale = refs.canvas.querySelectorAll(
-      '.fe-zoom-ctrl, .fe-canvas-toolbar, .fe-minimap-wrap, .fe-minimap, .fe-mm-restore');
+      '.fe-view-pills, .fe-zoom-ctrl, .fe-canvas-toolbar, .fe-minimap-wrap,' +
+      ' .fe-minimap, .fe-mm-restore');
     Array.prototype.forEach.call(stale, function (el) {
       if (el.parentNode) el.parentNode.removeChild(el);
     });
@@ -2406,6 +2711,7 @@
     dom.minimapWrap = ov.minimapWrap;
     dom.minimapRestore = ov.minimapRestore;
     dom.toolbar = ov.toolbar;
+    dom.viewPills = ov.viewPills;
 
     renderPalette();
     attachCanvasHandlers();

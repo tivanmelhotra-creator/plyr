@@ -9,6 +9,32 @@
 
 ## 0. TL;DR — what state is the repo in?
 
+> ### ✅ UPDATE 2026-07-29 — ITEMS A–E ARE ALL DONE
+>
+> The table below is the **original 2026-07-28** plan and is kept for its
+> file/line anchors and rationale. Every UI item in it (A, B, C, D, E) has since
+> been implemented, plus a canvas-chrome relocation that the refreshed images
+> forced. Current truth:
+>
+> | Item | State |
+> | --- | --- |
+> | A — top bar | ✅ done (`views.js`) |
+> | B — Export ▾ / Save ▾ | ✅ done (`views.js`) |
+> | C — OUTLINE panel | ✅ done — **START edge**, not the end edge |
+> | D — blocks palette | ✅ done (`flow-editor.js`) |
+> | E — ACTIVITY LOG | ✅ done — **FOUR** tabs, not three |
+> | — canvas chrome | ✅ relocated to the **TOP-END** + labelled pill row |
+>
+> **Two corrections in this very file are now WRONG. Do not implement them:**
+> § 6.1 says the ACTIVITY LOG has three tabs — the refreshed
+> `state-empty-canvas.webp` shows **four** (`Runs · Execution · Variables ·
+> Logs`, opening on `Execution`), and the image wins. § 5 implies the OUTLINE is
+> an end-edge overlay — it is a full-height rail on the **START edge** that
+> occupies real canvas width (`--fe-ol-w`).
+>
+> Remaining work, the decisions taken, and the verification state are in
+> **`05-HANDOFF-palette-docs-followups.md`** — read that first.
+
 The work is split into a **substrate layer** (done, committed, tested) and a
 **UI layer** (not started). The substrate exists precisely so the UI layer is a
 rendering exercise with no algorithm design left in it.
@@ -366,6 +392,22 @@ variant at styles.css:1146; adding a column would fight both.
 
 ### 6.1 What the image shows (crop `/tmp/activity.png`)
 
+> **⚠ SUPERSEDED 2026-07-29 — the tab count is WRONG below.** This transcription
+> came from `shell-editor-launcher-menu.webp`, which shows three tabs. The
+> refreshed `state-empty-canvas.webp` shows **FOUR**:
+> `Runs · Execution · Variables · Logs`, and the panel opens on **`Execution`**.
+> As implemented: `AL_TABS = ['runs','execution','variables','logs']`,
+> `alTab = 'execution'` in `run-panel.js`. Guarded by `editor-shell.test.ts`.
+>
+> Also corrected: the run tally is NOT concatenated into the panel title (that
+> produced `Run — 3 ok / 0 err / 3`). The title is the static `ACTIVITY LOG`
+> label the image shows, and the tally lives in its own `#al-counts` sibling.
+>
+> And: **`RunState` has no `variables` bag.** The `Variables` tab derives its rows
+> from the graph's `variable` action nodes (`alVariables()`), with runtime values
+> read from the matching step's output sample; unknown values print `—`.
+> Inventing a `state.variables` would have stored derived state twice.
+
 ```
 ACTIVITY LOG
 Runs | Variables | Logs                       Auto-scroll (●=on, orange)  [⤓] [⌃⌄]
@@ -409,6 +451,45 @@ workflow's variables.
 ---
 
 ## 7. Item D — left sidebar upgrade
+
+> ### ✅ DONE 2026-07-29 — and the counts below are MOCK
+>
+> **THE 6-vs-7 DECISION (do not re-litigate).** The image shows seven rows
+> totalling **128** blocks. The real catalog has **six** categories and **fifty**
+> actions. The image's rows and counts are **mock**.
+>
+> Resolution: **presentational**. `ACTION_CATALOG` stays the single source of
+> truth — no invented categories, no renamed `cat` ids, no padded action list
+> (renaming `cat` would corrupt every node colour, the NDV and `graphToSteps`).
+> The image's row vocabulary is mapped onto real categories and **every count is
+> computed** from real members:
+>
+> | image row | catalog category | real count |
+> |---|---|---|
+> | Triggers | `trigger` | 4 |
+> | Browser | `navigation` | 10 |
+> | Web Interaction | `interaction` | 16 |
+> | Flow Control | `flow` | 7 |
+> | Online Services | `integration` | 5 |
+> | Data | `data` | 8 |
+>
+> **Six rows, not seven**: the image's `General` and `Elements` rows have no
+> catalog members at all, and a row with a fake count is exactly the
+> fake-successful UI § 8 forbids. Any category missing from the table is swept
+> into a final row rather than silently dropped. `Triggers` leads because that is
+> what a flow starts with. The full reasoning is written into `flow-editor.js`
+> above `PALETTE_GROUPS` so it survives without this doc.
+>
+> **Footer routes had to change too.** `app.js#currentRoute()` **silently**
+> rewrites an unknown hash to `#/workspace` — so a plausible `#/templates` does
+> not 404, it quietly dumps the user elsewhere, which is indistinguishable from a
+> bug. Also, § 4's note about routing `Settings` / `Connections` "to the workflow"
+> could not be honoured: no workflow-scoped settings or credentials view exists.
+> As shipped: `Templates` -> `#/workspace?tab=templates`, `Connections` ->
+> `#/workspace?tab=connections` (both real `WS_TABS` ids; `renderWorkspace` now
+> honours `?tab=` via `applyTabQuery()`), `Variables` -> `RunPanel.showTab('variables')`,
+> `Settings` -> `#/settings`, `Help & Docs` -> **disabled with a tooltip** because
+> no docs view ships. `Version 1.3.7` is mock and was not rendered.
 
 From the spec §2 "Left sidebar", in order:
 `Search blocks...` (+ a `⌘K` hint chip) · `Favorites` · `General` · `Browser` ·
