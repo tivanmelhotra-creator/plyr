@@ -111,7 +111,24 @@ describe('canvas chrome — item G: floating toolbar', () => {
     // class alone would cross-wire them. Guard the attribute selectors.
     expect(FE).toContain("ctrl.querySelectorAll('[data-z]')");
     expect(FE).toContain("ctrl.querySelectorAll('.fe-tool')");
-    expect(FE).toContain("ctrl.querySelectorAll('[data-view]')");
+    // `data-view` now spans TWO hosts (the labelled `.fe-view-pills` row and the
+    // icon-only toolbar), so it is bound by iterating both. Binding inside
+    // `ctrl` alone would render Auto Layout / Focus Mode as dead buttons.
+    expect(FE).toContain("host.querySelectorAll('[data-view]')");
+    expect(FE).toMatch(/\[pills,\s*ctrl\]\.forEach/);
+  });
+
+  it('puts the two LABELLED view actions in their own top-end pill row', () => {
+    // Locked by the refreshed `docs/uiux/state-empty-canvas.webp`: Auto Layout
+    // and Focus Mode are pills ABOVE the tool/zoom cluster, not segments inside
+    // it. Fullscreen has no label in either image and stays with the tools.
+    expect(FE).toContain("pills.className = 'fe-view-pills'");
+    const idx = FE.indexOf("pills.innerHTML");
+    expect(idx).toBeGreaterThan(-1);
+    const row = FE.slice(idx, FE.indexOf('canvas.appendChild(pills)'));
+    expect(row).toContain('data-view="autolayout"');
+    expect(row).toContain('data-view="focus"');
+    expect(row).not.toContain('data-view="fullscreen"');
   });
 
   it('stops mousedown on every control so the canvas pan handler cannot fire', () => {
@@ -180,7 +197,7 @@ describe('canvas chrome — item F: minimap header', () => {
     const idx = FE.indexOf('var stale = refs.canvas.querySelectorAll');
     expect(idx).toBeGreaterThan(-1);
     const sweep = FE.slice(idx, idx + 300);
-    for (const cls of ['.fe-canvas-toolbar', '.fe-minimap-wrap', '.fe-mm-restore']) {
+    for (const cls of ['.fe-view-pills', '.fe-canvas-toolbar', '.fe-minimap-wrap', '.fe-mm-restore']) {
       expect(sweep, `sweep must include ${cls}`).toContain(cls);
     }
   });
@@ -340,12 +357,21 @@ describe('canvas chrome — the CSS the JS toggles actually exists', () => {
     expect(block).toMatch(/height:\s*100px/);
   });
 
-  it('anchors both clusters 24px from the canvas edges (spec inset)', () => {
+  it('anchors every cluster 24px from the canvas edges (spec inset)', () => {
+    // CORRECTED 2026-07-29: both reference images pin the tool/zoom cluster to
+    // the TOP-END of the canvas (the old spec said bottom-start), with the
+    // labelled pill row 24px above it. Only the minimap stays bottom-end.
+    const pills = CSS.slice(CSS.indexOf('.fe-view-pills {'), CSS.indexOf('.fe-view-pill {'));
+    expect(pills).toMatch(/inset-block-start:\s*24px/);
+    expect(pills).toMatch(/inset-inline-end:\s*24px/);
     // the toolbar rule is a selector GROUP (legacy .fe-zoom-ctrl + the new
     // .fe-canvas-toolbar), so anchor on the block, not on one exact selector
     const tb = CSS.slice(CSS.indexOf('.fe-canvas-toolbar {'), CSS.indexOf('.fe-tb-group'));
-    expect(tb).toMatch(/inset-block-end:\s*24px/);
-    expect(tb).toMatch(/inset-inline-start:\s*24px/);
+    // 62px = the 24px inset + the 30px pill row + an 8px gap, so the two
+    // top-end rows stack instead of overlapping.
+    expect(tb).toMatch(/inset-block-start:\s*62px/);
+    expect(tb).toMatch(/inset-inline-end:\s*24px/);
+    expect(tb).not.toMatch(/inset-inline-start:/);
     const mm = CSS.slice(CSS.indexOf('.fe-minimap-wrap {'), CSS.indexOf('.fe-minimap-wrap[hidden]'));
     expect(mm).toMatch(/inset-block-end:\s*24px/);
     expect(mm).toMatch(/inset-inline-end:\s*24px/);

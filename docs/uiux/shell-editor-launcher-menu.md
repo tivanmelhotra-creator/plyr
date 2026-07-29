@@ -133,6 +133,34 @@ info-blue `#2BA6FF`, success `#2ECC71`, danger `#E45555`, text `#E8EDF4` /
 
 These match the earlier shell specs; recorded here only as a consistency check.
 
+> ### ⚠ CORRECTIONS 2026-07-29 (this section had three stale claims)
+>
+> `state-empty-canvas.webp` was refreshed and is now the **newer** capture of the
+> same shell. Where the two disagree, the refreshed one wins. Also, some claims
+> below were simply mis-transcribed from *this* image. Corrected:
+>
+> | stale claim in this section | corrected |
+> |---|---|
+> | Activity Log tabs are `Runs · Variables · Logs` (three) | **FOUR**: `Runs · Execution · Variables · Logs`, opening on `Execution` (refreshed image) |
+> | Outline tree is an overlay "on the canvas inline-start" | It is a **full-height rail on the START edge**, flush against the palette — measured bbox `[142,53,273,524]` in *this* image. It occupies real canvas width (`--fe-ol-w`: 236px open / 26px collapsed), it is not a floating overlay. |
+> | (unstated) canvas tool + zoom controls sit near the minimap | They are in the canvas **TOP-END** corner — measured bbox `[788,80,977,114]` here — with the two **labelled** view actions (`Auto Layout`, `Focus Mode`) on their own pill row directly above at a 24px inset. The minimap alone is bottom-end. |
+>
+> The palette counts in § 4 are **MOCK** — see the 6-vs-7 decision table in
+> `state-empty-canvas.md` § 2C and `04-HANDOFF` § 8. Six real categories, fifty
+> actions, every count computed. `General` and `Elements` have no catalog members
+> and are therefore not rendered at all.
+>
+> § 4's routing note ("route them to the workflow") could not be honoured either:
+> there is no workflow-scoped settings or credentials view. `Settings` goes to the
+> product-level `#/settings`, `Connections` and `Templates` deep-link real
+> Workspace tabs (`#/workspace?tab=…`), `Variables` opens the ACTIVITY LOG's
+> Variables tab, and `Help & Docs` renders **disabled** because no docs view
+> ships. `app.js#currentRoute()` silently rewrites unknown hashes to
+> `#/workspace`, so an invented route would have looked like it worked.
+>
+> `Version 1.3.7` and the status-bar values are mock; no front-end version
+> constant exists.
+
 - **Nodes**: `#151C25` cards, radius `10px`, `1px` border (orange-tinted while
   selected), a category-tinted `28×28` icon tile, title `13px/600`, subtitle
   `11px` `#5E6876`, a `more-vertical` button, and a small state badge
@@ -140,10 +168,13 @@ These match the earlier shell specs; recorded here only as a consistency check.
 - **Edges**: orange `#FF8A1F` for the happy path; the Condition node emits two
   labelled pills — `True` on `rgba(46,204,113,.15)`/`#2ECC71` and `False` on
   `rgba(228,85,85,.15)`/`#E45555`.
-- **Outline tree** (overlay on the canvas inline-start): numbered steps
+- **Outline tree** (full-height rail on the canvas START edge, *not* a floating
+  overlay — see the corrections box above): numbered steps
   (`4.1.1`, `4.1.2.1`, …) with `11–12px` rows, `14px` indent per level, the
   branch labels `True` / `False` as group headers.
-- **Activity Log** (bottom dock): tabs `Runs` · `Variables` · `Logs`
+- **Activity Log** (bottom dock): tabs `Runs` · `Execution` · `Variables` ·
+  `Logs` — **four**, per the refreshed `state-empty-canvas.webp`; this image
+  shows three, and the newer one wins
   (active = orange underline), an `Auto-scroll` switch (orange when on), a
   `download` button and a `chevron-up/down` collapse. Below: an `All Runs`
   select + `Clear` button, then a table
