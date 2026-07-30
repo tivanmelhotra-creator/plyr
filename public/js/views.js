@@ -908,7 +908,9 @@
     root.innerHTML =
       '<div class="fe-shell">' +
         '<div class="fe-topbar">' +
-          '<span class="fe-brand"><span class="fe-brand-mark">A</span>' + t('fe.brand') + '</span>' +
+          // G13: the real brand mark, not the letter `A` in an orange tile.
+          '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
+            t('fe.brand') + '</span>' +
           // Editor-local App Launcher: the SAME six areas as the header/sidebar.
           '<div class="fe-nav">' +
             '<button class="fe-navlink" id="fe-nav-home" data-route="#/">' +
@@ -956,7 +958,18 @@
           '</div>' +
           // Breadcrumb + badge moved to a hairline second line so the tab strip
           // owns row one (the images never wrap the bar to two tall rows).
-          '<div class="fe-crumbline">' +
+          //
+          // G4 (handoff 11 §3.2): the row is now `hidden` by default. NO locked
+          // image has a second bar row — `state-empty-canvas.webp` starts the
+          // canvas immediately under the bar — and the row cost ~24px of canvas
+          // to restate what the active tab (name) and the status bar (version /
+          // draft state) already say. The element itself MUST stay in the DOM:
+          // `#fe-wf-label` / `#fe-wf-badge` are written by `refreshWfLabel()`
+          // and the six `.fe-legacy` ids have UNGUARDED listeners below — a
+          // missing id throws and blanks the whole editor. `hidden` is honoured
+          // because `.fe-crumbline[hidden] { display: none }` beats the
+          // `display:flex` base rule.
+          '<div class="fe-crumbline" id="fe-crumbline" hidden>' +
             '<span class="fe-crumb-sep">/</span>' +
             '<span class="fe-wf-title" id="fe-wf-label"></span>' +
             '<span id="fe-wf-badge"></span>' +

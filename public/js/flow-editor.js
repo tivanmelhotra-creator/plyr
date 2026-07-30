@@ -574,6 +574,21 @@
       cand.forEach(function (c) { if (c[1] < best[1]) best = c; });
       ins[best[0]] = Math.max(ins[best[0]], best[1]);
     });
+    // The ACTIVITY LOG dock is a body-level `position: fixed` singleton, so the
+    // query above cannot see it — yet on the full-bleed route it is drawn ON TOP
+    // of the canvas' bottom band, and since G6 it is OPEN by default (46vh).
+    // Without charging it, `fitToScreen` parks the tail of a long chain behind
+    // the drawer: exactly the ghost-card class of bug that panel-aware fit was
+    // introduced to kill. Measured from its live rect, so collapsing it (or the
+    // site-wide translate variant, which sits below the fold) costs nothing.
+    var dock = document.getElementById('run-panel');
+    if (dock && dock.offsetHeight) {
+      var dr = dock.getBoundingClientRect();
+      var overlap = rect.bottom - dr.top;
+      if (overlap > 0 && dr.right > rect.left && dr.left < rect.right) {
+        ins.bottom = Math.max(ins.bottom, overlap + 16);
+      }
+    }
     // Never let the overlays eat the whole canvas (tiny viewports, 980px pass).
     if (ins.left + ins.right > rect.width * 0.7) { ins.left = pad; ins.right = pad; }
     if (ins.top + ins.bottom > rect.height * 0.7) { ins.top = pad; ins.bottom = pad; }
@@ -2783,7 +2798,7 @@
       if (!members.length) return;
       var cat = (CAT.categoryById && CAT.categoryById(g.id)) ||
         { color: '#6b7280', label: 'cat.other' };
-      out.push({ id: g.id, icon: g.icon, label: t(cat.label),
+      out.push({ id: g.id, icon: g.icon, label: paletteGroupLabel(g, cat),
         count: members.length, color: cat.color });
     });
     out.push({ id: ADD_ALL, icon: 'grid', label: t('an.all'),
@@ -3071,14 +3086,31 @@
   // catalog members at all, and rendering an empty row with a fake count is
   // exactly the "fake-successful UI" the house rules forbid. `Triggers` takes
   // the leading slot because triggers are what a flow starts with.
+  // `label` is the ROW NAME (the image's vocabulary); the catalog's own
+  // `cat.<id>` label keeps driving everything else (node tone lookups, the NDV,
+  // the Executions filters), so the two never diverge in meaning — only the
+  // palette's presentation adopts the product wording. Omit `label` and the row
+  // falls back to `cat.<id>`, which is what the leftovers sweep below relies on.
   var PALETTE_GROUPS = [
-    { id: 'trigger',     icon: 'zap' },
-    { id: 'navigation',  icon: 'globe' },
-    { id: 'interaction', icon: 'mouse-pointer' },
-    { id: 'flow',        icon: 'git-branch' },
-    { id: 'integration', icon: 'layers' },
-    { id: 'data',        icon: 'database' },
+    { id: 'trigger',     icon: 'zap',            label: 'pg.triggers' },
+    { id: 'navigation',  icon: 'globe',          label: 'pg.browser' },
+    { id: 'interaction', icon: 'mouse-pointer',  label: 'pg.webInteraction' },
+    { id: 'flow',        icon: 'git-branch',     label: 'pg.flowControl' },
+    { id: 'integration', icon: 'layers',         label: 'pg.onlineServices' },
+    { id: 'data',        icon: 'database',       label: 'pg.data' },
   ];
+
+  /**
+   * The palette row name for a group: the image's product wording when the group
+   * declares one, else the catalog category label. ONE helper so the expanded
+   * list, the collapsed rail and the Add Node palette can never drift apart —
+   * three copies of `t(cat.label)` is how the rail ended up saying "Navigation"
+   * while the list said "Browser".
+   */
+  function paletteGroupLabel(g, cat) {
+    if (g && g.label) return t(g.label);
+    return t((cat && cat.label) || 'cat.other');
+  }
 
   // Footer group — the image lists `Templates`, `Variables`, `Connections`,
   // `Settings`, `Help & Docs`, plus `Collapse`.
@@ -3195,7 +3227,7 @@
     gh.style.setProperty('--cat-color', cat.color);
     gh.innerHTML =
       '<span class="pg-ic">' + IC(g.icon, 14) + '</span>' +
-      '<span class="pg-label">' + esc(t(cat.label)) + '</span>' +
+      '<span class="pg-label">' + esc(paletteGroupLabel(g, cat)) + '</span>' +
       '<span class="pg-count">' + count + '</span>' +
       '<span class="pg-caret">' + IC(open ? 'chevron-up' : 'chevron-down', 12) + '</span>';
     gh.addEventListener('click', function () {
@@ -3311,9 +3343,120 @@
   //
   // The rail is a SEPARATE element and the real palette is merely hidden by CSS,
   // so collapsing still never loses the search text or the open-group set.
+  /**
+   * G8 — the collapsed rail is a FULL icon column, not one restore chip.
+   *
+   * `docs/uiux/state-empty-canvas.webp` counts THIRTEEN glyphs on the collapsed
+   * left edge, with the `»` expander LAST. Ours reaches the same thirteen out of
+   * real surfaces only — no glyph stands for something that does not exist:
+   *
+   *   1  star          Favorites            (count = starred blocks, real)
+   *   2  zap           Triggers             \
+   *   3  globe         Browser               |
+   *   4  mouse-pointer Web Interaction       |  the six catalog groups, each
+   *   5  git-branch    Flow Control          |  with its REAL member count
+   *   6  layers        Online Services       |
+   *   7  database      Data                 /
+   *   8  grid          Templates            \
+   *   9  sliders       Variables             |  the same five footer links the
+   *  10  link          Connections           |  expanded palette shows, same
+   *  11  settings      Settings              |  handlers, same disabled state
+   *  12  help-circle   Help & Docs (disabled)/
+   *  13  chevron-right Expand
+   *
+   * A glyph name that is not in the registry renders the `dot` fallback SILENTLY,
+   * so `tests/unit/node-toolbox.test.ts` pins every name used here.
+   */
+  function railBtn(opts) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pl-rail-btn' + (opts.cls ? ' ' + opts.cls : '');
+    b.title = opts.name;
+    b.setAttribute('aria-label', opts.name);
+    if (opts.group) b.setAttribute('data-group', opts.group);
+    if (opts.act) b.setAttribute('data-pl', opts.act);
+    if (opts.color) b.style.setProperty('--cat-color', opts.color);
+    if (opts.disabled) {
+      b.disabled = true;
+      b.setAttribute('aria-disabled', 'true');
+    }
+    b.innerHTML = IC(opts.icon, 15);
+    if (opts.onClick && !opts.disabled) b.addEventListener('click', opts.onClick);
+    return b;
+  }
+
+  /** Expand the palette, open `groupId`'s row, and scroll it into view. */
+  function railOpenGroup(groupId) {
+    paletteOpen[groupId] = true;
+    setPaletteCollapsed(false);
+    renderPaletteList();
+    var head = dom.palette.querySelector('.palette-group-head[data-group="' + groupId + '"]');
+    if (head && head.scrollIntoView) head.scrollIntoView({ block: 'nearest' });
+  }
+
   function paletteRail() {
     var rail = document.createElement('div');
     rail.className = 'pl-rail';
+
+    // 1 — Favorites. Count is the real number of starred blocks; when nothing is
+    // starred the expanded row already explains itself, so the glyph still opens
+    // it rather than pretending there is content.
+    var favCount = ACTIONS.filter(function (a) { return paletteFavs[a.id]; }).length;
+    rail.appendChild(railBtn({
+      icon: 'star', cls: 'pl-rail-fav', color: '#F5C542',
+      name: t('pl.favorites') + ' · ' + favCount,
+      onClick: function () {
+        // `__fav` is the same open-state key the expanded Favorites head uses,
+        // so the glyph opens the row the user expects instead of a second one.
+        paletteOpen.__fav = true;
+        setPaletteCollapsed(false);
+        renderPaletteList();
+        var fav = dom.palette.querySelector('.palette-group-head.pg-fav');
+        if (fav && fav.scrollIntoView) fav.scrollIntoView({ block: 'nearest' });
+      },
+    }));
+
+    PALETTE_GROUPS.forEach(function (g) {
+      var members = ACTIONS.filter(function (a) { return (a.cat || 'other') === g.id; });
+      if (!members.length) return;     // same rule as the expanded list
+      var cat = (CAT.categoryById && CAT.categoryById(g.id)) ||
+        { color: '#6b7280', label: 'cat.other' };
+      // An icon-only control needs a name, and its count comes from the real
+      // members — the rail must not become a second place that can lie.
+      rail.appendChild(railBtn({
+        icon: g.icon, group: g.id, color: cat.color,
+        name: paletteGroupLabel(g, cat) + ' · ' + members.length,
+        onClick: function () { railOpenGroup(g.id); },
+      }));
+    });
+
+    // A hairline between "blocks you can insert" and "places you can go", so the
+    // twelve glyphs do not read as one undifferentiated list.
+    var sep = document.createElement('span');
+    sep.className = 'pl-rail-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    rail.appendChild(sep);
+
+    // 8..12 — the SAME five footer destinations as the expanded palette, driven
+    // by the SAME table, so a route (or a disabled reason) can never be true in
+    // one surface and stale in the other.
+    PALETTE_LINKS.forEach(function (l) {
+      rail.appendChild(railBtn({
+        icon: l.icon, act: l.act || null, cls: 'pl-rail-link',
+        disabled: !!l.disabled,
+        name: l.disabled ? t(l.key) + ' — ' + t(l.disabled) : t(l.key),
+        onClick: function () {
+          if (l.route) { location.hash = l.route; return; }
+          if (l.act === 'variables') {
+            var RP = window.RunPanel;
+            if (RP && RP.showTab && RP.showTab('variables')) return;
+            U().toast(t('pl.varsUnavailable'), 'info');
+          }
+        },
+      }));
+    });
+
+    // 13 — the expander, LAST (the image puts `»` at the bottom of the rail).
     var chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'pl-restore';
@@ -3322,32 +3465,6 @@
     chip.innerHTML = IC('chevron-right', 14);
     chip.addEventListener('click', function () { setPaletteCollapsed(false); });
     rail.appendChild(chip);
-
-    PALETTE_GROUPS.forEach(function (g) {
-      var members = ACTIONS.filter(function (a) { return (a.cat || 'other') === g.id; });
-      if (!members.length) return;     // same rule as the expanded list
-      var cat = (CAT.categoryById && CAT.categoryById(g.id)) ||
-        { color: '#6b7280', label: 'cat.other' };
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'pl-rail-btn';
-      b.setAttribute('data-group', g.id);
-      // An icon-only control needs a name, and its count comes from the real
-      // members — the rail must not become a second place that can lie.
-      var name = t(cat.label) + ' · ' + members.length;
-      b.title = name;
-      b.setAttribute('aria-label', name);
-      b.style.setProperty('--cat-color', cat.color);
-      b.innerHTML = IC(g.icon, 15);
-      b.addEventListener('click', function () {
-        paletteOpen[g.id] = true;
-        setPaletteCollapsed(false);
-        renderPaletteList();
-        var head = dom.palette.querySelector('.palette-group-head[data-group="' + g.id + '"]');
-        if (head && head.scrollIntoView) head.scrollIntoView({ block: 'nearest' });
-      });
-      rail.appendChild(b);
-    });
     return rail;
   }
 

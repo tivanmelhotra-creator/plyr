@@ -517,8 +517,44 @@
   function getPins() { return pins; }
 
   // ---- drawer mount/teardown ------------------------------------------------
-  function open() { if (dom && dom.drawer) { dom.drawer.classList.add('open'); if (dom.toggleBtn) dom.toggleBtn.innerHTML = RIC('chevron-down', 13); } }
-  function close() { if (dom && dom.drawer) { dom.drawer.classList.remove('open'); if (dom.toggleBtn) dom.toggleBtn.innerHTML = RIC('chevron-right', 13); } }
+  // ---- open/closed state, sticky across reloads (G6) -------------------------
+  // The refreshed `docs/uiux/state-empty-canvas.webp` shows the ACTIVITY LOG
+  // **open** on the `Execution` tab, so that is the default. It is a preference,
+  // not a constant: the user may collapse it, and that choice must survive a
+  // route change and a reload — the drawer is unmounted/remounted on every
+  // editor mount (`views.js#renderEditor`), so without persistence a collapse
+  // silently reverted a moment later.
+  //
+  // Stored in the ONE namespaced blob `localStorage['ab_ui_prefs']` via
+  // AppUtil.pref, exactly like `fePaletteCollapsed` / `feOutlineOpen`.
+  var DOCK_PREF = 'feDockOpen';
+
+  function dockPref(fallback) {
+    var u = U();
+    return u && u.pref ? !!u.pref(DOCK_PREF, fallback) : fallback;
+  }
+  function rememberDock(openState) {
+    var u = U();
+    if (u && u.setPref) u.setPref(DOCK_PREF, !!openState);
+  }
+
+  /**
+   * @param {boolean} [remember=true] pass `false` for the restore pass in
+   *   `mount()`: re-applying a stored value is not a fresh user choice, and
+   *   writing it back would make the pref un-resettable from outside.
+   */
+  function open(remember) {
+    if (!dom || !dom.drawer) return;
+    dom.drawer.classList.add('open');
+    if (dom.toggleBtn) dom.toggleBtn.innerHTML = RIC('chevron-down', 13);
+    if (remember !== false) rememberDock(true);
+  }
+  function close(remember) {
+    if (!dom || !dom.drawer) return;
+    dom.drawer.classList.remove('open');
+    if (dom.toggleBtn) dom.toggleBtn.innerHTML = RIC('chevron-right', 13);
+    if (remember !== false) rememberDock(false);
+  }
   function toggle() { if (dom && dom.drawer) { dom.drawer.classList.contains('open') ? close() : open(); } }
 
   /**
@@ -620,6 +656,10 @@
     renderFilterRow();
     renderAll();
     refreshRuns();
+
+    // G6: restore the sticky open/closed state (default OPEN, per the locked
+    // image) WITHOUT recording the restore as a user choice.
+    if (dockPref(true)) open(false); else close(false);
   }
 
   function unmount() {

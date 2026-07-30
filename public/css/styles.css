@@ -552,15 +552,14 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   color: var(--text);
   white-space: nowrap;
 }
+/* G13: the mark is the glyph itself in `--primary` — the locked image has NO
+   filled tile behind it (the old orange square with a black `A` was invented). */
 .fe-brand-mark {
   width: 24px; height: 24px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 7px;
-  background: var(--primary);
-  color: #0B0F14;
-  font-size: 14px;
-  font-weight: 800;
+  color: var(--primary);
 }
+.fe-brand-mark .ic { stroke-width: 2.1; }
 .fe-crumb-sep { color: var(--text-faint); }
 .fe-wf-title {
   font-weight: 600;
@@ -1141,11 +1140,22 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   border-color: var(--border-strong);
   color: var(--text);
 }
+/* CONTRACT: this bar is docked by exactly TWO insets — one block, one inline —
+   and takes its size from its content. If a later rule resolves all FOUR insets
+   the absolutely-positioned box STRETCHES to the gap between them, and because
+   it is opaque (`--bg-elev`) at `z-index: 5` it then paints over the node layer
+   (`z-index: 2`): the canvas renders as an empty grid with the nodes hidden
+   underneath. That is exactly what two conflicting `max-width: 980px` blocks
+   did (`50px/12px/12px/12px` -> a 932x358 slab). The opposing pair is pinned to
+   `auto` here so the invariant is stated where the docking is defined, and any
+   override MUST reset the pair it is not using. */
 .fe-zoom-ctrl,
 .fe-canvas-toolbar {
   position: absolute;
   inset-block-start: 62px;
   inset-inline-end: 24px;
+  inset-block-end: auto;
+  inset-inline-start: auto;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1426,9 +1436,13 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
      canvases; the body alone is no longer the outermost element. */
   .fe-minimap-wrap,
   .fe-mm-restore { display: none; }
-  /* Keep the toolbar usable: drop the two text labels and tighten the insets
-     so the pointer tools + zoom cluster still fit a phone-width canvas. */
-  .fe-zoom-ctrl { inset-block-end: 12px; inset-inline-start: 12px; }
+  /* Keep the toolbar usable by dropping the two text labels. It is deliberately
+     NOT re-docked here: `.fe-zoom-ctrl` and `.fe-canvas-toolbar` are the SAME
+     element, and the narrow-viewport block further down already docks it
+     top-end under `.fe-view-pills`. The bottom-start override that used to live
+     on this line predated that block, survived it, and left all four insets
+     resolved -> the bar stretched to 932x358 and hid every node. See the
+     CONTRACT note on the base rule. */
   .fe-tb-btn > span { display: none; }
   .fe-tb-btn { padding: 0 7px; }
 }
@@ -3733,6 +3747,11 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   margin-top: 2px;
   font-size: 12px;
 }
+/* G4: hidden by default (no locked image shows a second bar row) but kept in
+   the DOM for `#fe-wf-label`, `#fe-wf-badge` and the six `.fe-legacy` ids.
+   The attribute selector is REQUIRED — the rule above sets `display:flex`,
+   which would otherwise beat the UA `[hidden] { display: none }`. */
+.fe-crumbline[hidden] { display: none; }
 /* The seven legacy ids stay in the DOM (their listeners are unguarded) but
    must never be visible or focusable. */
 .fe-legacy { display: none !important; }
@@ -4050,8 +4069,16 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   .fe-view-pills { inset-block-start: 12px; inset-inline-end: 12px; gap: 6px; }
   .fe-view-pill { padding: 0 9px; }
   .fe-view-pill > span { display: none; }
+  /* Docked top-end, just under the pills. The `auto` pair is restated rather
+     than inherited so this rule stays correct no matter what order the media
+     blocks end up in — see the CONTRACT note on the base rule. */
   .fe-zoom-ctrl,
-  .fe-canvas-toolbar { inset-block-start: 50px; inset-inline-end: 12px; }
+  .fe-canvas-toolbar {
+    inset-block-start: 50px;
+    inset-inline-end: 12px;
+    inset-block-end: auto;
+    inset-inline-start: auto;
+  }
 }
 
 /* ============================================================================
@@ -4296,14 +4323,36 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   align-items: center;
 }
 .fe-layout.fe-pal-collapsed > .fe-palette > *:not(.pl-rail) { display: none; }
+/* G8: the rail is the full 13-glyph column, so it OWNS the panel height and the
+   `»` expander is pushed to the bottom edge (that is where the locked image puts
+   it). `min-height: 0` + `overflow-y: auto` keeps it usable on a short viewport
+   instead of letting the last glyphs fall off screen. */
 .pl-rail {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   width: 100%;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+.pl-rail > .pl-restore { margin-block-start: auto; }
+/* Divider between "blocks to insert" and "places to go". */
+.pl-rail-sep {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 1px;
+  margin-block: 2px;
+  background: var(--border);
+}
+/* Footer destinations read as chrome, not as content. */
+.pl-rail-btn.pl-rail-link { color: var(--text-faint); }
+.pl-rail-btn.pl-rail-link:hover,
+.pl-rail-btn.pl-rail-link:focus-visible { color: var(--text); }
+.pl-rail-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.pl-rail-btn[disabled]:hover { background: transparent; border-color: transparent; }
 .pl-rail-btn {
   display: inline-flex;
   align-items: center;
@@ -4347,13 +4396,30 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 [dir="rtl"] .pl-restore > svg { transform: scaleX(-1); }
 
 @media (max-width: 980px) {
-  /* The rail becomes a short horizontal band above the canvas, so the list can
-     no longer own the panel's whole height. */
-  .fe-palette { overflow-y: auto; }
-  .palette-list { overflow: visible; }
+  /* The panel is a capped-height flex column here, and `overflow: visible` on
+     the list was actively harmful: flex resolved the list to height ZERO (its
+     content is ~2400px, the cap left it nothing) and `visible` then let all of
+     that content PAINT OUTSIDE the box, straight over the footer links — the
+     980px render showed `TRIGGERS` and `Connections` written on top of each
+     other. The list keeps the base contract instead (it is the only scroller)
+     and is given a floor so flex can never starve it to nothing again. */
+  .fe-palette { overflow: hidden; max-height: 264px; }
+  .palette-list { overflow-y: auto; overflow-x: hidden; min-height: 96px; }
+  /* Five stacked links are 170px tall — taller than the whole panel is allowed
+     to be — so the footer becomes a wrapping row and gives that height back to
+     the list. `.pl-link` is `width: 100%` by default, which would defeat the
+     wrap by forcing one link per line. */
+  .palette-foot { flex-direction: row; flex-wrap: wrap; gap: 2px 4px; }
+  .palette-foot > .pl-link { width: auto; flex: 0 0 auto; }
   .fe-layout.fe-pal-collapsed { grid-template-columns: 1fr; }
   /* ...and a vertical icon column would waste the full width it now has. */
-  .pl-rail { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+  .pl-rail {
+    flex-direction: row; flex-wrap: wrap; justify-content: center;
+    flex: 0 0 auto; overflow: visible;
+  }
+  /* `margin-block-start: auto` would shove the expander onto its own line. */
+  .pl-rail > .pl-restore { margin-block-start: 0; margin-inline-start: auto; }
+  .pl-rail-sep { width: 1px; height: 24px; margin: 2px 4px; }
 }
 
 /* ============================================================================
