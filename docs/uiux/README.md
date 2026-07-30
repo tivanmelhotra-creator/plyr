@@ -99,7 +99,15 @@ reference. The editor-shell items A–E are complete; see
 `04-HANDOFF-editor-shell-outline-activity.md` for what each landed as and for the
 decisions taken where the image described something the backend does not have.
 
-**Current status doc: `06-HANDOFF-visual-verification-a11y-statusbar.md`** — it
+**Current status doc: `07-HANDOFF-fullbleed-editor-shell.md`** — the editor is now
+**full-bleed** (no app sidebar, no page heading; its own top bar starts at y=0,
+the ACTIVITY LOG docks bottom-start inside the canvas and the MINIMAP sits
+bottom-end with a stacked `+ − Fit` column, the status bar closes the screen),
+exactly as `state-empty-canvas.webp` draws it. Read § 5 of that file for the
+remaining TODO: the 1280×700 / RTL re-shoots, the collapsed-by-default question,
+the 13-glyph icon rail, then items **H / I / J / N** of `04-HANDOFF` § 9.
+
+Previous status doc: `06-HANDOFF-visual-verification-a11y-statusbar.md` — it
 supersedes `05-HANDOFF-palette-docs-followups.md`, records the palette a11y pass,
 the collapsed icon rail, the minimap fix and the real `/health`-backed status bar,
 and — most usefully — documents the **working headless-browser harness**

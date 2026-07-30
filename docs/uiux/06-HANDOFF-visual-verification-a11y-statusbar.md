@@ -1,5 +1,15 @@
 # 06 — HANDOFF: visual verification, palette a11y, a real status bar
 
+> ## ⚠ SUPERSEDED 2026-07-30 — read `07-HANDOFF-fullbleed-editor-shell.md` first
+>
+> § 5's headline leftover ("the editor is **not full-bleed**: the app sidebar and
+> the 'Visual Editor' page header are still visible") **is now done**, together
+> with the bottom dock (ACTIVITY LOG bottom-start, MINIMAP bottom-end with the
+> stacked `+ − Fit` column). The remaining TODO lives in `07-HANDOFF` § 5.
+>
+> Everything else here — the screenshot harness (§ 2), the guard-test style, the
+> anchors — is still accurate and still worth reading.
+
 > **Written:** 2026-07-30 · **Branch:** `genspark_ai_developer` · **Base:** `origin/main` @ `db0048b`
 > **Audience:** the next session, which starts with **ZERO chat history**.
 >

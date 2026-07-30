@@ -438,6 +438,9 @@
       'fe.zoomIn': 'بزرگ‌نمایی',
       'fe.zoomOut': 'کوچک‌نمایی',
       'fe.fit': 'جا دادن در صفحه',
+      // Short form for the minimap's stacked button column (the design spells
+      // it out as one short word, not the full tooltip sentence).
+      'fe.fitShort': 'جا',
       // چرم مینی‌مپ (آیتم F) + نوار شناور بوم (آیتم G)
       'fe.canvasTools': 'ابزارهای بوم',
       'fe.minimap': 'مینی‌مپ',
@@ -1210,6 +1213,7 @@
       'fe.zoomIn': 'Zoom in',
       'fe.zoomOut': 'Zoom out',
       'fe.fit': 'Fit to screen',
+      'fe.fitShort': 'Fit',
       // Minimap chrome (item F) + floating canvas toolbar (item G)
       'fe.canvasTools': 'Canvas tools',
       'fe.minimap': 'MINIMAP',
