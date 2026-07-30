@@ -14,6 +14,7 @@ import {
 } from '../validation';
 import {
   runBodySchema,
+  runNodeBodySchema,
   scheduleBodySchema,
   workflowBodySchema,
   workflowStateSchema,
@@ -229,6 +230,126 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         priority: plan.priority,
         userType: isVip ? 'VIP' : 'Free',
         webhookEnabled: !!webhookUrl
+      });
+
+    } catch (e: unknown) {
+      const error = e as Error;
+      res.status(400).json({ success: false, error: error.message });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // POST /run-node — item N: execute ONE node with REAL upstream data.
+  //
+  // The client sends the chain PREFIX: every enabled step from the trigger up
+  // to and including the node under test, which is therefore always the LAST
+  // element of `steps`. Running the prefix (instead of the lone step) is what
+  // makes the NDV OUTPUT column truthful — a node's input is produced by
+  // actually executing its ancestors, never synthesised.
+  //
+  // Deliberate omissions:
+  //   * no `webhookUrl` — a node test must not fire the user's webhook;
+  //   * no `workflowId` — the job is NOT stamped `__workflowId`, so a partial
+  //     test run never pollutes the Workspace Executions tab or the run stats
+  //     (see GET /jobs and GET /workspace/:userId/stats).
+  // Quota and queue limits are identical to POST /run: a node test costs the
+  // same browser minutes, so it must not become a quota bypass.
+  // ══════════════════════════════════════════════════════════════════
+  router.post('/run-node', async (req: AuthenticatedRequest, res) => {
+    try {
+      const body = parseBody(runNodeBodySchema, req.body, res);
+      if (!body) return;
+
+      const userId = sanitizeUserId(body.userId);
+      const headless = validateHeadless(body.headless, config.DEFAULT_HEADLESS);
+
+      const plan = await UserManager.getUserPlan(connection, userId);
+      const steps = validateSteps(body.steps, plan);
+      const triggerData = (body.triggerData && typeof body.triggerData === 'object')
+        ? body.triggerData
+        : undefined;
+
+      // The node under test is the last step. A client that also sends
+      // nodeIndex must agree, otherwise its OUTPUT column would be painted
+      // from another node's items — fail loudly instead of guessing.
+      const nodeIndex = steps.length - 1;
+      if (body.nodeIndex !== undefined && body.nodeIndex !== nodeIndex) {
+        return res.status(400).json({
+          success: false,
+          error: `nodeIndex must address the LAST step of the prefix (${nodeIndex})`
+        });
+      }
+
+      // Check quota — identical to POST /run (a node test burns real minutes).
+      const hasQuota = await quotaManager.hasQuotaRemaining(userId, plan.quota);
+      if (!hasQuota) {
+        const usage = await quotaManager.getUsage(userId);
+        return res.status(429).json({
+          success: false,
+          error: 'Daily quota exhausted',
+          quotaMinutes: plan.quota,
+          usedMinutes: Math.round(usage.usedSeconds / 60)
+        });
+      }
+
+      // Check queue limit — identical to POST /run.
+      const currentActiveCount = await connection.scard(getUserActiveJobsKey(userId));
+      if (currentActiveCount >= config.MAX_QUEUED_JOBS_PER_USER) {
+        const waiting = await queue.getJobs(['waiting', 'delayed', 'active']);
+        const realCount = waiting.filter(j => String(j.data.userId) === userId).length;
+        if (realCount >= config.MAX_QUEUED_JOBS_PER_USER) {
+          return res.status(429).json({
+            success: false,
+            error: `Queue limit reached. You have ${realCount}/${config.MAX_QUEUED_JOBS_PER_USER} active jobs.`
+          });
+        }
+      }
+
+      const job = await queue.add(
+        'run',
+        { userId, steps, headless, triggerData, __runNode: true, __nodeIndex: nodeIndex },
+        { priority: plan.priority }
+      );
+      const activeKey = getUserActiveJobsKey(userId);
+      await connection.sadd(activeKey, job.id!);
+      await connection.expire(activeKey, 90 * 60);
+
+      // ?wait=true keeps the same contract as POST /run (inline result, or 202
+      // + pollUrl when the run outlives config.RUN_WAIT_MAX_MS).
+      const wait = req.query.wait === 'true' || req.query.wait === '1';
+      if (wait) {
+        const result = await waitForJobResult(
+          queue, userId, job.id!, config.RUN_WAIT_MAX_MS, config.RUN_WAIT_POLL_MS
+        );
+        if (result) {
+          return res.json({
+            ...(result as object),
+            jobId: job.id,
+            nodeIndex,
+            partial: true,
+            waited: true
+          });
+        }
+        return res.status(202).json({
+          success: true,
+          jobId: job.id,
+          nodeIndex,
+          partial: true,
+          waited: true,
+          completed: false,
+          message: `Node run still going after ${config.RUN_WAIT_MAX_MS}ms; poll GET /job/${userId}/${job.id}`,
+          pollUrl: `/job/${userId}/${job.id}`
+        });
+      }
+
+      return res.json({
+        success: true,
+        jobId: job.id,
+        nodeIndex,
+        partial: true,
+        stepCount: steps.length,
+        message: 'Node run queued successfully',
+        priority: plan.priority
       });
 
     } catch (e: unknown) {
@@ -637,7 +758,13 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         // /run job has none, and the UI labels those as one-off runs.
         workflowId: j.data.__workflowId ? String(j.data.__workflowId) : null,
         workflowVersion: typeof j.data.__workflowVersion === 'number' ? j.data.__workflowVersion : null,
-        trigger: j.data.__scheduled ? 'schedule' : (j.data.__workflowId ? 'workflow' : 'manual'),
+        // [Item N] A per-node test run is a PARTIAL execution: it is tagged
+        // `__runNode` and carries no `__workflowId`, so the Executions tab and
+        // the workspace stats never count it as a real workflow run.
+        partial: !!j.data.__runNode,
+        nodeIndex: typeof j.data.__nodeIndex === 'number' ? j.data.__nodeIndex : null,
+        trigger: j.data.__runNode ? 'node'
+          : (j.data.__scheduled ? 'schedule' : (j.data.__workflowId ? 'workflow' : 'manual')),
         startedAt: j.processedOn ? new Date(j.processedOn).toISOString() : null,
         finishedAt: j.finishedOn ? new Date(j.finishedOn).toISOString() : null,
         // Elapsed wall time of the RUN itself (not the queue wait), so a job

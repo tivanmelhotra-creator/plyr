@@ -127,9 +127,12 @@ describe('sidebar — exactly the six locked product areas', () => {
   });
 
   it('uses the icons named by the spec (§ 3A)', () => {
+    // Re-read off the locked images: `Workspace` is four EQUAL squares (`grid`,
+    // the launcher glyph), `Jobs` is a briefcase and `Admin` is a shield with a
+    // check — the earlier `layout` / `layers` / `shield` set was a guess.
     for (const [route, icon] of Object.entries({
-      home: 'home', workspace: 'layout', dashboard: 'bar-chart',
-      jobs: 'layers', admin: 'shield', settings: 'settings',
+      home: 'home', workspace: 'grid', dashboard: 'bar-chart',
+      jobs: 'briefcase', admin: 'shield-check', settings: 'settings',
     })) {
       const row = navBlock.slice(navBlock.indexOf(`data-route="${route}"`));
       expect(row.slice(0, 200), `${route} -> ${icon}`).toContain(`data-icon="${icon}"`);
@@ -188,6 +191,83 @@ describe('app launcher — the header replacement for nav links', () => {
     const open = CSS.slice(CSS.indexOf('.launcher-btn.open'));
     expect(open.slice(0, 220)).toContain('var(--primary)');
     expect(open.slice(0, 220)).toContain('rgba(255, 138, 31, 0.18)');
+  });
+
+  /* The locked panel (docs/uiux/shell-editor-launcher-menu.webp, re-checked
+     against the zoomed crop the reviewer sent) fixes three things this panel
+     used to get wrong: the glyph per route, the glyph SIZE, and an open state
+     that filled the button orange instead of ringing it. */
+  it('uses the locked glyph for every route, at the locked 20px size', () => {
+    const panel = HTML.slice(HTML.indexOf('id="launcher-menu"'), HTML.indexOf('</header>'));
+    const want: Record<string, string> = {
+      home: 'home',
+      workspace: 'grid',        // four EQUAL squares, like the launcher button
+      dashboard: 'bar-chart',
+      jobs: 'briefcase',        // was `layers` — the image shows a briefcase
+      admin: 'shield-check',    // was a plain shield — the image has a check
+      settings: 'settings',
+    };
+    NAV.forEach((route) => {
+      const row = panel.slice(panel.indexOf(`data-route="${route}"`));
+      const m = row.slice(0, 220).match(/data-icon="([a-z-]+)" data-icon-size="(\d+)"/);
+      expect(m, `launcher row "${route}" declares an icon + size`).toBeTruthy();
+      expect(m![1], `launcher glyph for "${route}"`).toBe(want[route]);
+      expect(m![2], `launcher glyph size for "${route}"`).toBe('20');
+      expect(Icons.has(m![1]), `registry has "${m![1]}"`).toBe(true);
+    });
+  });
+
+  it('the sidebar and the launcher agree glyph-for-glyph (one architecture)', () => {
+    const nav = HTML.slice(HTML.indexOf('<nav class="sidebar-nav">'), HTML.indexOf('</nav>'));
+    const panel = HTML.slice(HTML.indexOf('id="launcher-menu"'), HTML.indexOf('</header>'));
+    NAV.forEach((route) => {
+      const inNav = nav.slice(nav.indexOf(`data-route="${route}"`)).slice(0, 200)
+        .match(/data-icon="([a-z-]+)"/);
+      const inPanel = panel.slice(panel.indexOf(`data-route="${route}"`)).slice(0, 220)
+        .match(/data-icon="([a-z-]+)"/);
+      expect(inNav, `sidebar row "${route}"`).toBeTruthy();
+      expect(inPanel![1], `glyph drift for "${route}"`).toBe(inNav![1]);
+    });
+  });
+
+  it('the open button is RINGED, not filled (the glyph must stay readable)', () => {
+    const open = CSS.slice(CSS.indexOf('.launcher-btn.open'), CSS.indexOf('.launcher-menu {'));
+    // A solid orange fill inverted the glyph to near-black and lost the 2x2 grid.
+    expect(open).not.toMatch(/background:\s*var\(--primary\)/);
+    expect(open).toContain('background: var(--bg-elev-2)');
+    expect(open).toContain('color: var(--text)');
+    // The ring is a box-shadow so opening the panel cannot resize the button.
+    expect(open).toMatch(/box-shadow:[^;]*1\.5px var\(--primary\)/);
+    expect(open).not.toMatch(/border:\s*[^;]*var\(--primary\)/);
+  });
+
+  it('has the row geometry the panel image shows', () => {
+    const item = CSS.slice(CSS.indexOf('.launcher-item {'), CSS.indexOf('.launcher-item:hover'));
+    expect(item).toContain('height: 40px');
+    expect(item).toContain('gap: 12px');
+    expect(item).toMatch(/font: 500 14px/);
+  });
+});
+
+/**
+ * ONE product name. The locked sidebar reads "Aria Automate" next to the logo
+ * mark, and the editor shell already used `fe.brand` for exactly that string —
+ * so the old `app.title` ("Automation Backend") made the same shell introduce
+ * itself under two names depending on which screen you were on.
+ */
+describe('brand — the shell has a single product name', () => {
+  it('index.html falls back to the locked name', () => {
+    expect(HTML).toMatch(/data-i18n="app\.title">Aria Automate</);
+    expect(HTML).not.toContain('Automation Backend');
+  });
+
+  it('both dictionaries carry it, and it matches the editor brand', () => {
+    // The sandbox has no stored language, so `t()` resolves through `fa`.
+    expect(I18N.t('app.title')).toBe(I18N.t('fe.brand'));
+    const en = I18N_SRC.slice(I18N_SRC.indexOf('    en: {'));
+    expect(en).toContain("'app.title': 'Aria Automate'");
+    expect(en).toContain("'fe.brand': 'Aria Automate'");
+    expect(I18N_SRC).not.toContain('Automation Backend');
   });
 });
 

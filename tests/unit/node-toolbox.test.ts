@@ -94,7 +94,7 @@ describe('item H — floating Add Node palette', () => {
     expect(matches.indexOf('if (q)')).toBeLessThan(matches.indexOf('addState.cat === ADD_ALL'));
   });
 
-  it('wires all four entry points', () => {
+  it('wires all five entry points', () => {
     // 1. the empty-state CTA
     const empty = FE.slice(FE.indexOf('function renderEmptyState()'),
       FE.indexOf('function appendValidation('));
@@ -106,6 +106,11 @@ describe('item H — floating Add Node palette', () => {
     expect(FE).toMatch(/ev\.key === 'Tab'[\s\S]{0,200}openAddPaletteForSelection/);
     // 4. a connection dragged into empty canvas
     expect(FE).toMatch(/from: \{ nodeId: fromId, port: fromPort \}/);
+    // 5. the circled `+` chip on a free output port (see the dedicated describe
+    //    below for its rules) — the only entry point that pre-wires a SPECIFIC
+    //    branch port without a drag.
+    expect(FE).toContain("add.className = 'flow-port-add port-'");
+    expect(FE).toMatch(/from: \{ nodeId: node\.id, port: p\.id \}/);
   });
 
   it('a connection dropped on CHROME cancels instead of inserting behind it', () => {
@@ -161,6 +166,141 @@ describe('item H — floating Add Node palette', () => {
   });
 });
 
+/**
+ * The circled `+` on a free output port — the FIFTH Add Node entry point.
+ *
+ * It is in six of the eight locked images (right of a node, sitting on a short
+ * connector stub), and it is the only entry point that pre-wires ONE SPECIFIC
+ * branch port, so `else` / `catch` / `case:N` can be extended by a click instead
+ * of a drag. Everything here is a rule that a future refactor could silently
+ * break, so each one gets an assertion.
+ */
+describe('circled + on a free output port', () => {
+  /** The chip is built inside the per-port loop of the card renderer. */
+  const CHIP = FE.slice(FE.indexOf("// A FREE output port gets the circled `+` chip"),
+    FE.indexOf('// connection drag — start on THIS output port'));
+
+  it('is rendered ONLY on a port that has no edge yet', () => {
+    // Same rule as openAddPaletteForSelection: offering "add" on a taken port
+    // would silently replace that connection.
+    expect(CHIP).toContain('var portTaken = state.edges.some(');
+    expect(CHIP).toContain("(e.port || 'next') === p.id");
+    expect(CHIP).toContain('if (!portTaken) {');
+    // ...and the guard has to WRAP the chip, not merely precede it.
+    expect(CHIP.indexOf('if (!portTaken) {'))
+      .toBeLessThan(CHIP.indexOf("add.className = 'flow-port-add"));
+  });
+
+  it('opens the SHARED palette pre-wired to THAT port', () => {
+    // No second palette, no second insert path: openAddPalette + slotAfter.
+    expect(CHIP).toContain('openAddPalette({');
+    expect(CHIP).toContain('world: slotAfter(node.id)');
+    expect(CHIP).toContain('from: { nodeId: node.id, port: p.id }');
+    // It opens next to the click, like the other entry points.
+    expect(CHIP).toContain('at: { x: ev.clientX, y: ev.clientY }');
+  });
+
+  it('does not hijack the card: no node drag, no canvas click-through', () => {
+    // The card's own mousedown starts a node drag — the chip must swallow it,
+    // or every click on the chip would nudge the node.
+    expect(CHIP).toMatch(/add\.addEventListener\('mousedown', function \(ev\) \{ ev\.stopPropagation\(\); \}\)/);
+    // The click must not bubble to the card (which would select/open the NDV).
+    expect(CHIP).toMatch(/add\.addEventListener\('click', function \(ev\) \{\s*\n\s*ev\.stopPropagation\(\);/);
+  });
+
+  it('is a real button with an accessible name from BOTH dictionaries', () => {
+    expect(CHIP).toContain("add.type = 'button'");
+    expect(CHIP).toContain("add.title = t('fe.addFromPort')");
+    expect(CHIP).toContain("add.setAttribute('aria-label', t('fe.addFromPort'))");
+    expect(hasKeyInBothDicts('fe.addFromPort')).toBe(true);
+    // The glyph is a registry icon, not a literal "+" character.
+    expect(CHIP).toContain("IC('plus'");
+    expect(ICONS.has('plus')).toBe(true);
+  });
+
+  it('is centred on ITS OWN port, using half the CSS size', () => {
+    // A branching node has several ports: the chip must follow portY(p.id), not
+    // the card top, or all of them would stack at the same height.
+    expect(CHIP).toContain("add.style.top = (portY(node, p.id) - node.y - PORT_ADD_R) + 'px'");
+    expect(FE).toContain('var PORT_ADD_R = 9;');
+    // 9 is half of the 18px chip — the two must stay in sync.
+    const chipCss = CSS.slice(CSS.indexOf('.flow-port-add {'), CSS.indexOf('.flow-port-add::before'));
+    expect(chipCss).toContain('width: 18px');
+    expect(chipCss).toContain('height: 18px');
+  });
+
+  it('has the CSS the JS assumes: chip, connector stub, and it sits OUTSIDE the card', () => {
+    const chipCss = CSS.slice(CSS.indexOf('.flow-port-add {'), CSS.indexOf('.flow-port-add:hover'));
+    expect(chipCss).toContain('position: absolute');
+    // Logical property: the chip has to flip with the RTL/LTR canvas.
+    expect(chipCss).toContain('inset-inline-end:');
+    expect(chipCss).not.toContain('right:');
+    expect(chipCss).toContain('border-radius: 50%');
+    // The stub that visually connects the chip to the port dot.
+    expect(CSS).toContain('.flow-port-add::before');
+    expect(CSS).toMatch(/\.flow-port-add::before \{[\s\S]{0,240}inset-inline-end: 100%/);
+  });
+
+  it('carries the SAME colour per port as the port dot itself', () => {
+    // A green `+` on a red `else` port would read as the wrong branch.
+    const pairs: Array<[string, string]> = [
+      ['.flow-port-add.port-then', 'var(--success)'],
+      ['.flow-port-add.port-else', 'var(--danger)'],
+      ['.flow-port-add.port-catch', 'var(--danger)'],
+      ['.flow-port-add.port-done', '#f5a623'],
+      ['.flow-port-add.port-finally', '#f5a623'],
+      ['.flow-port-add[class*="port-case-"]', '#06b6d4'],
+    ];
+    pairs.forEach(([sel, colour]) => {
+      expect(CSS, sel).toContain(sel);
+      // the colour is declared somewhere in the rule this selector participates in
+      const at = CSS.indexOf(sel);
+      expect(CSS.slice(at, at + 400), `${sel} -> ${colour}`).toContain(colour);
+    });
+    // `case:0` becomes `port-case-0`: the class sanitiser must strip the colon,
+    // or the `[class*="port-case-"]` rule never matches.
+    expect(FE).toContain("p.id.replace(/[^a-z0-9]+/gi, '-')");
+  });
+
+  it('disappears on a LOCKED canvas (a read-only graph must not offer inserts)', () => {
+    expect(CSS).toContain('.fe-canvas.fe-locked .flow-port-add { display: none; }');
+  });
+
+  it('uses only tokens this stylesheet actually defines', () => {
+    const chipCss = CSS.slice(CSS.indexOf('.flow-port-add {'),
+      CSS.indexOf('.fe-canvas.fe-locked .flow-port-add'));
+    ['--text-mute', '--accent', '--surface-2', '--text-disabled'].forEach((bad) => {
+      expect(chipCss, bad).not.toContain(bad);
+    });
+  });
+});
+
+/**
+ * Minimap viewport indicator. The frame is `union(nodes, viewport)`, so with a
+ * couple of nodes the viewport rect is almost the whole widget; as a FILLED
+ * `--primary-soft` block it covered the node dots and read as one orange smear.
+ */
+describe('minimap viewport reads as a frame, not a filled block', () => {
+  const MM = CSS.slice(CSS.indexOf('.mm-viewport {'), CSS.indexOf('.fe-hint {'));
+
+  it('is an outline with a see-through interior', () => {
+    expect(MM).toContain('background: transparent');
+    expect(MM).not.toContain('var(--primary-soft)');
+    expect(MM).toContain('border: 1.5px solid var(--primary)');
+  });
+
+  it('dims the OUTSIDE with a scrim instead of tinting the inside', () => {
+    expect(MM).toMatch(/box-shadow: 0 0 0 9999px rgba\(/);
+    // The 9999px spread only works because the minimap clips it.
+    const mapCss = CSS.slice(CSS.indexOf('.fe-minimap {'), CSS.indexOf('.mm-node {'));
+    expect(mapCss).toContain('overflow: hidden');
+  });
+
+  it('never eats a click meant for the map itself', () => {
+    expect(MM).toContain('pointer-events: none');
+  });
+});
+
 describe('item J — full node context menu', () => {
   const menu = FE.slice(FE.indexOf('function openNodeMenu('), FE.indexOf('function renderNodes()'));
 
@@ -180,7 +320,8 @@ describe('item J — full node context menu', () => {
       'fe.resetColor', 'fe.addComment', 'fe.editComment', 'fe.favNode',
       'fe.unfavNode', 'fe.favAdded', 'fe.favRemoved', 'fe.convertSubflow',
       'fe.convertSubflowSoon', 'fe.advanced', 'fe.copyNodeJson', 'fe.copiedJson',
-      'fe.copyFailed', 'fe.runNode', 'fe.runNodeSoon', 'fe.promptOk',
+      'fe.copyFailed', 'fe.runNode', 'fe.runNodeHint', 'fe.runNodeQueued',
+      'fe.runNodeDisabled', 'fe.runNodeBranch', 'fe.promptOk',
       'fe.promptCancel', 'fe.promptHint'].forEach((k) => {
       expect(hasKeyInBothDicts(k), k).toBe(true);
     });
@@ -196,10 +337,18 @@ describe('item J — full node context menu', () => {
   });
 
   it('the one unbacked row renders DISABLED with an explanation', () => {
+    // `Convert Subflow` is now the ONLY unconditionally-disabled row: it needs a
+    // container concept in the graph model that does not exist yet.
     expect(menu).toMatch(/label: t\('fe\.convertSubflow'\),\s*\n\s*disabled: true, hint: t\('fe\.convertSubflowSoon'\)/);
-    // ...and `Run node` inside Advanced is disabled for the same reason: item N
-    // has no endpoint yet, so shipping the button alone would be fake-success.
-    expect(menu).toMatch(/label: t\('fe\.runNode'\),\s*\n\s*disabled: true, hint: t\('fe\.runNodeSoon'\)/);
+    // `Run node` (item N) is backed by POST /run-node, so it is disabled only
+    // CONDITIONALLY — and every branch still carries a tooltip, so a dead row
+    // always says why it is dead.
+    expect(menu).toMatch(/label: t\('fe\.runNode'\),\s*\n\s*disabled: !!why, hint: why \? t\(why\) : t\('fe\.runNodeHint'\)/);
+    expect(menu).toContain('runNodeBlockedReason(nodeId)');
+    expect(menu).toContain('fn: function () { runNode(nodeId); }');
+    // `fe.runNodeSoon` was the placeholder excuse; it must be gone from BOTH
+    // dictionaries so nothing can quietly fall back to it.
+    expect(I18N_SRC).not.toContain('fe.runNodeSoon');
     const item = FE.slice(FE.indexOf('function ctxItem('), FE.indexOf('function ctxColorRow('));
     expect(item).toContain("b.setAttribute('aria-disabled', 'true')");
     expect(item).toContain('b.disabled = true');
@@ -454,5 +603,134 @@ describe('item I — group selection boundary + toolbar', () => {
     expect(own).not.toContain('var(--accent');
     expect(own).not.toContain('var(--surface-2');
     expect(own).not.toContain('var(--text-disabled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item N — per-node Run (09-HANDOFF-item-N-per-node-run.md).
+//
+// The behaviour needs a live graph, so what is verified here is the *contract*:
+// that the prefix is a real slice of toSteps(), that indexes are resolved through
+// the STEP chain (the bug in § 3.1), that both entry points go through the same
+// helper, and that nothing falls back to running the whole flow.
+// ---------------------------------------------------------------------------
+describe('item N — per-node run', () => {
+  const API = readFileSync(join(ROOT, 'public', 'js', 'api.js'), 'utf8');
+  const runNodeFn = FE.slice(FE.indexOf('function runNode(nodeId)'), FE.indexOf('function setNodeStatus('));
+
+  it('sends the chain PREFIX — a literal slice of the serialization', () => {
+    // Sending the lone step would leave its input empty and the NDV OUTPUT
+    // column would show a lie, so the prefix is non-negotiable.
+    expect(runNodeFn).toContain('toSteps().slice(0, idx + 1)');
+    expect(runNodeFn).toContain('nodeIndex: idx');
+    expect(runNodeFn).toContain('chainStepIndex(nodeId)');
+  });
+
+  it('talks to POST /run-node, not to POST /run', () => {
+    expect(API).toContain("post('/run-node', payload)");
+    expect(API).toContain('runNode: runNode,');
+    expect(runNodeFn).toContain('API.runNode(uid,');
+    expect(runNodeFn).not.toContain('API.runFlow');
+  });
+
+  it('never clicks the whole-flow Run button — the old fake success is gone', () => {
+    // `.ndv-run-btn` used to do `closeNdv(); getElementById('fe-run').click()`,
+    // i.e. it said "Run node" and ran the entire workflow.
+    expect(FE).not.toContain("getElementById('fe-run')");
+    const head = FE.slice(FE.indexOf("runBtn.className = 'ndv-run-btn'"), FE.indexOf("closeBtn.className = 'ndv-close'"));
+    expect(head).toContain('runNodeBlockedReason(node.id)');
+    expect(head).toContain('runNode(node.id)');
+  });
+
+  it('both entry points read the SAME blocked reason, so they cannot disagree', () => {
+    expect(FE).toContain('function runNodeBlockedReason(nodeId)');
+    const reason = FE.slice(FE.indexOf('function runNodeBlockedReason(nodeId)'), FE.indexOf('function runUserId()'));
+    expect(reason).toContain("'fe.runNodeDisabled'");
+    expect(reason).toContain("'fe.runNodeBranch'");
+    // Two callers: the context-menu row and the NDV header button.
+    expect(FE.split('runNodeBlockedReason(').length - 1).toBeGreaterThanOrEqual(3);
+  });
+
+  it('a blocked Run button LOOKS dead, not merely dimmed', () => {
+    const css = CSS.slice(CSS.indexOf('.ndv-run-btn:hover'), CSS.indexOf('.ndv-close {'));
+    expect(css).toContain('cursor: not-allowed');
+    expect(css).toContain('var(--text-faint)');
+    // ...and only tokens this stylesheet defines (the 08-HANDOFF trap).
+    expect(css).not.toContain('var(--text-mute');
+    expect(css).not.toContain('var(--surface-2');
+    expect(css).not.toContain('var(--text-disabled');
+    const head = FE.slice(FE.indexOf("runBtn.className = 'ndv-run-btn'"), FE.indexOf("closeBtn.className = 'ndv-close'"));
+    expect(head).toContain("runBtn.setAttribute('aria-disabled', 'true')");
+    // Every branch carries a tooltip — a dead control must say why.
+    expect(head).toContain('runBtn.title =');
+  });
+
+  it('env_root is not treated as an automation user (views.js rule)', () => {
+    const uid = FE.slice(FE.indexOf('function runUserId()'), FE.indexOf('function runNode(nodeId)'));
+    expect(uid).toContain("'env_root'");
+    expect(uid).toContain("return '0'");
+    expect(VIEWS).toContain("uid === 'env_root'");
+  });
+
+  it('paints the node running immediately and rolls back to error on failure', () => {
+    expect(runNodeFn).toContain("setNodeStatus(nodeId, 'running')");
+    expect(runNodeFn).toContain("setNodeStatus(nodeId, 'error')");
+    expect(runNodeFn).toContain("t('fe.runNodeQueued')");
+  });
+
+  it('streams the partial run into the ACTIVITY LOG like a normal run', () => {
+    expect(runNodeFn).toContain('window.RunPanel');
+    expect(runNodeFn).toContain('RP.startJob(');
+  });
+
+  it('exposes the helpers so views.js / a toolbar can reuse them', () => {
+    expect(FE).toContain('chainStepIndex: chainStepIndex,');
+    expect(FE).toContain('stepChainIds: stepChainIds,');
+    expect(FE).toContain('runNode: runNode,');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 09-HANDOFF § 3.1 — the chain-index vs step-index divergence.
+// ---------------------------------------------------------------------------
+describe('step index resolution skips disabled nodes', () => {
+  const RP = readFileSync(join(ROOT, 'public', 'js', 'run-panel.js'), 'utf8');
+
+  it('run-panel still addresses nodes by STEP index', () => {
+    // This is the caller whose indexes were being mis-resolved; if it ever stops
+    // deriving nodeIndex0 from the step number, revisit stepChainIds().
+    expect(RP).toMatch(/idx1\s*-\s*1/);
+  });
+
+  it('stepChainIds() is chainNodeIds() minus the disabled nodes', () => {
+    const fn = FE.slice(FE.indexOf('function stepChainIds()'), FE.indexOf('function chainStepIndex(nodeId)'));
+    expect(fn).toContain('chainNodeIds().filter');
+    expect(fn).toContain('n.disabled !== true');
+  });
+
+  it('chainStepIndex() is its exact inverse', () => {
+    const fn = FE.slice(FE.indexOf('function chainStepIndex(nodeId)'), FE.indexOf('function runNodeBlockedReason('));
+    expect(fn).toContain('stepChainIds().indexOf(nodeId)');
+  });
+
+  it('EVERY index -> id resolver goes through stepChainIds()', () => {
+    // The four public byIndex helpers plus setNodeStatus(number). Resolving any
+    // of them through chainNodeIds() paints the wrong card once a node is
+    // disabled, because graphToSteps() emits no step for it.
+    ['setNodeResultsByIndex', 'selectByChainIndex', 'pinByIndex', 'isPinnedByIndex'].forEach((name) => {
+      const i = FE.indexOf(name + ': function');
+      expect(i, name).toBeGreaterThan(-1);
+      const body = FE.slice(i, i + 400);
+      expect(body, name).toContain('stepChainIds()');
+      expect(body, name).not.toContain('chainNodeIds()');
+    });
+    const sns = FE.slice(FE.indexOf('function setNodeStatus(ref, status)'), FE.indexOf('function clearStatuses()'));
+    expect(sns).toContain('stepChainIds()');
+    expect(sns).not.toContain('chainNodeIds()');
+  });
+
+  it('the serializer that defines "a step" still skips disabled nodes', () => {
+    // stepChainIds() is only correct while this stays true.
+    expect(GSJS).toContain('disabled');
   });
 });

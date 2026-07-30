@@ -45,7 +45,42 @@
   };
 
   var THEME_KEY = 'ab_theme';
+  var PREFS_KEY = 'ab_ui_prefs';
   var healthTimer = null;
+
+  // ---------------------------------------------
+  // UI preferences
+  // ---------------------------------------------
+  // Small, sticky view choices (is the blocks palette collapsed? is the OUTLINE
+  // panel open?) live in ONE namespaced blob instead of a new localStorage key
+  // per switch — the alternative grows an unbounded set of `ab_*` keys that
+  // nothing ever cleans up, and makes "reset my layout" impossible to implement.
+  //
+  // Deliberately NOT for anything the server owns: preferences here are per
+  // browser, so putting real user settings in them would silently desync
+  // between devices.
+  function readPrefs() {
+    try {
+      var raw = localStorage.getItem(PREFS_KEY);
+      var obj = raw ? JSON.parse(raw) : null;
+      // A hand-edited or half-written value must not break booting the app.
+      return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+    } catch (e) { return {}; }
+  }
+
+  /** Read one preference, returning `fallback` when it was never set. */
+  function pref(key, fallback) {
+    var all = readPrefs();
+    return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : fallback;
+  }
+
+  /** Persist one preference, leaving every other key untouched. */
+  function setPref(key, value) {
+    var all = readPrefs();
+    all[key] = value;
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(all)); } catch (e) { /* quota / private mode */ }
+    return value;
+  }
 
   // ---------------------------------------------
   // Theme
@@ -603,6 +638,11 @@
     navigate: function (route) { location.hash = '#/' + route; },
     lang: function () { return I18N.getLang(); },
     formatUptime: formatUptime,
+    // Sticky view state (see PREFS_KEY above). The editor uses these so a
+    // collapsed palette / closed OUTLINE survives a reload instead of springing
+    // back open on every navigation.
+    pref: pref,
+    setPref: setPref,
     // Latest /health payload, or null when unknown. Paired with the
     // `health:change` document event above.
     health: function () { return lastHealth; },

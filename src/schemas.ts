@@ -99,7 +99,26 @@ export const workflowStateSchema = z
     message: 'Provide at least one of: active, liveBrowser',
   });
 
+// [Item N] POST /run-node — the chain PREFIX up to and including the node under
+// test. `steps` is asserted here as a non-empty array (deep-validated by
+// validateSteps in the route); the node under test is always the LAST element,
+// and the optional `nodeIndex` is a client/server agreement check, not a
+// selector. No webhookUrl (a node test must not fire the user's webhook) and no
+// workflowId (a partial run must never be attributed to a saved workflow, or it
+// would pollute the Workspace Executions tab and the run stats).
+export const runNodeBodySchema = z.object({
+  userId: z.union([z.string(), z.number()], {
+    required_error: 'userId is required',
+    invalid_type_error: 'userId must be a string or number',
+  }),
+  steps: stepsEnvelope,
+  nodeIndex: z.number().int().min(0).optional(),
+  headless: headlessLoose,
+  triggerData: triggerDataLoose,
+});
+
 export type RunBody = z.infer<typeof runBodySchema>;
+export type RunNodeBody = z.infer<typeof runNodeBodySchema>;
 export type ScheduleBody = z.infer<typeof scheduleBodySchema>;
 export type WorkflowBody = z.infer<typeof workflowBodySchema>;
 export type WorkflowStateBody = z.infer<typeof workflowStateSchema>;

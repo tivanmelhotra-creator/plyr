@@ -902,6 +902,72 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .flow-port.out.port-finally { background: #f5a623; }
 .flow-port.out[class*="port-case-"] { background: #06b6d4; }
 
+/* Circled `+` on a FREE output port — the fifth Add Node entry point.
+ *
+ * Drawn exactly as the locked images draw it: a short connector STUB leaving the
+ * port, ending in an 18px orange-outlined circle with a `+` glyph. The stub is a
+ * `::before` anchored to the chip's inline-START edge, so the pair reads
+ * "port → stub → +" in LTR and mirrors correctly in RTL without a second rule
+ * (the port itself uses `inset-inline-end`, so the chip must follow the port,
+ * not a hardcoded side).
+ *
+ * Geometry: the port dot straddles the card edge, then 22px of stub, then the
+ * chip -> inset-inline-end = -(22 + 18) = -40px. `top` is set from JS so the
+ * chip centres on the port's own Y line, branch ports included. */
+.flow-port-add {
+  position: absolute;
+  inset-inline-end: -40px;
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--primary);
+  background: var(--bg-elev);
+  color: var(--primary);
+  cursor: pointer;
+  opacity: 0.75;
+  z-index: 3;
+  transition: opacity 0.12s ease, transform 0.12s ease, background-color 0.12s ease;
+}
+.flow-port-add::before {
+  content: '';
+  position: absolute;
+  inset-inline-end: 100%;
+  top: 50%;
+  width: 22px;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--primary);
+  opacity: 0.85;
+}
+.flow-port-add:hover,
+.flow-port-add:focus-visible {
+  opacity: 1;
+  transform: scale(1.15);
+  background: var(--primary-soft);
+}
+.flow-port-add:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* The chip inherits its stub + ring colour from the port it hangs off, so a
+   `False` branch does not sprout an orange `+`. */
+.flow-port-add.port-then,
+.flow-port-add.port-body,
+.flow-port-add.port-try { border-color: var(--success); color: var(--success); }
+.flow-port-add.port-then::before,
+.flow-port-add.port-body::before,
+.flow-port-add.port-try::before { background: var(--success); }
+.flow-port-add.port-else,
+.flow-port-add.port-catch { border-color: var(--danger); color: var(--danger); }
+.flow-port-add.port-else::before,
+.flow-port-add.port-catch::before { background: var(--danger); }
+.flow-port-add.port-done,
+.flow-port-add.port-finally { border-color: #f5a623; color: #f5a623; }
+.flow-port-add.port-done::before,
+.flow-port-add.port-finally::before { background: #f5a623; }
+.flow-port-add[class*="port-case-"] { border-color: #06b6d4; color: #06b6d4; }
+.flow-port-add[class*="port-case-"]::before { background: #06b6d4; }
+/* Canvas lock (toolbar item G) freezes GEOMETRY, and adding a node changes it. */
+.fe-canvas.fe-locked .flow-port-add { display: none; }
+
 /* In-card port label, sitting just inside the right edge next to its dot. */
 .flow-port-label {
   position: absolute;
@@ -1328,10 +1394,24 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   border-radius: 2px;
   opacity: 0.85;
 }
+/* Viewport indicator.
+ *
+ * It used to be a FILLED `--primary-soft` rect. The minimap frame is
+ * `union(nodes, viewport)`, so on a small graph the viewport IS almost the whole
+ * frame — and the fill then covered the node dots and read as one orange block
+ * instead of "here is what you are looking at" (09-HANDOFF § 5.1).
+ *
+ * Standard minimap idiom instead: the inside stays clear so the dots show
+ * through, and everything OUTSIDE is scrimmed with a huge spread box-shadow. The
+ * rect is now legible at every zoom, and when it covers the whole frame the
+ * scrim is simply invisible — which is the honest signal that nothing is
+ * off-screen. */
 .mm-viewport {
   position: absolute;
   border: 1.5px solid var(--primary);
-  background: var(--primary-soft);
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.42);
   pointer-events: none;
 }
 
@@ -1824,7 +1904,20 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   border: none; border-radius: 8px; padding: 7px 14px; cursor: pointer;
 }
 .ndv-run-btn:hover { filter: brightness(1.08); }
-.ndv-run-btn:disabled { opacity: 0.55; cursor: default; }
+/* Item N: a node that produces no step (disabled, or off the main chain) cannot
+   be run, so the button must READ dead — a merely dimmed orange pill still looks
+   pressable. It keeps its tooltip (`fe.runNodeDisabled` / `fe.runNodeBranch`) so
+   the reason is one hover away. */
+.ndv-run-btn:disabled,
+.ndv-run-btn[aria-disabled="true"] {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  cursor: not-allowed;
+  filter: none;
+}
+.ndv-run-btn:disabled:hover,
+.ndv-run-btn[aria-disabled="true"]:hover { filter: none; }
 .ndv-close {
   flex: 0 0 auto; width: 30px; height: 30px;
   display: flex; align-items: center; justify-content: center;
@@ -2785,39 +2878,51 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .launcher-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
 .launcher-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 /* Open state is deliberately loud: the panel is a modeless overlay, so the
-   button is the only affordance telling you where it came from. */
+   button is the only affordance telling you where it came from.
+
+   It is a RING, not a fill. The locked panel image shows a dark interior with a
+   1.5px orange outline and a LIGHT glyph; the earlier solid-orange treatment
+   inverted the glyph to near-black, which lost the 2x2 grid at 18px and made
+   the button the loudest thing on the header. The ring is drawn with
+   `box-shadow` rather than `border` so the button does not change size when it
+   opens (a 1.5px border would shift the tabs beside it by 3px). */
 .launcher-btn.open {
-  background: var(--primary);
-  color: #0B0F14;
-  box-shadow: 0 0 0 3px rgba(255, 138, 31, 0.18);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  box-shadow: 0 0 0 1.5px var(--primary), 0 0 0 5px rgba(255, 138, 31, 0.18);
 }
+/* Panel geometry is measured off shell-editor-launcher-menu.webp: ~40px rows,
+   20px glyphs, 14px labels, 12px icon->label gap, 6px panel padding, and the
+   panel starting ~6px under the button. Width is 184px rather than the mock's
+   ~152px because the Persian labels ("فضای کاری", "پنل ادمین") are longer
+   than the English ones and must not wrap. */
 .launcher-menu {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 6px);
   inset-inline-start: 0;
   z-index: 60;
-  width: 196px;
-  padding: 8px;
+  width: 184px;
+  padding: 6px;
   background: #111318;
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 .launcher-menu[hidden] { display: none; }
 .launcher-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 36px;
+  gap: 12px;
+  height: 40px;
   padding: 0 10px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text);
-  font: 500 13px/1 var(--font);
+  font: 500 14px/1 var(--font);
   cursor: pointer;
   text-align: start;
   transition: background var(--transition), color var(--transition);

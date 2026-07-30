@@ -92,7 +92,33 @@
   var PAL_FAV_KEY = 'ab_palette_favs';
   var paletteFavs = {};      // { actionId: true } — starred blocks
   var paletteOpen = {};      // { groupId: true } — expanded category rows
-  var paletteCollapsed = false;  // the `Collapse` control at the footer
+  // The `Collapse` control at the palette footer. Hydrated from the sticky UI
+  // prefs when the editor mounts (see hydrateViewPrefs) so the choice survives a
+  // reload -- collapsing the palette on every visit only to have it spring back
+  // open is the whole complaint. The DEFAULT stays expanded on purpose: the
+  // locked images disagree with each other (state-empty-canvas shows the
+  // 13-glyph rail, the NDV image shows the full category list), so this is a
+  // user preference, not a design constant.
+  var paletteCollapsed = false;
+
+  // app.js is the LAST script tag, so `window.AppUtil` does not exist while this
+  // IIFE evaluates. These read it at CALL time and no-op until it is there,
+  // which keeps ONE owner of the `ab_ui_prefs` blob instead of a second parser
+  // here that could disagree about its shape.
+  function prefGet(key, fallback) {
+    var A = window.AppUtil;
+    return A && A.pref ? A.pref(key, fallback) : fallback;
+  }
+  function prefSet(key, value) {
+    var A = window.AppUtil;
+    if (A && A.setPref) A.setPref(key, value);
+    return value;
+  }
+
+  /** Restore sticky panel state. Called once per editor mount, before render. */
+  function hydrateViewPrefs() {
+    paletteCollapsed = !!prefGet('fePaletteCollapsed', false);
+  }
 
   function loadPaletteFavs() {
     try {
@@ -391,6 +417,10 @@
   var NODE_H_MIN = 64;      // spec: "node card height 48-58" for the body, 64 with padding
   var PORT_SLOT = 22;       // vertical pitch when a node exposes several ports
   var PORT_R = 7;           // half of the 14px port dot (used to centre it)
+  // Half of the 18px circled `+` chip on a free output port. Kept next to
+  // PORT_R because both are the JS half of a CSS size: change one, change both
+  // (the chip's own width lives in `.flow-port-add`).
+  var PORT_ADD_R = 9;
   function nodeW() { return NODE_W; }
   // Step 24: ports of a node. Branching actions expose multiple output ports
   // (then/else, body/done, try/catch/finally, switch cases). Returns a list of
@@ -509,17 +539,60 @@
   }
 
   // Fit all nodes into the visible canvas (with padding).
+  /**
+   * The OUTLINE panel, the run-info strip and the minimap are absolutely
+   * positioned INSIDE `.fe-canvas`, so the visible canvas is smaller than its
+   * own box. Fitting to the full box slid the first node underneath the OUTLINE
+   * overlay: a seeded render showed the Start card as a "ghost" behind the panel.
+   *
+   * The insets are measured from live rects rather than hard-coded, so they stay
+   * correct when a panel is collapsed, when its width changes in CSS, and under
+   * RTL (where the OUTLINE hugs the opposite edge — the geometry decides, not a
+   * `dir` branch).
+   */
+  function canvasInsets(rect) {
+    var pad = 60;
+    var ins = { top: pad, right: pad, bottom: pad, left: pad };
+    if (!dom || !dom.canvas) return ins;
+    var overlays = dom.canvas.querySelectorAll('.fe-outline, .fe-runinfo, .fe-minimap-wrap');
+    Array.prototype.forEach.call(overlays, function (el) {
+      if (el.hidden || !el.offsetWidth || !el.offsetHeight) return;
+      var r = el.getBoundingClientRect();
+      // An overlay is charged to ONE edge. Picking the nearest edge is wrong for
+      // corner overlays: the minimap sits bottom-end and is 460x197, so "nearest"
+      // could charge its 460px WIDTH to the end edge and shrink the fit to the
+      // 0.4 floor. Charge it instead to the edge that costs the least canvas.
+      var GAP = 24;
+      var TOUCH = 48;               // how close counts as hugging an edge
+      var cand = [];
+      if (r.left - rect.left <= TOUCH) cand.push(['left', r.right - rect.left + GAP]);
+      if (rect.right - r.right <= TOUCH) cand.push(['right', rect.right - r.left + GAP]);
+      if (r.top - rect.top <= TOUCH) cand.push(['top', r.bottom - rect.top + GAP]);
+      if (rect.bottom - r.bottom <= TOUCH) cand.push(['bottom', rect.bottom - r.top + GAP]);
+      if (!cand.length) return;     // floating in the middle — not an edge dock
+      var best = cand[0];
+      cand.forEach(function (c) { if (c[1] < best[1]) best = c; });
+      ins[best[0]] = Math.max(ins[best[0]], best[1]);
+    });
+    // Never let the overlays eat the whole canvas (tiny viewports, 980px pass).
+    if (ins.left + ins.right > rect.width * 0.7) { ins.left = pad; ins.right = pad; }
+    if (ins.top + ins.bottom > rect.height * 0.7) { ins.top = pad; ins.bottom = pad; }
+    return ins;
+  }
+
   function fitToScreen() {
     var bb = nodesBBox();
     if (!bb || !dom) return;
     var rect = dom.canvas.getBoundingClientRect();
-    var pad = 60;
-    var sx = (rect.width - pad * 2) / Math.max(1, bb.w);
-    var sy = (rect.height - pad * 2) / Math.max(1, bb.h);
+    var ins = canvasInsets(rect);
+    var availW = Math.max(1, rect.width - ins.left - ins.right);
+    var availH = Math.max(1, rect.height - ins.top - ins.bottom);
+    var sx = availW / Math.max(1, bb.w);
+    var sy = availH / Math.max(1, bb.h);
     var scale = Math.min(2, Math.max(0.4, Math.min(sx, sy)));
     state.view.scale = scale;
-    state.view.x = pad - bb.minX * scale + (rect.width - pad * 2 - bb.w * scale) / 2;
-    state.view.y = pad - bb.minY * scale + (rect.height - pad * 2 - bb.h * scale) / 2;
+    state.view.x = ins.left - bb.minX * scale + (availW - bb.w * scale) / 2;
+    state.view.y = ins.top - bb.minY * scale + (availH - bb.h * scale) / 2;
     applyViewTransform();
   }
 
@@ -887,6 +960,40 @@
         lbl.style.top = (portY(node, p.id) - node.y - 9) + 'px';
         card.appendChild(lbl);
       }
+      // A FREE output port gets the circled `+` chip on a short connector stub —
+      // visible in six of the eight locked images (e.g. right of "Click Element
+      // #next-button" in shell-editor-click-ndv.webp). It is the fifth Add Node
+      // entry point and the only one that pre-wires a SPECIFIC branch port, so
+      // `else` / `catch` / `case:` can be extended without a drag.
+      //
+      // Only free ports get one: dropping a node on a port that is already
+      // connected would silently replace that connection, which is not what
+      // "add a node" means (same rule as openAddPaletteForSelection).
+      var portTaken = state.edges.some(function (e) {
+        return e.from === node.id && (e.port || 'next') === p.id;
+      });
+      if (!portTaken) {
+        var add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'flow-port-add port-' + p.id.replace(/[^a-z0-9]+/gi, '-');
+        add.setAttribute('data-port', p.id);
+        add.title = t('fe.addFromPort');
+        add.setAttribute('aria-label', t('fe.addFromPort'));
+        add.innerHTML = IC('plus', 11);
+        add.style.top = (portY(node, p.id) - node.y - PORT_ADD_R) + 'px';
+        // The card's own mousedown starts a node drag; the chip must not.
+        add.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+        add.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          openAddPalette({
+            world: slotAfter(node.id),
+            from: { nodeId: node.id, port: p.id },
+            at: { x: ev.clientX, y: ev.clientY },
+          });
+        });
+        card.appendChild(add);
+      }
+
       // connection drag — start on THIS output port (carries its port id)
       po.addEventListener('mousedown', function (ev) {
         if (ev.button !== 0) return;
@@ -1151,8 +1258,15 @@
             } },
           { icon: 'braces', label: t('fe.copyNodeJson'),
             fn: function () { copyNodeJson(nodeId); } },
-          { icon: 'play', label: t('fe.runNode'),
-            disabled: true, hint: t('fe.runNodeSoon') },
+          // Item N: real per-node run. The row is enabled only when the node
+          // actually produces a step on the main chain; otherwise it renders
+          // disabled with the concrete reason, never a silent no-op.
+          (function () {
+            var why = runNodeBlockedReason(nodeId);
+            return { icon: 'play', label: t('fe.runNode'),
+              disabled: !!why, hint: why ? t(why) : t('fe.runNodeHint'),
+              fn: function () { runNode(nodeId); } };
+          })(),
         ];
       } },
       { sep: true },
@@ -1664,22 +1778,78 @@
   // Display title: designed nodes get a human name instead of the raw action id.
   // Human node names for the canvas card + NDV header, so both agree with the
   // designed screens (docs/uiux). Anything absent falls back to the raw action id.
+  /* Human name per catalog action.
+   *
+   * It covers ALL 50 actions on purpose. Every locked image labels its cards
+   * with product language — "Type Text", "Wait Element", "Extract Data" — while
+   * an unmapped action fell back to its raw id, so a seeded render showed
+   * `fill` / `wait` / `extract` on the canvas, in the OUTLINE and in the blocks
+   * palette. The fallback is kept for actions added later, and
+   * `tests/unit/palette-labels.test.ts` fails the moment the catalog grows a
+   * member this table does not name, in either dictionary. */
   var NODE_DISPLAY_NAMES = {
-    click: 'nk.clickElement',
-    if: 'nk.condition',
-    while: 'nk.whileLoop',
+    // navigation
+    goto: 'nk.openUrl',
+    wait: 'nk.wait',
     launch: 'nk.launchBrowser',
     'wait-element': 'nk.waitElement',
     delay: 'nk.delay',
+    'switch-frame': 'nk.switchFrame',
+    'switch-tab': 'nk.switchTab',
+    'close-tab': 'nk.closeTab',
     'close-browser': 'nk.closeBrowser',
+    'handle-dialog': 'nk.handleDialog',
+    // interaction
+    click: 'nk.clickElement',
+    dblclick: 'nk.doubleClick',
+    hover: 'nk.hover',
+    focus: 'nk.focusElement',
+    'mouse-move': 'nk.moveMouse',
+    'drag-drop': 'nk.dragDrop',
+    scroll: 'nk.scrollPage',
+    fill: 'nk.typeText',
+    type: 'nk.typeKeystrokes',
+    press: 'nk.pressKey',
+    select: 'nk.selectOption',
+    check: 'nk.checkBox',
+    uncheck: 'nk.uncheckBox',
+    upload: 'nk.uploadFile',
+    'remove-element': 'nk.removeElement',
+    'add-style': 'nk.injectCss',
+    // data
+    extract: 'nk.extractText',
     'extract-data': 'nk.extractData',
     'parse-json': 'nk.parseJson',
-    goto: 'nk.openUrl',
+    'export-data': 'nk.exportData',
+    screenshot: 'nk.screenshot',
+    download: 'nk.downloadFile',
+    attribute: 'nk.readAttribute',
+    variable: 'nk.setVariable',
+    // integration
+    cookie: 'nk.cookies',
+    clipboard: 'nk.clipboard',
+    notification: 'nk.notification',
+    log: 'nk.logMessage',
     'http-request': 'nk.httpRequest',
-    trigger_webhook: 'nk.webhookTrigger',
+    // flow
+    if: 'nk.condition',
+    switch: 'nk.switchCase',
+    loop: 'nk.loop',
+    foreach: 'nk.forEach',
+    while: 'nk.whileLoop',
+    try: 'nk.tryCatch',
+    stop_and_error: 'nk.stopAndError',
+    // triggers
     trigger_manual: 'nk.manualTrigger',
+    trigger_webhook: 'nk.webhookTrigger',
     trigger_schedule: 'nk.scheduleTrigger',
+    trigger_telegram: 'nk.telegramTrigger',
   };
+  /** Human name of an action id, falling back to the id itself. */
+  function actionLabel(actionId) {
+    var key = NODE_DISPLAY_NAMES[actionId];
+    return key ? t(key) : String(actionId);
+  }
   function ndvTitle(node) {
     var key = NODE_DISPLAY_NAMES[node.action];
     return key ? t(key) : nodeTitle(node);
@@ -1753,11 +1923,18 @@
     var runBtn = document.createElement('button');
     runBtn.className = 'ndv-run-btn';
     runBtn.innerHTML = '<span class="ndv-run-play">' + IC('play', 12) + '</span>' + esc(t('ndv.runNode'));
-    runBtn.addEventListener('click', function () {
-      closeNdv();
-      var r = document.getElementById('fe-run');
-      if (r) r.click();
-    });
+    // Item N. Until now this button said "Run node" and clicked #fe-run, i.e. it
+    // ran the WHOLE flow — a fake success, because it looked like it had done
+    // what it promised. It now runs the chain prefix ending at THIS node, or
+    // renders disabled with the reason it cannot.
+    var runWhy = runNodeBlockedReason(node.id);
+    runBtn.title = runWhy ? t(runWhy) : t('fe.runNodeHint');
+    if (runWhy) {
+      runBtn.disabled = true;
+      runBtn.setAttribute('aria-disabled', 'true');
+    } else {
+      runBtn.addEventListener('click', function () { runNode(node.id); });
+    }
     head.appendChild(runBtn);
     var closeBtn = document.createElement('button');
     closeBtn.className = 'ndv-close';
@@ -1965,11 +2142,100 @@
     return ids;
   }
 
+  /**
+   * The main chain restricted to the nodes that actually PRODUCE a step, i.e.
+   * every enabled node. This — not chainNodeIds() — is the id list a step index
+   * addresses, because graphToSteps() skips `disabled` nodes (08-HANDOFF § 2).
+   *
+   * Bug this fixes (09-HANDOFF § 3.1): run-panel.js paints results with
+   * `nodeIndex0 = stepIndex1 - 1`; resolving that through chainNodeIds() (which
+   * KEEPS disabled nodes) shifted every halo / NDV result / pin after a disabled
+   * node onto the wrong card.
+   */
+  function stepChainIds() {
+    return chainNodeIds().filter(function (id) {
+      var n = state && state.nodes ? state.nodes[id] : null;
+      return !!n && n.disabled !== true;
+    });
+  }
+
+  /**
+   * Inverse of stepChainIds(): the 0-based index of `nodeId` **in the serialized
+   * step list**, or -1 when the node has no step of its own (disabled, or not on
+   * the main chain at all). Item N needs the STEP index, because the prefix it
+   * sends is a literal slice of toSteps().
+   *
+   * Keep this adjacent to stepChainIds() so the two cannot drift apart.
+   */
+  function chainStepIndex(nodeId) {
+    return stepChainIds().indexOf(nodeId);
+  }
+
+  /**
+   * Why a node cannot be run on its own, as an i18n key — '' when it CAN.
+   * Both entry points (the context-menu row and the NDV header button) render
+   * from this single source so they can never disagree about the reason.
+   */
+  function runNodeBlockedReason(nodeId) {
+    var n = state && state.nodes ? state.nodes[nodeId] : null;
+    if (!n) return 'fe.runNodeBranch';
+    if (n.disabled === true) return 'fe.runNodeDisabled';
+    if (chainStepIndex(nodeId) < 0) return 'fe.runNodeBranch';
+    return '';
+  }
+
+  /** views.js rule: env_root is the admin key, not an automation user. */
+  function runUserId() {
+    var uid = API && API.getUserId ? API.getUserId() : '';
+    if (!uid || uid === 'env_root') return '0';
+    return uid;
+  }
+
+  /**
+   * Item N — execute the chain PREFIX ending at `nodeId` (09-HANDOFF § 2.1).
+   *
+   * A node can only be executed with REAL upstream data, so we send every
+   * enabled step from the trigger up to and including this one and let the
+   * server run them; the node under test is always the LAST step. Sending the
+   * lone step would leave its input empty and the OUTPUT column would show a
+   * lie, and calling API.runFlow() would file the partial run as a real
+   * execution — hence the dedicated `__runNode`-tagged endpoint.
+   */
+  function runNode(nodeId) {
+    if (runNodeBlockedReason(nodeId)) return false;   // guarded: row is disabled
+    var idx = chainStepIndex(nodeId);
+    var steps = toSteps().slice(0, idx + 1);
+    if (!steps.length) return false;
+    var uid = runUserId();
+    if (!uid) { if (U() && U().toast) U().toast(t('fe.needUserId'), 'error'); return false; }
+    setNodeStatus(nodeId, 'running');
+    API.runNode(uid, { steps: steps, nodeIndex: idx, headless: true })
+      .then(function (data) {
+        if (U() && U().toast) U().toast(t('fe.runNodeQueued'), 'ok');
+        var RP = window.RunPanel;
+        if (RP && RP.startJob) {
+          if (RP.open) RP.open();
+          RP.startJob({
+            userId: uid,
+            jobId: data.jobId,
+            apiKey: API.getKey ? API.getKey() : '',
+          });
+        }
+      })
+      .catch(function (err) {
+        setNodeStatus(nodeId, 'error');
+        if (U() && U().toast) {
+          U().toast(err && err.message ? err.message : String(err), 'error');
+        }
+      });
+    return true;
+  }
+
   function setNodeStatus(ref, status) {
     if (!state) return;
     var id = ref;
     if (typeof ref === 'number') {
-      var ids = chainNodeIds();
+      var ids = stepChainIds();
       id = ids[ref];
     }
     if (!id || !state.nodes[id]) return;
@@ -2429,9 +2695,14 @@
     var starred = !!paletteFavs[a.id];
     // The row is a button-like surface plus its own star toggle, so the star
     // is a real nested <button> rather than a click-position heuristic.
+    // The row shows the PRODUCT name ("Type Text"), like every locked image,
+    // and keeps the raw action id in the tooltip so nothing is lost for anyone
+    // who writes steps by hand. `data-action` still carries the id, so drag/drop
+    // and the tests address the row by id, not by label.
+    item.title = a.id;
     item.innerHTML = '<span class="pi-dot" aria-hidden="true"></span>' +
       '<span class="pi-icon">' + ICON(a.id) + '</span>' +
-      '<span class="pi-label">' + esc(a.id) + '</span>' +
+      '<span class="pi-label">' + esc(actionLabel(a.id)) + '</span>' +
       '<button type="button" class="pi-star' + (starred ? ' on' : '') + '"' +
         ' aria-pressed="' + (starred ? 'true' : 'false') +
         '" title="' + esc(t(starred ? 'pl.unfav' : 'pl.fav')) + '">' +
@@ -2839,6 +3110,7 @@
     var p = dom.palette;
     p.innerHTML = '';
     loadPaletteFavs();
+    hydrateViewPrefs();
     // Every group starts expanded on the first mount so the palette is not an
     // opaque wall of closed rows.
     if (!Object.keys(paletteOpen).length) {
@@ -3092,6 +3364,7 @@
   }
   function setPaletteCollapsed(on) {
     paletteCollapsed = !!on;
+    prefSet('fePaletteCollapsed', paletteCollapsed);
     applyPaletteCollapsed();
     // the canvas box changed width, so the minimap viewport rect is now stale
     renderMinimap();
@@ -3968,6 +4241,14 @@
     setNodeStatus: setNodeStatus,
     clearStatuses: clearStatuses,
 
+    // ---- Item N: per-node run ---------------------------------------------
+    // `chainStepIndex(nodeId)` is the node's index in toSteps() (-1 when it has
+    // no step); `runNode(nodeId)` executes the chain prefix ending there.
+    chainStepIndex: chainStepIndex,
+    stepChainIds: stepChainIds,
+    runNodeBlockedReason: runNodeBlockedReason,
+    runNode: runNode,
+
     // ---- Step 25: NDV per-node results (INPUT/OUTPUT columns) -------------
     // The live runner (Step 26) calls setNodeResults(nodeId, { input, output })
     // with arrays of WorkflowItem-shaped objects; the NDV re-renders if open.
@@ -3982,16 +4263,17 @@
     },
 
     // ---- Step 26: live run wiring by chain index --------------------------
-    // The live runner addresses nodes by their 0-based position in the main
-    // chain (chainNodeIds()). These helpers translate that to the internal
-    // nodeId so run-panel.js need not know about node identity.
+    // The live runner addresses nodes by their 0-based position in the STEP
+    // list, so these helpers resolve through stepChainIds() (enabled nodes
+    // only) — never chainNodeIds(), which keeps disabled nodes and would shift
+    // every index after one by one card (09-HANDOFF § 3.1).
     //
     // res = { output:[...items], meta:{ outputItemCount, inputItemCount,
     //         durationMs, status, error } }. Stores OUTPUT items for the NDV
     // and the meta that drives the on-node success/error badge.
     setNodeResultsByIndex: function (chainIndex0, res) {
       if (typeof chainIndex0 !== 'number') return;
-      var ids = chainNodeIds();
+      var ids = stepChainIds();
       var id = ids[chainIndex0];
       if (!id || !state.nodes[id]) return;
       res = res || {};
@@ -4010,21 +4292,21 @@
     // Select the chain node at a 0-based index and open its NDV.
     selectByChainIndex: function (chainIndex0) {
       if (typeof chainIndex0 !== 'number') return;
-      var ids = chainNodeIds();
+      var ids = stepChainIds();
       var id = ids[chainIndex0];
       if (!id || !state.nodes[id]) return;
       selectNode(id);
     },
     // Pin / unpin a chain node (0-based) — shows a 📌 on the card.
     pinByIndex: function (chainIndex0, on) {
-      var ids = chainNodeIds();
+      var ids = stepChainIds();
       var id = ids[chainIndex0];
       if (!id) return;
       if (on === false) delete nodePins[id]; else nodePins[id] = true;
       if (dom) renderNodes();
     },
     isPinnedByIndex: function (chainIndex0) {
-      var ids = chainNodeIds();
+      var ids = stepChainIds();
       var id = ids[chainIndex0];
       return !!(id && nodePins[id]);
     },
