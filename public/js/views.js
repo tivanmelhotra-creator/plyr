@@ -1578,7 +1578,9 @@
         var tone = isPort ? '' : olTone(r.action);
         var active = !isPort && sel && sel === r.nodeId;
         html += '<div class="fe-ol-row' + (isPort ? ' is-port' : '') +
-          (active ? ' is-active' : '') + '" role="treeitem"' +
+          (active ? ' is-active' : '') + (r.disabled ? ' is-off' : '') +
+          '" role="treeitem"' +
+          (r.disabled ? ' title="' + esc(t('fe.nodeDisabled')) + '"' : '') +
           ' data-depth="' + r.depth + '"' +
           (isPort ? ' data-port-key="' + esc(key) + '" aria-expanded="' + (collapsed ? 'false' : 'true') + '"'
                   : ' data-node="' + esc(r.nodeId) + '"') +

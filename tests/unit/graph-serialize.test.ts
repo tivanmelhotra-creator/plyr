@@ -20,7 +20,9 @@ import vm from 'node:vm';
 
 interface Edge { from: string; to: string; port?: string }
 interface ErrorPolicy { continueOnFail?: boolean; retryOnFail?: boolean; maxTries?: number; waitBetweenTriesMs?: number }
-interface Node { id: string; action: string; params?: Record<string, unknown>; x?: number; y?: number; errorPolicy?: ErrorPolicy }
+interface Node { id: string; action: string; params?: Record<string, unknown>; x?: number; y?: number; errorPolicy?: ErrorPolicy;
+  /** Item J annotations: `disabled` changes serialisation, `label` is a name. */
+  disabled?: boolean; label?: string }
 interface Graph { nodes: Record<string, Node>; edges: Edge[]; nextId?: number }
 interface Step { action: string; params?: Record<string, unknown>; condition?: any;
   then?: Step[]; else?: Step[]; steps?: Step[]; catch?: Step[]; finally?: Step[];
@@ -539,5 +541,91 @@ describe('graph-serialize — stepsToGraph pipeline layout', () => {
       },
     ];
     expect(GS.graphToSteps(GS.stepsToGraph(original))).toEqual(original);
+  });
+});
+
+/**
+ * Item J's `Disable` row. A disabled node is EDITOR state that changes what the
+ * backend receives, so the contract is asserted here (behaviourally) and not
+ * only in a source-shape guard:
+ *   - the node emits no step and the chain continues through its `next` port
+ *   - its missing required params can no longer fail validation (it never runs)
+ *   - it still WARNS, so a silently skipped node is discoverable
+ */
+describe('graph-serialize — disabled nodes (item J)', () => {
+  it('skips a disabled node and passes the chain through it', () => {
+    const g = graph(
+      [
+        { id: 'a', action: 'goto', params: { url: 'https://x.com' } },
+        { id: 'b', action: 'click', params: { selector: '.btn' }, disabled: true },
+        { id: 'c', action: 'type', params: { selector: '#q', text: 'hi' } },
+      ],
+      [
+        { from: 'start', to: 'a' },
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'c' },
+      ],
+    );
+    const steps = GS.graphToSteps(g);
+    expect(steps.map((s) => s.action)).toEqual(['goto', 'type']);
+  });
+
+  it('a disabled FIRST node still lets the rest of the flow serialise', () => {
+    const g = graph(
+      [
+        { id: 'a', action: 'goto', params: { url: 'https://x.com' }, disabled: true },
+        { id: 'b', action: 'click', params: { selector: '.btn' } },
+      ],
+      [{ from: 'start', to: 'a' }, { from: 'a', to: 'b' }],
+    );
+    expect(GS.graphToSteps(g).map((s) => s.action)).toEqual(['click']);
+  });
+
+  it('a disabled BRANCHING node drops its branches too (documented consequence)', () => {
+    const g = graph(
+      [
+        { id: 'i', action: 'if', params: { left: '1', operator: 'equals', right: '1' }, disabled: true },
+        { id: 't', action: 'click', params: { selector: '.t' } },
+        { id: 'n', action: 'goto', params: { url: 'https://after.example' } },
+      ],
+      [
+        { from: 'start', to: 'i' },
+        { from: 'i', to: 't', port: 'then' },
+        { from: 'i', to: 'n', port: 'next' },
+      ],
+    );
+    // The `then` child is only reachable THROUGH the skipped node, so it goes
+    // with it; the main chain continues at the `next` target.
+    expect(GS.graphToSteps(g).map((s) => s.action)).toEqual(['goto']);
+  });
+
+  it('warns about a disabled node instead of erroring on its params', () => {
+    const g = graph(
+      [{ id: 'a', action: 'goto', params: {}, disabled: true } as Node],
+      [{ from: 'start', to: 'a' }],
+    );
+    const res = GS.validateGraph(g);
+    expect(res.warnings.some((w) => w.code === 'disabled' && w.nodeId === 'a')).toBe(true);
+    expect(res.errors.filter((e) => e.nodeId === 'a')).toEqual([]);
+  });
+
+  it('an ENABLED node with the same missing params is still validated', () => {
+    const g = graph(
+      [{ id: 's', action: 'switch', params: {} }],
+      [{ from: 'start', to: 's' }],
+    );
+    const res = GS.validateGraph(g);
+    expect(res.errors.some((e) => e.code === 'switch-var' && e.nodeId === 's')).toBe(true);
+  });
+
+  it('outlineTree marks disabled rows so the OUTLINE can mirror the canvas', () => {
+    const g = graph(
+      [{ id: 'a', action: 'goto', params: {}, disabled: true, label: 'Login page' } as Node],
+      [{ from: 'start', to: 'a' }],
+    );
+    const outline = (GS as unknown as { outlineTree: (x: Graph) => any[] }).outlineTree(g);
+    const row = outline.find((r) => r.nodeId === 'a');
+    expect(row.disabled).toBe(true);
+    expect(row.label).toBe('Login page');
   });
 });
