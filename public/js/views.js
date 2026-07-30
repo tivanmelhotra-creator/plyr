@@ -941,8 +941,18 @@
             '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
             '<button class="fe-icobtn" id="fe-bell" title="' + esc(t('sh.notifications')) + '" aria-label="' + esc(t('sh.notifications')) + '">' + IC('bell', 15) + '</button>' +
             '<button class="fe-icobtn" id="fe-gear" title="' + esc(t('sh.settings')) + '" aria-label="' + esc(t('sh.settings')) + '">' + IC('settings', 15) + '</button>' +
-            '<span class="fe-avatar" id="fe-avatar" title="' + esc(t('sh.account')) + '">' + IC('user', 15) +
-              '<span class="fe-avatar-dot" aria-hidden="true"></span></span>' +
+            // Account menu. On the FULL-BLEED editor route the app header is
+            // hidden (app.js `FULLBLEED_ROUTES`), which took Language and
+            // Logout with it — so the avatar has to be a real menu, not the
+            // decorative <span> it used to be. Anything the avatar offers is
+            // wired to the shell's own handlers; nothing here is invented.
+            '<div class="fe-split fe-acct" id="fe-acct-wrap">' +
+              '<button class="fe-avatar" id="fe-avatar" type="button" aria-haspopup="menu"' +
+                ' aria-expanded="false" title="' + esc(t('sh.account')) + '"' +
+                ' aria-label="' + esc(t('sh.account')) + '">' + IC('user', 15) +
+                '<span class="fe-avatar-dot" aria-hidden="true"></span></button>' +
+              '<div class="fe-menu fe-menu-end" id="fe-acct-menu" role="menu" hidden></div>' +
+            '</div>' +
           '</div>' +
           // Breadcrumb + badge moved to a hairline second line so the tab strip
           // owns row one (the images never wrap the bar to two tall rows).
@@ -1420,6 +1430,43 @@
     }
     bindMenu(saveMenuBtn, saveMenu, renderSaveMenu);
 
+    // ---- Account ▾ (avatar) ----------------------------------------------
+    // The editor is full-bleed (`body.route-fullbleed`), so `.topbar` — which
+    // owned Language / Theme / Logout — is not on screen. Those three
+    // destinations move here instead of being dropped: an avatar that opens
+    // nothing, on the only screen where Logout is otherwise unreachable, would
+    // be exactly the fake-successful chrome the house rules forbid.
+    var acctBtn = root.querySelector('#fe-avatar');
+    var acctMenu = root.querySelector('#fe-acct-menu');
+    function renderAcctMenu() {
+      var U0 = U();
+      acctMenu.innerHTML =
+        menuItem(t('sh.settings'), 'settings', { act: 'settings' }) +
+        menuItem(t('settings.language'), 'globe', {
+          act: 'lang',
+          badge: (window.I18N && window.I18N.meta) ? window.I18N.meta().label : '',
+        }) +
+        '<div class="fe-mi-sep" role="separator"></div>' +
+        // Only offered when app.js actually exposed the session teardown.
+        // `power` (not a `log-out` glyph — the registry has no such key and
+        // `IC()` would silently fall back to a dot).
+        menuItem(t('nav.logout'), 'power', {
+          act: 'logout',
+          danger: true,
+          disabled: !(U0 && typeof U0.logout === 'function'),
+        });
+      acctMenu.querySelectorAll('[data-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var a = b.getAttribute('data-act');
+          closeMenus(false);
+          if (a === 'settings') { location.hash = '#/settings'; }
+          else if (a === 'lang') { if (window.I18N) window.I18N.toggle(); }
+          else if (a === 'logout') { if (U0 && U0.logout) U0.logout(); }
+        });
+      });
+    }
+    bindMenu(acctBtn, acctMenu, renderAcctMenu);
+
     // ---- Workflow tab strip (item A) ------------------------------------
     // Real data only: the mock names in the reference image (Login Flow /
     // Payment Flow / Instagram Bot / Scraper) must NEVER be hardcoded.
@@ -1571,6 +1618,9 @@
       // publishes its width as `--fe-ol-w`; the run-info strip and any other
       // start-anchored overlay offset off that instead of hardcoding a gap.
       if (olCanvas) olCanvas.classList.toggle('fe-ol-closed', !olOpen);
+      // The docked ACTIVITY LOG starts after this rail (full-bleed route), so
+      // the gutter it was measured against just changed.
+      if (FE.syncDock) FE.syncDock();
       if (olOpen) renderOutline();
     }
     var olCloseBtn = root.querySelector('#fe-ol-close');
@@ -1645,11 +1695,17 @@
     setOutlineOpen(true);
     refreshShell();
 
+    // The full-bleed route docks the ACTIVITY LOG against the canvas' start
+    // gutter, which is measured in px — so a window resize invalidates it.
+    var onWinResize = function () { if (FE.syncDock) FE.syncDock(); };
+    window.addEventListener('resize', onWinResize);
+
     // Tear-down: the editor view is re-rendered on every language switch and
     // route change, so a leaked document listener would stack up.
     root.__feShellCleanup = function () {
       if (offChange) offChange();
       if (offRun) offRun();
+      window.removeEventListener('resize', onWinResize);
       shellListeners.forEach(function (p) { document.removeEventListener(p[0], p[1]); });
       shellListeners = [];
     };

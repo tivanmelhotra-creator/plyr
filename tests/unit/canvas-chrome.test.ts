@@ -452,3 +452,98 @@ describe('canvas chrome — the CSS the JS toggles actually exists', () => {
     expect(block).toContain('.fe-mm-restore');
   });
 });
+
+/**
+ * FULL-BLEED EDITOR ROUTE (2026-07-30).
+ *
+ * `docs/uiux/state-empty-canvas.webp` shows the editor owning the whole
+ * viewport: no app sidebar, no "Visual Editor" page heading, its own top bar at
+ * y=0, the ACTIVITY LOG docked bottom-START *inside* the canvas and the MINIMAP
+ * as its bottom-END neighbour, with the status bar as the last row on screen.
+ *
+ * Three regressions are cheap to reintroduce and expensive to notice, so they
+ * are pinned here:
+ *   1. the route class must come from app.js' route table, not from a view;
+ *   2. the docked drawer must collapse by CLAMPING ITS HEIGHT — the site-wide
+ *      `translateY` collapse still PAINTS the hidden tail, which drew straight
+ *      over the status bar;
+ *   3. hiding `.topbar` removes Logout/Language, so the editor's avatar has to
+ *      be a real menu that offers them.
+ */
+describe('full-bleed editor route', () => {
+  const APP = readFileSync(join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+  const VIEWS = readFileSync(join(ROOT, 'public', 'js', 'views.js'), 'utf8');
+
+  it('the route table — not a view — decides what is full-bleed', () => {
+    expect(APP).toMatch(/var FULLBLEED_ROUTES\s*=\s*\[\s*'editor'\s*\]/);
+    expect(APP).toContain("classList.toggle('route-fullbleed'");
+    expect(APP).toContain('FULLBLEED_ROUTES.indexOf(route) !== -1');
+    // Logging out must clear it, or the login screen inherits the class.
+    const login = APP.slice(APP.indexOf('function showLogin'), APP.indexOf('function showApp'));
+    expect(login).toContain("classList.remove('route-fullbleed')");
+  });
+
+  it('the app chrome is dropped and the shell owns the viewport', () => {
+    const fb = CSS.slice(CSS.indexOf('FULL-BLEED EDITOR ROUTE'));
+    expect(fb).toContain('body.route-fullbleed .sidebar');
+    expect(fb).toContain('body.route-fullbleed .topbar');
+    expect(fb).toMatch(/body\.route-fullbleed \.fe-shell \{[^}]*height:\s*100vh/);
+    // The old `calc(100vh - 250px)` height and the drawer reserve both have to
+    // be neutralised, or the shell overflows the screen by exactly that much.
+    expect(fb).toMatch(/body\.route-fullbleed \.fe-shell \.fe-layout \{[^}]*height:\s*auto/);
+    expect(fb).toMatch(/body\.route-fullbleed \.fe-shell \{[^}]*padding-bottom:\s*0/);
+    // Nothing may sit after the status bar: the result block is re-ordered.
+    expect(fb).toContain('body.route-fullbleed #fe-result:empty');
+  });
+
+  it('the docked ACTIVITY LOG clips instead of sliding over the status bar', () => {
+    const idx = CSS.indexOf('body.route-fullbleed .run-panel {');
+    expect(idx).toBeGreaterThan(-1);
+    const block = CSS.slice(idx, CSS.indexOf('\n}', idx));
+    expect(block).toMatch(/transform:\s*none/);          // no translateY tail
+    expect(block).toMatch(/max-height:\s*var\(--rp-head-h\)/);
+    expect(block).toMatch(/overflow:\s*hidden/);
+    // It docks after the rails (measured) and above the status bar.
+    expect(block).toContain('var(--fe-dock-start');
+    expect(block).toContain('inset-block-end: var(--fe-sb-h)');
+    expect(CSS).toContain('body.route-fullbleed .run-panel.open { max-height: 46vh; }');
+  });
+
+  it('the gutter the drawer docks against is measured, never hardcoded', () => {
+    expect(FE).toContain('function publishDockGutter()');
+    expect(FE).toContain("setProperty('--fe-dock-start'");
+    expect(FE).toContain("getPropertyValue('--fe-ol-w')");
+    // Re-measured on every canvas-box change...
+    const mm = FE.slice(FE.indexOf('function renderMinimap()'));
+    expect(mm.slice(0, 600)).toContain('publishDockGutter()');
+    // ...including the OUTLINE rail, which lives in views.js.
+    expect(FE).toContain('syncDock: publishDockGutter');
+    expect(VIEWS).toContain('if (FE.syncDock) FE.syncDock();');
+  });
+
+  it('the minimap stacks [+]/[-]/Fit beside the map, as the image draws them', () => {
+    const wrap = FE.slice(FE.indexOf("wrap.className = 'fe-minimap-wrap'"));
+    const block = wrap.slice(0, wrap.indexOf('canvas.appendChild(wrap)'));
+    expect(block).toContain('fe-mm-body');
+    expect(block).toContain('fe-mm-zoom');
+    // The head keeps ONLY the title and the close control.
+    const head = block.slice(block.indexOf('fe-mm-head'), block.indexOf('fe-mm-body'));
+    expect(head).toContain('data-mm="close"');
+    expect(head).not.toContain('data-mm="in"');
+    // `Fit` is a word in the column, and it uses the SHORT label — the tooltip
+    // string ("Fit to screen") overflowed the 38px column.
+    expect(block).toContain("esc(t('fe.fitShort'))");
+    expect(I18N_SRC.match(/'fe\.fitShort'/g) || []).toHaveLength(2);
+    expect(CSS).toContain('.fe-mm-body {');
+    expect(CSS).toContain('.fe-mm-zoom {');
+  });
+
+  it('the avatar is a real Account menu, because .topbar is hidden', () => {
+    expect(VIEWS).toContain('id="fe-acct-menu"');
+    expect(VIEWS).toMatch(/id="fe-avatar"[\s\S]{0,120}aria-haspopup="menu"/);
+    expect(VIEWS).toContain('bindMenu(acctBtn, acctMenu, renderAcctMenu)');
+    // Logout is only offered when app.js really exposed the session teardown.
+    expect(VIEWS).toContain("disabled: !(U0 && typeof U0.logout === 'function')");
+    expect(APP).toContain('logout: doLogout');
+  });
+});

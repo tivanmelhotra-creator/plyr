@@ -1287,9 +1287,37 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .fe-mm-restore[hidden] { display: none; }
 .fe-mm-restore:hover { border-color: var(--primary); color: var(--primary); }
 
+/* Body = the map itself + the VERTICAL [+]/[-]/Fit column the refreshed image
+   stacks on its end edge (they used to be tiny icons in the header). */
+.fe-mm-body { display: flex; align-items: stretch; }
+.fe-mm-zoom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  width: 26px;
+  padding: 4px 0;
+  background: var(--surface-0);
+  border-inline-start: 1px solid var(--border);
+}
+/* `Fit` is spelled out in the image, so it is a word button, not a glyph. */
+.fe-mm-fit {
+  width: auto;
+  min-width: 22px;
+  padding: 0 3px;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .fe-minimap {
   position: relative;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 100px;
   background: var(--bg);
   overflow: hidden;
@@ -3562,11 +3590,19 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   position: relative;
   display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px;
+  padding: 0;
   border-radius: 50%;
   background: var(--bg-elev-2);
   border: 1px solid var(--border-strong);
   color: var(--text-dim);
+  cursor: pointer;
 }
+/* It is a real menu button now (the full-bleed route hides `.topbar`, so this
+   is where Logout / Language live), so it needs real affordances. */
+.fe-avatar:hover,
+.fe-avatar.open { color: var(--text); border-color: var(--primary); }
+.fe-avatar:focus-visible { outline: none; border-color: var(--primary); color: var(--primary); }
+.fe-acct { position: relative; display: inline-flex; }
 .fe-avatar-dot {
   position: absolute; bottom: -1px; inset-inline-end: -1px;
   width: 8px; height: 8px;
@@ -4213,4 +4249,133 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   .fe-layout.fe-pal-collapsed { grid-template-columns: 1fr; }
   /* ...and a vertical icon column would waste the full width it now has. */
   .pl-rail { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+}
+
+/* ============================================================================
+   FULL-BLEED EDITOR ROUTE — `body.route-fullbleed`
+   ----------------------------------------------------------------------------
+   `docs/uiux/state-empty-canvas.webp` (1672x941, the authoritative editor
+   reference) shows something the build did not: the editor has **no app
+   sidebar and no "Visual Editor" page heading**. Its OWN top bar starts at
+   y=0, the canvas fills everything below it, and the status bar closes the
+   screen. The ACTIVITY LOG is docked bottom-START *inside* the canvas with the
+   MINIMAP as its bottom-END neighbour — neither one covers the status bar.
+
+   The route is listed in `app.js#FULLBLEED_ROUTES`, which toggles this class.
+   Nothing here is editor-specific beyond the selectors: adding another
+   full-bleed route only needs that array plus a view that re-exposes whatever
+   chrome destinations `.topbar` owned (see the avatar Account menu in
+   views.js — hiding the header otherwise takes Logout and Language with it).
+   ========================================================================= */
+body.route-fullbleed {
+  /* Bottom-dock geometry. `--fe-dock-start` is MEASURED and published by
+     flow-editor.js#publishDockGutter() because the drawer is a body-level
+     `position: fixed` singleton and cannot see the nested rails' widths. */
+  --fe-mm-w: clamp(220px, 30vw, 460px);
+  --fe-dock-gap: 12px;
+  --fe-sb-h: 28px;
+}
+
+/* 1. Drop the app chrome. */
+body.route-fullbleed .sidebar,
+body.route-fullbleed .topbar { display: none; }
+body.route-fullbleed .app { grid-template-columns: 1fr; }
+body.route-fullbleed .content { padding: 0; overflow: hidden; }
+
+/* 2. The shell owns the viewport: top bar / canvas / status bar, in flow. */
+body.route-fullbleed .fe-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  padding-bottom: 0;   /* no drawer reserve: the dock now sits ABOVE the bar */
+}
+body.route-fullbleed .fe-shell .fe-topbar {
+  flex: 0 0 auto;
+  border-top: 0;
+  border-inline: 0;
+  border-radius: 0;
+}
+body.route-fullbleed .fe-shell .fe-layout {
+  flex: 1 1 auto;
+  height: auto;        /* was calc(100vh - 250px) — the shell measures it now */
+  min-height: 0;
+  margin-top: 0;
+  border-inline: 0;
+  border-radius: 0;
+}
+/* The status bar is the LAST row of the screen; the JSON/result block, which is
+   emitted after it in the DOM, is re-ordered above it instead of being pushed
+   off-screen. `:empty` keeps it out of the layout in the normal case, so this
+   costs nothing until an export or a run actually prints something. */
+body.route-fullbleed .fe-shell .fe-layout { order: 2; }
+body.route-fullbleed #fe-result {
+  order: 3;
+  flex: 0 0 auto;
+  max-height: 34vh;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+body.route-fullbleed #fe-result:empty { display: none; }
+body.route-fullbleed .fe-statusbar {
+  order: 4;
+  flex: 0 0 auto;
+  height: var(--fe-sb-h);
+  border-inline: 0;
+  border-bottom: 0;
+  border-radius: 0;
+}
+/* The design has nothing after the status bar; the drag hint is duplicated by
+   the empty-state card that owns the same message. */
+body.route-fullbleed .fe-hint { display: none; }
+
+/* 3. ACTIVITY LOG docked bottom-START, clear of both the rails and the bar.
+      COLLAPSE MECHANISM DIFFERS ON PURPOSE. Site-wide the drawer collapses by
+      sliding itself off the bottom edge (`translateY(100% - head)`), which is
+      free — but a translated box still PAINTS below its offset parent, so on
+      this route the hidden tail was drawn straight over the status bar. Here it
+      collapses by clamping its own height instead, so `overflow: hidden` really
+      does clip it and the status bar stays the last thing on screen. */
+body.route-fullbleed .run-panel {
+  inset-inline-start: calc(var(--fe-dock-start, 0px) + var(--fe-dock-gap));
+  inset-inline-end: calc(var(--fe-mm-w) + 24px + var(--fe-dock-gap));
+  inset-block-end: var(--fe-sb-h);
+  transform: none;
+  max-height: var(--rp-head-h);
+  transition: max-height var(--transition);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  overflow: hidden;
+}
+body.route-fullbleed .run-panel.open { max-height: 46vh; }
+
+/* 4. MINIMAP as the dock's END neighbour — the design draws it much larger
+      than the 180x100 chip, with [+]/[-]/Fit stacked on its end edge. */
+body.route-fullbleed .fe-minimap-wrap {
+  width: var(--fe-mm-w);
+  inset-block-end: var(--fe-dock-gap);
+  inset-inline-end: var(--fe-dock-gap);
+}
+body.route-fullbleed .fe-minimap { height: clamp(96px, 18vh, 176px); }
+body.route-fullbleed .fe-mm-zoom { width: 38px; gap: 4px; }
+body.route-fullbleed .fe-mm-btn { width: 24px; height: 24px; }
+body.route-fullbleed .fe-mm-restore {
+  inset-block-end: var(--fe-dock-gap);
+  inset-inline-end: var(--fe-dock-gap);
+}
+
+@media (max-width: 980px) {
+  /* Too narrow to sit the log and the map side by side: the log spans the
+     screen again and the map shrinks back to a chip. */
+  body.route-fullbleed {
+    --fe-mm-w: 180px;
+  }
+  body.route-fullbleed .run-panel {
+    inset-inline-start: 0;
+    inset-inline-end: 0;
+    border-inline: 0;
+    border-radius: 0;
+  }
+  body.route-fullbleed .fe-minimap { height: 96px; }
 }

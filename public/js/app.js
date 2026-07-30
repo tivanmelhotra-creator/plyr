@@ -82,6 +82,7 @@
   // ---------------------------------------------
   function showLogin() {
     stopHealthPolling();
+    document.body.classList.remove('route-fullbleed');
     el.app.hidden = true;
     el.loginScreen.hidden = false;
     el.apiKeyInput.value = '';
@@ -238,6 +239,18 @@
     schedules: 'workspace',
     quota: 'settings',
   };
+
+  /**
+   * Routes that own the whole viewport. The design images for the editor
+   * (`docs/uiux/state-empty-canvas.webp`) show NO app sidebar and NO page
+   * heading — the editor's own top bar starts at y=0 and its status bar closes
+   * the screen. A route listed here gets `body.route-fullbleed`; the stylesheet
+   * hides `.sidebar` / `.topbar` and lets the view fill `100vh`.
+   *
+   * Only add a route here if its view re-exposes the chrome's destinations
+   * itself, otherwise the hidden header takes Logout / Language with it.
+   */
+  var FULLBLEED_ROUTES = ['editor'];
 
   // Legacy hashes kept working so bookmarks and in-app links from before the
   // architecture change do not 404 into the default route.
@@ -405,6 +418,17 @@
     // page title
     el.pageTitle.setAttribute('data-i18n', 'nav.' + route);
     el.pageTitle.textContent = I18N.t('nav.' + route);
+
+    // FULL-BLEED ROUTES. `docs/uiux/state-empty-canvas.webp` puts the editor's
+    // OWN top bar at y=0 and its status bar at the very bottom of the screen:
+    // there is no app sidebar and no "Visual Editor" page heading in the design
+    // at all, because the editor is a workspace, not a page inside one. Rather
+    // than duplicating the shell chrome, the route drops it — one body class the
+    // stylesheet keys off (`body.route-fullbleed`, styles.css § Full-bleed).
+    // The editor's own bar re-exposes every destination the hidden chrome owned
+    // (Home / Workspace links, gear, and the account menu below), so nothing
+    // becomes unreachable.
+    document.body.classList.toggle('route-fullbleed', FULLBLEED_ROUTES.indexOf(route) !== -1);
 
     // close mobile sidebar + the launcher panel
     el.sidebar.classList.remove('open');
@@ -582,6 +606,10 @@
     // Latest /health payload, or null when unknown. Paired with the
     // `health:change` document event above.
     health: function () { return lastHealth; },
+    // The full-bleed editor hides the app header, so its own account menu has
+    // to be able to end the session. Exposed rather than re-implemented: two
+    // logout paths would drift (one clearing `ab_session_only`, one not).
+    logout: doLogout,
   };
 
   // ---------------------------------------------

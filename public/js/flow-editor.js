@@ -448,6 +448,32 @@
   }
 
   // ---- Rendering ------------------------------------------------------------
+  /**
+   * Publish the canvas' START gutter (everything before the free canvas area:
+   * the app edge, the BLOCKS rail, then the OUTLINE rail) as `--fe-dock-start`
+   * on the document element.
+   *
+   * WHY a custom property and not plain CSS: `docs/uiux/state-empty-canvas.webp`
+   * docks the ACTIVITY LOG *inside* the canvas, to the end of both rails — but
+   * the drawer is a body-level `position: fixed` singleton (it is shared with
+   * the Workspace view), so it cannot see how wide a nested rail happens to be,
+   * and the rails have four different widths (240/64/0 palette x 236/26
+   * outline). Measuring once per transform and publishing the result is the only
+   * honest way to line the two up; the value is DERIVED every time, never
+   * stored, and no layout depends on it outside `body.route-fullbleed`.
+   */
+  function publishDockGutter() {
+    if (!dom || !dom.canvas) return;
+    var rect = dom.canvas.getBoundingClientRect();
+    var cs = getComputedStyle(dom.canvas);
+    var olw = parseFloat(cs.getPropertyValue('--fe-ol-w')) || 0;
+    // Logical (writing-direction aware) start edge, so RTL docks on the right.
+    var rtl = (document.documentElement.getAttribute('dir') || '') === 'rtl';
+    var vw = document.documentElement.clientWidth || window.innerWidth || 0;
+    var start = rtl ? Math.max(0, vw - rect.right) : Math.max(0, rect.left);
+    document.documentElement.style.setProperty('--fe-dock-start', (start + olw) + 'px');
+  }
+
   function applyViewTransform() {
     var v = state.view;
     dom.world.style.transform =
@@ -548,6 +574,11 @@
 
   function renderMinimap() {
     if (!dom || !dom.minimap) return;
+    // Every caller of `renderMinimap` is exactly a "the canvas box may have
+    // changed" moment (transform, palette collapse, focus mode), which is also
+    // when the docked ACTIVITY LOG has to be re-measured. One hook, so the two
+    // cannot drift apart.
+    publishDockGutter();
     var mm = dom.minimap;
     var W = mm.clientWidth || 160, H = mm.clientHeight || 110;
     var bb = nodesBBox();
@@ -2248,6 +2279,7 @@
     applyPaletteCollapsed();
     // the canvas box changed width, so the minimap viewport rect is now stale
     renderMinimap();
+    publishDockGutter();
   }
 
   // ---- Canvas-level interactions (pan, box-select, drop, connection) --------
@@ -2566,17 +2598,30 @@
     // ---- F: minimap with a real header (bottom-end corner) -----------------
     var wrap = document.createElement('div');
     wrap.className = 'fe-minimap-wrap';
+    // Layout corrected 2026-07-30 against `state-empty-canvas.webp`: the head
+    // carries ONLY the title and the close [x], while [+] / [-] / Fit form a
+    // VERTICAL column on the map's end edge (the image stacks them there, with
+    // `Fit` spelled out as a word rather than drawn as an icon). The click
+    // handler below binds by `[data-mm]` across the whole wrapper, so moving a
+    // button between the head and the column cannot silently unbind it.
     wrap.innerHTML =
       '<div class="fe-mm-head">' +
         '<span class="fe-mm-title">' + IC('map') + '<span>' + esc(t('fe.minimap')) + '</span></span>' +
         '<span class="fe-mm-actions">' +
-          '<button class="fe-mm-btn" data-mm="out" title="' + esc(t('fe.zoomOut')) + '">' + IC('minus', 12) + '</button>' +
-          '<button class="fe-mm-btn" data-mm="in" title="' + esc(t('fe.zoomIn')) + '">' + IC('plus', 12) + '</button>' +
-          '<button class="fe-mm-btn" data-mm="fit" title="' + esc(t('fe.fit')) + '">' + IC('maximize', 12) + '</button>' +
           '<button class="fe-mm-btn fe-mm-close" data-mm="close" title="' + esc(t('fe.minimapHide')) + '">' + IC('x', 12) + '</button>' +
         '</span>' +
       '</div>' +
-      '<div class="fe-minimap"></div>';
+      '<div class="fe-mm-body">' +
+        '<div class="fe-minimap"></div>' +
+        '<span class="fe-mm-zoom" role="group" aria-label="' + esc(t('fe.canvasTools')) + '">' +
+          '<button class="fe-mm-btn" data-mm="in" title="' + esc(t('fe.zoomIn')) + '"' +
+            ' aria-label="' + esc(t('fe.zoomIn')) + '">' + IC('plus', 13) + '</button>' +
+          '<button class="fe-mm-btn" data-mm="out" title="' + esc(t('fe.zoomOut')) + '"' +
+            ' aria-label="' + esc(t('fe.zoomOut')) + '">' + IC('minus', 13) + '</button>' +
+          '<button class="fe-mm-btn fe-mm-fit" data-mm="fit" title="' + esc(t('fe.fit')) + '">' +
+            esc(t('fe.fitShort')) + '</button>' +
+        '</span>' +
+      '</div>';
     canvas.appendChild(wrap);
 
     // collapsed restore chip — hidden until the minimap is closed
@@ -2852,6 +2897,14 @@
     },
     /** Selected node id, so the outline can mirror the canvas selection. */
     getSelected: function () { return state ? state.selected : null; },
+    /**
+     * Re-measure the canvas' start gutter into `--fe-dock-start`. The shell
+     * calls this after collapsing the OUTLINE rail — that rail lives in
+     * views.js, so the editor cannot observe the change itself, and without the
+     * re-measure the docked ACTIVITY LOG would keep a 236px gap that is no
+     * longer there.
+     */
+    syncDock: publishDockGutter,
     /** Select a node AND bring it into view — the outline is a navigator (§ 6). */
     revealNode: function (nodeId) {
       if (!state || !state.nodes[nodeId]) return false;
