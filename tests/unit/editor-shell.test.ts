@@ -417,9 +417,120 @@ describe('item D — blocks palette', () => {
    * that would leave no room for the restore chip and strand the user.
    */
   it('the collapsed rail keeps a restore affordance', () => {
-    expect(CSS).toMatch(/\.fe-layout\.fe-pal-collapsed\s*\{\s*grid-template-columns:\s*44px 1fr/);
+    expect(CSS).toMatch(/\.fe-layout\.fe-pal-collapsed\s*\{\s*grid-template-columns:\s*64px 1fr/);
     expect(FE).toContain('function setPaletteCollapsed(');
     expect(FE).toContain("chip.className = 'pl-restore'");
+  });
+
+  /**
+   * ...and it is an ICON RAIL, not an empty gutter: the reference shell keeps
+   * every category glyph reachable while collapsed. A rail with only a restore
+   * button forces expand-then-hunt for a one-click destination the design has.
+   */
+  it('the collapsed rail lists the same real categories as the panel', () => {
+    expect(FE).toContain('function paletteRail()');
+    expect(FE).toContain("rail.className = 'pl-rail'");
+    expect(FE).toContain("b.className = 'pl-rail-btn'");
+    // Built from PALETTE_GROUPS, so the rail can never drift from the panel.
+    const rail = FE.slice(FE.indexOf('function paletteRail()'), FE.indexOf('function applyPaletteCollapsed()'));
+    expect(rail).toContain('PALETTE_GROUPS.forEach');
+    // Empty categories are skipped here too, and counts stay computed.
+    expect(rail).toContain('if (!members.length) return;');
+    expect(rail).toContain('members.length');
+    // Icon-only buttons must carry an accessible name.
+    expect(rail).toContain('aria-label');
+    // Clicking a glyph expands AND opens that row — not just expands.
+    expect(rail).toContain('paletteOpen[g.id] = true');
+    expect(rail).toContain('setPaletteCollapsed(false)');
+    ['.pl-rail', '.pl-rail-btn'].forEach((sel) => {
+      expect(CSS, `${sel} is emitted but never styled`).toContain(sel);
+    });
+    // Hiding by CSS (not rebuilding) is what preserves the search text.
+    expect(CSS).toContain('.fe-layout.fe-pal-collapsed > .fe-palette > *:not(.pl-rail)');
+  });
+
+  /**
+   * `.palette-item` is a <div> only because it HOSTS the star <button> (nested
+   * buttons are invalid HTML). Everything a real <button> supplied has to be
+   * re-supplied by hand, or blocks become mouse-only.
+   */
+  it('a block row is operable by keyboard', () => {
+    const item = FE.slice(FE.indexOf('function paletteItem(a)'), FE.indexOf('var PALETTE_GROUPS = ['));
+    expect(item).toContain("item.setAttribute('role', 'button')");
+    expect(item).toContain("item.setAttribute('tabindex', '0')");
+    // Enter AND Space, because both activate a button.
+    expect(item).toMatch(/ev\.key !== 'Enter' && ev\.key !== ' '/);
+    expect(item).toContain('placeNewNode(a.id)');
+    // Space scrolls the list unless the default is suppressed.
+    expect(item).toContain('ev.preventDefault()');
+    // Keys pressed while the nested star has focus must not ALSO drop a node.
+    expect(item).toContain('if (ev.target !== item) return;');
+    // A <div> has no default focus ring, so focus must be styled.
+    expect(CSS).toContain('.palette-item:focus-visible');
+    // ...and the star has to become VISIBLE when the row is focused, otherwise
+    // the next Tab stop is an invisible control.
+    expect(CSS).toContain('.palette-item:focus-within .pi-star');
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+/**
+ * The status bar's `Environment` cell used to render a hardcoded
+ * `t('sb.envDev')` with a GREEN dot — on a production deployment the bar
+ * cheerfully claimed "Development". A read-only telemetry cell that cannot be
+ * wrong is the whole point, so its value now comes from `/health` and the wiring
+ * is pinned end to end: route -> app.js -> views.js.
+ */
+describe('status bar — the Environment cell tells the truth', () => {
+  const HEALTH = readFileSync(join(ROOT, 'src', 'Routes', 'health.routes.ts'), 'utf8');
+
+  it('the server actually reports env and mode', () => {
+    expect(HEALTH).toContain('env: config.NODE_ENV');
+    expect(HEALTH).toContain('mode: config.DEPLOYMENT_MODE');
+  });
+
+  it('app.js keeps the payload and announces changes', () => {
+    expect(APP).toContain('var lastHealth = null');
+    expect(APP).toContain("document.dispatchEvent(new CustomEvent('health:change'");
+    expect(APP).toMatch(/health: function \(\) \{ return lastHealth; \}/);
+    // A failed probe must CLEAR it: a cached `production` badge beside an
+    // OFFLINE indicator is worse than no badge.
+    const fail = APP.slice(APP.indexOf("setSysIndicator('bad'"), APP.indexOf('function startHealthPolling'));
+    expect(fail).toContain('setHealth(null)');
+  });
+
+  it('views.js renders the reported value, or an explicit dash', () => {
+    const cell = VIEWS.slice(VIEWS.indexOf('function environmentCell()'), VIEWS.indexOf('function refreshStatusBar()'));
+    expect(cell.length).toBeGreaterThan(100);
+    expect(cell).toContain('U().health()');
+    // unknown -> a dash and a NEUTRAL dot, never a green guess
+    expect(cell).toMatch(/statusCell\(t\('sb\.environment'\), '—', 'idle'\)/);
+    // green only for a real production report
+    expect(cell).toContain("env.toLowerCase() === 'production' ? 'good' : 'idle'");
+    // an unmapped env name is printed verbatim rather than guessed at
+    expect(cell).toContain('key ? t(key) : env');
+    // the old hardcode must never come back
+    const bar = VIEWS.slice(VIEWS.indexOf('function statusCell('), VIEWS.indexOf('function refreshWfLabel()'));
+    expect(bar).not.toMatch(/statusCell\(t\('sb\.environment'\), t\('sb\.envDev'\)/);
+    // ...and the cell has to follow the 10s poll, without leaking a listener
+    expect(VIEWS).toContain("onDoc('health:change', refreshStatusBar)");
+  });
+
+  it('never renders the mock version string from the preview image', () => {
+    // `Version 1.3.7` in the reference is a mock; the real value is the open
+    // workflow's version, and `unsaved` when there is none. The figure may
+    // appear in a COMMENT (it documents the image's reading order) but never as
+    // a string literal that could reach the DOM.
+    expect(VIEWS.replace(/^\s*\/\/.*$/gm, '')).not.toContain('1.3.7');
+    expect(VIEWS).toContain("cur && cur.version ? 'v' + cur.version : t('sb.unsaved')");
+  });
+
+  it('every sb.* key exists in both dictionaries', () => {
+    // Three shapes: `t('sb.x')`, the `t(cond ? 'sb.on' : 'sb.off')` ternary, and
+    // the ENV_LABEL table, whose values are bare key strings.
+    const keys = new Set<string>([...VIEWS.matchAll(/'(sb\.[A-Za-z]+)'/g)].map((m) => m[1]));
+    expect(keys.size).toBeGreaterThanOrEqual(12);
+    keys.forEach(expectKeyInBothDicts);
   });
 });
 

@@ -99,6 +99,14 @@ reference. The editor-shell items A–E are complete; see
 `04-HANDOFF-editor-shell-outline-activity.md` for what each landed as and for the
 decisions taken where the image described something the backend does not have.
 
+**Current status doc: `06-HANDOFF-visual-verification-a11y-statusbar.md`** — it
+supersedes `05-HANDOFF-palette-docs-followups.md`, records the palette a11y pass,
+the collapsed icon rail, the minimap fix and the real `/health`-backed status bar,
+and — most usefully — documents the **working headless-browser harness**
+(`tools/ui-preview-server.js` + `tools/ui-shot.js`) that makes the UI verifiable
+instead of assumed. The only remaining editor backlog is items **H / I / J / N**
+of `04-HANDOFF` § 9.
+
 Guard tests for this work: `tests/unit/editor-shell.test.ts` (top bar incl. the
 six legacy ids, split menus, OUTLINE derivation, palette grouping + computed
 counts, footer routes, ACTIVITY LOG contracts) and

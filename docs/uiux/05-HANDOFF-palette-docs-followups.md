@@ -2,9 +2,15 @@
 
 > **Written:** 2026-07-29 · **Branch:** `genspark_ai_developer` · **Base:** `origin/main` @ `1ed4e8d`
 > **Audience:** the next session, which starts with **ZERO chat history**.
-> Read this file top-to-bottom BEFORE touching code. It supersedes
-> `04-HANDOFF-editor-shell-outline-activity.md` for *status*; that file is still
-> the best source for *file/line anchors* and for the substrate API.
+>
+> **⚠️ SUPERSEDED FOR STATUS (2026-07-30) by
+> `06-HANDOFF-visual-verification-a11y-statusbar.md`.** F1, F2, F3 and F5 below
+> are **DONE** — read `06` for what actually shipped, for the (now working)
+> headless-browser harness, and for the remaining backlog. Everything in § 1–§ 4
+> of this file is still accurate and still binding.
+>
+> It supersedes `04-HANDOFF-editor-shell-outline-activity.md` for *status*; that
+> file is still the best source for *file/line anchors* and for the substrate API.
 >
 > **Why this file exists:** the session ran out of credit budget mid-way through
 > the documentation pass. Items A–E are complete and committed, but a handful of
@@ -25,7 +31,9 @@
 | — canvas chrome relocated to **TOP-END** + labelled pill row | ✅ **DONE** |
 | — guard test `tests/unit/editor-shell.test.ts` (32 tests) | ✅ **DONE** |
 | — docs updated (`state-empty-canvas.md` rewritten, `shell-editor-launcher-menu.md` § 5, `README.md`, `04-HANDOFF` § 0/6.1/7) | ✅ **DONE** |
-| Follow-ups F1–F6 | ❌ **TODO** — see § 5 |
+| Follow-ups F1, F2, F3, F5 | ✅ **DONE 2026-07-30** — see `06-HANDOFF` |
+| Follow-up F4 | ⛔ **DEFERRED BY DESIGN** |
+| Follow-up F6 (items H / I / J / N) | ❌ **TODO** — the only remaining chunk |
 
 **Verification at the time of writing:**
 - `npx vitest run` → **35 files / 647 tests passed**
@@ -201,7 +209,14 @@ Both guards were **mutation-tested**: changing a route to `#/docs` and renaming
 Nothing here is blocking; the build is green and the UI works. These are the
 loose ends the credit budget cut short.
 
-### F1 — verify the palette visually (LOW effort, do this first)
+### F1 — verify the palette visually (LOW effort, do this first) — ✅ DONE
+> **DONE 2026-07-30.** The claim below is **WRONG**: `sudo -n` works, so
+> `sudo npx playwright install-deps chromium` installs the browser libs and real
+> screenshots are possible. See `06-HANDOFF` § 2 for the harness
+> (`tools/ui-preview-server.js` + `tools/ui-shot.js`) and § 3 for the four
+> defects the screenshots exposed (collapsed rail, minimap, drawer overlap,
+> empty-card centring).
+
 No screenshot was ever taken of the finished palette. Playwright is installed
 but the **sandbox lacks the browser system libs** (`sudo npx playwright
 install-deps` is not available). What *does* work:
@@ -219,12 +234,12 @@ on hover, the footer, and `Collapse` → restore.
 scrolls. If the rail's height is not constrained by `.fe-layout` in some viewport,
 the footer could be pushed out of view. Check at ~700px height.
 
-### F2 — `pi-star` keyboard reachability (SMALL)
+### F2 — `pi-star` keyboard reachability (SMALL) — ✅ DONE 2026-07-30
 `.pi-star` is `opacity: 0` until `.palette-item:hover`. There is a
 `.pi-star:focus-visible { opacity: 1 }` rule, but tab order through 50 rows was
 never exercised. Consider making the star visible when its row has focus-within.
 
-### F3 — `.palette-item` is now a `<div>` (SMALL, a11y)
+### F3 — `.palette-item` is now a `<div>` (SMALL, a11y) — ✅ DONE 2026-07-30
 It changed from `<button>` to `<div>` so the nested star button is legal HTML.
 It kept its click handler but **lost implicit button semantics**. Add
 `role="button"` + `tabindex="0"` + an Enter/Space handler, or reshape the markup
@@ -237,7 +252,10 @@ Slack, Notion, …). The `integration` category has **five** real actions
 `04-HANDOFF` § 6 params table already marks this **level C — later**. Do not
 invent them.
 
-### F5 — status bar values (DEFERRED)
+### F5 — status bar values (DEFERRED) — ✅ DONE 2026-07-30
+> `Environment` now comes from `/health` (`env` = `NODE_ENV`, `mode` =
+> `DEPLOYMENT_MODE`) and renders `—` when unknown; `Version` was already the open
+> workflow's real version. `1.3.7` is still banned, now by a test.
 `shell-editor-launcher-menu.md` § 5 describes a status bar
 (`Version 1.3.7 · Auto-save enabled · Last saved · Workflow ID · Environment`).
 `Version` and `Environment` have **no real source**; `package.json` is

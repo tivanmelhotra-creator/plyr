@@ -526,6 +526,26 @@
   }
 
   // ---- Minimap --------------------------------------------------------------
+  //
+  // WHY THIS IS NOT A PLAIN "fit the nodes" BOX.
+  //
+  // Framing only `nodesBBox()` looks right on a busy graph and absurd on a
+  // small one. A fresh workflow holds a single 180x64 node, so the fit resolves
+  // to a scale near 0.8: the map renders ONE ~148x52 slab of solid category
+  // colour that fills the whole panel, and the viewport rectangle lands outside
+  // the visible area. A minimap that cannot show where you are is worse than no
+  // minimap, so two corrections are applied together:
+  //
+  //   1. the framed region is the UNION of the node bbox and the CURRENT
+  //      viewport — "you are here" is therefore always inside the picture; and
+  //   2. the scale is capped, so the map always reads as a miniature no matter
+  //      how few nodes exist.
+  //
+  // The cap is deliberately loose (a 180px node still becomes ~25px wide, wide
+  // enough to see its colour) and in practice only binds when both the graph
+  // and the canvas viewport are tiny.
+  var MM_MAX_SCALE = 0.14;
+
   function renderMinimap() {
     if (!dom || !dom.minimap) return;
     var mm = dom.minimap;
@@ -535,11 +555,21 @@
     while (mm.firstChild) mm.removeChild(mm.firstChild);
     if (!bb) return;
     var pad = 12;
-    var scale = Math.min((W - pad) / Math.max(1, bb.w), (H - pad) / Math.max(1, bb.h));
-    var offX = (W - bb.w * scale) / 2;
-    var offY = (H - bb.h * scale) / 2;
-    function mapX(x) { return offX + (x - bb.minX) * scale; }
-    function mapY(y) { return offY + (y - bb.minY) * scale; }
+    // The visible canvas expressed in world coordinates.
+    var rect = dom.canvas.getBoundingClientRect();
+    var v = state.view;
+    var vs = v.scale || 1;
+    var vw = (rect.width || 1) / vs, vh = (rect.height || 1) / vs;
+    var vx = (-v.x) / vs, vy = (-v.y) / vs;
+    // frame = union(nodes, viewport)
+    var fx = Math.min(bb.minX, vx), fy = Math.min(bb.minY, vy);
+    var fw = Math.max(1, Math.max(bb.maxX, vx + vw) - fx);
+    var fh = Math.max(1, Math.max(bb.maxY, vy + vh) - fy);
+    var scale = Math.min((W - pad) / fw, (H - pad) / fh, MM_MAX_SCALE);
+    var offX = (W - fw * scale) / 2;
+    var offY = (H - fh * scale) / 2;
+    function mapX(x) { return offX + (x - fx) * scale; }
+    function mapY(y) { return offY + (y - fy) * scale; }
 
     Object.keys(state.nodes).forEach(function (id) {
       var n = state.nodes[id];
@@ -554,11 +584,8 @@
       mm.appendChild(dot);
     });
 
-    // viewport rectangle (the visible canvas area mapped into world coords)
-    var rect = dom.canvas.getBoundingClientRect();
-    var v = state.view;
-    var vx = (-v.x) / v.scale, vy = (-v.y) / v.scale;
-    var vw = rect.width / v.scale, vh = rect.height / v.scale;
+    // viewport rectangle — same world-space box the frame was built from, so it
+    // can never be clipped away by the fit.
     var vp = document.createElement('div');
     vp.className = 'mm-viewport';
     vp.style.left = mapX(vx) + 'px';
@@ -1845,6 +1872,15 @@
     item.className = 'palette-item';
     item.setAttribute('data-action', a.id);
     item.setAttribute('draggable', 'true');
+    // A <div> was chosen so the row can HOST the star <button> (nested buttons
+    // are invalid HTML), but that loses everything a <button> gave for free.
+    // Handing the semantics back explicitly, because dropping a block on the
+    // canvas must not require a mouse:
+    //   role=button   -> assistive tech announces it as activatable
+    //   tabindex=0    -> it is in the tab order at all
+    //   Enter/Space   -> the keys a button would have handled itself
+    item.setAttribute('role', 'button');
+    item.setAttribute('tabindex', '0');
     item.style.setProperty('--cat-color', cat.color);
     var starred = !!paletteFavs[a.id];
     // The row is a button-like surface plus its own star toggle, so the star
@@ -1858,6 +1894,14 @@
         IC('star', 12) + '</button>';
     item.addEventListener('click', function (ev) {
       if (ev.target && ev.target.closest && ev.target.closest('.pi-star')) return;
+      placeNewNode(a.id);
+    });
+    item.addEventListener('keydown', function (ev) {
+      // The star is a real <button>: it turns Enter/Space into its own `click`,
+      // so those keys must not ALSO drop a node while the star holds focus.
+      if (ev.target !== item) return;
+      if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+      ev.preventDefault();            // Space would otherwise scroll the list
       placeNewNode(a.id);
     });
     var star = item.querySelector('.pi-star');
@@ -2140,24 +2184,63 @@
   }
 
   // ---- palette collapse (the footer `Collapse` control) ---------------------
+  //
+  // Collapsed is NOT an empty gutter with one restore button. The reference
+  // shell keeps a narrow ICON RAIL: every category glyph stays visible and
+  // clickable, plus a `»` chip that brings the full panel back. Clicking a
+  // glyph does the obvious thing — expand, and open that row.
+  //
+  // The rail is a SEPARATE element and the real palette is merely hidden by CSS,
+  // so collapsing still never loses the search text or the open-group set.
+  function paletteRail() {
+    var rail = document.createElement('div');
+    rail.className = 'pl-rail';
+    var chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'pl-restore';
+    chip.title = t('pl.expand');
+    chip.setAttribute('aria-label', t('pl.expand'));
+    chip.innerHTML = IC('chevron-right', 14);
+    chip.addEventListener('click', function () { setPaletteCollapsed(false); });
+    rail.appendChild(chip);
+
+    PALETTE_GROUPS.forEach(function (g) {
+      var members = ACTIONS.filter(function (a) { return (a.cat || 'other') === g.id; });
+      if (!members.length) return;     // same rule as the expanded list
+      var cat = (CAT.categoryById && CAT.categoryById(g.id)) ||
+        { color: '#6b7280', label: 'cat.other' };
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'pl-rail-btn';
+      b.setAttribute('data-group', g.id);
+      // An icon-only control needs a name, and its count comes from the real
+      // members — the rail must not become a second place that can lie.
+      var name = t(cat.label) + ' · ' + members.length;
+      b.title = name;
+      b.setAttribute('aria-label', name);
+      b.style.setProperty('--cat-color', cat.color);
+      b.innerHTML = IC(g.icon, 15);
+      b.addEventListener('click', function () {
+        paletteOpen[g.id] = true;
+        setPaletteCollapsed(false);
+        renderPaletteList();
+        var head = dom.palette.querySelector('.palette-group-head[data-group="' + g.id + '"]');
+        if (head && head.scrollIntoView) head.scrollIntoView({ block: 'nearest' });
+      });
+      rail.appendChild(b);
+    });
+    return rail;
+  }
+
   function applyPaletteCollapsed() {
     if (!dom || !dom.palette) return;
     var shell = dom.palette.closest ? dom.palette.closest('.fe-layout') : null;
     if (shell) shell.classList.toggle('fe-pal-collapsed', paletteCollapsed);
-    // A collapsed rail keeps ONE affordance: the restore button. Rebuilding the
-    // whole palette would lose the search text and the open-group set.
-    var chip = dom.palette.querySelector('.pl-restore');
-    if (paletteCollapsed && !chip) {
-      chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'pl-restore';
-      chip.title = t('pl.expand');
-      chip.setAttribute('aria-label', t('pl.expand'));
-      chip.innerHTML = IC('panel-left', 14);
-      chip.addEventListener('click', function () { setPaletteCollapsed(false); });
-      dom.palette.appendChild(chip);
-    } else if (!paletteCollapsed && chip) {
-      chip.parentNode.removeChild(chip);
+    var rail = dom.palette.querySelector('.pl-rail');
+    if (paletteCollapsed && !rail) {
+      dom.palette.appendChild(paletteRail());
+    } else if (!paletteCollapsed && rail) {
+      rail.parentNode.removeChild(rail);
     }
   }
   function setPaletteCollapsed(on) {
