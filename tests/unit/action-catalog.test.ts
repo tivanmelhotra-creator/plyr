@@ -231,3 +231,92 @@ describe('action catalog — Step 32 backend/UI sync (Single Source of Truth)', 
     expect(badCanonicals, `alias canonical ids missing from catalog: ${badCanonicals.join(', ')}`).toEqual([]);
   });
 });
+
+/**
+ * Every locked design labels its cards with PRODUCT language — "Type Text",
+ * "Wait Element", "Extract Data" — never the internal action id. flow-editor.js
+ * resolves that label through `NODE_DISPLAY_NAMES[action] -> t(key)`, with the
+ * raw id as a deliberate fallback for actions added later.
+ *
+ * Two silent failure modes made a seeded render read `fill` / `wait` / `extract`
+ * on the canvas, in the OUTLINE and in the blocks palette:
+ *   1. the action had no entry in NODE_DISPLAY_NAMES  -> fallback to the raw id;
+ *   2. the entry pointed at an i18n key missing from a dictionary -> `t()` returns
+ *      the key itself, so the card read `nk.typeText`. Because `t()` falls back
+ *      fa -> en -> key, an en-only key ALSO leaked English into Persian, which no
+ *      runtime assertion can see.
+ * Both are structural, so both are pinned here.
+ */
+describe('node display names — product language, in both dictionaries', () => {
+  const FE_SRC = readFileSync(join(__dirname, '..', '..', 'public', 'js', 'flow-editor.js'), 'utf8');
+  const I18N_SRC = readFileSync(join(__dirname, '..', '..', 'public', 'js', 'i18n.js'), 'utf8');
+
+  /** The `NODE_DISPLAY_NAMES` object literal, parsed out of the IIFE source. */
+  function displayNames(): Record<string, string> {
+    const at = FE_SRC.indexOf('var NODE_DISPLAY_NAMES = {');
+    expect(at, 'NODE_DISPLAY_NAMES not found in flow-editor.js').toBeGreaterThan(-1);
+    const end = FE_SRC.indexOf('\n  };', at);
+    expect(end).toBeGreaterThan(at);
+    const body = FE_SRC.slice(at, end);
+    const out: Record<string, string> = {};
+    const re = /(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:\s*'([^']+)'/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body))) out[m[1] || m[2]] = m[3];
+    return out;
+  }
+
+  /** fa and en are separate objects; a key must be present in each. */
+  function dictSlices(): { fa: string; en: string } {
+    const faAt = I18N_SRC.indexOf('fa: {');
+    const enAt = I18N_SRC.indexOf('en: {');
+    expect(faAt).toBeGreaterThan(-1);
+    expect(enAt).toBeGreaterThan(faAt);
+    return { fa: I18N_SRC.slice(faAt, enAt), en: I18N_SRC.slice(enAt) };
+  }
+
+  const NAMES = displayNames();
+  const DICTS = dictSlices();
+
+  it('parsed a non-trivial table (the parser itself can rot)', () => {
+    expect(Object.keys(NAMES).length).toBeGreaterThanOrEqual(50);
+  });
+
+  it('names EVERY action in the catalog — no card can fall back to a raw id', () => {
+    const unnamed = catalog.ids().filter((id) => !NAMES[id]);
+    expect(unnamed, `actions with no display name: ${unnamed.join(', ')}`).toEqual([]);
+  });
+
+  it('maps only real actions (a renamed action must not leave a dead entry)', () => {
+    const real = new Set(catalog.ids());
+    const dangling = Object.keys(NAMES).filter((id) => !real.has(id));
+    expect(dangling, `display names for unknown actions: ${dangling.join(', ')}`).toEqual([]);
+  });
+
+  it('points every entry at an `nk.` i18n key', () => {
+    const odd = Object.entries(NAMES).filter(([, key]) => !key.startsWith('nk.'));
+    expect(odd.map(([id, key]) => `${id} -> ${key}`)).toEqual([]);
+  });
+
+  it('resolves every key in the PERSIAN dictionary (default locale)', () => {
+    const missing = [...new Set(Object.values(NAMES))].filter((k) => !DICTS.fa.includes(`'${k}':`));
+    expect(missing, `nk keys missing from fa: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('resolves every key in the ENGLISH dictionary', () => {
+    const missing = [...new Set(Object.values(NAMES))].filter((k) => !DICTS.en.includes(`'${k}':`));
+    expect(missing, `nk keys missing from en: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('renders the human label in the palette row, keeping the id as the tooltip', () => {
+    const at = FE_SRC.indexOf('function paletteItem');
+    expect(at).toBeGreaterThan(-1);
+    const body = FE_SRC.slice(at, at + 2800);
+    expect(body).toContain('actionLabel(a.id)');
+    expect(body).toContain("item.title = a.id");
+    expect(body).not.toMatch(/pi-label">'\s*\+\s*esc\(a\.id\)/);
+  });
+
+  it('exposes a single labelling helper, so the canvas and the palette cannot drift', () => {
+    expect(FE_SRC).toContain('function actionLabel(actionId)');
+  });
+});

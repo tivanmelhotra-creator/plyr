@@ -134,6 +134,20 @@
     return post('/run', payload);
   }
   /**
+   * Item N — run ONE node: `steps` is the chain PREFIX up to and including it,
+   * so the node under test is the LAST step and its input is produced by really
+   * executing its ancestors (never synthesised). The server tags the job
+   * `__runNode` and does NOT stamp `__workflowId`, so a node test never shows up
+   * as a workflow execution or in the workspace stats.
+   * body = { steps, nodeIndex?, headless?, triggerData? }
+   */
+  function runNode(userId, body) {
+    var payload = { userId: userId };
+    var b = body || {};
+    for (var k in b) { if (Object.prototype.hasOwnProperty.call(b, k)) payload[k] = b[k]; }
+    return post('/run-node', payload);
+  }
+  /**
    * List a user's jobs, newest first.
    * `workflowId` is optional and narrows the list to the runs of ONE saved
    * workflow — that is what the Workspace "Executions" tab asks for. Filtering
@@ -231,6 +245,7 @@
     getAdminToken: getAdminToken,
     setAdminToken: setAdminToken,
     runFlow: runFlow,
+    runNode: runNode,
     listJobs: listJobs,
     getJob: getJob,
     cancelJob: cancelJob,

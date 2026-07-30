@@ -33,7 +33,8 @@ Headline corrections, so they are not re-litigated:
 - The OUTLINE rail is on the **START edge**, full height, flush against the
   palette — it occupies real canvas width, published as `--fe-ol-w`.
 - The ACTIVITY LOG has **FOUR** tabs (`Runs · Execution · Variables · Logs`),
-  not three, and opens on `Execution`.
+  not three, and opens on `Execution`. (`shell-editor-launcher-menu.webp` still
+  draws the older THREE-tab set opening on `Runs`; the newest image wins.)
 - `Test Workflow` and `Stop` are **one slot in two states**, not two buttons.
 - The palette's seven rows / 128 blocks / `Version 1.3.7` are **MOCK** — see the
   6-vs-7 decision table (six real categories, fifty actions, computed counts).
@@ -84,12 +85,12 @@ and the two 2026-07-28 screens define the product-level navigation.
 | Stem | Role | Full | Lite | Spec | Implementation |
 |------|------|------|------|------|----------------|
 | `workspace-overview` | Workspace = workflow hub (7 stat cards, table, toggles) | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`views.js` → `renderWorkspace`) · backend `active`/`liveBrowser` + `/workspace/:userId/stats` executed |
-| `shell-editor-launcher-menu` | Header App Launcher + six-area menu | `.webp` | `lite/*.jpg` | `.md` | ✅ built · launcher + menu + six-item sidebar + workflow tab strip + Export/Save split menus + blocks-palette groups done (§ 5 corrections box records the stale claims) |
+| `shell-editor-launcher-menu` | Header App Launcher + six-area menu | `.webp` | `lite/*.jpg` | `.md` | ✅ built · launcher + menu + six-item sidebar + workflow tab strip + Export/Save split menus + blocks-palette groups done; panel re-measured at 3x in 2026-07-30 → locked glyphs (`grid` / `briefcase` / `shield-check`), 40px rows / 20px glyphs, **ringed** (not filled) open button, one product name (§ 5 corrections box records the stale claims) |
 | `ndv-condition-final` | Condition NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend `source`/`attribute` executed |
 | `ndv-click-element-final` | Click Element NDV focused | `.webp` | `lite/*.jpg` | `.md` | ✅ built (`ndv-nodes.js`) · backend click extras executed |
 | `shell-editor-click-ndv` | Full shell + Click NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ node cards / ports / connectors / status bar / **SVG icons** / **left-to-right pipeline layout** / **minimap header** / **floating canvas toolbar** done; Outline + Activity Log + top-bar chrome pending |
-| `shell-editor-condition-ndv` | Full shell + Condition NDV open | `.webp` | `lite/*.jpg` | `.md` | ◐ `True`/`False` edge pills + selection glow done; per-node Run pending |
-| `shell-add-node-palette` | Shell with add-node palette | `.webp` | `lite/*.jpg` | `.md` | ◐ category-derived modal glow + node context menu (4 of 9 items) done; floating Add Node palette / group toolbar / full context menu pending |
+| `shell-editor-condition-ndv` | ⚠ **stem is wrong** — this is the annotated **context-menu / group-toolbar / Add-Node** screen (not a Condition NDV) | `.webp` | `lite/*.jpg` | `.md` | ✅ `True`/`False` edge pills + selection glow + nine-row context menu + group toolbar + **per-node Run** (item N) done |
+| `shell-add-node-palette` | ⚠ **stem is wrong** — this is an **HTTP Request NDV**, not an add-node palette | `.webp` | `lite/*.jpg` | `.md` | ◐ category-derived modal glow + full context menu + floating Add Node palette (**five** entry points, incl. the circled `+` on a free output port) done; NDV `Run 2 of 2` selector + OUTPUT footer pending |
 | `state-empty-canvas` | **Refreshed: full editor shell** (stem is historical) | `.webp` **(newest)** | `lite/*.jpg` *(stale)* | `.md` *(rewritten)* | ✅ built · top bar (items A–B) + OUTLINE rail (C) + blocks palette (D) + 4-tab ACTIVITY LOG (E) + **top-end** canvas toolbar & pill row + titled minimap; empty-state card still renders when the graph is empty |
 
 Remaining work per screen is tracked, with file/line anchors, in
@@ -99,14 +100,34 @@ reference. The editor-shell items A–E are complete; see
 `04-HANDOFF-editor-shell-outline-activity.md` for what each landed as and for the
 decisions taken where the image described something the backend does not have.
 
-**Current status doc: `09-HANDOFF-item-N-per-node-run.md`** — start here. It is
-the complete implementation spec for the **last open item, N (per-node Run)**:
-the `POST /run-node` contract (run the chain *prefix* so the node's input is
-real, never synthesised), the zod schema, the front-end wiring, the i18n keys and
-the tests to write — plus four extra findings, including two real bugs: the
-chain-index/step-index divergence once a node is `disabled`, and the NDV
-“Run node” button that today runs the **whole flow** (a fake-success violation
-that item N fixes). Its § 5 lists what is still open after that.
+**Current status doc: `11-HANDOFF-labels-fit-prefs-render-compare.md`** —
+start here. It is written to be readable with no prior context. This pass closed
+three defects that only a **real render** could surface: node cards were labelled
+with raw action ids (`fill`, `wait`, `extract`) because `NODE_DISPLAY_NAMES`
+covered 14 of 50 actions and the `nk.*` keys existed only in `en`; `fitToScreen`
+ignored the overlays that live *inside* the canvas, sliding the first node under
+the OUTLINE panel; and the palette/OUTLINE collapse state was not persisted
+(`AppUtil.pref` / `setPref` over one `ab_ui_prefs` blob).
+
+Its **§ 3 is the first systematic render-vs-design comparison** — G1…G13, ordered
+by how much visual parity they cost, with the locked image that proves each one.
+Its § 4 is a verified anchor table and § 5 the priority order. § 6 lists every
+loose end, including the traps (`app.js` loads last, so `AppUtil` is absent at
+module scope; the minimap must be charged to the cheapest canvas edge, not the
+nearest; `shell-add-node-palette.webp` actually shows the NDV).
+
+Previous status doc: `10-HANDOFF-run-node-shipped-port-add-launcher.md` — item
+**N (per-node Run)** shipped (`POST /run-node` runs the chain *prefix*, tagged
+`__runNode` with no `__workflowId` so a partial run never pollutes Executions or
+the workspace stats), plus the chain-index/step-index fix, the circled `+` on
+free output ports (the fifth Add Node entry point), the minimap viewport fix and
+the launcher/brand parity pass.
+
+Older status doc: `09-HANDOFF-item-N-per-node-run.md` — the implementation
+spec and rationale for item N: why the *prefix* is sent rather than the single
+step (the INPUT column would otherwise lie) and why it is not routed through
+`API.runFlow()` (the server could not tell a partial run from a real one). Keep
+it for the rejected-alternatives record; its § 2 is now history.
 
 Previous status doc: `08-HANDOFF-addnode-contextmenu-groupbar.md` — closes
 items **H**, **J** and **I**: the floating **Add Node** palette (four entry

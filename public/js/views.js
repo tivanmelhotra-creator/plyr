@@ -1537,7 +1537,10 @@
     var olPanel = root.querySelector('#fe-outline');
     var olBody = root.querySelector('#fe-ol-body');
     var olTab = root.querySelector('#fe-ol-tab');
-    var olOpen = true;
+    // Sticky across reloads (AppUtil.pref), because closing the OUTLINE only to
+    // have it reopen on every navigation is the same complaint as the palette.
+    // The default stays OPEN: it is the editor's only node navigator.
+    var olOpen = AppUtil.pref ? !!AppUtil.pref('feOutlineOpen', true) : true;
     var olCollapsed = {};   // { 'nodeId|port': true } — pure view state
 
     function olPortLabel(row) {
@@ -1612,8 +1615,11 @@
       });
     }
     var olCanvas = root.querySelector('#fe-canvas');
-    function setOutlineOpen(open) {
+    function setOutlineOpen(open, remember) {
       olOpen = !!open;
+      // `remember` is false for the initial restore pass, so re-applying stored
+      // state never counts as a fresh user choice.
+      if (remember !== false && AppUtil.setPref) AppUtil.setPref('feOutlineOpen', olOpen);
       if (olPanel) olPanel.hidden = !olOpen;
       if (olTab) olTab.hidden = olOpen;
       // The rail occupies real canvas width on the START edge, so the canvas
@@ -1694,7 +1700,7 @@
     var offRun = (window.RunPanel && window.RunPanel.onUpdate)
       ? window.RunPanel.onUpdate(function () { refreshRunInfo(); refreshRunSlot(); })
       : null;
-    setOutlineOpen(true);
+    setOutlineOpen(olOpen, false);
     refreshShell();
 
     // The full-bleed route docks the ACTIVITY LOG against the canvas' start

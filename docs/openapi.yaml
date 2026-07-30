@@ -149,6 +149,85 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /run-node:
+    post:
+      tags: [Jobs]
+      summary: Execute ONE node with real upstream data (per-node test run)
+      description: >-
+        Runs the chain PREFIX of a workflow: every enabled step from the trigger
+        up to and including the node under test, which is therefore always the
+        LAST element of `steps`. Running the prefix (rather than the lone step)
+        is what makes the node editor's OUTPUT column truthful — the node's input
+        is produced by really executing its ancestors, never synthesised.
+
+
+        Two fields are deliberately absent from the body: `webhookUrl` (a node
+        test must not fire the user's webhook) and `workflowId` (the job is not
+        stamped `__workflowId`, so a partial test run never appears in the
+        Workspace Executions tab or in the run statistics — `GET /jobs` reports
+        it as `trigger: "node"`, `partial: true`).
+
+
+        Quota and per-user queue limits are identical to `POST /run`: a node test
+        burns the same browser minutes, so it is not a quota bypass.
+      parameters:
+        - in: query
+          name: wait
+          required: false
+          schema: { type: string, enum: ['true', '1', 'false'] }
+          description: >-
+            When `true`/`1`, block until the partial run finishes (up to
+            `RUN_WAIT_MAX_MS`) and return the full result inline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunNodeBody' }
+      responses:
+        '200':
+          description: >-
+            Node run accepted (async), OR — for `wait=true` — the completed
+            partial result. Both carry `partial: true` and the resolved
+            `nodeIndex`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunNodeAccepted'
+                  - $ref: '#/components/schemas/JobResult'
+        '202':
+          description: >-
+            `wait=true` timed out before completion; the partial run is still
+            going. Poll `pollUrl` for the result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  jobId: { type: string }
+                  nodeIndex: { type: integer, example: 2 }
+                  partial: { type: boolean, example: true }
+                  waited: { type: boolean, example: true }
+                  completed: { type: boolean, example: false }
+                  message: { type: string }
+                  pollUrl: { type: string, example: /job/u1/42 }
+        '400':
+          description: >-
+            Invalid body, or a `nodeIndex` that does not address the LAST step of
+            the prefix (painting the OUTPUT column from another node's items
+            would be a silent lie, so this fails loudly).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: Daily quota exhausted or per-user queue limit reached.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /schedule:
     post:
       tags: [Schedules]
@@ -536,6 +615,44 @@ components:
           format: uri
           nullable: true
           description: Optional URL notified on job completion/failure (signed if WEBHOOK_SECRET set).
+
+    RunNodeBody:
+      type: object
+      required: [userId, steps]
+      description: >-
+        Per-node test run. `steps` is the chain PREFIX up to and including the
+        node under test, so that node is the LAST element. No `webhookUrl` and no
+        `workflowId` — see the `/run-node` description.
+      properties:
+        userId:
+          oneOf: [ { type: string }, { type: integer } ]
+          example: u1
+        steps:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Step' }
+          description: The chain prefix; the node under test is the last item.
+        nodeIndex:
+          type: integer
+          minimum: 0
+          example: 2
+          description: >-
+            Optional agreement check, NOT a selector. When present it must equal
+            `steps.length - 1`; a mismatch is a 400.
+        headless:
+          oneOf: [ { type: boolean }, { type: string }, { type: integer } ]
+          description: Run the browser headless. Defaults to DEFAULT_HEADLESS.
+
+    RunNodeAccepted:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        jobId: { type: string, example: '42' }
+        nodeIndex: { type: integer, example: 2 }
+        partial: { type: boolean, example: true }
+        stepCount: { type: integer, example: 3 }
+        message: { type: string, example: Node run queued successfully }
+        priority: { type: integer, example: 100 }
 
     ScheduleBody:
       allOf:

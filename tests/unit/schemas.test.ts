@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Response } from 'express';
 import {
   runBodySchema,
+  runNodeBodySchema,
   scheduleBodySchema,
   formatZodError,
   parseBody,
@@ -58,6 +59,51 @@ describe('scheduleBodySchema', () => {
   it('rejects an over-long name', () => {
     const r = scheduleBodySchema.safeParse({ userId: 'u1', steps: validSteps, cron: '* * * * *', name: 'n'.repeat(121) });
     expect(r.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [Item N] POST /run-node — the per-node test-run envelope.
+// ---------------------------------------------------------------------------
+describe('runNodeBodySchema', () => {
+  it('accepts a minimal prefix body', () => {
+    const r = runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps });
+    expect(r.success).toBe(true);
+  });
+  it('accepts nodeIndex 0 (the trigger is a legal node to test)', () => {
+    const r = runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, nodeIndex: 0 });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.nodeIndex).toBe(0);
+  });
+  it('requires userId', () => {
+    expect(runNodeBodySchema.safeParse({ steps: validSteps }).success).toBe(false);
+  });
+  it('rejects empty or non-array steps — there is no prefix to run', () => {
+    expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: [] }).success).toBe(false);
+    expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: 'goto' }).success).toBe(false);
+  });
+  it('rejects a negative or fractional nodeIndex', () => {
+    expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, nodeIndex: -1 }).success).toBe(false);
+    expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, nodeIndex: 1.5 }).success).toBe(false);
+  });
+  it('carries NO webhookUrl and NO workflowId — a node test must not fire a webhook or be attributed', () => {
+    // The schema is non-strict like its siblings, so unknown keys are dropped
+    // rather than rejected; what matters is that they never reach the handler.
+    const r = runNodeBodySchema.safeParse({
+      userId: 'u1', steps: validSteps,
+      webhookUrl: 'https://example.com/hook', workflowId: 'wf_1',
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).not.toHaveProperty('webhookUrl');
+      expect(r.data).not.toHaveProperty('workflowId');
+    }
+  });
+  it('accepts triggerData so the prefix can be seeded like a real run', () => {
+    const r = runNodeBodySchema.safeParse({
+      userId: 'u1', steps: validSteps, triggerData: { source: 'webhook', body: { a: 1 } },
+    });
+    expect(r.success).toBe(true);
   });
 });
 
