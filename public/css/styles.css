@@ -647,6 +647,15 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   border-inline-start-color: var(--cat-color, var(--primary));
 }
 .palette-item:active { cursor: grabbing; }
+/* The row is `role="button"` + `tabindex="0"`, so keyboard focus has to be as
+   obvious as hover — otherwise the tab ring would be the only clue and there is
+   no default one on a <div>. */
+.palette-item:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-strong);
+  border-inline-start-color: var(--cat-color, var(--primary));
+}
 .pi-dot {
   width: 7px; height: 7px;
   border-radius: 50%;
@@ -669,11 +678,17 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 }
 
 /* Empty canvas state card (state-empty-canvas.md) */
+/* Centred in the FREE canvas, not in the canvas box: the OUTLINE rail OVERLAYS
+   the start edge (it is `position:absolute`, so it takes no layout space), and a
+   plain `left: 50%` slid the card underneath it as soon as the canvas got narrow
+   — the title read "...t building your workflow" behind the rail. The offset
+   follows `--fe-ol-w`, so it tracks the rail's open/collapsed width for free. */
 .fe-empty-card {
   position: absolute;
-  top: 50%; left: 50%;
+  top: 50%;
+  inset-inline-start: calc(var(--fe-ol-w, 26px) + (100% - var(--fe-ol-w, 26px)) / 2);
   transform: translate(-50%, -50%);
-  width: min(420px, calc(100% - 48px));
+  width: min(420px, calc(100% - var(--fe-ol-w, 26px) - 48px));
   padding: 32px 24px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
@@ -682,6 +697,10 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   text-align: center;
   z-index: 4;
 }
+/* `transform` is physical, `inset-inline-start` is not: in RTL the card is
+   anchored from the end edge, so it has to be pulled the other way to stay
+   centred on that point. */
+[dir="rtl"] .fe-empty-card { transform: translate(50%, -50%); }
 .fe-empty-icon {
   width: 64px; height: 64px;
   margin: 0 auto;
@@ -1473,6 +1492,13 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
  * Step 26 — live run/log drawer + on-node run badges + pin indicator
  * ======================================================================== */
 
+/* The collapsed drawer's head height. It is a token because TWO unrelated rules
+   have to agree with it: the drawer's own collapsed transform, and the bottom
+   space the editor reserves so its status bar can never be trapped underneath a
+   `position: fixed` band (see `.fe-shell`). Hardcoding 42px in three places is
+   how that kind of overlap silently comes back. */
+:root { --rp-head-h: 42px; }
+
 /* Collapsible bottom run/log drawer (singleton, appended to <body>). */
 .run-panel {
   position: fixed;
@@ -1486,7 +1512,7 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   display: flex;
   flex-direction: column;
   max-height: 42vh;
-  transform: translateY(calc(100% - 42px)); /* collapsed: only the head shows */
+  transform: translateY(calc(100% - var(--rp-head-h))); /* collapsed: only the head shows */
   transition: transform var(--transition);
 }
 .run-panel.open { transform: translateY(0); }
@@ -1496,7 +1522,7 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   align-items: center;
   gap: 10px;
   padding: 8px 14px;
-  min-height: 42px;
+  min-height: var(--rp-head-h);
   cursor: pointer;
   user-select: none;
   border-bottom: 1px solid var(--border);
@@ -1783,7 +1809,13 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 @media (max-width: 860px) { .ndv-modal .ndv-cols { grid-template-columns: 1fr; } }
 
 /* Editor shell wrapper */
-.fe-shell { display: flex; flex-direction: column; gap: 0; }
+/* The ACTIVITY LOG drawer is `position: fixed; bottom: 0`, so its collapsed head
+   sits on top of whatever the last 42px of the viewport happen to be. On a short
+   viewport (~700px) the editor is taller than the screen, and scrolling to the
+   bottom used to park the STATUS BAR — and the palette's own `Collapse` row —
+   permanently underneath that head. Reserving the head's height here means the
+   shell always ends above the drawer instead of behind it. */
+.fe-shell { display: flex; flex-direction: column; gap: 0; padding-bottom: var(--rp-head-h); }
 .fe-shell .fe-topbar { border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; }
 .fe-shell .fe-layout { margin-top: 0; border-radius: 0 0 var(--radius) var(--radius); }
 .fe-shell .fe-hint { margin-top: 8px; }
@@ -4068,8 +4100,12 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   transition: opacity var(--transition), color var(--transition);
 }
 /* Hidden until hover so 50 rows are not 50 competing stars — but a STARRED row
-   keeps its star visible, otherwise the state would be invisible at rest. */
+   keeps its star visible, otherwise the state would be invisible at rest.
+   `:focus-within` is what makes the star reachable WITHOUT a mouse: tabbing to
+   the row reveals its star, so the next Tab lands on a control the user can
+   actually see. Without it the star was focusable but invisible. */
 .palette-item:hover .pi-star,
+.palette-item:focus-within .pi-star,
 .pi-star:focus-visible { opacity: 1; }
 .pi-star.on { opacity: 1; color: var(--primary); }
 .pi-star:hover { color: var(--primary); background: rgba(255, 255, 255, 0.06); }
@@ -4109,14 +4145,46 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 
 /* ---- collapsed rail ----------------------------------------------------- */
 /* A third grid variant, kept distinct from `.fe-focus` (which zeroes the column
-   entirely): collapsing leaves a 44px rail so the restore chip has somewhere to
-   live and the palette can be brought back without a keyboard. */
-.fe-layout.fe-pal-collapsed { grid-template-columns: 44px 1fr; }
+   entirely): collapsing leaves a 64px rail — the width the reference shell uses
+   for its category icon strip, and enough for a 40px square target plus the
+   panel's own padding. The palette itself is only HIDDEN, never rebuilt, so the
+   search text and the open-group set survive a collapse/expand round trip. */
+.fe-layout.fe-pal-collapsed { grid-template-columns: 64px 1fr; }
 .fe-layout.fe-pal-collapsed > .fe-palette {
-  padding-inline: 6px;
+  padding-inline: 8px;
   align-items: center;
 }
-.fe-layout.fe-pal-collapsed > .fe-palette > *:not(.pl-restore) { display: none; }
+.fe-layout.fe-pal-collapsed > .fe-palette > *:not(.pl-rail) { display: none; }
+.pl-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  flex: 0 0 auto;
+}
+.pl-rail-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition),
+    border-color var(--transition);
+}
+.pl-rail-btn:hover,
+.pl-rail-btn:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border);
+  color: var(--cat-color, var(--primary));
+}
 .pl-restore {
   display: inline-flex;
   align-items: center;
@@ -4132,6 +4200,10 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   transition: background var(--transition), color var(--transition);
 }
 .pl-restore:hover { background: var(--bg-elev-2); color: var(--text); }
+.pl-restore:focus-visible { outline: none; border-color: var(--primary); color: var(--primary); }
+/* `»` points AWAY from the panel edge, so it has to flip with the writing
+   direction — in RTL the palette sits on the right and expands leftwards. */
+[dir="rtl"] .pl-restore > svg { transform: scaleX(-1); }
 
 @media (max-width: 980px) {
   /* The rail becomes a short horizontal band above the canvas, so the list can
@@ -4139,4 +4211,6 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   .fe-palette { overflow-y: auto; }
   .palette-list { overflow: visible; }
   .fe-layout.fe-pal-collapsed { grid-template-columns: 1fr; }
+  /* ...and a vertical icon column would waste the full width it now has. */
+  .pl-rail { flex-direction: row; flex-wrap: wrap; justify-content: center; }
 }

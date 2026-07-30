@@ -26,6 +26,13 @@ export const createHealthRoutes = (deps: HealthRoutesDeps): Router => {
     res.json({
       status: 'ok',
       version: config.VERSION,
+      // The editor status bar shows an `Environment` cell. It used to render a
+      // hardcoded "Development" string, which is exactly the fake-successful UI
+      // the house rules forbid: on a production box the bar would have lied.
+      // These two fields are the ONLY source that cell is allowed to read, and
+      // when they are absent the cell renders `—` instead of guessing.
+      env: config.NODE_ENV,
+      mode: config.DEPLOYMENT_MODE,
       uptime: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
       redis: redisStatus,

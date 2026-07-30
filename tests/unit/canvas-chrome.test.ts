@@ -184,6 +184,28 @@ describe('canvas chrome — item F: minimap header', () => {
     expect(FE).toMatch(/dom\.minimapRestore\.hidden = minimapOpen/);
   });
 
+  /**
+   * The map used to frame ONLY `nodesBBox()`. On a fresh workflow that is one
+   * 180x64 node, so the fit resolved near 0.8 and the widget rendered a single
+   * slab of solid category colour with the viewport rect pushed off the edge —
+   * a "minimap" that could not answer where you are.
+   */
+  it('frames the union of nodes AND viewport, with a capped scale', () => {
+    const mm = FE.slice(FE.indexOf('function renderMinimap()'), FE.indexOf('function curvePath('));
+    expect(mm.length).toBeGreaterThan(200);
+    // a hard ceiling, so one node can never fill the panel
+    expect(FE).toMatch(/var MM_MAX_SCALE = 0\.\d+;/);
+    expect(mm).toContain('MM_MAX_SCALE');
+    // the frame is the union, so the viewport rect is always inside the picture
+    expect(mm).toContain('Math.min(bb.minX, vx)');
+    expect(mm).toContain('Math.max(bb.maxX, vx + vw)');
+    // ...and the rect is drawn from the SAME numbers the frame was built from
+    expect(mm).not.toMatch(/vx = \(-v\.x\) \/ v\.scale/);
+    expect(mm.indexOf('var vx =')).toBeLessThan(mm.indexOf('var scale ='));
+    // a zero-height canvas must not produce a NaN/Infinity transform
+    expect(mm).toContain('v.scale || 1');
+  });
+
   it('re-renders the minimap when it is reopened', () => {
     // reopening a stale widget would show the pre-collapse graph
     const idx = FE.indexOf('function setMinimapOpen');
@@ -343,6 +365,41 @@ describe('canvas chrome — the CSS the JS toggles actually exists', () => {
       '.fe-mm-btn', '.fe-mm-restore']) {
       expect(CSS, `missing CSS for ${sel}`).toContain(sel);
     }
+  });
+
+  /**
+   * The OUTLINE rail is `position:absolute` over the canvas, so it takes NO
+   * layout space. A card centred with `left:50%` therefore slid underneath it as
+   * soon as the canvas got narrow ("...t building your workflow" behind the
+   * rail). The offset has to follow `--fe-ol-w` so it also tracks the rail's
+   * collapsed width.
+   */
+  it('centres the empty-state card in the FREE canvas, clear of the OUTLINE rail', () => {
+    const card = CSS.slice(CSS.indexOf('.fe-empty-card {'), CSS.indexOf('.fe-empty-icon {'));
+    expect(card).toContain('var(--fe-ol-w');
+    expect(card).not.toMatch(/left:\s*50%/);
+    expect(card).toMatch(/inset-inline-start:\s*calc\(/);
+    // the width must shrink by the rail too, or the card overflows the free area
+    expect(card).toMatch(/width:\s*min\(420px, calc\(100% - var\(--fe-ol-w/);
+    // `transform` is physical while `inset-inline-start` is not, so RTL needs
+    // the opposite pull — otherwise the card lands half off-canvas in Persian.
+    expect(CSS).toContain('[dir="rtl"] .fe-empty-card');
+  });
+
+  /**
+   * The ACTIVITY LOG drawer is `position: fixed; bottom: 0`. Its collapsed head
+   * covers the last 42px of the VIEWPORT, which on a ~700px screen was the
+   * editor's status bar and the palette's `Collapse` row.
+   */
+  it('reserves the collapsed drawer head so the shell cannot hide behind it', () => {
+    expect(CSS).toMatch(/--rp-head-h:\s*42px/);
+    // one token, three consumers — no re-hardcoded 42px
+    const shell = CSS.slice(CSS.indexOf('.fe-shell {'), CSS.indexOf('.fe-shell .fe-topbar'));
+    expect(shell).toContain('padding-bottom: var(--rp-head-h)');
+    const rp = CSS.slice(CSS.indexOf('.run-panel {'), CSS.indexOf('.run-panel.open'));
+    expect(rp).toContain('translateY(calc(100% - var(--rp-head-h)))');
+    const head = CSS.slice(CSS.indexOf('.rp-head {'), CSS.indexOf('}', CSS.indexOf('.rp-head {')));
+    expect(head).toContain('min-height: var(--rp-head-h)');
   });
 
   it('gives the active tool and the focus toggle a visible pressed state', () => {

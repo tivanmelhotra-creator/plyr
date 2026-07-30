@@ -1035,6 +1035,38 @@
         (value ? '<span class="fe-sb-val">' + esc(value) + '</span>' : '') +
         '</span>';
     }
+    /**
+     * The `Environment` cell.
+     *
+     * This used to render `t('sb.envDev')` unconditionally — a literal
+     * "Development" that stayed green on a production deployment. The only
+     * honest source is the server, so the value now comes from `/health`
+     * (`env` = NODE_ENV, `mode` = DEPLOYMENT_MODE) and renders `—` while that
+     * is unknown. Known names get a translated label; anything else is printed
+     * verbatim rather than guessed at.
+     */
+    var ENV_LABEL = {
+      production: 'sb.envProd',
+      development: 'sb.envDev',
+      test: 'sb.envTest',
+      staging: 'sb.envStaging',
+    };
+    function environmentCell() {
+      var h = (U().health && U().health()) || null;
+      var env = h && h.env ? String(h.env) : '';
+      if (!env) {
+        // Unknown, and it SAYS so — the dot stays neutral, not green.
+        return statusCell(t('sb.environment'), '—', 'idle');
+      }
+      var key = ENV_LABEL[env.toLowerCase()];
+      var label = key ? t(key) : env;
+      // `single` vs `multi` changes what the whole product does, so it is worth
+      // the four characters — but only when the server actually reported it.
+      if (h.mode) label += ' · ' + String(h.mode);
+      return statusCell(t('sb.environment'), label,
+        env.toLowerCase() === 'production' ? 'good' : 'idle');
+    }
+
     function refreshStatusBar() {
       if (!statusBar) return;
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
@@ -1045,7 +1077,7 @@
           cur && cur.id ? 'good' : 'idle'),
         statusCell(t('sb.lastSaved'), saved || '—'),
         statusCell(t('sb.workflowId'), cur && cur.id ? String(cur.id) : '—'),
-        statusCell(t('sb.environment'), t('sb.envDev'), 'good'),
+        environmentCell(),
       ];
       statusBar.innerHTML = cells.join('<span class="fe-sb-sep"></span>');
     }
@@ -1254,6 +1286,10 @@
     }
     onDoc('click', function () { closeMenus(false); });
     onDoc('keydown', function (ev) { if (ev.key === 'Escape') closeMenus(true); });
+    // `/health` is re-polled every 10s: the Environment cell has to follow it,
+    // including back to `—` when the server drops off. Registered through
+    // `onDoc` so `unmount` removes it instead of leaking one per editor visit.
+    onDoc('health:change', refreshStatusBar);
 
     /**
      * One menu row. `disabled` items are VISIBLY disabled with a tooltip —

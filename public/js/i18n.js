@@ -417,6 +417,22 @@
       'fe.hint': 'راهنما: نود را بکشید (به شبکه می‌چسبد؛ Alt برای حرکت آزاد) · Shift+کشیدن پس‌زمینه = انتخاب کادری · Ctrl+C/V کپی/چسباندن · Delete حذف · چرخ ماوس زوم · کلیک روی لبه آن را حذف می‌کند.',
       'fe.saveServer': 'ذخیره روی سرور',
       'fe.unsaved': 'ورکفلوی ذخیره‌نشده',
+      // Editor status bar. These lived ONLY in the `en` dictionary, so `t()`
+      // silently fell back to English for every Persian user — invisible at
+      // runtime, which is why the guard test now walks `sb.*` too.
+      'sb.version': 'نسخه',
+      'sb.unsaved': 'ذخیره‌نشده',
+      'sb.autoSave': 'ذخیرهٔ خودکار',
+      'sb.on': 'فعال',
+      'sb.off': 'خاموش',
+      'sb.lastSaved': 'آخرین ذخیره',
+      'sb.workflowId': 'شناسهٔ ورکفلو',
+      'sb.environment': 'محیط',
+      // The VALUE of this cell comes from /health (NODE_ENV), never a literal.
+      'sb.envDev': 'توسعه',
+      'sb.envProd': 'تولید',
+      'sb.envTest': 'آزمایش',
+      'sb.envStaging': 'پیش‌تولید',
       'fe.searchNode': 'جست‌وجوی نود…',
       'fe.noNodes': 'نودی یافت نشد.',
       'fe.zoomIn': 'بزرگ‌نمایی',
@@ -1183,7 +1199,12 @@
       'sb.lastSaved': 'Last saved',
       'sb.workflowId': 'Workflow ID',
       'sb.environment': 'Environment',
+      // Labels for the values `/health` can report. An env name that is not in
+      // this map is printed verbatim — never mapped to a friendly guess.
       'sb.envDev': 'Development',
+      'sb.envProd': 'Production',
+      'sb.envTest': 'Test',
+      'sb.envStaging': 'Staging',
       'fe.searchNode': 'Search nodes\u2026',
       'fe.noNodes': 'No matching nodes.',
       'fe.zoomIn': 'Zoom in',

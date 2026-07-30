@@ -162,15 +162,33 @@
     return parts.join(' ');
   }
 
+  /**
+   * The last `/health` payload, kept so views can render REAL server facts
+   * (`env`, `mode`, `version`) instead of hardcoding a plausible-looking value.
+   * `null` means "not known yet or the probe failed" — consumers must show `—`
+   * in that case rather than assuming a default.
+   */
+  var lastHealth = null;
+
+  function setHealth(data) {
+    lastHealth = data || null;
+    // A DOM event, so a view can subscribe without app.js knowing it exists.
+    document.dispatchEvent(new CustomEvent('health:change', { detail: lastHealth }));
+  }
+
   function fetchHealth() {
     return API.health()
       .then(function (data) {
         var ok = data && data.status === 'ok' && data.redis === 'connected';
         setSysIndicator(ok ? 'ok' : 'warn', ok ? 'status.online' : 'status.degraded');
+        setHealth(data);
         return data;
       })
       .catch(function () {
         setSysIndicator('bad', 'status.offline');
+        // Drop the stale payload: a cached `production` badge next to an
+        // OFFLINE indicator would be worse than no badge at all.
+        setHealth(null);
         throw new Error('health failed');
       });
   }
@@ -561,6 +579,9 @@
     navigate: function (route) { location.hash = '#/' + route; },
     lang: function () { return I18N.getLang(); },
     formatUptime: formatUptime,
+    // Latest /health payload, or null when unknown. Paired with the
+    // `health:change` document event above.
+    health: function () { return lastHealth; },
   };
 
   // ---------------------------------------------
