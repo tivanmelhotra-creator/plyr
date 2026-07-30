@@ -337,7 +337,8 @@
     col.appendChild(s1.root);
 
     // ---- 2. Click options ------------------------------------------------
-    var s2 = ui.section(t('click.secClickOptions'), 2);
+    // 4-up in one row, as in the preview — see the `.cols-4` note in styles.css.
+    var s2 = ui.section(t('click.secClickOptions'), 4);
     s2.body.appendChild(ui.fieldCell(t('click.clickType'),
       ui.selectCell([
         { value: 'single', label: t('click.typeSingle') },
@@ -367,7 +368,8 @@
     s3.body.appendChild(ui.toggleRow(t('click.multipleMatches'), p.multipleMatches,
       function (v) { set('multipleMatches', v); }, { info: t('click.multipleMatchesHelp') }).root);
     s3.body.appendChild(ui.fieldCell(t('p.timeout'),
-      ui.numberCell(p.timeout, { min: 0, placeholder: '10000' }, function (v) { set('timeout', v); })));
+      ui.numberCell(p.timeout, { min: 0, placeholder: '10000' }, function (v) { set('timeout', v); }),
+      null, null, { inline: true, info: t('help.timeoutMs') }));
     s3.body.appendChild(ui.toggleRow(t('click.highlightElement'), p.highlightElement,
       function (v) { set('highlightElement', v); }, { info: t('click.highlightElementHelp') }).root);
     s3.body.appendChild(ui.toggleRow(t('p.scrollIntoView'), p.scrollIntoView,
@@ -376,15 +378,17 @@
       function (v) { set('visibleOnly', v); }).root);
     s3.body.appendChild(ui.fieldCell(t('click.stableFor'),
       ui.numberCell(p.stableForMs, { min: 0, placeholder: '300' }, function (v) { set('stableForMs', v); }),
-      t('click.stableForHelp')));
+      t('click.stableForHelp'), null, { inline: true }));
     col.appendChild(s3.root);
 
     // ---- 4. Position offsets --------------------------------------------
     var s4 = ui.section(t('click.secOffsets'), 2);
     s4.body.appendChild(ui.fieldCell(t('click.offsetX'),
-      ui.numberCell(p.offsetX, { placeholder: '0' }, function (v) { set('offsetX', v); })));
+      ui.numberCell(p.offsetX, { placeholder: '0' }, function (v) { set('offsetX', v); }),
+      null, null, { inline: true }));
     s4.body.appendChild(ui.fieldCell(t('click.offsetY'),
-      ui.numberCell(p.offsetY, { placeholder: '0' }, function (v) { set('offsetY', v); })));
+      ui.numberCell(p.offsetY, { placeholder: '0' }, function (v) { set('offsetY', v); }),
+      null, null, { inline: true }));
     var offHelp = ui.el('div', 'aria-cell-help span-2', t('click.offsetHelp'));
     s4.body.appendChild(offHelp);
     col.appendChild(s4.root);
@@ -406,20 +410,25 @@
     s6.body.appendChild(ui.toggleRow(t('click.forceClick'), p.force,
       function (v) { set('force', v); },
       { info: t('help.forceClick'), help: t('help.forceClick') }).root);
-    // `Continue on fail` is listed in the design's Behavior group, but it is NOT
+    col.appendChild(s6.root);
+
+    // ---- 7. `Continue on fail` -------------------------------------------
+    // The preview puts this OUTSIDE the Behavior card, as a bare row closing
+    // the column — and that is also the honest place for it, because it is NOT
     // a click param: the runtime reads it as a top-level AutomationStep field
-    // (node.errorPolicy -> graph-serialize.js). So it is mirrored here for
+    // (node.errorPolicy -> graph-serialize.js). It is surfaced here for
     // discoverability while still writing to the single source of truth, which
     // the Error tab also edits.
     node.errorPolicy = node.errorPolicy || {};
-    s6.body.appendChild(ui.toggleRow(t('settings.continueOnFail'),
+    var foot7 = ui.el('div', 'aria-footrow');
+    foot7.appendChild(ui.toggleRow(t('settings.continueOnFail'),
       node.errorPolicy.continueOnFail === true,
       function (v) {
         node.errorPolicy.continueOnFail = v === true;
         if (ctx.onParamsChange) ctx.onParamsChange();
       },
-      { info: t('help.continueOnFail'), help: t('help.continueOnFail') }).root);
-    col.appendChild(s6.root);
+      { info: t('help.continueOnFail') }).root);
+    col.appendChild(foot7);
     return true;
   }
 

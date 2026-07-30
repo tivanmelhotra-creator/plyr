@@ -104,11 +104,18 @@
   }
 
   // ---- generic field cell (label above control, helper below) ---------------
-  function fieldCell(labelText, control, helperText, span) {
-    var cell = el('div', 'aria-cell' + (span ? ' span-' + span : ''));
+  // opts (all optional):
+  //   inline: true  — label LEFT / control RIGHT on one row, the way the locked
+  //                   preview lays out numerics that sit among toggle rows
+  //                   (`Timeout (ms)`, `Stable for (ms)`, `Offset X (px)`).
+  //   info: string  — the small ⓘ dot the preview puts after those labels.
+  function fieldCell(labelText, control, helperText, span, opts) {
+    var o = opts || {};
+    var cell = el('div', 'aria-cell' + (span ? ' span-' + span : '') + (o.inline ? ' is-inline' : ''));
     if (labelText) {
       var lab = el('div', 'aria-cell-label');
       lab.appendChild(el('span', null, labelText));
+      if (o.info) withInfo(lab, o.info);
       cell.appendChild(lab);
     }
     if (control) cell.appendChild(control);
