@@ -439,9 +439,13 @@ describe('item D — blocks palette', () => {
     expect(rail).toContain('members.length');
     // Icon-only buttons must carry an accessible name.
     expect(rail).toContain('aria-label');
-    // Clicking a glyph expands AND opens that row — not just expands.
-    expect(rail).toContain('paletteOpen[g.id] = true');
-    expect(rail).toContain('setPaletteCollapsed(false)');
+    // Clicking a glyph expands AND opens that row — not just expands. The body
+    // moved into `railOpenGroup()` when the rail grew its footer glyphs (G8), so
+    // assert the call here and the behaviour on the helper.
+    expect(rail).toContain('railOpenGroup(g.id)');
+    const openGroup = FE.slice(FE.indexOf('function railOpenGroup('), FE.indexOf('function paletteRail()'));
+    expect(openGroup).toContain('paletteOpen[groupId] = true');
+    expect(openGroup).toContain('setPaletteCollapsed(false)');
     ['.pl-rail', '.pl-rail-btn'].forEach((sel) => {
       expect(CSS, `${sel} is emitted but never styled`).toContain(sel);
     });
@@ -597,6 +601,347 @@ describe('standing contracts', () => {
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/[^\n]*/g, '');
       expect(EMOJI.test(code), `${name} emits an emoji`).toBe(false);
+    });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Handoff 11 § 5 items — G4 breadcrumb, G6 dock default, G1 palette row names,
+// G8 the full collapsed rail, G13 the brand mark.
+// ───────────────────────────────────────────────────────────────────────────
+describe('shell parity items G4 / G6 / G1 / G8 / G13', () => {
+  /**
+   * G4. NO locked image has a second bar row — the canvas starts immediately
+   * under the top bar — so the hairline breadcrumb is hidden. It must still be
+   * IN the DOM: `#fe-wf-label` / `#fe-wf-badge` are written unconditionally by
+   * `refreshWfLabel()`, and the six `.fe-legacy` ids have unguarded listeners,
+   * so deleting the row throws mid-render and blanks the editor.
+   */
+  it('G4 hides the breadcrumb row without removing it', () => {
+    expect(VIEWS).toContain('class="fe-crumbline" id="fe-crumbline" hidden');
+    // The base rule sets display:flex, which BEATS the UA `[hidden]` rule, so
+    // the attribute selector is what actually hides it.
+    expect(CSS).toMatch(/\.fe-crumbline\[hidden\]\s*\{\s*display:\s*none/);
+    // Still emitted, still written to.
+    ['fe-wf-label', 'fe-wf-badge'].forEach((id) => {
+      expect(VIEWS).toContain(`id="${id}"`);
+    });
+    ['fe-from-run', 'fe-load', 'fe-json', 'fe-clear', 'fe-save', 'fe-save-server'].forEach((id) => {
+      expect(VIEWS, `${id} disappeared with the breadcrumb row`).toContain(`id="${id}"`);
+    });
+    expect(VIEWS).toContain('class="fe-legacy" hidden');
+  });
+
+  /**
+   * G6. The refreshed `state-empty-canvas.webp` shows the ACTIVITY LOG OPEN on
+   * `Execution`. It is a preference, not a constant: the drawer is unmounted and
+   * remounted on every editor mount, so a collapse that is not persisted silently
+   * reverts on the next route change.
+   */
+  it('G6 opens the ACTIVITY LOG by default and remembers a collapse', () => {
+    expect(RP).toContain("var DOCK_PREF = 'feDockOpen'");
+    expect(RP).toMatch(/dockPref\(true\)\s*\)\s*open\(false\);\s*else\s*close\(false\)/);
+    // Persisted through the ONE namespaced prefs blob, like the palette/OUTLINE.
+    expect(RP).toContain('u.setPref(DOCK_PREF');
+    expect(APP).toContain("var PREFS_KEY = 'ab_ui_prefs'");
+    // The restore pass must not be recorded as a fresh user choice.
+    expect(RP).toContain('if (remember !== false) rememberDock(true)');
+    expect(RP).toContain('if (remember !== false) rememberDock(false)');
+    // Four tabs, opening on Execution — unchanged, pinned here so a later edit
+    // cannot quietly drop back to three.
+    expect(RP).toContain("var AL_TABS = ['runs', 'execution', 'variables', 'logs']");
+    expect(RP).toContain("var alTab = 'execution'");
+  });
+
+  /**
+   * ...and an open dock must be charged to the fit, or `fitToScreen` parks the
+   * tail of a chain behind it. The drawer is a body-level fixed singleton, so the
+   * in-canvas overlay query cannot see it.
+   */
+  it('G6 keeps fitToScreen honest about the open dock', () => {
+    const insets = FE.slice(FE.indexOf('function canvasInsets('), FE.indexOf('function fitToScreen('));
+    expect(insets).toContain("document.getElementById('run-panel')");
+    expect(insets).toContain('ins.bottom = Math.max(ins.bottom');
+    // Measured, never hard-coded: a literal 46vh here would go stale the moment
+    // the CSS changes.
+    expect(insets).toContain('dock.getBoundingClientRect()');
+  });
+
+  /**
+   * G1. The palette adopts the image's row vocabulary (Triggers / Browser / Web
+   * Interaction / Flow Control / Online Services / Data) while every count stays
+   * computed from real catalog members. ONE helper, so the expanded list, the
+   * collapsed rail and the Add Node palette cannot drift apart.
+   */
+  it('G1 renders the design row names with real counts', () => {
+    expect(FE).toContain('function paletteGroupLabel(g, cat)');
+    const PG = ['pg.triggers', 'pg.browser', 'pg.webInteraction', 'pg.flowControl',
+      'pg.onlineServices', 'pg.data'];
+    PG.forEach((k) => {
+      expect(FE, `${k} is not wired into PALETTE_GROUPS`).toContain(`label: '${k}'`);
+      expectKeyInBothDicts(k);
+    });
+    // Exactly six rows, one per real category — no invented `General` /
+    // `Elements` rows, which have no catalog members at all.
+    const groups = FE.slice(FE.indexOf('var PALETTE_GROUPS = ['), FE.indexOf('function paletteGroupLabel('));
+    expect([...groups.matchAll(/label: 'pg\./g)]).toHaveLength(6);
+    const catIds = new Set(CATALOG.categories.map((c: any) => c.id));
+    [...groups.matchAll(/\{ id: '([a-z]+)'/g)].forEach((m) => {
+      expect(catIds.has(m[1]), `PALETTE_GROUPS row "${m[1]}" is not a real category`).toBe(true);
+    });
+    // Counts still come from members, never from a literal.
+    expect(FE).toContain("name: paletteGroupLabel(g, cat) + ' · ' + members.length");
+    // And the design's mock totals must never be pasted back in. Comments are
+    // stripped first: the mock's `128 blocks` is DOCUMENTED in the source as the
+    // number we deliberately do not ship, and that prose must stay readable.
+    const code = FE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    ['128 blocks', 'count: 128', 'count: 24', 'count: 12,'].forEach((lit) => {
+      expect(code.includes(lit), `invented palette count ${lit}`).toBe(false);
+    });
+  });
+
+  /**
+   * G8. The collapsed rail is the full glyph column the image shows — Favorites,
+   * the six real groups, the five footer destinations, and the expander LAST —
+   * built from the same two tables as the expanded panel.
+   */
+  it('G8 builds the full collapsed rail from real surfaces', () => {
+    const rail = FE.slice(FE.indexOf('function railBtn('), FE.indexOf('function applyPaletteCollapsed()'));
+    expect(rail).toContain("icon: 'star'");                 // Favorites
+    expect(rail).toContain('PALETTE_GROUPS.forEach');       // the six groups
+    expect(rail).toContain('PALETTE_LINKS.forEach');        // the five links
+    expect(rail).toContain("rail.className = 'pl-rail'");
+    // The expander is appended AFTER the links, i.e. it is the last glyph.
+    expect(rail.indexOf("chip.className = 'pl-restore'")).toBeGreaterThan(rail.indexOf('PALETTE_LINKS.forEach'));
+    // Favorites count is the real number of starred blocks.
+    expect(rail).toContain('ACTIONS.filter(function (a) { return paletteFavs[a.id]; }).length');
+    // A disabled destination stays disabled AND explained in the rail too.
+    expect(rail).toContain('disabled: !!l.disabled');
+    expect(rail).toContain("t(l.key) + ' — ' + t(l.disabled)");
+    // Icon-only controls need names, and the new classes need styling.
+    expect(rail).toContain("b.setAttribute('aria-label', opts.name)");
+    ['.pl-rail-sep', '.pl-rail-link', '.pl-rail-btn[disabled]'].forEach((sel) => {
+      expect(CSS, `${sel} is emitted but never styled`).toContain(sel);
+    });
+    // The expander sits at the bottom edge of the column.
+    expect(CSS).toMatch(/\.pl-rail > \.pl-restore\s*\{\s*margin-block-start:\s*auto/);
+    // Twelve glyphs + the expander = the image's thirteen.
+    const groupRows = CATALOG.categories.filter((c: any) =>
+      CATALOG.actions.some((a: any) => (a.cat || 'other') === c.id)).length;
+    const links = [...FE.matchAll(/\{ key: 'pl\.[A-Za-z]+',/g)].length;
+    expect(1 + groupRows + links + 1).toBe(13);
+  });
+
+  /**
+   * G13. The brand mark is the product's own glyph, traced from the 1672px
+   * locked image: two facing arcs around a ringed pupil. Not a letter in a tile,
+   * and not `zap` (which the palette already uses for the Triggers category).
+   */
+  it('G13 ships a real brand mark in both shells', () => {
+    expect(Icons.has ? Icons.has('aria-mark') : !!Icons.svg('aria-mark')).toBe(true);
+    const svg = Icons.svg('aria-mark', { size: 22 });
+    expect(svg).toContain('stroke="currentColor"');
+    expect(svg).toContain('fill="none"');
+    expect(svg).not.toMatch(/#[0-9a-fA-F]{3,8}/);   // colour comes from CSS
+    // Editor shell: the glyph replaced the invented orange tile with a letter.
+    expect(VIEWS).toContain("IC('aria-mark', 22)");
+    expect(VIEWS).not.toContain('<span class="fe-brand-mark">A</span>');
+    expect(CSS).not.toMatch(/\.fe-brand-mark\s*\{[^}]*background:\s*var\(--primary\)/);
+    // App shell sidebar uses the same mark.
+    const HTML = readFileSync(join(PUBLIC, 'index.html'), 'utf8');
+    expect(HTML).toContain('data-icon="aria-mark"');
+    expect(HTML).not.toContain('class="brand-logo" data-icon="zap"');
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// G10 — the fa/RTL render pass. Its finding was not a layout bug: 38 `fa`
+// entries carried the ENGLISH string, so the whole editor chrome rendered in
+// English inside an RTL frame. The both-dicts test cannot see this (the keys
+// exist), and `t()` cannot either (it returns what the dictionary holds), so
+// only a render or this guard catches it.
+// ───────────────────────────────────────────────────────────────────────────
+describe('G10 fa/RTL localisation of the editor chrome', () => {
+  const PERSIAN = /[\u0600-\u06FF]/;
+  /**
+   * `pl.shortcut` is the `K` of `Ctrl K` — a key cap, not a word. Anything else
+   * added here needs a reason written next to it.
+   */
+  const LATIN_BY_DESIGN = new Set(['pl.shortcut']);
+
+  it('ships no English-only value for the shell chrome keys', () => {
+    const faEntries = [...DICTS.fa.matchAll(/'((?:al|ol|pl|sh)\.[A-Za-z0-9]+)':\s*'([^']*)'/g)];
+    expect(faEntries.length).toBeGreaterThan(60);
+    const leaks = faEntries
+      .filter(([, key, val]) => val && !LATIN_BY_DESIGN.has(key) && !PERSIAN.test(val))
+      .map(([, key, val]) => `${key} = "${val}"`);
+    expect(leaks, `untranslated fa values:\n  ${leaks.join('\n  ')}`).toEqual([]);
+  });
+
+  /** ...and the English dictionary must not have been Persian-ised by mistake. */
+  it('keeps the en dictionary in English', () => {
+    const enEntries = [...DICTS.en.matchAll(/'((?:al|ol|pl|sh)\.[A-Za-z0-9]+)':\s*'([^']*)'/g)];
+    const wrong = enEntries.filter(([, , val]) => PERSIAN.test(val)).map(([, key]) => key);
+    expect(wrong).toEqual([]);
+  });
+
+  /** The one-shot patch scripts stay in `tools/` — they are not counted JS. */
+  it('records how the dictionaries were patched', () => {
+    const tools = readFileSync(join(ROOT, 'tools', 'patch-fa-shell-i18n.py'), 'utf8');
+    // The ZWNJ placeholder convention is the part a future session must not lose.
+    expect(tools).toContain("ZWNJ = '\\u200c'");
+    expect(tools).toContain("newline=''");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Handoff 11 § 5 item G10 — the 980 px render pass.
+//
+// The pass surfaced two real defects, and both were CSS-only, so both are
+// guarded by parsing the stylesheet rather than by eyeballing a PNG:
+//
+//   1. `.fe-zoom-ctrl` and `.fe-canvas-toolbar` are the SAME element. Two
+//      separate `max-width: 980px` blocks docked it to opposite corners, so all
+//      FOUR insets resolved (`50px/12px/12px/12px`) and the absolutely
+//      positioned box stretched to 932x358. It is opaque (`--bg-elev`) at
+//      `z-index: 5`; the node layer is `z-index: 2`. Result: a canvas that
+//      rendered as an empty grid with all seven nodes hidden underneath.
+//
+//   2. `.fe-palette` is a height-capped flex column at 980 px. The cap left
+//      `.palette-list` a computed height of ZERO against ~2400 px of content,
+//      and the narrow-viewport override set `overflow: visible`, so the list
+//      painted its rows straight over the footer links.
+// ───────────────────────────────────────────────────────────────────────────
+describe('G10 — the 980 px narrow-viewport render pass', () => {
+  /** Brace-matched body of every `@media (max-width: 980px)` block, in order. */
+  function mediaBlocks980(): string[] {
+    const out: string[] = [];
+    const re = /@media\s*\(max-width:\s*980px\)\s*\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(CSS))) {
+      let depth = 1;
+      let i = m.index + m[0].length;
+      const start = i;
+      while (i < CSS.length && depth > 0) {
+        if (CSS[i] === '{') depth++;
+        else if (CSS[i] === '}') depth--;
+        i++;
+      }
+      out.push(CSS.slice(start, i - 1));
+    }
+    return out;
+  }
+
+  /**
+   * Declarations that `sel` collects across every 980 px block, merged in
+   * document order so the LAST declaration wins — which is what the cascade
+   * does at equal specificity, and the reason defect 1 was invisible when
+   * reading either block on its own.
+   */
+  function decls980(sel: string): Record<string, string> {
+    const merged: Record<string, string> = {};
+    mediaBlocks980().forEach((body) => {
+      const src = body.replace(/\/\*[\s\S]*?\*\//g, '');
+      const re = /([^{}]+)\{([^{}]*)\}/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src))) {
+        const hit = m[1]
+          .split(',')
+          .map((s) => s.trim().replace(/\s+/g, ' '))
+          .some((s) => s === sel);
+        if (!hit) continue;
+        m[2].split(';').forEach((d) => {
+          const i = d.indexOf(':');
+          if (i < 0) return;
+          merged[d.slice(0, i).trim()] = d.slice(i + 1).trim();
+        });
+      }
+    });
+    return merged;
+  }
+
+  it('finds the narrow-viewport blocks it is asserting against', () => {
+    // If the media query is ever reworded (`980px` -> a token, say) every
+    // assertion below would vacuously pass, so prove the parse found something.
+    expect(mediaBlocks980().length).toBeGreaterThanOrEqual(2);
+  });
+
+  /**
+   * The invariant, stated positively: the bar is docked by ONE block inset and
+   * ONE inline inset. Both members of the opposing pair must be absent or
+   * `auto` — never a length.
+   */
+  it('never resolves all four insets on the canvas toolbar', () => {
+    ['.fe-zoom-ctrl', '.fe-canvas-toolbar'].forEach((sel) => {
+      const d = decls980(sel);
+      const blockPair = ['inset-block-start', 'inset-block-end'];
+      const inlinePair = ['inset-inline-start', 'inset-inline-end'];
+      [blockPair, inlinePair].forEach((pair) => {
+        const lengths = pair.filter((p) => d[p] && d[p] !== 'auto');
+        expect(
+          lengths.length,
+          `${sel} resolves BOTH of ${pair.join(' + ')} to a length ` +
+            `(${lengths.map((p) => `${p}: ${d[p]}`).join(', ')}) — the box will ` +
+            'stretch and paint over the nodes',
+        ).toBeLessThan(2);
+      });
+    });
+  });
+
+  /** The same contract restated where the docking is defined, so it is findable. */
+  it('pins the opposing inset pair to `auto` on the base rule', () => {
+    const base = CSS.slice(CSS.indexOf('.fe-zoom-ctrl,\n.fe-canvas-toolbar {'));
+    const body = base.slice(0, base.indexOf('}'));
+    expect(body).toContain('inset-block-end: auto');
+    expect(body).toContain('inset-inline-start: auto');
+    // ...and the reason, so nobody "tidies" the two autos away again.
+    expect(CSS).toContain('CONTRACT: this bar is docked by exactly TWO insets');
+  });
+
+  /**
+   * The palette keeps its base contract at 980 px: the LIST is the only
+   * scroller. `overflow: visible` on a flex child that the cap has starved to
+   * zero height is what let it paint over the footer.
+   */
+  it('keeps the palette list scrolling, never `visible`, at 980 px', () => {
+    const list = decls980('.palette-list');
+    expect(list['overflow']).not.toBe('visible');
+    expect(list['overflow-y']).toBe('auto');
+    // A floor so flex can never resolve the list to zero height again.
+    const floor = parseInt(list['min-height'] || '0', 10);
+    expect(floor, 'the list needs a min-height floor at 980px').toBeGreaterThan(0);
+
+    const pal = decls980('.fe-palette');
+    expect(pal['overflow'], 'the panel must not become the scroller').toBe('hidden');
+    const cap = parseInt(pal['max-height'] || '0', 10);
+    // The cap has to clear the list floor plus the 32px search row plus a
+    // one-row footer, or the footer is pushed out of the panel again.
+    expect(cap, `max-height ${cap}px cannot hold a ${floor}px list + chrome`).toBeGreaterThanOrEqual(floor + 120);
+  });
+
+  /**
+   * Five stacked destination links are 170px tall — taller than the whole panel
+   * is allowed to be at 980px. They wrap into a row instead, which is only
+   * possible if `.pl-link`'s default `width: 100%` is released.
+   */
+  it('lays the palette footer out as a wrapping row at 980 px', () => {
+    const foot = decls980('.palette-foot');
+    expect(foot['flex-direction']).toBe('row');
+    expect(foot['flex-wrap']).toBe('wrap');
+    const link = decls980('.palette-foot > .pl-link');
+    expect(link['width'], '`.pl-link` is width:100% by default — one link per line').toBe('auto');
+  });
+
+  /**
+   * The stale rule that caused defect 1 must not come back. It is named
+   * explicitly because a future session reading only the first media block
+   * would think re-docking the bar bottom-start is a harmless improvement.
+   */
+  it('does not re-dock the toolbar bottom-start on narrow viewports', () => {
+    mediaBlocks980().forEach((body) => {
+      expect(body.replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(
+        /\.fe-zoom-ctrl[^{}]*\{[^{}]*inset-block-end:\s*\d/,
+      );
     });
   });
 });

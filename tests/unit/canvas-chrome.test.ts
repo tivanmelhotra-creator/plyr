@@ -428,7 +428,16 @@ describe('canvas chrome — the CSS the JS toggles actually exists', () => {
     // top-end rows stack instead of overlapping.
     expect(tb).toMatch(/inset-block-start:\s*62px/);
     expect(tb).toMatch(/inset-inline-end:\s*24px/);
-    expect(tb).not.toMatch(/inset-inline-start:/);
+    // TIGHTENED 2026-07-30 (G10 980px pass): the intent here is "docked to the
+    // END edge, never the start" — but banning the PROPERTY also banned the
+    // explicit `inset-inline-start: auto` that now guarantees it. Two media
+    // blocks had each set one half of the inline pair, all four insets
+    // resolved, and the absolutely positioned bar STRETCHED to 932x358 —
+    // opaque, `z-index: 5`, painted over the `z-index: 2` node layer, so the
+    // 980px canvas rendered as an empty grid. Forbid a LENGTH, require `auto`.
+    expect(tb).not.toMatch(/inset-inline-start:\s*[\d-]/);
+    expect(tb).toMatch(/inset-inline-start:\s*auto/);
+    expect(tb).toMatch(/inset-block-end:\s*auto/);
     const mm = CSS.slice(CSS.indexOf('.fe-minimap-wrap {'), CSS.indexOf('.fe-minimap-wrap[hidden]'));
     expect(mm).toMatch(/inset-block-end:\s*24px/);
     expect(mm).toMatch(/inset-inline-end:\s*24px/);

@@ -1,8 +1,16 @@
 # HANDOFF 11 — node labels, panel-aware fit, sticky view prefs, and the first real render-vs-design comparison
 
-> **This is the CURRENT status document.** It supersedes `10-HANDOFF-run-node-shipped-port-add-launcher.md`.
-> Read § 0 before touching anything, then § 5 for what to do next.
-> A fresh session with no chat history should be able to continue from this file alone.
+> **SUPERSEDED by `12-HANDOFF-shell-parity-brand-mark-fa-980.md`. Read that file instead.**
+> It carries § 0 forward verbatim and records which of the § 5 items below have shipped.
+>
+> Two things in this file are now known to be **wrong**, and are corrected in handoff 12:
+> - **§ 3.2 / G13 describes the brand mark as the letter `A` in an orange rounded tile.** The 1672 px WebP shows
+>   an orange stroked `(o)` with **no tile**. See handoff 12 § 3.
+> - **§ 6's heuristic "a zoom one point off the 0.4 floor means suspect the insets"** sent the 980 px
+>   investigation the wrong way. The empty canvas was an opaque toolbar stretched over the node layer; the fit was
+>   correct. See handoff 12 § 2.1.
+>
+> Kept for history: the node-label, panel-aware-fit and sticky-prefs work it documents is still accurate.
 
 ---
 

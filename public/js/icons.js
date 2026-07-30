@@ -34,6 +34,20 @@
   var P = {
     'alert-circle': ['<circle cx="12" cy="12" r="9"/>', '<path d="M12 8v5"/>', '<path d="M12 16.5h.01"/>'],
     'alert-triangle': ['<path d="M10.3 4.1a2 2 0 0 1 3.4 0l7 12.1a2 2 0 0 1-1.7 3H5a2 2 0 0 1-1.7-3z"/>', '<path d="M12 9.5v4"/>', '<path d="M12 17h.01"/>'],
+    // The product's own brand mark (G13). Traced from the highest-resolution
+    // locked image, `docs/uiux/state-empty-canvas.webp` at 1672px: TWO facing
+    // crescent arcs (open at top-centre and bottom-centre) around a small ring
+    // with a solid pupil — an abstract "(o)". It is NOT a rounded square with
+    // the letter `A`, which is what the shell used to render, and it is NOT the
+    // network glyph in the much smaller 1024px `workspace-overview.webp`; the
+    // higher-resolution image wins. Stroke-only and colourless on purpose, so
+    // `--primary` (or a hover tone) drives it from CSS like every other icon.
+    'aria-mark': [
+      '<path d="M9.6 4.9a7.6 7.6 0 0 0 0 14.2"/>',
+      '<path d="M14.4 4.9a7.6 7.6 0 0 1 0 14.2"/>',
+      '<circle cx="12" cy="12" r="3.1"/>',
+      '<circle cx="12" cy="12" r="1" fill="currentColor"/>',
+    ],
     'arrow-down': ['<path d="M12 4v15"/>', '<path d="m6 13 6 6 6-6"/>'],
     'arrow-up': ['<path d="M12 20V5"/>', '<path d="m6 11 6-6 6 6"/>'],
     'arrows-vertical': ['<path d="M12 3v18"/>', '<path d="m8 7 4-4 4 4"/>', '<path d="m8 17 4 4 4-4"/>'],
