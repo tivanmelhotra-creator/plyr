@@ -99,15 +99,34 @@ reference. The editor-shell items A–E are complete; see
 `04-HANDOFF-editor-shell-outline-activity.md` for what each landed as and for the
 decisions taken where the image described something the backend does not have.
 
-**Current status doc: `07-HANDOFF-fullbleed-editor-shell.md`** — the editor is now
+**Current status doc: `09-HANDOFF-item-N-per-node-run.md`** — start here. It is
+the complete implementation spec for the **last open item, N (per-node Run)**:
+the `POST /run-node` contract (run the chain *prefix* so the node's input is
+real, never synthesised), the zod schema, the front-end wiring, the i18n keys and
+the tests to write — plus four extra findings, including two real bugs: the
+chain-index/step-index divergence once a node is `disabled`, and the NDV
+“Run node” button that today runs the **whole flow** (a fake-success violation
+that item N fixes). Its § 5 lists what is still open after that.
+
+Previous status doc: `08-HANDOFF-addnode-contextmenu-groupbar.md` — closes
+items **H**, **J** and **I**: the floating **Add Node** palette (four entry
+points, including a connection dropped on empty canvas), the full nine-row
+**node context menu** with node annotations (`label` / `note` / `color` /
+`disabled`), and the **group-selection** blue dashed boundary + seven-button
+action toolbar. `disabled` is honest: it changes what the serializer emits
+(n8n-style pass-through). Read § 6 of that file for the remaining TODO — item
+**N** (per-node Run, backend first), the 980px / RTL passes, the collapse
+defaults, the 13-glyph icon rail, the minimap proportions, and the newly-spotted
+circled `+` on free output ports.
+
+Older status doc: `07-HANDOFF-fullbleed-editor-shell.md` — the editor is now
 **full-bleed** (no app sidebar, no page heading; its own top bar starts at y=0,
 the ACTIVITY LOG docks bottom-start inside the canvas and the MINIMAP sits
 bottom-end with a stacked `+ − Fit` column, the status bar closes the screen),
-exactly as `state-empty-canvas.webp` draws it. Read § 5 of that file for the
-remaining TODO: the 1280×700 / RTL re-shoots, the collapsed-by-default question,
-the 13-glyph icon rail, then items **H / I / J / N** of `04-HANDOFF` § 9.
+exactly as `state-empty-canvas.webp` draws it. Its § 4 code anchors and § 5.6
+do-not-"fix" list are still current.
 
-Previous status doc: `06-HANDOFF-visual-verification-a11y-statusbar.md` — it
+Oldest kept status doc: `06-HANDOFF-visual-verification-a11y-statusbar.md` — it
 supersedes `05-HANDOFF-palette-docs-followups.md`, records the palette a11y pass,
 the collapsed icon rail, the minimap fix and the real `/health`-backed status bar,
 and — most usefully — documents the **working headless-browser harness**

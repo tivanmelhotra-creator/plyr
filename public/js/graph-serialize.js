@@ -231,6 +231,17 @@
       var node = graph.nodes[nextId];
       if (!node) break;
       seen[nextId] = true;
+      // A node flagged `disabled` (context-menu item J / group toolbar item I)
+      // is SKIPPED exactly the way n8n skips a deactivated node: it emits no
+      // step and the chain continues through its MAIN `next` port, so switching
+      // one node off does not tear the rest of the flow apart. Consequence to
+      // keep in mind: disabling a BRANCHING node (if/switch/loop/try) also
+      // drops everything that hangs off its branch ports, because those
+      // children are only reachable through the node being skipped.
+      if (node.disabled === true) {
+        nextId = portTarget(graph, node.id, 'next');
+        continue;
+      }
       var built = buildNode(graph, node, seen);
       if (built.step) {
         applyErrorPolicy(built.step, node);
@@ -497,6 +508,15 @@
       if (!strictAction(node.action)) {
         errors.push({ code: 'unknown-action', nodeId: id, message: 'val.unknownAction' });
       }
+      // A DISABLED node never reaches the backend (walkChain skips it), so its
+      // missing parameters cannot fail a run and must NOT be reported as
+      // errors — that would make a valid flow un-runnable for a node that is
+      // switched off. It still gets a WARNING, because a silently skipped node
+      // is exactly the kind of thing a user forgets they switched off.
+      if (node.disabled === true) {
+        warnings.push({ code: 'disabled', nodeId: id, message: 'val.disabledNode' });
+        continue;
+      }
       // loop/foreach/while must have a non-empty body
       if (node.action === 'loop' || node.action === 'foreach' || node.action === 'while') {
         if (!portTarget(graph, id, 'body')) {
@@ -571,6 +591,10 @@
           num: num,
           depth: num.split('.').length - 1,
           kind: 'node',
+          // The outline is a mirror of the canvas, so a node switched off on the
+          // canvas has to read as switched off here too (views.js dims the row).
+          disabled: node.disabled === true,
+          label: typeof node.label === 'string' ? node.label : '',
         });
         if (rows.length >= OUTLINE_MAX_ROWS) return;
 

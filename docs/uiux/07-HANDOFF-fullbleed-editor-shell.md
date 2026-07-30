@@ -1,9 +1,13 @@
 # 07 — HANDOFF: full-bleed editor shell + bottom dock
 
-> **THIS IS THE CURRENT STATUS DOCUMENT.** It supersedes
-> `06-HANDOFF-visual-verification-a11y-statusbar.md` (which superseded `05-…`).
-> Read this file first, then `04-HANDOFF-editor-shell-outline-activity.md` § 9
-> for the remaining feature backlog.
+> ⚠ **SUPERSEDED by `08-HANDOFF-addnode-contextmenu-groupbar.md`** (2026-07-30).
+> Items **H**, **J** and **I** of § 5 are **DONE** — read `08-…` for their
+> anchors and for the current open list. This file is still useful for § 4 (code
+> anchors of the shell/dock work) and § 5.6 (the do-not-"fix" list).
+>
+> It supersedes `06-HANDOFF-visual-verification-a11y-statusbar.md` (which
+> superseded `05-…`). See also `04-HANDOFF-editor-shell-outline-activity.md` § 9
+> for the older feature backlog.
 >
 > Written 2026-07-30, at the end of a session that ran out of credits mid-way.
 > Everything that was *not* finished is in **§ 5**, with the exact files, line

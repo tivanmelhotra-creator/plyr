@@ -455,11 +455,17 @@ describe('item D — blocks palette', () => {
    * re-supplied by hand, or blocks become mouse-only.
    */
   it('a block row is operable by keyboard', () => {
-    const item = FE.slice(FE.indexOf('function paletteItem(a)'), FE.indexOf('var PALETTE_GROUPS = ['));
+    // The signature grew an `opts` argument when the floating Add Node palette
+    // (item H) started reusing this renderer — slice on the name only, so the
+    // guard follows the function instead of its argument list.
+    const item = FE.slice(FE.indexOf('function paletteItem(a'), FE.indexOf('var ADD_ALL ='));
     expect(item).toContain("item.setAttribute('role', 'button')");
     expect(item).toContain("item.setAttribute('tabindex', '0')");
     // Enter AND Space, because both activate a button.
     expect(item).toMatch(/ev\.key !== 'Enter' && ev\.key !== ' '/);
+    // Activation goes through `pick()`, which is `placeNewNode` by default and
+    // the caller's `onPick` when the Add Node palette hosts the row.
+    expect(item).toContain('pick()');
     expect(item).toContain('placeNewNode(a.id)');
     // Space scrolls the list unless the default is suppressed.
     expect(item).toContain('ev.preventDefault()');

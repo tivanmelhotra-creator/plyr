@@ -479,6 +479,9 @@
     dom.world.style.transform =
       'translate(' + v.x + 'px,' + v.y + 'px) scale(' + v.scale + ')';
     dom.svg.style.transform = dom.world.style.transform;
+    // Published for chrome that lives INSIDE the zoomed world but must not zoom
+    // with it (item I's group toolbar). Kept here so zooming needs no re-render.
+    dom.world.style.setProperty('--fe-inv-scale', String(1 / (v.scale || 1)));
     updateZoomLabel();
     renderMinimap();
   }
@@ -715,6 +718,10 @@
 
   function nodeTitle(node) {
     if (node.action === '__start__') return t('fe.startNode');
+    // `Rename` (context menu item J) stores a user label on the node. It wins
+    // over every derived name, and because it lives on the node it travels
+    // through serialize()/saveLocal() and the undo stack like any other field.
+    if (node.label) return String(node.label);
     // Designed nodes read with their human name on the card too, so the canvas
     // and the NDV header agree (previews show "Click Element" / "Condition").
     var key = NODE_DISPLAY_NAMES && NODE_DISPLAY_NAMES[node.action];
@@ -748,7 +755,8 @@
     var selected = state.selected === node.id || (state.selSet && state.selSet[node.id]);
     var card = document.createElement('div');
     card.className = 'flow-node' + (isStart ? ' is-start' : '') +
-      (selected ? ' selected' : '') + ' status-' + status;
+      (selected ? ' selected' : '') + ' status-' + status +
+      (node.disabled === true ? ' is-off' : '');
     card.setAttribute('data-node', node.id);
     card.style.left = node.x + 'px';
     card.style.top = node.y + 'px';
@@ -761,7 +769,11 @@
 
     // Category accent bar (left) — colour-codes the node by category.
     var cat = isStart ? { color: '#34d399' } : categoryOf(node.action);
-    card.style.setProperty('--cat-color', cat.color);
+    // `Change Color` (context menu item J) overrides the CATEGORY accent for
+    // this one node. Only values from NODE_COLORS are ever stored, so a graph
+    // loaded from disk cannot inject an arbitrary CSS value here.
+    card.style.setProperty('--cat-color',
+      node.color && isNodeColor(node.color) ? node.color : cat.color);
 
     var header = document.createElement('div');
     header.className = 'flow-node-head';
@@ -801,6 +813,25 @@
         pinmark.innerHTML = IC('pin', 11);
         pinmark.title = t('rp.pinned');
         card.appendChild(pinmark);
+      }
+      // `Disable` must be visible on the CANVAS, not only in a menu — a node
+      // that is silently skipped at run time is a debugging trap.
+      if (node.disabled === true) {
+        var off = document.createElement('div');
+        off.className = 'fn-off';
+        off.innerHTML = IC('eye-off', 11) + '<span>' + esc(t('fe.offBadge')) + '</span>';
+        off.title = t('fe.nodeDisabled');
+        card.appendChild(off);
+      }
+      // `Add Comment` — the note is a first-class annotation, so it renders on
+      // the card (truncated) with the full text as its tooltip.
+      if (node.note) {
+        var note = document.createElement('div');
+        note.className = 'fn-note';
+        note.innerHTML = IC('message-square', 11) +
+          '<span>' + esc(String(node.note).slice(0, 60)) + '</span>';
+        note.title = String(node.note);
+        card.appendChild(note);
       }
     }
 
@@ -922,36 +953,210 @@
     dom.world.appendChild(card);
   }
 
-  // ---- node context menu (kebab / right-click) ------------------------------
-  // Inventory taken from docs/uiux/shell-add-node-palette.md: Clone · Rename ·
-  // Disable · Pin · Delete. Items whose backend/UI support does not exist yet
-  // are simply not listed — an unimplemented menu row is worse than no row.
+  // ---- node context menu (kebab / right-click) — item J ---------------------
+  //
+  // The locked inventory (docs/uiux/shell-add-node-palette.md § "Floating
+  // context menu") is NINE rows: Clone · Delete · Rename · Disable ·
+  // Change Color (with colour dots) · Add Comment · Add to Favorites ·
+  // Convert to Subflow · Advanced ▸.
+  //
+  // All nine are rendered, and every one of them is BACKED:
+  //   Clone            -> copySelection()+pasteClipboard() (annotations included)
+  //   Delete           -> removeNode()
+  //   Rename           -> node.label, shown by nodeTitle() on card + OUTLINE
+  //   Disable          -> node.disabled, SKIPPED by graph-serialize#walkChain
+  //   Change Color     -> node.color, a swatch row of the 6 design tokens
+  //   Add Comment      -> node.note, rendered on the card with a tooltip
+  //   Add to Favorites -> the SAME `paletteFavs` store the palette star writes
+  //   Convert Subflow  -> nothing implements subflows, so it renders DISABLED
+  //                       with a tooltip that says so (menuItem-style honesty)
+  //   Advanced ▸       -> submenu: Open settings · Pin/Unpin output · Copy JSON
+  //
+  // "Convert to Subflow" is the only inert row and it LOOKS inert. A row that
+  // silently does nothing would be worse than no row at all.
   function closeNodeMenu() {
     var ex = document.querySelector('.fe-ctxmenu');
-    if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+    while (ex) {
+      if (ex.parentNode) ex.parentNode.removeChild(ex);
+      ex = document.querySelector('.fe-ctxmenu');
+    }
+  }
+
+  /** One clickable row of a context menu (or a disabled, explained row). */
+  function ctxItem(it, onDone) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fe-ctxitem' + (it.danger ? ' is-danger' : '') +
+      (it.disabled ? ' is-disabled' : '') + (it.submenu ? ' has-sub' : '');
+    b.setAttribute('role', 'menuitem');
+    if (it.disabled) {
+      b.disabled = true;
+      b.setAttribute('aria-disabled', 'true');
+      if (it.hint) b.title = it.hint;
+    }
+    b.innerHTML = '<span class="fe-ctxicon">' + IC(it.icon) + '</span>' +
+      '<span class="fe-ctxlabel">' + esc(it.label) + '</span>' +
+      (it.kbd ? '<span class="fe-ctxkbd">' + esc(it.kbd) + '</span>' : '') +
+      (it.submenu ? '<span class="fe-ctxsub">' + IC('chevron-right', 12) + '</span>' : '');
+    if (!it.disabled && !it.submenu) {
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeNodeMenu();
+        it.fn();
+      });
+    }
+    if (it.submenu) {
+      var open = function (ev) {
+        ev.stopPropagation();
+        var r = b.getBoundingClientRect();
+        // The submenu is a sibling menu, not a nested one: same close path, and
+        // no chance of a menu that survives its parent.
+        var sub = document.createElement('div');
+        sub.className = 'fe-ctxmenu is-sub';
+        sub.setAttribute('role', 'menu');
+        it.submenu().forEach(function (si) { sub.appendChild(ctxItem(si, onDone)); });
+        document.body.appendChild(sub);
+        var sr = sub.getBoundingClientRect();
+        sub.style.left = Math.max(8, Math.min(r.right + 2, window.innerWidth - sr.width - 8)) + 'px';
+        sub.style.top = Math.max(8, Math.min(r.top, window.innerHeight - sr.height - 8)) + 'px';
+      };
+      b.addEventListener('click', open);
+      b.addEventListener('mouseenter', function () {
+        var ex = document.querySelector('.fe-ctxmenu.is-sub');
+        if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+      });
+    }
+    return b;
+  }
+
+  /**
+   * The `Change Color` row: six design-token swatches plus a reset chip.
+   *
+   * `target` is either ONE node id (per-node context menu) or an ARRAY of ids
+   * (group toolbar ▸ More). One renderer for both keeps the swatch inventory,
+   * the whitelist and the "on" marker from drifting between the two surfaces;
+   * a group recolour is applied in a single undo step.
+   */
+  function ctxColorRow(target) {
+    var many = Object.prototype.toString.call(target) === '[object Array]';
+    var nodeId = many ? target[0] : target;
+    var apply = function (c) {
+      if (many) setSelectionColor(target, c); else setNodeColor(nodeId, c);
+    };
+    // The "on" marker only lights up when the whole target shares that colour.
+    var current = many
+      ? (target.every(function (id) {
+        return state.nodes[id] && state.nodes[id].color === (state.nodes[target[0]] || {}).color;
+      }) ? (state.nodes[target[0]] || {}).color : null)
+      : (state.nodes[nodeId] || {}).color;
+    var node = { color: current };
+    var row = document.createElement('div');
+    row.className = 'fe-ctxcolors';
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', t('fe.changeColor'));
+    var head = document.createElement('span');
+    head.className = 'fe-ctxcolors-lbl';
+    head.innerHTML = IC('palette', 14) + '<span>' + esc(t('fe.changeColor')) + '</span>';
+    row.appendChild(head);
+    var dots = document.createElement('span');
+    dots.className = 'fe-ctxdots';
+    NODE_COLORS.forEach(function (c) {
+      var d = document.createElement('button');
+      d.type = 'button';
+      d.className = 'fe-ctxdot' + (node && node.color === c ? ' is-on' : '');
+      d.style.background = c;
+      d.title = c;
+      d.setAttribute('aria-label', c);
+      d.setAttribute('aria-pressed', node && node.color === c ? 'true' : 'false');
+      d.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeNodeMenu();
+        apply(c);
+      });
+      dots.appendChild(d);
+    });
+    var reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'fe-ctxdot is-reset';
+    reset.title = t('fe.resetColor');
+    reset.setAttribute('aria-label', t('fe.resetColor'));
+    reset.innerHTML = IC('rotate-ccw', 11);
+    reset.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      closeNodeMenu();
+      apply(null);
+    });
+    dots.appendChild(reset);
+    row.appendChild(dots);
+    return row;
   }
 
   function openNodeMenu(nodeId, clientX, clientY) {
     closeNodeMenu();
     var node = state && state.nodes[nodeId];
     if (!node || node.action === '__start__') return;
+    var fav = !!paletteFavs[node.action];
 
     var menu = document.createElement('div');
     menu.className = 'fe-ctxmenu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', t('fe.nodeMenu'));
+
     var items = [
-      { icon: 'copy', label: t('fe.cloneNode'), fn: function () {
+      { icon: 'copy', label: t('fe.cloneNode'), kbd: MOD_KEY + '+C', fn: function () {
         state.selSet = {}; state.selSet[nodeId] = true; state.selected = nodeId;
         copySelection(); pasteClipboard();
       } },
-      { icon: 'sliders', label: t('ndv.open'), fn: function () { openNdv(nodeId); } },
-      { icon: 'pin',
-        label: nodePins[nodeId] ? t('fe.unpinNode') : t('fe.pinNode'),
+      { icon: 'pencil', label: t('fe.renameNode'), fn: function () {
+        openInlinePrompt({
+          title: t('fe.renameNode'), value: node.label || '',
+          placeholder: nodeTitle(node), x: clientX, y: clientY,
+          onOk: function (v) { renameNode(nodeId, v); },
+        });
+      } },
+      { icon: node.disabled === true ? 'eye' : 'eye-off',
+        label: t(node.disabled === true ? 'fe.enableNode' : 'fe.disableNode'),
+        fn: function () { setNodeDisabled(nodeId); } },
+      { swatches: true },
+      { icon: 'message-square',
+        label: t(node.note ? 'fe.editComment' : 'fe.addComment'),
         fn: function () {
-          if (nodePins[nodeId]) delete nodePins[nodeId]; else nodePins[nodeId] = true;
-          renderNodes();
+          openInlinePrompt({
+            title: t('fe.addComment'), value: node.note || '', multiline: true,
+            x: clientX, y: clientY,
+            onOk: function (v) { setNodeComment(nodeId, v); },
+          });
         } },
+      { icon: 'star', label: t(fav ? 'fe.unfavNode' : 'fe.favNode'), fn: function () {
+        // Favourites are per ACTION (that is what the palette can star), so the
+        // row says so in its tooltip rather than implying a per-node favourite.
+        if (paletteFavs[node.action]) delete paletteFavs[node.action];
+        else paletteFavs[node.action] = true;
+        savePaletteFavs();
+        if (dom && dom.palette) renderPaletteList();
+        if (U() && U().toast) {
+          U().toast(t(paletteFavs[node.action] ? 'fe.favAdded' : 'fe.favRemoved'), 'ok');
+        }
+      } },
+      { icon: 'sitemap', label: t('fe.convertSubflow'),
+        disabled: true, hint: t('fe.convertSubflowSoon') },
       { sep: true },
-      { icon: 'trash', label: t('fe.deleteNode'), danger: true,
+      { icon: 'sliders', label: t('fe.advanced'), submenu: function () {
+        return [
+          { icon: 'sliders', label: t('ndv.open'), fn: function () { openNdv(nodeId); } },
+          { icon: 'pin', label: t(nodePins[nodeId] ? 'fe.unpinNode' : 'fe.pinNode'),
+            fn: function () {
+              if (nodePins[nodeId]) delete nodePins[nodeId]; else nodePins[nodeId] = true;
+              renderNodes();
+            } },
+          { icon: 'braces', label: t('fe.copyNodeJson'),
+            fn: function () { copyNodeJson(nodeId); } },
+          { icon: 'play', label: t('fe.runNode'),
+            disabled: true, hint: t('fe.runNodeSoon') },
+        ];
+      } },
+      { sep: true },
+      { icon: 'trash', label: t('fe.deleteNode'), kbd: 'Del', danger: true,
         fn: function () { removeNode(nodeId); } },
     ];
 
@@ -962,16 +1167,8 @@
         menu.appendChild(sep);
         return;
       }
-      var b = document.createElement('button');
-      b.className = 'fe-ctxitem' + (it.danger ? ' is-danger' : '');
-      b.innerHTML = '<span class="fe-ctxicon">' + IC(it.icon) + '</span>' +
-        '<span>' + esc(it.label) + '</span>';
-      b.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        closeNodeMenu();
-        it.fn();
-      });
-      menu.appendChild(b);
+      if (it.swatches) { menu.appendChild(ctxColorRow(nodeId)); return; }
+      menu.appendChild(ctxItem(it));
     });
 
     // Position in viewport coords, flipped back inside if it would overflow.
@@ -983,6 +1180,21 @@
     var y = Math.min(clientY, window.innerHeight - r.height - 8);
     menu.style.left = Math.max(8, x) + 'px';
     menu.style.top = Math.max(8, y) + 'px';
+
+    // Keyboard: the menu is reachable from the kebab button, so it has to be
+    // operable without a mouse. Arrow keys move, Esc closes (handled globally).
+    var rows = menu.querySelectorAll('.fe-ctxitem:not(.is-disabled)');
+    if (rows.length) rows[0].focus();
+    menu.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+      ev.preventDefault();
+      var list = Array.prototype.slice.call(menu.querySelectorAll('.fe-ctxitem:not(.is-disabled)'));
+      var i = list.indexOf(document.activeElement);
+      var next = ev.key === 'ArrowDown' ? i + 1 : i - 1;
+      if (next < 0) next = list.length - 1;
+      if (next >= list.length) next = 0;
+      if (list[next]) list[next].focus();
+    });
   }
 
   function renderNodes() {
@@ -993,6 +1205,10 @@
     });
     Object.keys(state.nodes).forEach(function (id) { renderNode(state.nodes[id]); });
     renderEmptyState();
+    // Item I: the group boundary + toolbar are a function of the selection, so
+    // they are rebuilt by the same pass that paints selection state on cards —
+    // there is no second code path that could leave them stale.
+    renderSelectionTools();
   }
 
   // Aria spec (state-empty-canvas.md): centered card with an orange icon
@@ -1014,9 +1230,13 @@
     var cta = document.createElement('button');
     cta.className = 'fe-empty-cta';
     cta.textContent = '+ ' + t('fe.addFirstNode');
-    cta.addEventListener('click', function () {
-      var s = dom.palette && dom.palette.querySelector('.palette-search');
-      if (s) s.focus();
+    cta.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      // Item H: the CTA now opens the floating Add Node palette wired to Start,
+      // instead of merely moving focus into the docked palette's search box and
+      // leaving the user to figure out the rest.
+      var r = cta.getBoundingClientRect();
+      openAddPaletteForSelection({ x: r.left, y: r.bottom + 8 });
     });
     card.appendChild(cta);
     card.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
@@ -1820,6 +2040,267 @@
     renderAll();
   }
 
+  // ---- Per-node annotations (context menu item J) ---------------------------
+  //
+  // Four user-owned fields live on the node itself — `label` (Rename), `note`
+  // (Add Comment), `disabled` (Disable) and `color` (Change Color). They ride
+  // inside `state.nodes`, which means they are already covered by serialize(),
+  // saveLocal(), the undo snapshots and the clipboard, with no second store to
+  // keep in sync.
+  //
+  // HONEST LIMIT, written down so nobody reports it as a bug later: the server
+  // stores a workflow as `steps[]` (see src/validation.ts#validateSteps, which
+  // whitelists step fields), and `label`/`note`/`color` are EDITOR metadata with
+  // no place in that contract. They therefore survive a browser reload (the
+  // graph is kept in localStorage) but NOT a server round-trip. `disabled` is
+  // different: it changes what is serialised at all (graph-serialize.js skips
+  // the node), so its effect does reach the backend.
+  //
+  // Only these swatches can ever be stored, so a graph loaded from disk cannot
+  // inject an arbitrary value into the `--cat-color` custom property.
+  var NODE_COLORS = ['#FF8A1F', '#2BA6FF', '#2ECC71', '#E45555', '#A78BFA', '#F5C542'];
+  function isNodeColor(v) { return NODE_COLORS.indexOf(String(v)) !== -1; }
+
+  function renameNode(id, value) {
+    var n = state.nodes[id];
+    if (!n || id === 'start') return;
+    var next = String(value == null ? '' : value).trim().slice(0, 60);
+    if (next === (n.label || '')) return;
+    pushHistory();
+    if (next) n.label = next; else delete n.label;   // empty = back to the derived name
+    renderAll();
+  }
+
+  function setNodeComment(id, value) {
+    var n = state.nodes[id];
+    if (!n || id === 'start') return;
+    var next = String(value == null ? '' : value).trim().slice(0, 500);
+    if (next === (n.note || '')) return;
+    pushHistory();
+    if (next) n.note = next; else delete n.note;
+    renderAll();
+  }
+
+  function setNodeColor(id, color) {
+    var n = state.nodes[id];
+    if (!n || id === 'start') return;
+    pushHistory();
+    if (color && isNodeColor(color)) n.color = color; else delete n.color;
+    renderAll();
+  }
+
+  /** Toggle (or force, when `on` is a boolean) the disabled flag of one node. */
+  function setNodeDisabled(id, on) {
+    var n = state.nodes[id];
+    if (!n || id === 'start') return;
+    var next = typeof on === 'boolean' ? on : !(n.disabled === true);
+    if (next === (n.disabled === true)) return;
+    pushHistory();
+    if (next) n.disabled = true; else delete n.disabled;
+    renderAll();
+  }
+
+  /** Disable/enable a whole selection in ONE undo step (group toolbar, item I). */
+  function setSelectionDisabled(ids, on) {
+    var touched = (ids || []).filter(function (id) {
+      var n = state.nodes[id];
+      return n && id !== 'start' && (n.disabled === true) !== !!on;
+    });
+    if (!touched.length) return;
+    pushHistory();
+    touched.forEach(function (id) {
+      if (on) state.nodes[id].disabled = true; else delete state.nodes[id].disabled;
+    });
+    renderAll();
+  }
+
+  /**
+   * Apply one comment to a whole selection in ONE undo step (group toolbar).
+   * An empty value clears the note on every node, which is how the toolbar's
+   * "remove the comment from all of these" gesture is expressed.
+   */
+  function setSelectionComment(ids, value) {
+    var next = String(value == null ? '' : value).trim().slice(0, 500);
+    var touched = (ids || []).filter(function (id) {
+      var n = state.nodes[id];
+      return n && id !== 'start' && (n.note || '') !== next;
+    });
+    if (!touched.length) return;
+    pushHistory();
+    touched.forEach(function (id) {
+      if (next) state.nodes[id].note = next; else delete state.nodes[id].note;
+    });
+    renderAll();
+  }
+
+  /** Recolour a whole selection in ONE undo step (`null` resets to category). */
+  function setSelectionColor(ids, color) {
+    var use = color && isNodeColor(color) ? color : null;
+    var touched = (ids || []).filter(function (id) {
+      var n = state.nodes[id];
+      return n && id !== 'start' && (n.color || null) !== use;
+    });
+    if (!touched.length) return;
+    pushHistory();
+    touched.forEach(function (id) {
+      if (use) state.nodes[id].color = use; else delete state.nodes[id].color;
+    });
+    renderAll();
+  }
+
+  /**
+   * Pin / unpin a whole selection. Pins are VIEW state (they are not part of
+   * the graph), so this deliberately takes no history step — undo would have
+   * nothing to restore and would look broken.
+   */
+  function setSelectionPinned(ids, on) {
+    (ids || []).forEach(function (id) {
+      if (!state.nodes[id] || id === 'start') return;
+      if (on) nodePins[id] = true; else delete nodePins[id];
+    });
+    if (dom) renderNodes();
+  }
+
+  /**
+   * The serialized STEP of one node — the object the backend would actually
+   * receive, produced by the single serializer rather than a hand-rolled dump
+   * that could drift from it. Shared by "Copy node JSON" and its group twin.
+   */
+  function nodeStepJson(id) {
+    var n = state.nodes[id];
+    if (!n) return null;
+    var gs = GS();
+    if (!gs || !gs.graphToSteps) return { action: n.action, params: n.params || {} };
+    // Serialise a one-node graph so `coerceParams` + the condition builder run
+    // exactly as they do for a real save.
+    var solo = { nodes: { start: { id: 'start', action: '__start__', params: {} } },
+      edges: [{ from: 'start', to: id, port: 'next' }], nextId: 0 };
+    solo.nodes[id] = JSON.parse(JSON.stringify(n));
+    delete solo.nodes[id].disabled;        // a disabled node serialises to nothing
+    var steps = gs.graphToSteps(solo);
+    return steps[0] || {};
+  }
+
+  /** Copy `text` to the clipboard, with a fallback for non-secure contexts. */
+  function writeClipboard(text) {
+    var done = function (ok) {
+      if (U() && U().toast) U().toast(t(ok ? 'fe.copiedJson' : 'fe.copyFailed'), ok ? 'ok' : 'err');
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); },
+          function () { done(false); });
+        return true;
+      }
+    } catch (e) { /* fall through to the textarea path */ }
+    // Fallback for non-secure contexts, where navigator.clipboard is absent.
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(ta);
+      done(!!ok);
+      return !!ok;
+    } catch (e2) { done(false); return false; }
+  }
+
+  /** Copy ONE node's serialized step to the clipboard as JSON (Advanced ▸). */
+  function copyNodeJson(id) {
+    var step = nodeStepJson(id);
+    if (!step) return false;
+    return writeClipboard(JSON.stringify(step, null, 2));
+  }
+
+  /**
+   * Copy a whole selection as a JSON ARRAY of steps (group toolbar ▸ More).
+   * Order follows the main chain where the nodes sit on it, so the copied text
+   * reads in execution order rather than in click order.
+   */
+  function copySelectionJson(ids) {
+    var list = (ids || []).filter(function (id) { return !!state.nodes[id]; });
+    if (!list.length) return false;
+    var order = chainNodeIds();
+    list.sort(function (a, b) {
+      var ia = order.indexOf(a), ib = order.indexOf(b);
+      if (ia === -1) ia = Infinity;
+      if (ib === -1) ib = Infinity;
+      return ia - ib;
+    });
+    var steps = list.map(nodeStepJson).filter(Boolean);
+    return writeClipboard(JSON.stringify(steps, null, 2));
+  }
+
+  // ---- Inline prompt popover (Rename / Add Comment) -------------------------
+  //
+  // The browser's native `prompt` dialog was the cheap option and was rejected:
+  // it is a browser chrome dialog that ignores the product's RTL direction, its
+  // own dark theme and its i18n, and Playwright/automated review cannot see it.
+  // This is a small
+  // focus-trapped popover instead — Enter commits, Esc cancels, blur-to-cancel
+  // is deliberately NOT used (a stray click must not silently discard typing).
+  function closeInlinePrompt() {
+    var ex = document.querySelector('.fe-prompt');
+    if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+  }
+
+  function openInlinePrompt(opts) {
+    closeInlinePrompt();
+    var o = opts || {};
+    var box = document.createElement('div');
+    box.className = 'fe-prompt';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'false');
+    box.setAttribute('aria-label', o.title || '');
+    var inputId = 'fe-prompt-' + Date.now();
+    box.innerHTML =
+      '<label class="fe-prompt-title" for="' + inputId + '">' + esc(o.title || '') + '</label>' +
+      (o.multiline
+        ? '<textarea class="fe-prompt-input" id="' + inputId + '" rows="3"></textarea>'
+        : '<input type="text" class="fe-prompt-input" id="' + inputId + '" />') +
+      '<div class="fe-prompt-row">' +
+        '<button type="button" class="fe-prompt-ok">' + esc(t('fe.promptOk')) + '</button>' +
+        '<button type="button" class="fe-prompt-cancel">' + esc(t('fe.promptCancel')) + '</button>' +
+        '<span class="fe-prompt-hint">' + esc(t('fe.promptHint')) + '</span>' +
+      '</div>';
+    document.body.appendChild(box);
+
+    var input = box.querySelector('.fe-prompt-input');
+    input.value = o.value == null ? '' : String(o.value);
+    if (o.placeholder) input.placeholder = o.placeholder;
+
+    function commit() {
+      var v = input.value;
+      closeInlinePrompt();
+      if (typeof o.onOk === 'function') o.onOk(v);
+    }
+    box.querySelector('.fe-prompt-ok').addEventListener('click', commit);
+    box.querySelector('.fe-prompt-cancel').addEventListener('click', closeInlinePrompt);
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') { ev.stopPropagation(); closeInlinePrompt(); return; }
+      // In a textarea Enter inserts a newline; Ctrl/Cmd+Enter commits instead.
+      if (ev.key !== 'Enter') return;
+      if (o.multiline && !(ev.ctrlKey || ev.metaKey)) return;
+      ev.preventDefault();
+      commit();
+    });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+
+    // Position next to the trigger, flipped back inside the viewport.
+    var r = box.getBoundingClientRect();
+    var x = Math.min(o.x == null ? 120 : o.x, window.innerWidth - r.width - 8);
+    var y = Math.min(o.y == null ? 120 : o.y, window.innerHeight - r.height - 8);
+    box.style.left = Math.max(8, x) + 'px';
+    box.style.top = Math.max(8, y) + 'px';
+    input.focus();
+    input.select();
+    return box;
+  }
+
   // ---- Copy / paste ---------------------------------------------------------
   function copySelection() {
     var ids = activeSelection();
@@ -1829,8 +2310,18 @@
     clipboard = {
       nodes: ids.map(function (id) {
         var n = state.nodes[id];
-        return { action: n.action, params: JSON.parse(JSON.stringify(n.params || {})),
+        // A CLONE has to be a clone: the annotations (label/note/color/
+        // disabled) and the error-handling settings are part of the node the
+        // user is duplicating, so copying only action+params would quietly
+        // produce a different node than the one on screen.
+        var copy = { action: n.action, params: JSON.parse(JSON.stringify(n.params || {})),
           x: n.x, y: n.y };
+        if (n.label) copy.label = n.label;
+        if (n.note) copy.note = n.note;
+        if (n.color) copy.color = n.color;
+        if (n.disabled === true) copy.disabled = true;
+        if (n.errorPolicy) copy.errorPolicy = JSON.parse(JSON.stringify(n.errorPolicy));
+        return copy;
       }),
       // keep internal edges between copied nodes (relative by array index),
       // preserving the originating port so branch structure survives paste.
@@ -1847,9 +2338,15 @@
     clipboard.nodes.forEach(function (c) {
       var id = uid('n');
       newIds.push(id);
-      state.nodes[id] = { id: id, action: c.action,
+      var nn = { id: id, action: c.action,
         params: JSON.parse(JSON.stringify(c.params || {})),
         x: snap(c.x + 40), y: snap(c.y + 40) };
+      if (c.label) nn.label = c.label;
+      if (c.note) nn.note = c.note;
+      if (c.color && isNodeColor(c.color)) nn.color = c.color;
+      if (c.disabled === true) nn.disabled = true;
+      if (c.errorPolicy) nn.errorPolicy = JSON.parse(JSON.stringify(c.errorPolicy));
+      state.nodes[id] = nn;
       state.selSet[id] = true;
     });
     clipboard.edges.forEach(function (e) {
@@ -1897,7 +2394,23 @@
     addNode(actionId, snap(center.x - nodeW() / 2 + offset * 26), snap(center.y - 22 + offset * 30));
   }
 
-  function paletteItem(a) {
+  /**
+   * One catalog row. Used by BOTH the docked BLOCKS palette and the floating
+   * Add Node palette (item H) — the second surface reuses this renderer instead
+   * of owning a copy, so the star, the drag payload, the category dot and the
+   * keyboard contract can never drift apart between them.
+   *
+   * @param {object} a     catalog action
+   * @param {object} [opts]
+   *        opts.onPick(actionId) — replaces the default "drop at viewport
+   *        centre" behaviour (the Add Node palette inserts at a chosen point and
+   *        wires the new node to a source port instead).
+   */
+  function paletteItem(a, opts) {
+    var o = opts || {};
+    var pick = typeof o.onPick === 'function'
+      ? function () { o.onPick(a.id); }
+      : function () { placeNewNode(a.id); };
     var cat = categoryOf(a.id);
     var item = document.createElement('div');
     item.className = 'palette-item';
@@ -1925,7 +2438,7 @@
         IC('star', 12) + '</button>';
     item.addEventListener('click', function (ev) {
       if (ev.target && ev.target.closest && ev.target.closest('.pi-star')) return;
-      placeNewNode(a.id);
+      pick();
     });
     item.addEventListener('keydown', function (ev) {
       // The star is a real <button>: it turns Enter/Space into its own `click`,
@@ -1933,14 +2446,17 @@
       if (ev.target !== item) return;
       if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
       ev.preventDefault();            // Space would otherwise scroll the list
-      placeNewNode(a.id);
+      pick();
     });
     var star = item.querySelector('.pi-star');
     if (star) star.addEventListener('click', function (ev) {
       ev.stopPropagation();
       if (paletteFavs[a.id]) delete paletteFavs[a.id]; else paletteFavs[a.id] = true;
       savePaletteFavs();
-      renderPaletteList();
+      // Both surfaces read the SAME store, so both have to repaint — starring a
+      // block in the floating palette must show up in the docked one too.
+      if (dom && dom.palette && dom.palette.querySelector('.palette-list')) renderPaletteList();
+      if (document.querySelector('.fe-addnode')) renderAddList();
     });
     // HTML5 drag-and-drop onto the canvas
     item.addEventListener('dragstart', function (ev) {
@@ -1948,6 +2464,306 @@
       ev.dataTransfer.effectAllowed = 'copy';
     });
     return item;
+  }
+
+  // ---- Item H: the floating "Add Node" palette -------------------------------
+  //
+  // Reference: docs/uiux/shell-add-node-palette.webp + .md § "Right overlay:
+  // Add Node palette" — a titled card with `Search nodes...`, a CATEGORY column
+  // on the start edge and the matching node presets on the end edge. The spec
+  // calls it "a quick insertion launcher rather than a full library page", so it
+  // is transient (Esc / outside click closes it) and it never replaces the
+  // docked BLOCKS palette.
+  //
+  // It is a second SURFACE over the same data, never a second catalog: rows come
+  // from `paletteItem()`, groups from `PALETTE_GROUPS`, counts from the real
+  // members, favourites from the same `paletteFavs` store.
+  //
+  // Four entry points, all of which knew where the node should go BEFORE the
+  // palette opened — which is exactly why the docked palette could not serve
+  // them (it always drops at the viewport centre):
+  //   1. the empty-state card's `+ Add First Node`   -> after Start
+  //   2. the canvas toolbar's `+`                     -> after the selection, or
+  //                                                      at the viewport centre
+  //   3. `Tab` on the canvas                          -> same as (2)
+  //   4. dragging a connection into empty canvas      -> at the drop point,
+  //                                                      wired to that port
+  var addState = null;   // { cat, q, world:{x,y}, from:{nodeId,port}|null, active }
+  var ADD_ALL = '__all__';
+  var ADD_FAV = '__fav__';
+
+  function closeAddPalette() {
+    var ex = document.querySelector('.fe-addnode');
+    if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+    addState = null;
+    // The dashed "pending connection" hint on the source port goes with it.
+    if (dom && dom.world) {
+      var hint = dom.world.querySelectorAll('.fe-node-pending');
+      Array.prototype.forEach.call(hint, function (h) { h.classList.remove('fe-node-pending'); });
+    }
+  }
+
+  /** Catalog groups for the palette's category column, with REAL counts. */
+  function addCategories() {
+    var out = [{ id: ADD_FAV, icon: 'star', label: t('pl.favorites'),
+      count: ACTIONS.filter(function (a) { return paletteFavs[a.id]; }).length, color: '#F5C542' }];
+    PALETTE_GROUPS.forEach(function (g) {
+      var members = ACTIONS.filter(function (a) { return (a.cat || 'other') === g.id; });
+      if (!members.length) return;
+      var cat = (CAT.categoryById && CAT.categoryById(g.id)) ||
+        { color: '#6b7280', label: 'cat.other' };
+      out.push({ id: g.id, icon: g.icon, label: t(cat.label),
+        count: members.length, color: cat.color });
+    });
+    out.push({ id: ADD_ALL, icon: 'grid', label: t('an.all'),
+      count: ACTIONS.length, color: '#97A2B3' });
+    return out;
+  }
+
+  /** The actions the palette should currently list. */
+  function addMatches() {
+    var q = (addState && addState.q || '').trim().toLowerCase();
+    return ACTIONS.filter(function (a) {
+      if (q) {
+        // A search spans the WHOLE catalog: hiding hits because another
+        // category is selected is the classic "my search is broken" report.
+        var hay = a.id.toLowerCase();
+        var human = NODE_DISPLAY_NAMES && NODE_DISPLAY_NAMES[a.id]
+          ? String(t(NODE_DISPLAY_NAMES[a.id])).toLowerCase() : '';
+        return hay.indexOf(q) !== -1 || (human && human.indexOf(q) !== -1);
+      }
+      if (addState.cat === ADD_ALL) return true;
+      if (addState.cat === ADD_FAV) return !!paletteFavs[a.id];
+      return (a.cat || 'other') === addState.cat;
+    });
+  }
+
+  /** Insert the picked action, wire it to the source port, and close. */
+  function addPick(actionId) {
+    if (!addState) return;
+    var world = addState.world || { x: 320, y: 220 };
+    var from = addState.from;
+    closeAddPalette();
+    var before = Object.keys(state.nodes);
+    addNode(actionId, snap(world.x), snap(world.y));
+    // addNode() picks the id itself, so find the one that appeared.
+    var created = Object.keys(state.nodes).filter(function (id) {
+      return before.indexOf(id) === -1;
+    })[0];
+    if (created && from && from.nodeId && state.nodes[from.nodeId]) {
+      connect(from.nodeId, created, from.port || 'next');
+    }
+    if (created) centerOnNode(created);
+  }
+
+  function renderAddList() {
+    var panel = document.querySelector('.fe-addnode');
+    if (!panel || !addState) return;
+    var list = panel.querySelector('.an-list');
+    if (!list) return;
+    list.innerHTML = '';
+    var hits = addMatches();
+    if (!hits.length) {
+      list.innerHTML = '<div class="an-empty">' + esc(t('fe.noNodes')) + '</div>';
+      return;
+    }
+    hits.forEach(function (a, i) {
+      var row = paletteItem(a, { onPick: addPick });
+      if (i === (addState.active || 0)) row.classList.add('is-active');
+      row.setAttribute('data-add-index', String(i));
+      list.appendChild(row);
+    });
+    // Category column counts change with the favourites, so repaint them too.
+    var cats = panel.querySelectorAll('.an-cat');
+    Array.prototype.forEach.call(cats, function (c) {
+      c.classList.toggle('is-on', c.getAttribute('data-cat') === addState.cat);
+    });
+    var count = panel.querySelector('.an-count');
+    if (count) count.textContent = String(hits.length);
+  }
+
+  /** Move the highlighted row and keep it in view (ArrowUp/ArrowDown). */
+  function addMove(delta) {
+    if (!addState) return;
+    var n = addMatches().length;
+    if (!n) return;
+    var next = (addState.active || 0) + delta;
+    if (next < 0) next = n - 1;
+    if (next >= n) next = 0;
+    addState.active = next;
+    renderAddList();
+    var el = document.querySelector('.fe-addnode .palette-item.is-active');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  /**
+   * @param {object} [opts]
+   *   opts.world  {x,y} world coords for the new node (default: viewport centre)
+   *   opts.from   {nodeId, port} to wire the new node to
+   *   opts.at     {x,y} viewport coords to anchor the panel at
+   */
+  function openAddPalette(opts) {
+    closeAddPalette();
+    closeNodeMenu();
+    var o = opts || {};
+    loadPaletteFavs();
+
+    var world = o.world;
+    if (!world && dom && dom.canvas) {
+      var rect = dom.canvas.getBoundingClientRect();
+      var c = worldPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      world = { x: c.x - nodeW() / 2, y: c.y - 22 };
+    }
+    addState = { cat: ADD_ALL, q: '', active: 0, world: world || { x: 320, y: 220 },
+      from: o.from || null };
+
+    var panel = document.createElement('div');
+    panel.className = 'fe-addnode';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', t('an.title'));
+    panel.innerHTML =
+      '<div class="an-head">' +
+        '<span class="an-title">' + IC('plus', 14) + '<span>' + esc(t('an.title')) + '</span></span>' +
+        '<span class="an-count" aria-hidden="true"></span>' +
+        '<button type="button" class="an-close" title="' + esc(t('fe.close')) + '"' +
+          ' aria-label="' + esc(t('fe.close')) + '">' + IC('x', 14) + '</button>' +
+      '</div>' +
+      (addState.from
+        ? '<div class="an-from">' + IC('corner-down-left', 12) +
+          '<span>' + esc(t('an.fromNode')) + ': ' +
+          esc(nodeTitle(state.nodes[addState.from.nodeId] || { action: '' })) + '</span></div>'
+        : '') +
+      '<div class="an-searchrow">' +
+        '<span class="ps-ic" aria-hidden="true">' + IC('search', 13) + '</span>' +
+        '<input type="text" class="an-search" />' +
+      '</div>' +
+      '<div class="an-body">' +
+        '<div class="an-cats" role="tablist" aria-label="' + esc(t('an.categories')) + '"></div>' +
+        '<div class="an-list" role="listbox" aria-label="' + esc(t('an.title')) + '"></div>' +
+      '</div>' +
+      '<div class="an-foot">' +
+        '<span>' + IC('corner-down-left', 11) + esc(t('an.hintEnter')) + '</span>' +
+        '<span>' + IC('keyboard', 11) + esc(t('an.hintKeys')) + '</span>' +
+      '</div>';
+
+    var search = panel.querySelector('.an-search');
+    search.placeholder = t('an.search');
+    search.setAttribute('aria-label', t('an.search'));
+    search.addEventListener('input', function () {
+      addState.q = search.value;
+      addState.active = 0;
+      renderAddList();
+    });
+    search.addEventListener('keydown', function (ev) {
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); addMove(1); return; }
+      if (ev.key === 'ArrowUp') { ev.preventDefault(); addMove(-1); return; }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        var hits = addMatches();
+        var a = hits[addState.active || 0];
+        if (a) addPick(a.id);
+        return;
+      }
+      if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); closeAddPalette(); }
+    });
+
+    panel.querySelector('.an-close').addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      closeAddPalette();
+    });
+
+    var cats = panel.querySelector('.an-cats');
+    addCategories().forEach(function (c) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'an-cat' + (c.id === addState.cat ? ' is-on' : '');
+      b.setAttribute('data-cat', c.id);
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', c.id === addState.cat ? 'true' : 'false');
+      b.style.setProperty('--cat-color', c.color);
+      b.innerHTML = '<span class="an-cat-ic">' + IC(c.icon, 14) + '</span>' +
+        '<span class="an-cat-label">' + esc(c.label) + '</span>' +
+        '<span class="an-cat-count">' + c.count + '</span>';
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        addState.cat = c.id;
+        addState.active = 0;
+        // Selecting a category while a query is active would show a list that
+        // does not match the highlighted tab, so the query is cleared with it.
+        addState.q = '';
+        var s = panel.querySelector('.an-search');
+        if (s) { s.value = ''; s.focus(); }
+        Array.prototype.forEach.call(panel.querySelectorAll('.an-cat'), function (o2) {
+          var on = o2.getAttribute('data-cat') === c.id;
+          o2.classList.toggle('is-on', on);
+          o2.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        renderAddList();
+      });
+      cats.appendChild(b);
+    });
+
+    panel.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    document.body.appendChild(panel);
+    renderAddList();
+
+    // Anchor near the trigger, flipped back inside the viewport.
+    var r = panel.getBoundingClientRect();
+    var ax = o.at && o.at.x != null ? o.at.x : (window.innerWidth - r.width) / 2;
+    var ay = o.at && o.at.y != null ? o.at.y : (window.innerHeight - r.height) / 2;
+    panel.style.left = Math.max(8, Math.min(ax, window.innerWidth - r.width - 8)) + 'px';
+    panel.style.top = Math.max(8, Math.min(ay, window.innerHeight - r.height - 8)) + 'px';
+    search.focus();
+
+    // Mark the source node so it is obvious what the new node will attach to.
+    if (addState.from && dom && dom.world) {
+      var card = dom.world.querySelector('.flow-node[data-node="' + addState.from.nodeId + '"]');
+      if (card) card.classList.add('fe-node-pending');
+    }
+    return panel;
+  }
+
+  /**
+   * Where a node inserted "after" `nodeId` should land: one node-width plus a
+   * gutter to the end side, on the grid, nudged down while the slot is taken so
+   * two insertions never stack exactly on top of each other.
+   */
+  function slotAfter(nodeId) {
+    var n = state.nodes[nodeId];
+    if (!n) return { x: 320, y: 220 };
+    var x = snap(n.x + nodeW() + 60);
+    var y = snap(n.y);
+    var guard = 0;
+    while (guard < 40) {
+      var taken = Object.keys(state.nodes).some(function (id) {
+        var o = state.nodes[id];
+        return Math.abs(o.x - x) < nodeW() && Math.abs(o.y - y) < 60;
+      });
+      if (!taken) break;
+      y = snap(y + 90);
+      guard += 1;
+    }
+    return { x: x, y: y };
+  }
+
+  /** Open the palette for "insert after the current selection / after Start". */
+  function openAddPaletteForSelection(at) {
+    var sel = activeSelection();
+    var fromId = sel.length === 1 ? sel[0] : null;
+    if (!fromId && Object.keys(state.nodes).length === 1) fromId = 'start';
+    if (fromId) {
+      // Only offer the wiring when that port is actually free — silently
+      // replacing an existing connection is not what "add a node" means.
+      var free = !state.edges.some(function (e) {
+        return e.from === fromId && (e.port || 'next') === 'next';
+      });
+      return openAddPalette({
+        world: slotAfter(fromId),
+        from: free ? { nodeId: fromId, port: 'next' } : null,
+        at: at,
+      });
+    }
+    return openAddPalette({ at: at });
   }
 
   // ---- BLOCKS palette: presentational grouping (item D) ----------------------
@@ -2376,9 +3192,32 @@
         if (card) {
           var toId = card.getAttribute('data-node');
           if (toId) connect(drag.from, toId, drag.fromPort || 'next');
+          drag = null;
+          renderAll();
+          return;
         }
+        // Item H, entry point 4: a connection dropped on EMPTY canvas used to be
+        // thrown away. It is now read as "I want a node here, attached to this
+        // port" — the Add Node palette opens at the drop point and the pick is
+        // wired to the port the drag started from.
+        var openAt = { x: ev.clientX, y: ev.clientY };
+        var dropWorld = worldPoint(ev.clientX, ev.clientY);
+        var fromId = drag.from;
+        var fromPort = drag.fromPort || 'next';
         drag = null;
         renderAll();
+        // Only inside the canvas: releasing over the palette, the toolbar or the
+        // minimap means "cancel", not "insert a node behind that widget".
+        var onCanvas = !!(el && dom.canvas && dom.canvas.contains(el) &&
+          !(el.closest && (el.closest('.fe-canvas-toolbar') || el.closest('.fe-view-pills') ||
+            el.closest('.fe-minimap-wrap') || el.closest('.fe-addnode'))));
+        if (fromId && state.nodes[fromId] && onCanvas) {
+          openAddPalette({
+            world: { x: snap(dropWorld.x), y: snap(dropWorld.y - 22) },
+            from: { nodeId: fromId, port: fromPort },
+            at: openAt,
+          });
+        }
         return;
       }
       if (drag.type === 'box') {
@@ -2410,13 +3249,24 @@
     // keyboard: Delete removes selection, Ctrl/Cmd+C/V copy-paste.
     // Any click that is not inside the floating node menu dismisses it.
     on(window, 'mousedown', function (ev) {
-      var m = document.querySelector('.fe-ctxmenu');
-      if (m && !m.contains(ev.target)) closeNodeMenu();
+      // A submenu is a SIBLING of its parent menu (see ctxItem), so "inside the
+      // menu" cannot be tested against one element — ask whether the event
+      // started inside ANY open menu, otherwise a click on a submenu row would
+      // tear the menus down before its own `click` ever fired.
+      if (document.querySelector('.fe-ctxmenu') &&
+          !(ev.target && ev.target.closest && ev.target.closest('.fe-ctxmenu'))) {
+        closeNodeMenu();
+      }
+      if (document.querySelector('.fe-addnode') &&
+          !(ev.target && ev.target.closest &&
+            (ev.target.closest('.fe-addnode') || ev.target.closest('.fe-empty-card')))) {
+        closeAddPalette();
+      }
     });
 
     on(window, 'keydown', function (ev) {
       if (!dom) return;
-      if (ev.key === 'Escape') closeNodeMenu();
+      if (ev.key === 'Escape') { closeNodeMenu(); closeInlinePrompt(); closeAddPalette(); }
       // Cmd/Ctrl+K focuses the blocks search — the shortcut the palette
       // advertises. Handled BEFORE the "ignore while typing" guard below, so it
       // still works from inside another field (which is the whole point of it).
@@ -2431,6 +3281,16 @@
       var tag = (ev.target && ev.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       var meta = ev.ctrlKey || ev.metaKey;
+      // Item H: `Tab` opens the floating Add Node palette (the shortcut n8n
+      // users already have in their fingers). Only when the editor's own canvas
+      // is mounted and nothing is being typed into, so it does not steal the
+      // browser's focus traversal from the surrounding shell chrome.
+      if (!meta && !ev.shiftKey && !ev.altKey && ev.key === 'Tab' && dom && dom.canvas) {
+        ev.preventDefault();
+        if (document.querySelector('.fe-addnode')) closeAddPalette();
+        else openAddPaletteForSelection();
+        return;
+      }
       if (ev.key === 'Delete' || ev.key === 'Backspace') {
         if (activeSelection().length) { ev.preventDefault(); removeSelection(); }
       } else if (meta && (ev.key === 'c' || ev.key === 'C')) {
@@ -2490,6 +3350,183 @@
     if (ex) ex.parentNode.removeChild(ex);
   }
 
+  // ---- Group selection: boundary + action toolbar (item I) -------------------
+  //
+  // `shell-add-node-palette.md` §2 describes two things that belong together:
+  //   * "The selected cluster is surrounded by a blue dashed group boundary."
+  //   * a "bottom group toolbar" near that cluster carrying, in order:
+  //     Disable · Delete · Clone · Group · Convert Subflow · Add Comment · More
+  //
+  // The reference screenshot has the NDV modal covering that area, so only the
+  // written inventory is locked, not the pixels: the chrome therefore borrows
+  // the already-reviewed `.fe-ctxmenu` / canvas-toolbar language instead of
+  // inventing a new one.
+  //
+  // Both elements live INSIDE `dom.world`, so panning and zooming move them
+  // with the nodes for free — no listener bookkeeping. The toolbar alone is
+  // counter-scaled through `--fe-inv-scale` (published by `applyViewTransform`)
+  // so its labels stay legible at 40% as well as at 200% zoom.
+  //
+  // It appears only for a MULTI selection (2+ nodes): for a single node the
+  // kebab context menu already owns every one of these actions, and a second
+  // floating widget over one card would just be in the way.
+  function selectionBBox(ids) {
+    var box = null;
+    (ids || []).forEach(function (id) {
+      var n = state.nodes[id];
+      if (!n) return;
+      var x2 = n.x + nodeW(), y2 = n.y + nodeH(n);
+      if (!box) { box = { minX: n.x, minY: n.y, maxX: x2, maxY: y2 }; return; }
+      box.minX = Math.min(box.minX, n.x);
+      box.minY = Math.min(box.minY, n.y);
+      box.maxX = Math.max(box.maxX, x2);
+      box.maxY = Math.max(box.maxY, y2);
+    });
+    return box;
+  }
+
+  function clearSelectionTools() {
+    if (!dom || !dom.world) return;
+    ['.fe-selbox', '.fe-seltools'].forEach(function (sel) {
+      var ex = dom.world.querySelector(sel);
+      if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+    });
+  }
+
+  /** One toolbar button. `disabled` rows are visibly dead + carry a tooltip. */
+  function selBtn(spec) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fe-selbtn' + (spec.danger ? ' is-danger' : '') +
+      (spec.disabled ? ' is-disabled' : '');
+    b.innerHTML = IC(spec.icon, 14) + '<span>' + esc(spec.label) + '</span>';
+    if (spec.disabled) {
+      b.disabled = true;
+      b.setAttribute('aria-disabled', 'true');
+      b.title = spec.hint || spec.label;
+    } else {
+      b.title = spec.label;
+      b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      b.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        spec.fn(b);
+      });
+    }
+    return b;
+  }
+
+  /** The `More ▸` menu: the group twins of the per-node Advanced submenu. */
+  function openSelectionMore(ids, clientX, clientY) {
+    closeNodeMenu();
+    var allPinned = ids.every(function (id) { return !!nodePins[id]; });
+    var menu = document.createElement('div');
+    menu.className = 'fe-ctxmenu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', t('sel.more'));
+    menu.appendChild(ctxColorRow(ids));
+    [
+      { icon: 'braces', label: t('sel.copyJson'),
+        fn: function () { copySelectionJson(ids); } },
+      { icon: 'pin', label: t(allPinned ? 'sel.unpinAll' : 'sel.pinAll'),
+        fn: function () { setSelectionPinned(ids, !allPinned); } },
+      { icon: 'layout', label: t('sel.alignRow'),
+        fn: function () { alignSelection(ids); } },
+    ].forEach(function (it) { menu.appendChild(ctxItem(it)); });
+    document.body.appendChild(menu);
+    var r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(clientX, window.innerWidth - r.width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(clientY, window.innerHeight - r.height - 8)) + 'px';
+    var rows = menu.querySelectorAll('.fe-ctxitem:not(.is-disabled)');
+    if (rows.length) rows[0].focus();
+  }
+
+  /**
+   * Align a selection on its top-most row, evenly spaced along the flow axis.
+   * Purely positional, so it is a real, honest action with a single undo step.
+   */
+  function alignSelection(ids) {
+    var list = (ids || []).filter(function (id) { return !!state.nodes[id]; });
+    if (list.length < 2) return;
+    list.sort(function (a, b) { return state.nodes[a].x - state.nodes[b].x; });
+    var y = snap(Math.min.apply(null, list.map(function (id) { return state.nodes[id].y; })));
+    var x0 = snap(state.nodes[list[0]].x);
+    var gap = snap(nodeW() + 80);
+    pushHistory();
+    list.forEach(function (id, i) {
+      state.nodes[id].x = x0 + i * gap;
+      state.nodes[id].y = y;
+    });
+    renderAll();
+  }
+
+  function renderSelectionTools() {
+    if (!dom || !dom.world) return;
+    clearSelectionTools();
+    // Never while a drag is live: a boundary that lags one frame behind the
+    // cards it is supposed to wrap reads as a rendering bug.
+    if (drag) return;
+    var ids = activeSelection();
+    if (ids.length < 2) return;
+    var box = selectionBBox(ids);
+    if (!box) return;
+
+    var pad = 16;
+    var frame = document.createElement('div');
+    frame.className = 'fe-selbox';
+    frame.style.left = (box.minX - pad) + 'px';
+    frame.style.top = (box.minY - pad) + 'px';
+    frame.style.width = (box.maxX - box.minX + pad * 2) + 'px';
+    frame.style.height = (box.maxY - box.minY + pad * 2) + 'px';
+    dom.world.appendChild(frame);
+
+    var bar = document.createElement('div');
+    bar.className = 'fe-seltools';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', t('sel.toolbar'));
+    // Anchored to the bottom-centre of the boundary, per "a compact toolbar
+    // appears near the selected group" — the CSS does the -50% / counter-scale.
+    bar.style.left = ((box.minX + box.maxX) / 2) + 'px';
+    bar.style.top = (box.maxY + pad + 10) + 'px';
+
+    var count = document.createElement('span');
+    count.className = 'fe-selcount';
+    // Real count, straight off the selection — never a placeholder number.
+    count.innerHTML = '<b>' + ids.length + '</b><span>' + esc(t('sel.selected')) + '</span>';
+    bar.appendChild(count);
+
+    var allOff = ids.every(function (id) { return state.nodes[id].disabled === true; });
+    [
+      { icon: allOff ? 'eye' : 'eye-off', label: t(allOff ? 'sel.enable' : 'sel.disable'),
+        fn: function () { setSelectionDisabled(ids, !allOff); } },
+      { icon: 'trash', label: t('sel.delete'), danger: true,
+        fn: function () { removeSelection(); } },
+      { icon: 'copy', label: t('sel.clone'),
+        // The clipboard path already duplicates internal edges + annotations
+        // and moves the selection onto the copies, so a group clone is exactly
+        // a copy followed by a paste — not a second, drifting implementation.
+        fn: function () { copySelection(); pasteClipboard(); } },
+      // No frame/container concept exists in the graph model yet, so this is
+      // rendered dead with a tooltip rather than pretending to work.
+      { icon: 'frame', label: t('sel.group'), disabled: true, hint: t('sel.groupSoon') },
+      { icon: 'sitemap', label: t('fe.convertSubflow'), disabled: true,
+        hint: t('fe.convertSubflowSoon') },
+      { icon: 'message-square', label: t('fe.addComment'), fn: function (btn) {
+        var r = btn.getBoundingClientRect();
+        openInlinePrompt({
+          title: t('fe.addComment'), value: '', multiline: true,
+          x: r.left, y: r.bottom + 6,
+          onOk: function (v) { setSelectionComment(ids, v); },
+        });
+      } },
+      { icon: 'more-vertical', label: t('sel.more'), fn: function (btn) {
+        var r = btn.getBoundingClientRect();
+        openSelectionMore(ids, r.left, r.bottom + 6);
+      } },
+    ].forEach(function (spec) { bar.appendChild(selBtn(spec)); });
+    dom.world.appendChild(bar);
+  }
+
   // ---- Canvas overlay: view-action pills + floating toolbar + minimap --------
   // Items F + G of the uiux gap list.
   //
@@ -2517,6 +3554,12 @@
     pills.setAttribute('role', 'group');
     pills.setAttribute('aria-label', esc(t('fe.canvasTools')));
     pills.innerHTML =
+      // Item H's canvas entry point. It leads the row because "add a node" is
+      // the most common thing anyone does on a canvas, and it is the affordance
+      // the empty-state card promises once the canvas is no longer empty.
+      '<button class="fe-tb-btn fe-view-pill is-primary" data-view="addnode" title="' +
+        esc(t('an.hintKeys')) + '">' +
+        IC('plus') + '<span>' + esc(t('an.title')) + '</span></button>' +
       '<button class="fe-tb-btn fe-view-pill" data-view="autolayout" title="' +
         esc(t('fe.autoLayoutHint')) + '">' +
         IC('layout') + '<span>' + esc(t('fe.autoLayout')) + '</span></button>' +
@@ -2587,7 +3630,10 @@
         b.addEventListener('click', function (ev) {
           ev.stopPropagation();
           var v = b.getAttribute('data-view');
-          if (v === 'autolayout') autoLayout();
+          if (v === 'addnode') {
+            var br = b.getBoundingClientRect();
+            openAddPaletteForSelection({ x: br.left - 220, y: br.bottom + 8 });
+          } else if (v === 'autolayout') autoLayout();
           else if (v === 'focus') toggleFocusMode();
           else toggleFullscreen();
         });
