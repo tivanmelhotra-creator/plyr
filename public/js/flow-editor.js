@@ -1340,6 +1340,48 @@
     renderSelectionTools();
   }
 
+  /**
+   * Repaint SELECTION ONLY, in place, without rebuilding a single card.
+   *
+   * WHY THIS EXISTS — it fixes a bug that made the NDV unreachable.
+   * Selection changes exactly one thing on a card: the `selected` class (see
+   * `renderNode`, which is the only place that reads `state.selected` /
+   * `state.selSet`). `selectNode()` nevertheless called `renderNodes()`, which
+   * removes every `.flow-node` and builds new elements. So a single click on a
+   * card DESTROYED the element the mouse had just pressed. A `dblclick` event
+   * is only dispatched when both clicks share one target, so
+   * "double-click a node card to open its NDV" — the documented primary gesture
+   * — could never fire, on the first attempt or any attempt. The NDV was
+   * reachable solely through the right-click menu's `ndv.open` item.
+   *
+   * Measured before the fix: after one synthetic click,
+   * `document.body.contains(card) === false`.
+   *
+   * Returns false when the DOM and `state.nodes` disagree — a caller that
+   * mutated the graph before selecting still needs a real `renderNodes()`.
+   */
+  function applySelectionPaint() {
+    if (!dom || !dom.world || !state || !state.nodes) return false;
+    var cards = dom.world.querySelectorAll('.flow-node');
+    if (cards.length !== Object.keys(state.nodes).length) return false;
+    var ok = true;
+    Array.prototype.forEach.call(cards, function (card) {
+      var id = card.getAttribute('data-node');
+      if (!id || !state.nodes[id]) { ok = false; return; }
+      var on = state.selected === id || !!(state.selSet && state.selSet[id]);
+      // `classList.toggle` with a second argument is idempotent, so an
+      // unchanged card is genuinely untouched — no style recalc, no identity
+      // loss, and any in-flight gesture on it survives.
+      card.classList.toggle('selected', on);
+    });
+    if (!ok) return false;
+    // The group boundary + toolbar are also a function of the selection, and
+    // `renderNodes` used to be the only thing that refreshed them. Keeping that
+    // pairing here is what stops this fast path from leaving them stale.
+    renderSelectionTools();
+    return true;
+  }
+
   // Aria spec (state-empty-canvas.md): centered card with an orange icon
   // circle + "Add First Node" CTA when the canvas only holds the start node.
   function renderEmptyState() {
@@ -1373,12 +1415,24 @@
   }
 
   // Step 24: append a small validation summary (errors/warnings) to a box.
-  function appendValidation(box) {
+  //
+  // `onlyNodeId` narrows the summary to one node and suppresses the all-clear
+  // row. The designed NDV passes it because the locked preview has no
+  // graph-status band inside the modal (the 1:1 crop ends at `Continue on
+  // fail`), and because a whole-GRAPH verdict is not information about the node
+  // being edited — it was costing 36px of the centre column's scroll height to
+  // say "Graph is valid" in a single-node editor. Problems that DO belong to
+  // this node still surface here; only the noise is gone.
+  function appendValidation(box, onlyNodeId) {
     var res = validate();
     var wrap = document.createElement('div');
     wrap.className = 'fe-validation';
     var items = (res.errors || []).map(function (e) { return { kind: 'error', it: e }; })
       .concat((res.warnings || []).map(function (w) { return { kind: 'warn', it: w }; }));
+    if (onlyNodeId) {
+      items = items.filter(function (entry) { return entry.it && entry.it.nodeId === onlyNodeId; });
+      if (!items.length) return;
+    }
     if (!items.length) {
       wrap.innerHTML = '<span class="v-ok">' + IC('check', 13) + ' ' + esc(t('val.ok')) + '</span>';
       box.appendChild(wrap);
@@ -2052,7 +2106,7 @@
     ndv.appendChild(cols);
     body.appendChild(ndv);
 
-    appendValidation(body);
+    appendValidation(body, designed ? node.id : null);
     renderFieldFeedback();
   }
 
@@ -2280,7 +2334,12 @@
     state.selected = id;
     state.selSet = {};
     if (id && id !== 'start') state.selSet[id] = true;
-    renderNodes();
+    // Paint in place. The full rebuild this used to do destroyed the card the
+    // user had just pressed and so swallowed every `dblclick` — see
+    // `applySelectionPaint()`. Fall back to a real render only when the DOM and
+    // the graph disagree, which is the case for callers that add a node and then
+    // select it.
+    if (!applySelectionPaint()) renderNodes();
     renderInspector();
   }
 

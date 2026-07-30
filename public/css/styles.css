@@ -2029,7 +2029,13 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 /* The designed NDV is wider than the generic one (spec: 72-82% viewport). */
 .ndv-modal.is-designed {
   width: min(1180px, 94vw);
-  max-height: min(820px, 94vh);
+  /* `height`, not `max-height`: the spec says the modal takes "almost the full
+     usable canvas height", and the three columns can only place their own
+     furniture (fixed heads, pinned OUTPUT status strip) against a height that
+     does not depend on which node is open. `max-height` is kept as the hard
+     ceiling for short viewports. */
+  height: min(820px, 94vh);
+  max-height: 94vh;
 }
 .ndv-modal.is-designed .ndv-body { padding: 0; }
 .ndv-modal.is-designed .ndv { gap: 0; }
@@ -2037,6 +2043,105 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   grid-template-columns: minmax(210px, 0.86fr) minmax(0, 1.55fr) minmax(210px, 0.86fr);
   gap: 0;
   align-items: stretch;
+}
+
+/* ---- fixed-height shell: every column scrolls on its own ------------------
+ * MEASURED BUG (2026-07-30, G7): the designed NDV had no height contract, so
+ * the single grid row stretched to its tallest child — 1118px of centre
+ * sections — inside a 757px `.ndv-body`, and `.ndv-body` (the only
+ * `overflow: auto` anywhere in the chain) became the ONE scroller for the whole
+ * modal. Four things followed from that:
+ *   1. the INPUT / OUTPUT column heads, Schema|Table|JSON tabs, run selector
+ *      and search fields scrolled away with the data instead of staying put;
+ *   2. `.aria-col-body` — which already declares
+ *      `flex: 1 1 auto; min-height: 0; overflow: auto` — never scrolled,
+ *      because its column was 1118px tall, i.e. taller than its own content;
+ *   3. the OUTPUT status strip that the spec pins to "the very bottom" of the
+ *      column sat ~300px BELOW the modal's bottom edge;
+ *   4. `Optional modifiers` (y=988) and `Behavior` (y=1076) were outside a
+ *      modal ending at y=881 when it opened — present in the DOM, reachable
+ *      only by scrolling the entire modal.
+ * The chain below is what makes a percentage height survive: every flex/grid
+ * ancestor between the scroller and the modal needs `min-height: 0`, because
+ * the default `min-height: auto` on a flex item (and the default `auto` row
+ * size on a grid) refuses to shrink below its content.
+ * DO NOT give `.ndv-body` back an `overflow` here — that reinstates the single
+ * outer scroller and silently disables all three inner ones. */
+.ndv-modal.is-designed .ndv-body {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ndv-modal.is-designed .ndv {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ndv-modal.is-designed .ndv-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* An explicit single row completes the contract: `align-items: stretch`
+     alone still lets an `auto` row grow past the container. */
+  grid-template-rows: minmax(0, 1fr);
+}
+/* The centre column's scroller. INPUT and OUTPUT already have
+   `.aria-col-body`; the centre has `.ndv-pane` under its tab row. */
+.ndv-modal.is-designed .ndv-pane {
+  overflow: auto;
+  /* The bands below share their borders, so any gap here would break the stack
+     back into cards — and 6 gaps x 10px was 60px of the overflow on its own. */
+  gap: 0;
+  /* Bleed the padding so a scrollbar does not eat into the section cards. */
+  margin: 0 -16px;
+  padding: 0 16px 2px;
+}
+.ndv-modal.is-designed .ndv-pane::-webkit-scrollbar { width: 8px; height: 8px; }
+.ndv-modal.is-designed .ndv-pane::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08); border-radius: 8px;
+}
+.ndv-modal.is-designed .ndv-pane::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- centre sections are BANDS, not free-floating cards -------------------
+ * Cropping `docs/uiux/ndv-click-element-final.webp` at 1:1 (centre column, the
+ * 570px slice at +550+130) shows the six sections as one continuous bordered
+ * stack: a single hairline BETWEEN neighbours, no gap, no doubled borders, and
+ * radius only on the two ends. Shipping them as separate 10px-radius cards with
+ * an 8px gap cost 5 gaps + 10 border edges of pure vertical space — ~50px, on
+ * top of making the column read as a list of chips instead of one instrument
+ * panel. Measured section heights in that crop, for reference:
+ *   Selector 164 · Click options 104 · Selector options 168 ·
+ *   Position offsets 80 · Optional modifiers 62 · Behavior 84 ·
+ *   Continue on fail 39   (total 701px of centre content) */
+.ndv-modal.is-designed .aria-sec {
+  border-radius: 0;
+  padding: 9px 12px 11px;
+}
+.ndv-modal.is-designed .aria-sec + .aria-sec {
+  margin-top: 0;
+  border-top: 0;   /* the previous band's bottom border is the divider */
+}
+.ndv-modal.is-designed .aria-sec:first-of-type {
+  border-start-start-radius: var(--ndv-sec-radius, 10px);
+  border-start-end-radius: var(--ndv-sec-radius, 10px);
+}
+.ndv-modal.is-designed .aria-sec:last-of-type {
+  border-end-start-radius: var(--ndv-sec-radius, 10px);
+  border-end-end-radius: var(--ndv-sec-radius, 10px);
+}
+
+/* Below the 3-column breakpoint the columns stack, and three independently
+   scrolling strips in one short modal would be unusable. Hand the scroll back
+   to the body and let the modal size to its content again. */
+@media (max-width: 860px) {
+  .ndv-modal.is-designed {
+    height: auto;
+    max-height: min(820px, 94vh);
+  }
+  .ndv-modal.is-designed .ndv-cols { grid-template-columns: 1fr; grid-template-rows: none; }
+  .ndv-modal.is-designed .ndv-body { overflow: auto; display: block; }
+  .ndv-modal.is-designed .ndv-pane { overflow: visible; }
+  .ndv-modal.is-designed .ndv-col-input { border-right: 0; border-bottom: 1px solid var(--border); }
+  .ndv-modal.is-designed .ndv-col-output { border-left: 0; border-top: 1px solid var(--border); }
 }
 /* Columns are separated by hairlines, not gaps — as in the previews. */
 .ndv-modal.is-designed .ndv-col {
@@ -2179,43 +2284,86 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .aria-col-body::-webkit-scrollbar-track { background: transparent; }
 
 /* ---- centre section card ----------------------------------------------- */
+/* DENSITY (2026-07-30, G7): the locked preview fits all six Click Element
+   sections in the pane WITHOUT scrolling. Measured against it, our card chrome
+   was ~4px too generous on every edge and every row gap, which compounds over
+   6 cards x ~4 rows into ~90px of pure padding. These numbers are read off
+   `docs/uiux/ndv-click-element-final.webp`, not invented. */
 .aria-sec {
   background: var(--ndv-sec-bg, #0F141B);
   border: 1px solid var(--border);
   border-radius: var(--ndv-sec-radius, 10px);
-  padding: 10px 12px 12px;
+  padding: 8px 12px 10px;
 }
-.aria-sec + .aria-sec { margin-top: 10px; }
+.aria-sec + .aria-sec { margin-top: 8px; }
 .aria-sec-title {
   display: flex; align-items: center; gap: 6px;
   font-size: 11.5px; font-weight: 700; color: var(--text);
-  margin-bottom: 9px;
+  margin-bottom: 7px;
 }
 .aria-sec-title::before {
   content: '▾';
   font-size: 8px; color: var(--text-faint); line-height: 1;
 }
-.aria-sec-body { display: grid; gap: 10px 12px; }
+.aria-sec-body { display: grid; gap: 5px 12px; }
 .aria-sec-body.cols-1 { grid-template-columns: 1fr; }
 .aria-sec-body.cols-2 { grid-template-columns: 1fr 1fr; }
 .aria-sec-body.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+/* `Click options` is a single 4-up row in the preview (Click type · Mouse
+   button · Click count · Delay before click), not the 2x2 block we shipped. */
+.aria-sec-body.cols-4 { grid-template-columns: repeat(4, 1fr); }
 .aria-sec-body > .span-2 { grid-column: span 2; }
 .aria-sec-body > .span-3 { grid-column: span 3; }
+.aria-sec-body > .span-4 { grid-column: span 4; }
+/* Step down before collapsing: four fields need ~110px each, so a 4-up row
+   stops fitting well before the single-column breakpoint below. */
+@media (max-width: 1240px) {
+  .aria-sec-body.cols-4 { grid-template-columns: 1fr 1fr; }
+  .aria-sec-body > .span-4 { grid-column: span 2; }
+}
 @media (max-width: 1000px) {
-  .aria-sec-body.cols-2, .aria-sec-body.cols-3 { grid-template-columns: 1fr; }
-  .aria-sec-body > .span-2, .aria-sec-body > .span-3 { grid-column: span 1; }
+  .aria-sec-body.cols-2, .aria-sec-body.cols-3, .aria-sec-body.cols-4 { grid-template-columns: 1fr; }
+  .aria-sec-body > .span-2, .aria-sec-body > .span-3, .aria-sec-body > .span-4 { grid-column: span 1; }
 }
 
 /* ---- field cell: label · control · helper ------------------------------ */
-.aria-cell { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.aria-cell { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .aria-cell-label {
   display: flex; align-items: center; gap: 5px;
   font-size: var(--ndv-label, 10.5px); font-weight: 600;
   color: var(--text-dim); line-height: 1.2;
 }
 .aria-cell-help {
-  font-size: 10.5px; color: var(--text-faint); line-height: 1.4;
+  font-size: 10.5px; color: var(--text-faint); line-height: 1.35;
 }
+
+/* ---- INLINE field cell: label left, control right, one row --------------
+ * In the preview the numeric fields that live INSIDE a toggle group
+ * (`Timeout (ms)`, `Stable for (ms)`, `Offset X/Y (px)`) are laid out exactly
+ * like the toggles beside them — label on the left, control on the right, one
+ * ~28px row — NOT label-above-control. Stacking them made each of those rows
+ * 48px instead of 30px and was the single largest source of the overflow.
+ * Matching `.aria-toggle-row`'s grid here is what keeps the two row kinds on
+ * one visual rhythm when they share a grid row. */
+.aria-cell.is-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 0.85fr);
+  align-items: center;
+  gap: 4px 8px;
+  min-height: var(--ndv-row-h, 26px);
+}
+/* Cropping `ndv-click-element-final.webp` at 1:1 shows two distinct control
+   heights: ~34px for the prominent Selector fields and ~26px for the numerics
+   packed among the toggle rows. `--ndv-ctl-h` stays the tall one; inline cells
+   opt into the short one so their row pitch matches the toggles beside them. */
+.aria-cell.is-inline > .aria-input,
+.aria-cell.is-inline > .aria-select { height: var(--ndv-row-h, 26px); }
+.aria-cell.is-inline > .aria-cell-label {
+  grid-column: 1;
+  font-size: 11.5px; font-weight: 500;
+}
+.aria-cell.is-inline > .aria-cell-help { grid-column: 1 / -1; margin-top: -2px; }
+.aria-cell.is-inline > .aria-cell-label ~ *:not(.aria-cell-help) { grid-column: 2; }
 .aria-info {
   width: 12px; height: 12px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
@@ -2347,7 +2495,7 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   grid-template-columns: 1fr auto auto;
   align-items: center;
   gap: 4px 8px;
-  min-height: var(--ndv-ctl-h, 30px);
+  min-height: var(--ndv-row-h, 26px);
   min-width: 0;
 }
 .aria-toggle-label {
@@ -2358,6 +2506,11 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .aria-toggle-help { grid-column: 1 / -1; margin-top: -2px; }
+
+/* A bare closing row with no card behind it — the preview puts `Continue on
+   fail` here, outside the Behavior card, and it is the one control in the
+   centre column that writes to `node.errorPolicy` rather than to the params. */
+.aria-footrow { padding: 2px 12px 0; }
 
 /* ---- checkbox (Alt / Ctrl / Shift) ------------------------------------ */
 .aria-checkrow { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }

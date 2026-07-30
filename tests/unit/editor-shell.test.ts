@@ -52,6 +52,26 @@ const RP = readFileSync(join(PUBLIC, 'js', 'run-panel.js'), 'utf8');
 const APP = readFileSync(join(PUBLIC, 'js', 'app.js'), 'utf8');
 const CSS = readFileSync(join(PUBLIC, 'css', 'styles.css'), 'utf8');
 const I18N_SRC = readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8');
+/**
+ * Merged declarations of every rule whose selector list mentions BOTH
+ * `.ndv-modal.is-designed` (or the selector itself, for the shared primitives)
+ * and `sel`. Written as text-merging rather than a real cascade because the
+ * point is only "is this declaration stated somewhere for the designed NDV",
+ * which is what the G7 contract needs to survive a reorder.
+ */
+function designedRule(sel: string): string {
+  const out: string[] = [];
+  const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('([^{}]*' + esc + '[^{}]*)\\{([^{}]*)\\}', 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(CSS))) {
+    const selector = m[1].trim();
+    if (!/is-designed/.test(selector)) continue;
+    if (!selector.split(',').some((s) => s.trim().endsWith(sel) || s.trim() === sel)) continue;
+    out.push(m[2]);
+  }
+  return out.join(';');
+}
 
 /** Load the icon registry in a DOM-free sandbox (icons.js guards on `document`). */
 function loadIcons(): any {
@@ -943,5 +963,122 @@ describe('G10 — the 980 px narrow-viewport render pass', () => {
         /\.fe-zoom-ctrl[^{}]*\{[^{}]*inset-block-end:\s*\d/,
       );
     });
+  });
+});
+
+describe('G7 — Node Detail View (NDV)', () => {
+  /* ==========================================================================
+   * reachability + the fixed-height / per-column scroll contract
+   * ======================================================================= */
+    const NDV_UI = readFileSync(join(PUBLIC, 'js', 'ndv-ui.js'), 'utf8');
+    const NDV_NODES = readFileSync(join(PUBLIC, 'js', 'ndv-nodes.js'), 'utf8');
+
+    it('repaints selection in place instead of rebuilding every card', () => {
+      // THE BUG THIS PINS: `selectNode` used to call `renderNodes()`, which wipes
+      // and rebuilds every `.flow-node`. A `dblclick` is only dispatched when
+      // both clicks share ONE target, so the first click destroyed the element
+      // the mouse had just pressed and the documented "double-click a node to
+      // open its NDV" gesture could never fire — measured, after one synthetic
+      // click: document.body.contains(card) === false.
+      expect(FE).toMatch(/function applySelectionPaint\(/);
+      const fn = FE.slice(FE.indexOf('function selectNode('));
+      const body = fn.slice(0, fn.indexOf('\n  }'));
+      expect(body).toMatch(/if \(!applySelectionPaint\(\)\) renderNodes\(\);/);
+      // ...and it must NOT call renderNodes unconditionally any more.
+      expect(body).not.toMatch(/^\s*renderNodes\(\);/m);
+    });
+
+    it('keeps the in-place paint and the selection tools in step', () => {
+      // The group boundary + floating toolbar are also a function of the
+      // selection; `renderNodes` used to be the only thing refreshing them.
+      const fn = FE.slice(FE.indexOf('function applySelectionPaint('));
+      const body = fn.slice(0, fn.indexOf('\n  }'));
+      expect(body).toMatch(/renderSelectionTools\(\)/);
+      // It must bail out (never paint a stale DOM) when the graph disagrees.
+      expect(body).toMatch(/cards\.length !== Object\.keys\(state\.nodes\)\.length/);
+      expect(body).toMatch(/return false/);
+    });
+
+    it('does not leave the designed NDV body as the single scroller', () => {
+      // MEASURED: `.ndv-body` was the only `overflow: auto` in the chain, so the
+      // grid row stretched to its tallest child (1118px of centre sections) in a
+      // 757px body and the whole modal scrolled as one — the column heads
+      // scrolled away, `.aria-col-body` never scrolled, and the OUTPUT status
+      // strip sat ~300px below the modal's bottom edge.
+      const rule = designedRule('.ndv-body');
+      expect(rule).toMatch(/overflow:\s*hidden/);
+      expect(rule).toMatch(/display:\s*flex/);
+      expect(rule).toMatch(/min-height:\s*0/);
+    });
+
+    it('gives the designed NDV a real height so the columns can place furniture', () => {
+      const rule = designedRule('.ndv-modal.is-designed');
+      expect(rule).toMatch(/(^|\s)height:\s*min\(/);
+    });
+
+    it('completes the min-height:0 chain down to the scrollers', () => {
+      // A percentage height only survives if EVERY flex/grid ancestor opts out
+      // of the default `min-height: auto` / `auto` grid row.
+      expect(designedRule('.ndv')).toMatch(/min-height:\s*0/);
+      const cols = designedRule('.ndv-cols');
+      expect(cols).toMatch(/min-height:\s*0/);
+      expect(cols).toMatch(/grid-template-rows:\s*minmax\(0,\s*1fr\)/);
+      expect(designedRule('.ndv-col')).toMatch(/min-height:\s*0/);
+      // the centre column's own scroller
+      const pane = designedRule('.ndv-pane');
+      expect(pane).toMatch(/overflow:\s*auto/);
+      expect(pane).toMatch(/gap:\s*0/);
+      // INPUT / OUTPUT keep theirs
+      expect(CSS).toMatch(/\.aria-col-body\s*\{[^}]*overflow:\s*auto/);
+    });
+
+    it('stacks the centre sections as one bordered band group, not gapped cards', () => {
+      // Read off the 1:1 crop of ndv-click-element-final.webp: a single hairline
+      // BETWEEN neighbours, no gap, radius only on the two ends.
+      expect(designedRule('.aria-sec')).toMatch(/border-radius:\s*0/);
+      const adj = designedRule('.aria-sec + .aria-sec');
+      expect(adj).toMatch(/margin-top:\s*0/);
+      expect(adj).toMatch(/border-top:\s*0/);
+    });
+
+    it('offers an inline field cell and uses it for the packed numerics', () => {
+      // Label-above-control made Timeout / Stable for / Offset X|Y 48px rows
+      // where the preview shows ~26px — the largest single source of overflow.
+      expect(NDV_UI).toMatch(/o\.inline \? ' is-inline' : ''/);
+      expect(CSS).toMatch(/\.aria-cell\.is-inline\s*\{/);
+      // every numeric that shares a grid row with toggles must opt in
+      ['p.timeout', 'click.stableFor', 'click.offsetX', 'click.offsetY'].forEach((key) => {
+        const at = NDV_NODES.indexOf("t('" + key + "')");
+        expect(at, key).toBeGreaterThan(-1);
+        expect(NDV_NODES.slice(at, at + 320), key).toMatch(/inline:\s*true/);
+      });
+    });
+
+    it('lays Click options out 4-up, as the preview does', () => {
+      expect(NDV_NODES).toMatch(/ui\.section\(t\('click\.secClickOptions'\), 4\)/);
+      expect(CSS).toMatch(/\.aria-sec-body\.cols-4\s*\{[^}]*repeat\(4,\s*1fr\)/);
+      // and it must still collapse on narrow viewports
+      expect(CSS).toMatch(/cols-4[^{}]*\{\s*grid-template-columns:\s*1fr 1fr/);
+    });
+
+    it('puts Continue on fail outside the Behavior card, writing to errorPolicy', () => {
+      expect(NDV_NODES).toMatch(/aria-footrow/);
+      const at = NDV_NODES.indexOf('aria-footrow');
+      expect(NDV_NODES.slice(at, at + 600)).toMatch(/node\.errorPolicy\.continueOnFail = v === true/);
+    });
+
+    it('scopes the NDV validation strip to the node being edited', () => {
+      // A whole-GRAPH "Graph is valid" band inside a single-node editor is not
+      // information about that node, and the locked preview has no such row.
+      expect(FE).toMatch(/function appendValidation\(box, onlyNodeId\)/);
+      expect(FE).toMatch(/appendValidation\(body, designed \? node\.id : null\)/);
+    });
+
+    it('has the new help string in BOTH dictionaries, translated', () => {
+      const { fa, en } = DICTS;
+      expect(fa).toMatch(/'help\.timeoutMs':/);
+      expect(en).toMatch(/'help\.timeoutMs':/);
+      const faVal = /'help\.timeoutMs':\s*'([^']*)'/.exec(fa)![1];
+    expect(faVal).not.toMatch(/^[\x20-\x7E]+$/); // must not be an English value in `fa`
   });
 });

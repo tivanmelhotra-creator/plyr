@@ -1,8 +1,18 @@
 # HANDOFF 12 — shell parity (G4/G6/G1/G8/G13), the real brand mark, the Persian chrome sweep, and the 980 px pass
 
-> **This is the CURRENT status document.** It supersedes `11-HANDOFF-labels-fit-prefs-render-compare.md`.
-> Read § 0 before touching anything, then § 6 for what to do next.
-> A fresh session with no chat history should be able to continue from this file alone.
+> **SUPERSEDED** by `13-HANDOFF-ndv-reachability-scroll-density.md`. Read that
+> file instead; it carries § 0 forward verbatim and its § 5 is the live to-do
+> list. This file is kept for the 980 px investigation and the anchor tables.
+>
+> Two statements below are now known to be **incomplete**:
+> * § 6 item 1 treats G7 as "build out the NDV". The NDV was in fact already
+>   built and **unreachable** — `selectNode()` destroyed the card mid-gesture, so
+>   `dblclick` never fired. See handoff 13 § 1.1.
+> * The design base it names is right, but it does not say to **crop the WebP at
+>   1:1 and read it**. Every real parity finding this session came from the crop,
+>   and the written spec's control heights contradict it. See handoff 13 § 1.3.
+>
+> (Historical header: it superseded `11-HANDOFF-labels-fit-prefs-render-compare.md`.)
 
 ---
 
