@@ -29,11 +29,29 @@ export interface ScreencastFrame {
   height: number;
 }
 
+export interface PickAttr {
+  name: string;
+  value: string;
+}
+
 export interface PickResult {
   css: string;
   xpath: string;
   text?: string;
   tag?: string;
+  // `k` routes the single page binding to the right channel event:
+  //   'pick'   → the user clicked (or walked the DOM): lock this in
+  //   'hover'  → the pointer merely moved over it: live preview only
+  //   'verify' → the answer to a "how many elements match?" request
+  k?: 'pick' | 'hover' | 'verify';
+  // Attributes of the element (Automa's "Attributes" tab). Capped page-side.
+  attrs?: PickAttr[];
+  // How many elements the generated selector matches — 1 is what you want;
+  // 0 means the selector is broken, >1 means it is ambiguous.
+  count?: number;
+  // Whether DOM traversal is possible from here (drives the ↑/↓ arrows).
+  hasParent?: boolean;
+  hasChild?: boolean;
 }
 
 type FrameSink = (frame: ScreencastFrame) => void;
@@ -43,15 +61,26 @@ const IDLE_TTL_MS = 5 * 60 * 1000;     // close session after 5 min idle
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 
 // The picker script is injected into the page. It draws an overlay,
-// highlights the hovered element, and on click computes a CSS path +
-// XPath, then reports it via a binding exposed by Playwright. It does
-// NOT navigate or trigger the element's own handlers (capture + stop).
+// highlights the hovered element, and reports a CSS path + XPath through a
+// single binding exposed by Playwright. It does NOT navigate or trigger the
+// element's own handlers (capture + preventDefault + stopPropagation).
+//
+// Three channels share the one binding, distinguished by `k`:
+//   hover  — throttled, fires as the pointer moves (live preview in the panel)
+//   pick   — a real click, or a ↑/↓ DOM-traversal step (the locked answer)
+//   verify — the reply to __abVerify(sel): how many elements that selector hits
+//
+// Everything reported is capped page-side (attribute count, value/text length,
+// selector depth) because it travels over a WebSocket on every mouse move.
 const PICKER_SCRIPT = `(() => {
   if (window.__abPickerActive) return;
   window.__abPickerActive = true;
   var box = document.createElement('div');
   box.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #4f8cff;background:rgba(79,140,255,.15);box-shadow:0 0 0 1px #fff;transition:all .03s;';
   document.documentElement.appendChild(box);
+  var locked = null;      // element fixed by a click (traversal starts here)
+  var lastHover = null;   // last element reported on the hover channel
+  var lastAt = 0;         // hover throttle stamp
   function cssPath(el){
     if (!(el instanceof Element)) return '';
     if (el.id) return '#' + CSS.escape(el.id);
@@ -82,34 +111,130 @@ const PICKER_SCRIPT = `(() => {
     }
     return '/' + parts.join('/');
   }
-  function onMove(e){
-    var el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el || el === box) return;
+  // Attributes, in source order, capped: a Gmail node can carry a 2 KB jslog.
+  function attrsOf(el){
+    var out = [];
+    var list = el && el.attributes ? el.attributes : [];
+    for (var i = 0; i < list.length && out.length < 12; i++){
+      out.push({ name: list[i].name, value: String(list[i].value || '').slice(0, 160) });
+    }
+    return out;
+  }
+  // How many nodes a selector hits. Anything starting with / ( or . . is XPath;
+  // that is the same sniffing Playwright's locator() does, so the count the
+  // panel shows is the count the run will see.
+  function matchCount(sel){
+    if (!sel) return 0;
+    try {
+      if (/^\\s*[(/]|^\\s*\\.\\./.test(sel)){
+        var r = document.evaluate(sel, document, null, 7, null);
+        return r.snapshotLength;
+      }
+      return document.querySelectorAll(sel).length;
+    } catch (e) { return -1; }   // -1 = the selector itself is invalid
+  }
+  function payload(el, kind){
+    var css = cssPath(el);
+    return {
+      k: kind,
+      css: css,
+      xpath: xPath(el),
+      tag: el.nodeName.toLowerCase(),
+      text: (el.textContent || '').trim().slice(0, 80),
+      attrs: attrsOf(el),
+      count: matchCount(css),
+      hasParent: !!(el.parentElement && el.parentElement.nodeName !== 'HTML'),
+      hasChild: !!el.firstElementChild
+    };
+  }
+  function outline(el){
+    if (!el) return;
     var r = el.getBoundingClientRect();
     box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
     box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+  }
+  function report(el, kind){
+    try { window.__abReportPick(payload(el, kind)); } catch (err) {}
+  }
+  function onMove(e){
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === box) return;
     window.__abPickHover = el;
+    if (!locked) outline(el);
+    // Throttle: the panel only needs ~12 updates/sec, not one per pixel.
+    var now = Date.now();
+    if (el === lastHover && now - lastAt < 400) return;
+    if (now - lastAt < 80) return;
+    lastHover = el; lastAt = now;
+    report(el, 'hover');
   }
   function onClick(e){
     e.preventDefault(); e.stopPropagation();
     var el = window.__abPickHover || document.elementFromPoint(e.clientX, e.clientY);
     if (!el) return;
-    try {
-      window.__abReportPick({
-        css: cssPath(el),
-        xpath: xPath(el),
-        text: (el.textContent || '').trim().slice(0,80),
-        tag: el.nodeName.toLowerCase()
-      });
-    } catch (err) {}
+    locked = el;
+    outline(el);
+    report(el, 'pick');
   }
+  // Space selects whatever is under the pointer — Automa's shortcut, and the
+  // only way to pick an element that disappears on mouse-out (menus, tooltips).
+  function onKey(e){
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    var el = window.__abPickHover;
+    if (!el) return;
+    e.preventDefault(); e.stopPropagation();
+    locked = el; outline(el); report(el, 'pick');
+  }
+  // ↑ / ↓ in the panel: walk to the parent or the first child of the locked
+  // element. Selecting a whole row/card is usually one step up from the text
+  // node you can actually see, which is why this exists.
+  window.__abPickStep = function(dir){
+    var base = locked || window.__abPickHover;
+    if (!base) return false;
+    var next = dir === 'down' ? base.firstElementChild : base.parentElement;
+    if (!next || next.nodeName === 'HTML') return false;
+    locked = next; outline(next); report(next, 'pick');
+    return true;
+  };
+  // The panel's double-check button: count matches for a hand-typed selector
+  // and flash an outline over each of them (capped, so 5 000 rows can't hang).
+  window.__abVerify = function(sel){
+    var n = matchCount(sel);
+    try {
+      window.__abReportPick({ k: 'verify', css: String(sel || ''), xpath: '', count: n });
+    } catch (e) {}
+    if (n > 0){
+      var nodes = [];
+      try {
+        if (/^\\s*[(/]|^\\s*\\.\\./.test(sel)){
+          var r = document.evaluate(sel, document, null, 7, null);
+          for (var i = 0; i < r.snapshotLength && i < 40; i++) nodes.push(r.snapshotItem(i));
+        } else {
+          nodes = Array.prototype.slice.call(document.querySelectorAll(sel), 0, 40);
+        }
+      } catch (e) { nodes = []; }
+      var marks = nodes.map(function(el){
+        var rr = el.getBoundingClientRect();
+        var d = document.createElement('div');
+        d.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #22c55e;background:rgba(34,197,94,.12);left:' + rr.left + 'px;top:' + rr.top + 'px;width:' + rr.width + 'px;height:' + rr.height + 'px;';
+        document.documentElement.appendChild(d);
+        return d;
+      });
+      setTimeout(function(){ marks.forEach(function(d){ if (d.parentNode) d.parentNode.removeChild(d); }); }, 1400);
+    }
+    return n;
+  };
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('click', onClick, true);
+  document.addEventListener('keydown', onKey, true);
   window.__abStopPicker = function(){
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown', onKey, true);
     if (box && box.parentNode) box.parentNode.removeChild(box);
     window.__abPickerActive = false;
+    window.__abPickStep = null;
+    window.__abVerify = null;
   };
 })();`;
 
@@ -147,9 +272,13 @@ export class LiveBrowserSession {
     this.page = await this.context.newPage();
     await this.page.setViewportSize(this.vp).catch(() => {});
 
-    // Expose a binding the picker uses to report selections.
+    // Expose the ONE binding the picker uses. `k` decides which channel event
+    // the UI receives, so hover previews cannot be mistaken for a real pick.
     await this.page.exposeBinding('__abReportPick', (_src, payload: PickResult) => {
-      this.emit('pick', payload as unknown as Record<string, unknown>);
+      const kind = payload && payload.k === 'hover' ? 'hover'
+        : payload && payload.k === 'verify' ? 'verified'
+          : 'pick';
+      this.emit(kind, payload as unknown as Record<string, unknown>);
     }).catch(() => {});
 
     // CDP screencast (JPEG frames).
@@ -233,6 +362,19 @@ export class LiveBrowserSession {
     } catch { /* ignore */ }
   }
 
+  // Pointer movement without a click. The Element Picker needs this: its
+  // page-side highlight + hover preview are driven by mousemove, and the
+  // client streams a canvas image, not the real cursor.
+  async move(x: number, y: number): Promise<void> {
+    this.touch();
+    if (!this.cdp) return;
+    try {
+      await this.cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: Math.round(x), y: Math.round(y),
+      });
+    } catch { /* ignore */ }
+  }
+
   async scroll(x: number, y: number, dy: number): Promise<void> {
     this.touch();
     if (!this.cdp) return;
@@ -276,6 +418,33 @@ export class LiveBrowserSession {
       try { await this.page.evaluate('window.__abStopPicker && window.__abStopPicker()'); } catch { /* ignore */ }
     }
     this.emit('picker', { on: this.pickerOn });
+  }
+
+  // Walk the picked element to its parent ('up') or first child ('down').
+  // The page script reports the new element on the 'pick' channel itself, so
+  // there is exactly one code path producing a selector.
+  async pickStep(dir: string): Promise<void> {
+    this.touch();
+    if (!this.page || !this.pickerOn) return;
+    const arg = dir === 'down' ? 'down' : 'up';
+    try {
+      await this.page.evaluate(
+        `window.__abPickStep && window.__abPickStep(${JSON.stringify(arg)})`
+      );
+    } catch { /* ignore */ }
+  }
+
+  // Count (and flash) the elements a hand-typed selector matches. Answers on
+  // the 'verified' channel. Works without the picker overlay being on.
+  async verifySelector(selector: string): Promise<void> {
+    this.touch();
+    if (!this.page) return;
+    const sel = String(selector || '');
+    if (!sel) return;
+    try {
+      if (!this.pickerOn) await this.injectPicker();
+      await this.page.evaluate(`window.__abVerify && window.__abVerify(${JSON.stringify(sel)})`);
+    } catch { /* ignore */ }
   }
 
   async close(): Promise<void> {
