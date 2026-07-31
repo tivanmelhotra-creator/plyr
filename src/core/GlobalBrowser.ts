@@ -2,6 +2,11 @@ import { chromium } from 'playwright-extra';
 import type { Browser, BrowserContext } from 'playwright';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import { config } from '../config';
+import {
+  ANTI_AUTOMATION_ARGS,
+  interactiveContextOptions,
+  saveStorageState,
+} from './BrowserProfile';
 
 // Apply stealth plugin
 chromium.use(stealth());
@@ -67,6 +72,11 @@ export class GlobalBrowser {
           '--disable-backgrounding-occluded-windows',
           '--disable-renderer-backgrounding',
           '--disable-ipc-flooding-protection',
+          // Without these Chromium advertises navigator.webdriver and
+          // automation client hints, which is the single loudest bot signal
+          // there is. The stealth plugin patches the JS getter afterwards;
+          // the flag stops the signal being emitted at all (headers included).
+          ...ANTI_AUTOMATION_ARGS,
         ]
       });
 
@@ -162,6 +172,47 @@ export class GlobalBrowser {
     });
 
     return context;
+  }
+
+  /**
+   * Get a context for an INTERACTIVE session (Element Picker / Live Browser).
+   *
+   * Different contract from getContext() on purpose:
+   *   getContext()            → throwaway + random fingerprint  (workflow runs)
+   *   getInteractiveContext() → persistent + stable fingerprint (a human)
+   *
+   * A person picking a selector needs the SAME browser identity each time and
+   * needs their cookies back, otherwise every visit to a logged-in page is a
+   * login wall (HANDOFF 15 AUTH-GAP). Randomising the fingerprint per open,
+   * which is right for a run, is actively harmful here: it makes a site treat
+   * every session as a brand-new stranger and challenge it.
+   */
+  static async getInteractiveContext(
+    userId: string,
+    viewport?: { width: number; height: number },
+  ): Promise<BrowserContext> {
+    if (!this.instance || !this.instance.isConnected()) {
+      await this.initialize();
+    }
+    if (!this.instance || !this.instance.isConnected()) {
+      throw new Error('GlobalBrowser is not available. Please retry in a few seconds.');
+    }
+    this.lastHealthyTime = Date.now();
+    this.consecutiveFailures = 0;
+    const options = await interactiveContextOptions(userId, this.instance, { viewport });
+    return this.instance.newContext(options);
+  }
+
+  /**
+   * Persist an interactive context's cookies/localStorage for this user, then
+   * close it. Saving BEFORE closing is the whole point: the login the user did
+   * inside the picker modal is only durable if it is written out here.
+   */
+  static async saveAndCloseContext(context: BrowserContext, userId: string): Promise<boolean> {
+    let saved = false;
+    try { saved = await saveStorageState(context, userId); } catch { saved = false; }
+    await this.closeContext(context);
+    return saved;
   }
 
   /**

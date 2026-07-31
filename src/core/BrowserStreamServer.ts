@@ -173,6 +173,11 @@ export class BrowserStreamServer {
       case 'verify':
         await session.verifySelector(String(msg.selector || ''));
         break;
+      // "Forget this browser session": deletes the saved cookies so the next
+      // open starts anonymous again.
+      case 'forgetSession':
+        await session.forgetSession();
+        break;
       default:
         // unknown command: ignore
         break;

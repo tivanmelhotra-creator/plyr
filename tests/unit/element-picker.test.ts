@@ -148,3 +148,160 @@ describe('picker i18n + rule 0.9 labelling', () => {
     expect(ifList.slice(0, 400)).not.toContain('selectorType');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// Automa panel parity (turn 2 A) + the persistent server browser (turn 2 B).
+//
+// The panel grew from a flat key/value list into the shape Automa uses: cards
+// with per-attribute copy, an "#N Element" header, and two tabs. None of that is
+// worth anything if the data it renders never arrives, so these tests pin the
+// data path as well as the markup — the panel and the page script have to agree
+// on `candidates`, `index`, `tag` and `text`, and the session chip has to agree
+// with what LiveBrowser actually reports.
+// ══════════════════════════════════════════════════════════════════════════
+describe('picker panel: Automa parity', () => {
+  it('renders attribute CARDS with a per-attribute copy button', () => {
+    // The old row could only copy the whole selector; an aria-label had to be
+    // re-typed by eye.
+    expect(browserView).toContain('bvp-attr-box');
+    expect(browserView).toContain('bvp-attr-copy');
+    expect(browserView).toMatch(/copyText\(a\.value\)/);
+    // The copy must not also trigger "use as selector" on the box beneath it.
+    expect(browserView).toMatch(/ev\.stopPropagation\(\)/);
+  });
+
+  it('clicking an attribute offers tag[name="value"] and re-counts it', () => {
+    expect(browserView).toMatch(/\[' \+ a\.name \+ '=' \+ JSON\.stringify\(a\.value\)/);
+    // Rule 0.10: never show a selector without saying how many it matches, and
+    // never guess that number locally.
+    const box = browserView.slice(browserView.indexOf('box.addEventListener'));
+    expect(box.slice(0, 500)).toContain("send({ t: 'verify'");
+  });
+
+  it('has exactly two tabs: Attributes and Candidates (not Blocks)', () => {
+    expect(browserView).toContain('bvp-tab-attrs');
+    expect(browserView).toContain('bvp-tab-cands');
+    // HANDOFF 15 § 2.3: building steps from inside the picker stays refused.
+    expect(browserView).not.toMatch(/bvp-tab-blocks/);
+    expect(browserView).toContain("t('bvp.tabCandidates')");
+  });
+
+  it('shows the element index, tag and text', () => {
+    expect(browserView).toContain('bvp.elementIndex');
+    expect(browserView).toContain('bvp.elementIndexOf');
+    expect(browserView).toContain('bvp-el-tag');
+    expect(browserView).toContain('bvp-el-text');
+    // …and the page script must actually send all three.
+    expect(liveBrowser).toMatch(/index:\s*indexOf\(el, css\)/);
+    expect(liveBrowser).toMatch(/tag:\s*el\.nodeName\.toLowerCase\(\)/);
+  });
+
+  it('candidates come from the page, are pick-only, and carry counts', () => {
+    expect(liveBrowser).toContain('function candidatesFor(el)');
+    // Hover fires ~14x/sec; computing N querySelectorAll per hover is not free.
+    expect(liveBrowser).toMatch(/candidates:\s*kind === 'pick' \? candidatesFor\(el\) : \[\]/);
+    // Every candidate row shows its own match count (rule 0.10).
+    expect(browserView).toContain('bvp-cand-n');
+    expect(browserView).toMatch(/c\.count === 1 \? 'is-ok' : 'is-warn'/);
+    // A hover must not blank the list the user is reading.
+    expect(browserView).toMatch(/if \(locked\) renderCands/);
+  });
+
+  it('offers a clipped candidate in full via its tooltip', () => {
+    // Measured: `div[aria-label="Compose a new message"]` overflows the 306px
+    // panel by 22px. A selector you cannot read is one you cannot choose.
+    expect(browserView).toMatch(/b\.title = c\.sel/);
+  });
+
+  it('the stage answers ArrowUp / ArrowDown / Space', () => {
+    // lastIndexOf, not indexOf: render()'s own stage also binds keydown (to
+    // onStageKey) and comes first in the file.
+    const stageKeys = browserView.slice(
+      browserView.lastIndexOf("stage.addEventListener('keydown'")
+    ).slice(0, 700);
+    expect(stageKeys).toContain("dir: 'up'");
+    expect(stageKeys).toContain("dir: 'down'");
+    expect(stageKeys).toContain("key: 'Space'");
+    // …and the footer NAMES them, or they do not exist to the user.
+    expect(browserView).toContain('bvp.kbdWalk');
+    expect(browserView).toContain('<kbd>Space</kbd>');
+  });
+
+  it('has a visible drag grip, and it is centred PHYSICALLY', () => {
+    expect(browserView).toContain('bvp-grip');
+    expect(browserView).toContain("id=\"bvp-drag\"");
+    // `transform: translateX()` is not direction-aware: pairing it with
+    // `inset-inline-start` put the grip 30px off centre under fa/RTL.
+    const css = read('public/css/styles.css');
+    const grip = css.slice(css.indexOf('.bvp-grip {'), css.indexOf('.bvp-grip:hover'));
+    expect(grip).toContain('left: 50%');
+    expect(grip).not.toContain('inset-inline-start: 50%');
+  });
+
+  it('lets the attribute list use the panel height instead of a 190px cap', () => {
+    // Measured: the cap scrolled the list while leaving 231px of panel empty.
+    const css = read('public/css/styles.css');
+    const panes = css.slice(css.indexOf('.bvp-attrs,'), css.indexOf('.bvp-attr {'));
+    expect(panes).toContain('overflow: auto');
+    expect(panes).not.toMatch(/max-height:\s*190px/);
+  });
+});
+
+describe('picker session: the persistent server browser', () => {
+  const profile = read('src/core/BrowserProfile.ts');
+
+  it('the launch flags stop navigator.webdriver at the source', () => {
+    const glob = read('src/core/GlobalBrowser.ts');
+    expect(profile).toContain('--disable-blink-features=AutomationControlled');
+    expect(glob).toContain('ANTI_AUTOMATION_ARGS');
+    // JS patching cannot reach HTTP client-hint headers; the flag can.
+    expect(glob).toMatch(/stealth\(\)/);
+  });
+
+  it('cookies survive the session (the AUTH-GAP fix)', () => {
+    expect(profile).toContain('storageState');
+    expect(profile).toContain('export async function saveStorageState');
+    // A partial write must never replace a good session file.
+    expect(profile).toMatch(/rename/);
+    // …and the userId can never escape the sessions directory.
+    expect(profile).toMatch(/replace\(\/\[\^A-Za-z0-9_-\]\/g, '_'\)/);
+    expect(liveBrowser).toContain('GlobalBrowser.getInteractiveContext');
+    expect(liveBrowser).toContain('GlobalBrowser.saveAndCloseContext');
+  });
+
+  it('the UI is told whether the session was restored, and never guesses', () => {
+    expect(liveBrowser).toMatch(/signedIn:\s*this\.hadSavedSession/);
+    expect(browserView).toContain('setSession(msg.signedIn)');
+    // Opens pessimistic: claiming "signed in" before the server says so would be
+    // a lie about auth state (rule 0.3).
+    expect(browserView).toMatch(/setSession\(false\);\s*\/\/ pessimistic/);
+    // The disclosure paragraph must follow the real state, not be hardcoded.
+    expect(browserView).toMatch(/anonEl\.textContent = signedIn \? t\('bvp\.savedNote'\) : t\('bvp\.anonNote'\)/);
+  });
+
+  it('a persistent session can be forgotten from the same window', () => {
+    expect(browserView).toContain("send({ t: 'forgetSession' })");
+    expect(streamServer).toContain("case 'forgetSession'");
+    expect(liveBrowser).toContain('async forgetSession()');
+    expect(liveBrowser).toContain('clearStorageState');
+    expect(liveBrowser).toMatch(/clearCookies/);
+  });
+
+  it('cookie walls are dismissed by named CMP, not by guessing at text', () => {
+    // A greedy "click anything that says Accept" would happily click an
+    // "I agree" on a checkout form, or a "Continue" that navigates away from
+    // the page the user is picking from.
+    for (const cmp of ['onetrust', 'truste', 'cookiebot', 'usercentrics', 'didomi']) {
+      expect(profile.toLowerCase(), `CMP allowlist must know ${cmp}`).toContain(cmp);
+    }
+    // The fallback needs BOTH an accept word and a consent-named ancestor.
+    expect(profile).toMatch(/cookie\|consent\|gdpr\|cmp\|privacy/);
+    expect(liveBrowser).toContain('installConsentAutoDismiss');
+  });
+
+  it('the picker cannot swallow the consent dismisser own click', () => {
+    // CDP-dispatched input is trusted; el.click() is not. Without this guard the
+    // capture-phase handler preventDefault()s the dismisser into a no-op.
+    expect(liveBrowser).toMatch(/if \(e\.isTrusted === false\) return;/);
+  });
+});
