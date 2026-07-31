@@ -147,6 +147,18 @@ export class BrowserStreamServer {
       case 'navigate':
         await session.navigate(String(msg.url || ''));
         break;
+      // History. The picker window browses for real, so it needs the controls a
+      // browser has; without Back, following a link into the wrong page left
+      // retyping the URL as the only way out.
+      case 'back':
+        await session.back();
+        break;
+      case 'forward':
+        await session.forward();
+        break;
+      case 'reload':
+        await session.reload();
+        break;
       case 'click':
         await session.click(num(msg.x), num(msg.y));
         break;

@@ -139,14 +139,33 @@
 
   // ---- dark dropdown -------------------------------------------------------
   // options: [{ value, label }] | [string]
+  //          | [{ group: 'Text', options: [{ value, label } | string, …] }]
+  //
+  // The grouped form renders real <optgroup>s. It exists because the Condition
+  // Builder's operator list is 20+ entries long and Automa (project rule R1,
+  // MISSIONS.md) buckets the same list into basic / number / text / boolean —
+  // a flat list of that length is a scan, not a choice. <optgroup> is the
+  // native, zero-JS, screen-reader-announced way to do it, so no custom popup.
   function selectCell(options, value, onChange) {
     var sel = el('select', 'aria-select');
-    (options || []).forEach(function (o) {
+    function addOption(parent, o) {
       var val = typeof o === 'string' ? o : o.value;
       var lab = typeof o === 'string' ? o : o.label;
       var opt = el('option', null, lab);
       opt.value = String(val);
-      sel.appendChild(opt);
+      parent.appendChild(opt);
+    }
+    (options || []).forEach(function (o) {
+      if (o && typeof o === 'object' && Array.isArray(o.options)) {
+        // An empty bucket must not leave a dangling heading behind.
+        if (!o.options.length) return;
+        var grp = document.createElement('optgroup');
+        grp.label = o.group == null ? '' : String(o.group);
+        o.options.forEach(function (child) { addOption(grp, child); });
+        sel.appendChild(grp);
+        return;
+      }
+      addOption(sel, o);
     });
     if (value != null) sel.value = String(value);
     if (onChange) sel.addEventListener('change', function () { onChange(sel.value); });

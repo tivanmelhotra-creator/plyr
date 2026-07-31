@@ -3229,7 +3229,16 @@
       PALETTE_GROUPS.forEach(function (g) { paletteOpen[g.id] = true; });
     }
 
-    // ---- search row: input + the ⌘K hint the image shows -------------------
+    // ---- head row: search + the collapse control ---------------------------
+    // The collapse button used to live at the very BOTTOM of the panel, under
+    // five destination links — i.e. the control that hides the panel was the
+    // last thing in it, and on a short viewport it sat below the fold. It now
+    // rides the SAME row as the search field (user request, 2026-07-31): top of
+    // the panel, zero extra vertical space, and the collapse/expand pair (`‹`
+    // here, `›` on the rail) is symmetric at the top of both states.
+    var head = document.createElement('div');
+    head.className = 'palette-head';
+
     var searchRow = document.createElement('div');
     searchRow.className = 'palette-searchrow';
     searchRow.innerHTML =
@@ -3248,7 +3257,17 @@
       var el = dom.palette.querySelector('.palette-search');
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
     });
-    p.appendChild(searchRow);
+    head.appendChild(searchRow);
+
+    var colBtn = document.createElement('button');
+    colBtn.type = 'button';
+    colBtn.className = 'pl-collapse';
+    colBtn.title = t('pl.collapse');
+    colBtn.setAttribute('aria-label', t('pl.collapse'));
+    colBtn.innerHTML = IC('chevron-left', 14);
+    colBtn.addEventListener('click', function () { setPaletteCollapsed(true); });
+    head.appendChild(colBtn);
+    p.appendChild(head);
 
     var listWrap = document.createElement('div');
     listWrap.className = 'palette-list';
@@ -3270,10 +3289,8 @@
         '<span class="pl-link-ic">' + IC(l.icon, 13) + '</span>' +
         '<span>' + esc(t(l.key)) + '</span></button>';
     }).join('');
-    foot.innerHTML = linksHtml +
-      '<button type="button" class="pl-link pl-collapse" data-pl="collapse">' +
-        '<span class="pl-link-ic">' + IC('panel-left', 13) + '</span>' +
-        '<span>' + esc(t('pl.collapse')) + '</span></button>';
+    // Destinations only — `Collapse` moved to the head row above.
+    foot.innerHTML = linksHtml;
     p.appendChild(foot);
     foot.querySelectorAll('[data-route]').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -3290,9 +3307,6 @@
         U().toast(t('pl.varsUnavailable'), 'info');
       });
     }
-    var colBtn = foot.querySelector('[data-pl="collapse"]');
-    if (colBtn) colBtn.addEventListener('click', function () { setPaletteCollapsed(true); });
-
     renderPaletteList();
     applyPaletteCollapsed();
   }
@@ -3478,7 +3492,21 @@
     var rail = document.createElement('div');
     rail.className = 'pl-rail';
 
-    // 1 — Favorites. Count is the real number of starred blocks; when nothing is
+    // 1 — the expander, FIRST. It used to be appended last and pinned to the
+    // bottom edge; the collapse control now lives at the top of the expanded
+    // panel, so its counterpart belongs at the top of the rail. The pair then
+    // occupies the same corner in both states instead of jumping the full height
+    // of the panel every time it is used.
+    var chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'pl-restore';
+    chip.title = t('pl.expand');
+    chip.setAttribute('aria-label', t('pl.expand'));
+    chip.innerHTML = IC('chevron-right', 14);
+    chip.addEventListener('click', function () { setPaletteCollapsed(false); });
+    rail.appendChild(chip);
+
+    // 2 — Favorites. Count is the real number of starred blocks; when nothing is
     // starred the expanded row already explains itself, so the glyph still opens
     // it rather than pretending there is content.
     var favCount = ACTIONS.filter(function (a) { return paletteFavs[a.id]; }).length;
@@ -3517,7 +3545,7 @@
     sep.setAttribute('aria-hidden', 'true');
     rail.appendChild(sep);
 
-    // 8..12 — the SAME five footer destinations as the expanded palette, driven
+    // 9..13 — the SAME five footer destinations as the expanded palette, driven
     // by the SAME table, so a route (or a disabled reason) can never be true in
     // one surface and stale in the other.
     PALETTE_LINKS.forEach(function (l) {
@@ -3536,15 +3564,6 @@
       }));
     });
 
-    // 13 — the expander, LAST (the image puts `»` at the bottom of the rail).
-    var chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'pl-restore';
-    chip.title = t('pl.expand');
-    chip.setAttribute('aria-label', t('pl.expand'));
-    chip.innerHTML = IC('chevron-right', 14);
-    chip.addEventListener('click', function () { setPaletteCollapsed(false); });
-    rail.appendChild(chip);
     return rail;
   }
 
