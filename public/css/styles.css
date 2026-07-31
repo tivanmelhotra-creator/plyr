@@ -5010,9 +5010,15 @@ body.route-fullbleed .fe-mm-restore {
   justify-content: center;
   padding: 2vh 2vw;
 }
+/* A DEFINITE height, not `max-height`. Measured 2026-07-31: with
+ * `max-height` the shell height was indefinite, so the stage had no height to
+ * divide and `.bvp-canvas { max-height: 100% }` resolved to `none` — a
+ * 1280x720 frame in a 620px-tall window left 196 page pixels below the fold,
+ * invisible AND unclickable. A definite height also stops the modal from
+ * resizing every time a frame of a different size arrives. */
 .bvp-shell {
   width: min(1280px, 96vw);
-  max-height: 96vh;
+  height: min(860px, 96vh);
   display: flex;
   flex-direction: column;
   background: var(--bg-elev);
@@ -5038,19 +5044,50 @@ body.route-fullbleed .fe-mm-restore {
 }
 .bvp-url { flex: 1; min-width: 160px; }
 .bvp-status { white-space: nowrap; }
+/* Signed-in vs anonymous. Shrinks before the URL field does, but never wraps —
+ * a two-line badge would grow the bar and shorten the page image. */
+.bvp-session {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12rem;
+}
+.bvp-session:empty { display: none; }
+.bvp-forget:disabled { opacity: 0.35; cursor: not-allowed; }
 .bvp-close { margin-inline-start: 0.15rem; }
 
 /* The page image. `cell` cursor = picker armed (same signal as the
    standalone Live Browser view). */
+/* `min-height: 0` is what lets the stage shrink inside the flex column; with a
+ * floor here the stage would push past the shell and clip the image again. The
+ * stage centres the frame so a page whose aspect ratio differs from the stage
+ * letterboxes instead of being cut off. */
 .bvp-stage {
   position: relative;
-  flex: 1;
-  min-height: 320px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: #0a0d12;
   overflow: hidden;
   outline: none;
 }
-.bvp-canvas { display: block; width: 100%; height: auto; cursor: cell; }
+/* Contain, never crop: the canvas keeps its intrinsic aspect ratio and is
+ * bounded by BOTH axes of the stage. `toPoint()` scales by
+ * `canvas.width / getBoundingClientRect().width`, so letterboxing cannot
+ * desync the page-coordinate mapping (asserted in tools/picker-probe.js). */
+.bvp-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  cursor: cell;
+}
+/* Never intercept the pointer: before the first frame this overlay covered the
+ * whole stage, so the very first hover/click of a session hit the message
+ * instead of the page. */
 .bvp-empty {
   position: absolute;
   inset: 0;
@@ -5060,6 +5097,7 @@ body.route-fullbleed .fe-mm-restore {
   padding: 1rem;
   text-align: center;
   color: var(--text-dim);
+  pointer-events: none;
 }
 
 /* ---- the floating panel ------------------------------------------------ */
@@ -5068,11 +5106,15 @@ body.route-fullbleed .fe-mm-restore {
   top: 12px;
   inset-inline-end: 12px;
   width: 306px;
-  max-height: calc(100% - 24px);
+  /* Two caps, both needed. `100% - 24px` keeps the panel inside the stage; the
+   * 620px keeps it from swallowing a tall window just because the element had
+   * many attributes. The panes scroll inside whichever cap wins. */
+  max-height: min(calc(100% - 24px), 620px);
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  padding: 0.5rem;
+  /* Extra top padding leaves room for the grip that overhangs the top edge. */
+  padding: 0.8rem 0.5rem 0.5rem;
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -5086,19 +5128,59 @@ body.route-fullbleed .fe-mm-restore {
    closing it, so the target underneath stays clickable. */
 .bvp-panel.is-ghost { opacity: 0.22; }
 .bvp-panel.is-ghost:hover { opacity: 1; }
+/* The drag handle. Sits half-outside the panel's top edge, which is why the
+ * panel must NOT clip its overflow — the scrolling is delegated to the panes. */
+.bvp-grip {
+  position: absolute;
+  top: -11px;
+  /* PHYSICAL `left`, not `inset-inline-start`. `transform: translateX()` is not
+   * direction-aware, so under fa/RTL the logical inset anchored the grip's right
+   * edge at the midpoint and the transform then pushed it further right — 30px
+   * (exactly its own width) off centre, measured. Centring is a physical
+   * operation; both halves of it must be physical. */
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 22px;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  cursor: move;
+  user-select: none;
+}
+.bvp-grip:hover { color: var(--text); border-color: var(--primary); }
 .bvp-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
-  cursor: move;
   user-select: none;
 }
 .bvp-panel-title { font-weight: 600; }
 .bvp-panel-row { display: flex; align-items: center; gap: 0.3rem; }
 .bvp-panel-row .field-input { flex: 1; min-width: 0; }
-.bvp-mode { flex: 0 0 auto; width: 8.4rem; }
-.bvp-sel { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.78rem; }
+/* Needs the same specificity as the rule above it, otherwise `flex: 1` wins and
+ * this select stretches to fill the row (measured at 218px). It is sized to its
+ * CONTENT rather than to a fixed 8.4rem, because a fixed width clipped the
+ * English "CSS Selector" label to "CSS Select" — and the width that fits
+ * English is not the width that fits Persian. A control must never truncate its
+ * own label. */
+.bvp-panel-row .bvp-mode { flex: 0 0 auto; width: auto; }
+/* A selector and a URL are CODE. Under fa/RTL the inputs inherited `direction:
+ * rtl` and Unicode bidi moved the leading dot to the end — `.btn-primary`
+ * rendered as `btn-primary.`, i.e. the UI lied about the user's own selector. */
+.bvp-sel,
+.bvp-url {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  direction: ltr;
+  text-align: start;
+}
+.bvp-sel { font-size: 0.78rem; }
 .bvp-count { min-height: 1.1em; font-size: 0.75rem; color: var(--text-dim); }
 .bvp-count.is-ok { color: var(--success); }
 .bvp-count.is-warn { color: var(--warn); }
@@ -5111,33 +5193,192 @@ body.route-fullbleed .fe-mm-restore {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.bvp-attrs { flex: 1; min-height: 2rem; max-height: 200px; overflow: auto; }
-.bvp-attr {
+/* ---- tabs: Attributes | Candidates ------------------------------------- */
+.bvp-tabs {
   display: flex;
-  gap: 0.4rem;
-  padding: 0.18rem 0;
-  border-bottom: 1px dashed var(--border);
+  gap: 0.15rem;
+  border-bottom: 1px solid var(--border);
 }
-.bvp-attr-name {
-  flex: 0 0 5.6rem;
+.bvp-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 1;
+  padding: 0.32rem 0.2rem;
+  margin-bottom: -1px;
+  justify-content: center;
+  color: var(--text-dim);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.bvp-tab:hover { color: var(--text); }
+.bvp-tab.is-on { color: var(--primary); border-bottom-color: var(--primary); }
+/* The candidate count on the tab. Empty → collapses, so an element with no
+ * alternatives does not advertise a "0". */
+.bvp-tab-n:empty { display: none; }
+.bvp-tab-n {
+  padding: 0 0.28rem;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+.bvp-pane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.bvp-pane.is-off { display: none; }
+/* ---- "#2 of 7  <a>  Save changes" -------------------------------------- */
+.bvp-elhead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-height: 1.15em;
+  font-size: 0.74rem;
+}
+.bvp-elhead:empty { display: none; }
+.bvp-el-idx { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* `<a>` is code, and in fa the angle brackets would otherwise be mirrored. */
+.bvp-el-tag {
   color: var(--info);
   font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
-  font-size: 0.74rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  direction: ltr;
+  unicode-bidi: isolate;
 }
-.bvp-attr-value {
+/* The element's own text can be any script → isolate, do not force LTR. */
+.bvp-el-text {
   flex: 1;
   min-width: 0;
-  color: var(--text);
-  font-size: 0.74rem;
+  color: var(--text-dim);
+  unicode-bidi: isolate;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.bvp-attr-empty { padding: 0.3rem 0; }
+/* No `max-height` here. A fixed 190px cap scrolled the attribute list while
+ * leaving 231px of the panel empty below it (measured, tools/picker-panel-shot.js):
+ * the user scrolled past `class` to reach `aria-label` for no reason. The list is
+ * a flex child instead, so it takes whatever height the panel actually has and
+ * only scrolls once that is genuinely full. */
+.bvp-attrs,
+.bvp-cands { flex: 1 1 auto; min-height: 2rem; overflow: auto; }
+/* ---- attribute cards ---------------------------------------------------- */
+.bvp-attr { padding: 0.2rem 0 0.3rem; }
+/* An attribute NAME is always ASCII code → force LTR. It is a LABEL above the
+ * value now, not a fixed-width first column: a 5.6rem column left `jslog` values
+ * with ~40% of a 306px panel, i.e. permanently ellipsised. */
+.bvp-attr-name {
+  color: var(--text-dim);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.7rem;
+  direction: ltr;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bvp-attr-box {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.12rem;
+  padding: 0.22rem 0.3rem;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.bvp-attr-box:hover { border-color: var(--primary); }
+.bvp-attr-copy {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-dim);
+}
+/* An attribute VALUE may legitimately be Persian (aria-label="ذخیره"), so it
+ * must NOT be forced to LTR — it is isolated instead, which keeps its own
+ * script correct without letting it reorder the row around it. */
+.bvp-attr-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.73rem;
+  unicode-bidi: isolate;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ---- candidate selectors ------------------------------------------------ */
+.bvp-cand {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  margin-bottom: 0.25rem;
+  padding: 0.28rem 0.35rem;
+  text-align: start;
+  color: var(--text);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+}
+.bvp-cand:hover { border-color: var(--primary); }
+.bvp-cand-sel {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.72rem;
+  direction: ltr;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Rule 0.10: a selector is never shown without its match count. Green = the one
+ * you want; amber = it matches more than one element. */
+.bvp-cand-n {
+  flex: 0 0 auto;
+  min-width: 1.3rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+.bvp-cand-n.is-ok { color: var(--bg); background: var(--success); }
+.bvp-cand-n.is-warn { color: var(--bg); background: var(--warn); }
+/* "No element picked yet." is a MESSAGE, not an attribute name: it must not
+ * borrow the blue monospace treatment reserved for real attribute keys. */
+.bvp-attr-empty {
+  padding: 0.3rem 0;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
 .bvp-panel-foot { display: flex; }
 .bvp-panel-foot .btn { flex: 1; }
+/* Automa's footer line: it NAMES the keys. Keyboard control that is not written
+ * down does not exist as far as the user is concerned. */
+.bvp-kbd {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-align: center;
+}
+.bvp-kbd kbd {
+  padding: 0 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg-elev-2);
+  font-family: inherit;
+  font-size: 0.68rem;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
 .bvp-hint {
   margin: 0;
   padding: 0.45rem 0.75rem;
@@ -5146,6 +5387,9 @@ body.route-fullbleed .fe-mm-restore {
   color: var(--text-dim);
   font-size: 0.78rem;
 }
+/* The "this is a signed-out browser" disclosure. Dimmer than the hint so it
+ * reads as a caveat, but present on every open — see AUTH-GAP. */
+.bvp-anon { color: var(--text-faint, #5E6876); }
 
 /* Phones / short windows: the panel becomes a bottom sheet so it never
    eats the page image it is meant to help you read. */
@@ -5156,5 +5400,6 @@ body.route-fullbleed .fe-mm-restore {
     bottom: 8px;
     width: auto;
   }
-  .bvp-attrs { max-height: 110px; }
+  .bvp-attrs,
+  .bvp-cands { max-height: 110px; }
 }

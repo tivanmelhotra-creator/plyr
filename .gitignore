@@ -27,3 +27,7 @@ chromium/
 
 # Redis dump (test artifact)
 dump.rdb
+
+# Diagnostic renders from tools/ui-shot.js and tools/picker-panel-shot.js.
+# Measurement artefacts, not deliverables.
+.ui-shots/

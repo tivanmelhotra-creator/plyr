@@ -23,6 +23,14 @@
   function t(k) {
     return (window.AppUtil && window.AppUtil.t) ? window.AppUtil.t(k) : k;
   }
+  // t() with placeholders. The panel needs "#2 of 7" and "المان ‎#۲"، which do
+  // NOT share a word order, so the numbers are substituted INTO the translated
+  // string rather than concatenated around it in JS.
+  function tf(k, map) {
+    return String(t(k)).replace(/\{(\w+)\}/g, function (m, name) {
+      return map && map[name] != null ? String(map[name]) : m;
+    });
+  }
   function esc(s) {
     if (window.AppUtil && window.AppUtil.esc) return window.AppUtil.esc(s);
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -337,6 +345,8 @@
     pickState = null;
     if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
+    // The re-clamp listener holds the overlay's DOM alive; drop it with the modal.
+    if (ps.onResize) window.removeEventListener('resize', ps.onResize);
     if (ps.overlay && ps.overlay.parentNode) ps.overlay.parentNode.removeChild(ps.overlay);
   }
 
@@ -345,10 +355,19 @@
       '<div class="bvp-shell" role="dialog" aria-modal="true">' +
         '<div class="bvp-bar">' +
           '<span class="bvp-bar-title">' + BIC('target', 15) + ' ' + esc(t('bvp.title')) + '</span>' +
-          '<input class="field-input bvp-url" id="bvp-url" type="text" ' +
+          '<input class="field-input bvp-url" id="bvp-url" type="text" dir="ltr" ' +
             'placeholder="https://example.com" autocomplete="off" spellcheck="false">' +
           '<button class="btn btn-primary btn-sm" id="bvp-go">' + esc(t('bv.go')) + '</button>' +
           '<span class="badge bvp-status" id="bvp-status">—</span>' +
+          // The session chip is the visible half of the persistent context. Once
+          // cookies survive between opens, "is this browser signed in?" becomes a
+          // question the user cannot answer by looking at the page (they may not
+          // have navigated anywhere yet) — so the picker answers it, and offers
+          // the way back out.
+          '<span class="badge bvp-session" id="bvp-session"></span>' +
+          '<button class="icon-btn bvp-forget" id="bvp-forget" type="button" ' +
+            'title="' + esc(t('bvp.forget')) + '" aria-label="' + esc(t('bvp.forget')) + '">' +
+            BIC('cookie', 15) + '</button>' +
           '<button class="icon-btn bvp-close" id="bvp-close" type="button" ' +
             'title="' + esc(t('bvp.cancel')) + '" aria-label="' + esc(t('bvp.cancel')) + '">' +
             BIC('x', 15) + '</button>' +
@@ -357,7 +376,15 @@
           '<canvas class="bvp-canvas" id="bvp-canvas"></canvas>' +
           '<div class="bvp-empty" id="bvp-empty">' + esc(t('bvp.needUrl')) + '</div>' +
           '<div class="bvp-panel" id="bvp-panel">' +
-            '<div class="bvp-panel-head" id="bvp-drag">' +
+            // An explicit grip. The whole head was already draggable, but nothing
+            // SAID so — a `cursor: move` only appears once the pointer is already
+            // on it, which is no help to someone hunting for a way to move the
+            // panel off the element they are trying to click. Automa puts a
+            // visible handle above the panel; so do we.
+            '<div class="bvp-grip" id="bvp-drag" role="separator" ' +
+              'title="' + esc(t('bvp.drag')) + '" aria-label="' + esc(t('bvp.drag')) + '">' +
+              BIC('move', 13) + '</div>' +
+            '<div class="bvp-panel-head">' +
               '<span class="bvp-panel-title">' + esc(t('bvp.title')) + '</span>' +
               '<button class="icon-btn" id="bvp-ghost" type="button" ' +
                 'title="' + esc(t('bvp.seeThrough')) + '">' + BIC('eye', 14) + '</button>' +
@@ -374,7 +401,7 @@
                 'title="' + esc(t('bvp.child')) + '">' + BIC('chevron-down', 14) + '</button>' +
             '</div>' +
             '<div class="bvp-panel-row">' +
-              '<input class="field-input bvp-sel" id="bvp-sel" type="text" ' +
+              '<input class="field-input bvp-sel" id="bvp-sel" type="text" dir="ltr" ' +
                 'spellcheck="false" autocomplete="off" ' +
                 'placeholder="' + esc(t('bvp.selPlaceholder')) + '">' +
               '<button class="icon-btn" id="bvp-verify" type="button" ' +
@@ -383,15 +410,54 @@
                 'title="' + esc(t('bvp.copy')) + '">' + BIC('copy', 14) + '</button>' +
             '</div>' +
             '<div class="bvp-count" id="bvp-count"></div>' +
-            '<div class="bvp-panel-sub">' + esc(t('bvp.attributes')) + '</div>' +
-            '<div class="bvp-attrs" id="bvp-attrs"></div>' +
+            // Two tabs, like Automa's "Attributes | Blocks". Ours is
+            // "Attributes | Candidates": a Blocks tab would mean building steps
+            // from inside the picker, which is the flow builder's job (HANDOFF 15
+            // § 2.3), whereas alternative selectors are the thing the user
+            // actually needs here — Automa shows one selector and no match count,
+            // so a brittle `:nth-of-type` path looks exactly like a good one.
+            '<div class="bvp-tabs" role="tablist">' +
+              '<button class="bvp-tab is-on" id="bvp-tab-attrs" type="button" ' +
+                'role="tab" aria-selected="true" data-pane="attrs">' +
+                esc(t('bvp.attributes')) + '</button>' +
+              '<button class="bvp-tab" id="bvp-tab-cands" type="button" ' +
+                'role="tab" aria-selected="false" data-pane="cands">' +
+                esc(t('bvp.tabCandidates')) +
+                '<span class="bvp-tab-n" id="bvp-cands-n"></span></button>' +
+            '</div>' +
+            // "#1 Element", plus the two facts that tell you whether you grabbed
+            // what you meant: the tag name and the text inside it.
+            '<div class="bvp-elhead" id="bvp-elhead"></div>' +
+            '<div class="bvp-pane" id="bvp-pane-attrs" role="tabpanel">' +
+              '<div class="bvp-attrs" id="bvp-attrs"></div>' +
+            '</div>' +
+            '<div class="bvp-pane is-off" id="bvp-pane-cands" role="tabpanel">' +
+              '<div class="bvp-cands" id="bvp-cands"></div>' +
+            '</div>' +
             '<div class="bvp-panel-foot">' +
               '<button class="btn btn-primary btn-sm" id="bvp-use">' +
                 esc(t('bvp.use')) + '</button>' +
             '</div>' +
+            // Automa's footer line. Keyboard control is invisible unless the UI
+            // names the keys, and ours has three of them now.
+            '<p class="bvp-kbd">' + esc(t('bvp.kbdClick')) + ' ' +
+              '<kbd>Space</kbd> ' + esc(t('bvp.kbdLock')) + ' · ' +
+              '<kbd>↑</kbd><kbd>↓</kbd> ' + esc(t('bvp.kbdWalk')) + '</p>' +
           '</div>' +
         '</div>' +
-        '<p class="bvp-hint">' + esc(t('bvp.hint')) + '</p>' +
+        // The anonymity note is NOT optional polish. Our picker drives a
+        // server-side browser with a fresh, signed-out context, so every
+        // selector behind a login is unreachable — and the only symptom is a
+        // login wall where the user expected their own page. Saying it up front
+        // is the difference between a limitation and a bug report.
+        // (HANDOFF 15 § 6.1 `AUTH-GAP`; the real fix is session reuse or the
+        // extension, neither of which has landed.)
+        // Filled in by setSession() once the server says whether it restored a
+        // saved session: claiming "fresh, signed-out browser" would now be a LIE
+        // half the time, and a UI that lies about auth state is worse than one
+        // that says nothing.
+        '<p class="bvp-hint">' + esc(t('bvp.hint')) +
+          ' <span class="bvp-anon" id="bvp-anon"></span></p>' +
       '</div>';
   }
 
@@ -416,6 +482,10 @@
     var selIn = q('bvp-sel');
     var countEl = q('bvp-count');
     var attrsEl = q('bvp-attrs');
+    var candsEl = q('bvp-cands');
+    var elHead = q('bvp-elhead');
+    var sessEl = q('bvp-session');
+    var anonEl = q('bvp-anon');
     var ctx = canvas.getContext('2d');
 
     pickState = {
@@ -424,7 +494,9 @@
       locked: false,   // a click/traversal happened → stop following the pointer
       edited: false,   // the user typed in the field → stop overwriting it
       mode: (o.mode === 'xpath' ? 'xpath' : 'css'),
-      onKeyDoc: null
+      signedIn: false, // set from the server's `ready` frame, never assumed
+      onKeyDoc: null,
+      onResize: null
     };
     modeSel.value = pickState.mode;
     // Seed the field with whatever the caller's input already held, so the
@@ -468,31 +540,161 @@
         countEl.className = 'bvp-count is-warn';
       }
     }
+    function emptyNote(host, text) {
+      host.innerHTML = '';
+      // Deliberately NOT an attribute row: the empty state is prose, and reusing
+      // the row made it inherit the blue monospace styling that marks a real
+      // attribute key.
+      var msg = document.createElement('div');
+      msg.className = 'bvp-attr-empty';
+      msg.textContent = text;
+      host.appendChild(msg);
+    }
+    // An attribute CARD (Automa's shape): the name is a small label above, the
+    // value sits in a boxed field with its own copy button. Two reasons this
+    // beats the old single-line key/value row:
+    //   * the value gets the full panel width instead of 60% of it, so
+    //     `jslog="21578; u014N:cOuCgd,Kr2v"` stops being an ellipsis;
+    //   * copy is per-attribute. Copying the selector was already one click;
+    //     copying an `aria-label` off the page meant re-typing it by eye.
+    // Clicking the box itself offers `tag[name="value"]` as the selector, which
+    // is how a human actually decides ("the one with data-testid=submit").
+    function attrCard(a) {
+      var card = document.createElement('div');
+      card.className = 'bvp-attr';
+
+      var label = document.createElement('div');
+      label.className = 'bvp-attr-name';
+      label.textContent = a.name;
+      card.appendChild(label);
+
+      var box = document.createElement('div');
+      box.className = 'bvp-attr-box';
+
+      var cp = document.createElement('button');
+      cp.type = 'button';
+      cp.className = 'icon-btn bvp-attr-copy';
+      cp.title = t('bvp.copyValue');
+      cp.setAttribute('aria-label', t('bvp.copyValue') + ': ' + a.name);
+      cp.innerHTML = BIC('copy', 13);
+      cp.addEventListener('click', function (ev) {
+        ev.stopPropagation();          // do not also "use as selector"
+        copyText(a.value);
+      });
+      box.appendChild(cp);
+
+      var v = document.createElement('span');
+      v.className = 'bvp-attr-value';
+      v.textContent = a.value;
+      // Long values still ellipsise at 306px; the tooltip is the only way to read
+      // one in full without copying it out first.
+      v.title = a.value;
+      box.appendChild(v);
+
+      // Offer the attribute as a selector. Only meaningful in CSS mode — there is
+      // no honest one-line XPath translation to hand back, so we say why instead
+      // of silently doing nothing.
+      box.setAttribute('role', 'button');
+      box.setAttribute('aria-label', t('bvp.useAttr') + ': ' + a.name);
+      box.addEventListener('click', function () {
+        if (pickState.mode !== 'css') { toast(t('bvp.attrCssOnly'), 'info'); return; }
+        var tag = (pickState.last && pickState.last.tag) || '';
+        selIn.value = tag + '[' + a.name + '=' + JSON.stringify(a.value) + ']';
+        pickState.edited = true;
+        send({ t: 'verify', selector: selIn.value });   // never guess the count
+      });
+      card.appendChild(box);
+      return card;
+    }
     function renderAttrs(list) {
+      if (!list || !list.length) { emptyNote(attrsEl, t('bvp.noAttrs')); return; }
       attrsEl.innerHTML = '';
-      if (!list || !list.length) {
-        attrsEl.appendChild(rowEl('muted bvp-attr-empty', t('bvp.noAttrs'), ''));
-        return;
-      }
-      list.forEach(function (a) {
-        attrsEl.appendChild(rowEl('bvp-attr', a.name, a.value));
+      list.forEach(function (a) { attrsEl.appendChild(attrCard(a)); });
+    }
+    // Alternative selectors for the locked element, each with its own match
+    // count. This is the tab Automa does not have, and the answer to § 6.5:
+    // the generated path may be a `:nth-of-type` chain that breaks on the next
+    // deploy, while `[data-testid=…]` is sitting right there.
+    function renderCands(list) {
+      var n = q('bvp-cands-n');
+      n.textContent = list && list.length ? String(list.length) : '';
+      if (!list || !list.length) { emptyNote(candsEl, t('bvp.noCands')); return; }
+      candsEl.innerHTML = '';
+      list.forEach(function (c) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'bvp-cand';
+        // The full selector, because the row ellipsises: a 306px panel clipped
+        // `div[aria-label="Compose a new message"]` by 22px (measured), and a
+        // selector you cannot read is a selector you cannot choose.
+        b.title = c.sel;
+        b.setAttribute('aria-label', t('bvp.candUse') + ': ' + c.sel);
+
+        var s = document.createElement('span');
+        s.className = 'bvp-cand-sel';
+        s.textContent = c.sel;
+        b.appendChild(s);
+
+        // Rule 0.10: never show a selector without saying how many it matches.
+        var badge = document.createElement('span');
+        badge.className = 'bvp-cand-n ' + (c.count === 1 ? 'is-ok' : 'is-warn');
+        badge.textContent = c.count === 1 ? '1' : String(c.count);
+        b.appendChild(badge);
+
+        b.addEventListener('click', function () {
+          selIn.value = c.sel;
+          pickState.edited = true;
+          renderCount(c.count);
+          send({ t: 'verify', selector: c.sel });
+        });
+        candsEl.appendChild(b);
       });
     }
-    function rowEl(cls, name, value) {
-      var d = document.createElement('div');
-      d.className = cls;
-      if (!value && !name) return d;
-      var k = document.createElement('span');
-      k.className = 'bvp-attr-name';
-      k.textContent = name;
-      d.appendChild(k);
-      if (value !== '') {
-        var v = document.createElement('span');
-        v.className = 'bvp-attr-value';
-        v.textContent = value;
-        d.appendChild(v);
+    // "#2 of 7  <a>  Save changes" — index, tag, text. `index`/`count` come from
+    // the page, so the header can be honest about ambiguity where Automa's bare
+    // "#1 Element" cannot.
+    function renderElHead(data) {
+      elHead.innerHTML = '';
+      if (!data || !data.tag) return;
+      var idx = document.createElement('span');
+      idx.className = 'bvp-el-idx';
+      if (data.index > 0 && data.count > 1) {
+        idx.textContent = tf('bvp.elementIndexOf', { n: data.index, c: data.count });
+      } else {
+        idx.textContent = tf('bvp.elementIndex', { n: data.index > 0 ? data.index : 1 });
       }
-      return d;
+      elHead.appendChild(idx);
+
+      var tag = document.createElement('code');
+      tag.className = 'bvp-el-tag';
+      tag.textContent = '<' + data.tag + '>';
+      elHead.appendChild(tag);
+
+      if (data.text) {
+        var txt = document.createElement('span');
+        txt.className = 'bvp-el-text';
+        txt.textContent = data.text;
+        txt.title = data.text;
+        elHead.appendChild(txt);
+      }
+    }
+    function setPane(which) {
+      var on = which === 'cands' ? 'cands' : 'attrs';
+      ['attrs', 'cands'].forEach(function (p) {
+        q('bvp-pane-' + p).classList.toggle('is-off', p !== on);
+        var tab = q('bvp-tab-' + p);
+        tab.classList.toggle('is-on', p === on);
+        tab.setAttribute('aria-selected', p === on ? 'true' : 'false');
+      });
+    }
+    // Reports what the server told us about the persistent context, and keeps
+    // the disclosure paragraph in sync with it.
+    function setSession(signedIn) {
+      pickState.signedIn = !!signedIn;
+      sessEl.textContent = signedIn ? t('bvp.sessionSaved') : t('bvp.sessionAnon');
+      sessEl.className = 'badge bvp-session ' + (signedIn ? 'ok' : '');
+      anonEl.textContent = signedIn ? t('bvp.savedNote') : t('bvp.anonNote');
+      q('bvp-forget').disabled = !signedIn;
     }
     // One paint routine for both channels; `locked` decides whether the
     // pointer is still allowed to move the answer.
@@ -503,6 +705,11 @@
       if (!pickState.edited) selIn.value = selectorOf(data);
       renderCount(data.count);
       renderAttrs(data.attrs);
+      renderElHead(data);
+      // Candidates are computed page-side for picks only (a hover would pay for
+      // N querySelectorAll calls ~14x/sec), so a hover must not blank the list
+      // the user is reading — it keeps the locked element's candidates.
+      if (locked) renderCands(data.candidates);
       q('bvp-up').disabled = !data.hasParent;
       q('bvp-down').disabled = !data.hasChild;
     }
@@ -527,7 +734,12 @@
         case 'frame': drawFrame(msg.data); break;
         case 'ready':
           setStatus(t('bv.connected'), 'ok');
+          setSession(msg.signedIn);             // cookies restored, or anonymous?
           send({ t: 'picker', on: true });      // the picker IS the point here
+          break;
+        case 'session':
+          setSession(msg.signedIn);
+          if (msg.cleared) toast(t('bvp.forgotten'), 'success');
           break;
         case 'navigated': setStatus(t('bv.connected'), 'ok'); break;
         case 'hover':
@@ -578,8 +790,18 @@
       var p = toPoint(ev);
       send({ t: 'scroll', x: p.x, y: p.y, dy: ev.deltaY });
     }, { passive: false });
+    // Keyboard on the focused stage. Space was already here; ↑/↓ were only on the
+    // panel buttons, which is the wrong place for them — walking the DOM is done
+    // while looking at the page, and moving the pointer to a button is exactly
+    // what loses your place.
     stage.addEventListener('keydown', function (ev) {
-      if (ev.key === ' ' || ev.code === 'Space') { ev.preventDefault(); send({ t: 'key', key: 'Space' }); }
+      if (ev.key === ' ' || ev.code === 'Space') {
+        ev.preventDefault(); send({ t: 'key', key: 'Space' });
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault(); send({ t: 'pickStep', dir: 'up' });
+      } else if (ev.key === 'ArrowDown') {
+        ev.preventDefault(); send({ t: 'pickStep', dir: 'down' });
+      }
     });
     canvas.addEventListener('mousedown', function () { stage.focus(); });
 
@@ -606,6 +828,14 @@
     q('bvp-ghost').addEventListener('click', function () {
       panel.classList.toggle('is-ghost');
     });
+    q('bvp-tab-attrs').addEventListener('click', function () { setPane('attrs'); });
+    q('bvp-tab-cands').addEventListener('click', function () { setPane('cands'); });
+    // The persistent session must be resettable from the same window that created
+    // it. Otherwise "sign in inside this modal" is a one-way door: the next user
+    // of this browser profile inherits the previous account.
+    q('bvp-forget').addEventListener('click', function () {
+      send({ t: 'forgetSession' });
+    });
     q('bvp-use').addEventListener('click', function () {
       var val = (selIn.value || '').trim();
       if (!val) { selIn.focus(); return; }
@@ -614,21 +844,54 @@
       cb(val);
     });
 
-    // Drag the panel out of the way (it sits over the page image).
+    // ---- dragging the panel out of the way ------------------------------
+    // The panel floats over the page image, so it must be movable. Two rules,
+    // both learned from measuring this (tools/picker-probe2.js):
+    //
+    //  1. Clamp the WHOLE panel inside the stage, not just 40px of it. The old
+    //     `min(stage.width - 40, x)` let the user park the panel 266px outside
+    //     the stage, and `overflow: hidden` then ate the selector field and the
+    //     "Use this selector" button — the panel's own primary action became
+    //     unreachable with no way back except reopening the picker.
+    //  2. Read the stage rect on every move, never once at mousedown, and
+    //     re-clamp on resize. Inline left/top are absolute pixels: after the
+    //     window shrank, a panel placed at left:1238px stayed there and ended up
+    //     682px outside an 862px-wide stage.
+    function placePanel(x, y) {
+      var s = stage.getBoundingClientRect();
+      var p = panel.getBoundingClientRect();
+      var maxX = Math.max(0, s.width - p.width);
+      var maxY = Math.max(0, s.height - p.height);
+      panel.style.left = Math.max(0, Math.min(maxX, x)) + 'px';
+      panel.style.top = Math.max(0, Math.min(maxY, y)) + 'px';
+      // The stylesheet positions the panel with `inset-inline-end`, which maps to
+      // `right` in LTR but `left` in RTL. Clearing `right` alone would leave the
+      // fa layout fighting our inline `left`, so clear the LOGICAL property.
+      panel.style.insetInlineEnd = 'auto';
+    }
+    // Keep the panel inside the stage when the stage itself changes size, so a
+    // dragged panel can never be stranded off-screen.
+    function reclampPanel() {
+      if (!panel.style.left && !panel.style.top) return;   // still at its default
+      var s = stage.getBoundingClientRect();
+      var p = panel.getBoundingClientRect();
+      placePanel(p.left - s.left, p.top - s.top);
+    }
+
     var drag = null;
     q('bvp-drag').addEventListener('mousedown', function (ev) {
       var r = panel.getBoundingClientRect();
-      var s = stage.getBoundingClientRect();
-      drag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top, s: s };
+      drag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top };
       ev.preventDefault();
     });
     document.addEventListener('mousemove', function (ev) {
       if (!drag || !pickState) return;
-      panel.style.left = Math.max(0, Math.min(drag.s.width - 40, ev.clientX - drag.s.left - drag.dx)) + 'px';
-      panel.style.top = Math.max(0, Math.min(drag.s.height - 40, ev.clientY - drag.s.top - drag.dy)) + 'px';
-      panel.style.right = 'auto';
+      var s = stage.getBoundingClientRect();
+      placePanel(ev.clientX - s.left - drag.dx, ev.clientY - s.top - drag.dy);
     });
     document.addEventListener('mouseup', function () { drag = null; });
+    pickState.onResize = reclampPanel;
+    window.addEventListener('resize', reclampPanel);
 
     pickState.onKeyDoc = function (ev) {
       if (ev.key === 'Escape') { ev.preventDefault(); closePick(); }
@@ -637,6 +900,8 @@
 
     setStatus(t('bv.disconnected'), '');
     renderAttrs(null);
+    renderCands(null);
+    setSession(false);   // pessimistic until the server's `ready` says otherwise
     if (urlIn.value) connect(); else urlIn.focus();
   }
 
@@ -649,6 +914,29 @@
         navigator.clipboard.writeText(input.value);
       } else {
         document.execCommand('copy');
+      }
+      toast(t('bv.copied'), 'success');
+    } catch (e) { toast(t('bv.copyFail'), 'error'); }
+  }
+
+  // Copy a bare string (an attribute value). copyVal() cannot serve here: it
+  // select()s an input, and the attribute values live in spans. The textarea
+  // fallback keeps this working on http:// origins, where navigator.clipboard
+  // is undefined — the dev preview is one of those.
+  function copyText(str) {
+    var s = String(str == null ? '' : str);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(s);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = s;
+        ta.setAttribute('readonly', 'readonly');
+        ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
       }
       toast(t('bv.copied'), 'success');
     } catch (e) { toast(t('bv.copyFail'), 'error'); }

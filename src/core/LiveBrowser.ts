@@ -2,6 +2,11 @@
 
 import type { BrowserContext, Page, CDPSession } from 'playwright';
 import { GlobalBrowser } from './GlobalBrowser';
+import {
+  installConsentAutoDismiss,
+  hasSavedSession,
+  clearStorageState,
+} from './BrowserProfile';
 
 // ════════════════════════════════════════════════════════════════
 // LiveBrowser (Step 12) — interactive, streamable browser sessions.
@@ -34,6 +39,13 @@ export interface PickAttr {
   value: string;
 }
 
+export interface PickCandidate {
+  /** The selector itself, e.g. `button[data-testid="save"]`. */
+  sel: string;
+  /** How many elements it matches on the page right now. 1 is the goal. */
+  count: number;
+}
+
 export interface PickResult {
   css: string;
   xpath: string;
@@ -49,6 +61,13 @@ export interface PickResult {
   // How many elements the generated selector matches — 1 is what you want;
   // 0 means the selector is broken, >1 means it is ambiguous.
   count?: number;
+  // Which of those matches this element is (1-based; 0 when unknown). With
+  // `count` it renders as Automa's "#1 Element", but able to say "#2 of 4".
+  index?: number;
+  // Alternative selectors for the picked element, best-first, each with its own
+  // match count — the panel's "Candidates" tab. Empty on hover: computing them
+  // costs one querySelectorAll per candidate, which a ~14/sec hover cannot pay.
+  candidates?: PickCandidate[];
   // Whether DOM traversal is possible from here (drives the ↑/↓ arrows).
   hasParent?: boolean;
   hasChild?: boolean;
@@ -72,7 +91,10 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 //
 // Everything reported is capped page-side (attribute count, value/text length,
 // selector depth) because it travels over a WebSocket on every mouse move.
-const PICKER_SCRIPT = `(() => {
+// Exported so tests can inject the REAL script into a real page instead of a
+// copy that can drift from it (tests/unit/picker-drive.test.ts). Nothing in
+// `src/` imports it by name; it is used here through `page.evaluate` below.
+export const PICKER_SCRIPT = `(() => {
   if (window.__abPickerActive) return;
   window.__abPickerActive = true;
   var box = document.createElement('div');
@@ -133,6 +155,72 @@ const PICKER_SCRIPT = `(() => {
       return document.querySelectorAll(sel).length;
     } catch (e) { return -1; }   // -1 = the selector itself is invalid
   }
+  // Which of the selector's matches is THIS element (1-based, 0 = unknown).
+  // Automa's panel shows a bare "#1 Element"; pairing the index with the count
+  // answers the more useful question: "the selector hits 4 nodes and I am on
+  // the 2nd" — which is what tells you the selector is too loose.
+  function indexOf(el, sel){
+    if (!sel) return 0;
+    try {
+      var nodes = document.querySelectorAll(sel);
+      for (var i = 0; i < nodes.length; i++){ if (nodes[i] === el) return i + 1; }
+    } catch (e) {}
+    return 0;
+  }
+  // Candidate selectors, best-first, each with its own match count.
+  //
+  // Why: cssPath() walks up to 6 ancestors gluing 2 classes + :nth-of-type at
+  // every level. That is correct today and broken after the next re-render —
+  // framework class hashes and sibling order are the two least stable things on
+  // a page. A test id or a name attribute survives both. So we offer the stable
+  // hooks FIRST and let the panel show what each one actually matches, instead
+  // of handing over one brittle path and hoping.
+  //
+  // Deliberately cheap: attribute lookups + querySelectorAll on a handful of
+  // candidates, computed only for the locked element and the hovered one.
+  function candidatesFor(el){
+    if (!(el instanceof Element)) return [];
+    var tag = el.nodeName.toLowerCase();
+    var out = [];
+    var seen = {};
+    function add(sel){
+      if (!sel || seen[sel]) return;
+      seen[sel] = 1;
+      var n = matchCount(sel);
+      if (n <= 0) return;                     // never offer something that misses
+      out.push({ sel: sel, count: n });
+    }
+    function attr(name){
+      var v = el.getAttribute(name);
+      return v && v.length < 120 ? v : '';
+    }
+    if (el.id) add('#' + CSS.escape(el.id));
+    // Purpose-built hooks, in the order a human would trust them.
+    var byAttr = ['data-testid', 'data-test-id', 'data-test', 'data-cy', 'data-qa',
+                  'name', 'aria-label', 'placeholder', 'title', 'type', 'href'];
+    for (var i = 0; i < byAttr.length; i++){
+      var v = attr(byAttr[i]);
+      if (!v) continue;
+      add(tag + '[' + byAttr[i] + '=' + JSON.stringify(v) + ']');
+    }
+    var role = attr('role');
+    if (role) add(tag + '[role=' + JSON.stringify(role) + ']');
+    // A single class is more durable than a chain of two plus nth-of-type.
+    var cls = (el.getAttribute('class') || '').trim().split(/\\s+/).filter(Boolean);
+    for (var c = 0; c < cls.length && c < 3; c++){
+      // Skip the hashed/util classes that change on every build.
+      if (/^(css-|sc-|jsx-|_)/.test(cls[c]) || /\\d{4,}/.test(cls[c])) continue;
+      add(tag + '.' + CSS.escape(cls[c]));
+    }
+    add(cssPath(el));
+    // Unique wins, then the shortest — a short unique selector is the one a
+    // human can read and a re-render is least likely to break.
+    out.sort(function(a, b){
+      if ((a.count === 1) !== (b.count === 1)) return a.count === 1 ? -1 : 1;
+      return a.sel.length - b.sel.length;
+    });
+    return out.slice(0, 6);
+  }
   function payload(el, kind){
     var css = cssPath(el);
     return {
@@ -143,6 +231,11 @@ const PICKER_SCRIPT = `(() => {
       text: (el.textContent || '').trim().slice(0, 80),
       attrs: attrsOf(el),
       count: matchCount(css),
+      index: indexOf(el, css),
+      // Only for a real pick: computing candidates on every throttled hover
+      // frame would run querySelectorAll ~7x at 12 Hz for nothing, since the
+      // panel's Candidates tab is about the element you committed to.
+      candidates: kind === 'pick' ? candidatesFor(el) : [],
       hasParent: !!(el.parentElement && el.parentElement.nodeName !== 'HTML'),
       hasChild: !!el.firstElementChild
     };
@@ -169,6 +262,11 @@ const PICKER_SCRIPT = `(() => {
     report(el, 'hover');
   }
   function onClick(e){
+    // Only a REAL pointer click picks. Programmatic clicks (el.click()) are not
+    // trusted, and swallowing them would break anything the page — or our own
+    // cookie-consent auto-dismisser — does to itself while the picker is armed.
+    // CDP-dispatched input IS trusted, so the user's clicks still arrive.
+    if (e.isTrusted === false) return;
     e.preventDefault(); e.stopPropagation();
     var el = window.__abPickHover || document.elementFromPoint(e.clientX, e.clientY);
     if (!el) return;
@@ -250,6 +348,9 @@ export class LiveBrowserSession {
   private closed = false;
   public readonly userId: string;
   private vp = { ...DEFAULT_VIEWPORT };
+  // Whether this user already had a saved browser session when we started;
+  // the UI shows it so "why am I logged out" is never a mystery.
+  private hadSavedSession = false;
 
   constructor(id: string, userId: string) {
     this.id = id;
@@ -268,9 +369,19 @@ export class LiveBrowserSession {
   // Bring up an isolated context + page and start the CDP screencast.
   async start(): Promise<void> {
     if (this.closed) throw new Error('session_closed');
-    this.context = await GlobalBrowser.getContext();
+    // A PERSISTENT context, not a throwaway one: this session has a human in
+    // it. Cookies from last time come back, so a page the user logged into
+    // stays logged in instead of greeting them with a login wall every open
+    // (HANDOFF 15 AUTH-GAP). The fingerprint is stable for the same reason.
+    this.hadSavedSession = await hasSavedSession(this.userId);
+    this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
     this.page = await this.context.newPage();
     await this.page.setViewportSize(this.vp).catch(() => {});
+
+    // Consent walls cover the very elements the user is trying to pick, so they
+    // are dismissed before the page's own scripts run. Named-CMP allowlist only
+    // — see BrowserProfile.CONSENT_SCRIPT for why a text match would be unsafe.
+    await installConsentAutoDismiss(this.page);
 
     // Expose the ONE binding the picker uses. `k` decides which channel event
     // the UI receives, so hover previews cannot be mistaken for a real pick.
@@ -317,7 +428,14 @@ export class LiveBrowserSession {
     });
 
     this.touch();
-    this.emit('ready', { url: this.page.url(), width: this.vp.width, height: this.vp.height });
+    // `signedIn` tells the panel whether cookies were restored, so the UI can
+    // stop claiming "fresh, signed-out browser" once that is no longer true.
+    this.emit('ready', {
+      url: this.page.url(),
+      width: this.vp.width,
+      height: this.vp.height,
+      signedIn: this.hadSavedSession,
+    });
   }
 
   private emit(type: string, data: Record<string, unknown>): void {
@@ -447,6 +565,19 @@ export class LiveBrowserSession {
     } catch { /* ignore */ }
   }
 
+  /**
+   * Drop this user's saved cookies/localStorage and clear the live context,
+   * i.e. "sign out of everything" for the picker browser. Needed because a
+   * persistent session that cannot be reset is a trap: a half-broken login
+   * would follow the user around with no way to start clean.
+   */
+  async forgetSession(): Promise<void> {
+    await clearStorageState(this.userId);
+    this.hadSavedSession = false;
+    try { if (this.context) await this.context.clearCookies(); } catch { /* ignore */ }
+    this.emit('session', { signedIn: false, cleared: true });
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -454,7 +585,11 @@ export class LiveBrowserSession {
     try { if (this.cdp) await this.cdp.send('Page.stopScreencast').catch(() => {}); } catch { /* ignore */ }
     try { if (this.cdp) await this.cdp.detach().catch(() => {}); } catch { /* ignore */ }
     try { if (this.page) await this.page.close().catch(() => {}); } catch { /* ignore */ }
-    try { if (this.context) await GlobalBrowser.closeContext(this.context); } catch { /* ignore */ }
+    // Save BEFORE closing, or the login the user just performed inside the
+    // picker dies with the context — which was exactly the old behaviour.
+    try {
+      if (this.context) await GlobalBrowser.saveAndCloseContext(this.context, this.userId);
+    } catch { /* ignore */ }
     this.cdp = null; this.page = null; this.context = null;
   }
 }
