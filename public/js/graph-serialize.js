@@ -97,9 +97,28 @@
   // -------- condition builder (matches ConditionEngine SimpleCondition) ------
   // Params the Condition Builder NDV owns. They are encoded into the step's
   // `condition` object, so they must never ALSO appear in `step.params`.
-  // `maxDepth` / `evaluateMode` are UI-only recursion/evaluation guards.
+  //
+  // `maxDepth` and `evaluateMode` USED to be listed here. They were removed
+  // once a stack-wide audit showed no backend reference to either key: they
+  // were UI-only knobs that changed nothing about the run. They stay in this
+  // strip list for one release so that a workflow saved by an older build does
+  // not carry two orphan params into `step.params` when it is re-serialised.
   var CONDITION_ONLY_PARAMS = ['groups', 'selector', 'operator', 'value',
     'expected', 'source', 'attribute', 'maxDepth', 'evaluateMode'];
+
+  // Operators whose `expected` the engine compares with Array.includes and so
+  // MUST arrive as a real array (ConditionEngine 'in_list' / 'not_in_list' both
+  // return false outright for a non-array). The builder edits them as one
+  // comma/newline separated text field, which is the only shape a single input
+  // can hold, and the conversion happens here — at the single boundary where
+  // editor rows become backend conditions.
+  var LIST_OPERATORS = ['in_list', 'not_in_list'];
+  function splitListValue(raw) {
+    return String(raw == null ? '' : raw)
+      .split(/[\n,]/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+  }
 
   // The Condition Builder design (ndv-condition-final) adds a "Left source" +
   // "Attribute name" pair to each row. They travel to the backend as
@@ -110,7 +129,11 @@
     var cond = { operator: (row && row.operator) || 'exists' };
     if (row && row.selector !== undefined && row.selector !== '') cond.selector = row.selector;
     if (row && row.value !== undefined && row.value !== '') cond.value = row.value;
-    if (row && row.expected !== undefined && row.expected !== '') cond.expected = row.expected;
+    if (row && row.expected !== undefined && row.expected !== '') {
+      cond.expected = LIST_OPERATORS.indexOf(cond.operator) >= 0
+        ? splitListValue(row.expected)
+        : row.expected;
+    }
     if (row && row.source !== undefined && row.source !== '' && row.source !== 'text') {
       cond.source = row.source;
     }
@@ -165,7 +188,15 @@
       var row = { operator: c.operator || 'exists' };
       if (c.selector !== undefined) row.selector = String(c.selector);
       if (c.value !== undefined) row.value = String(c.value);
-      if (c.expected !== undefined) row.expected = String(c.expected);
+      // `in_list` / `not_in_list` arrive as a real ARRAY (see splitListValue).
+      // Join them back with ", " so the row edits as the same comma list the
+      // user typed — `String(['a','b'])` would give "a,b" without the space and
+      // an object array would give "[object Object]".
+      if (c.expected !== undefined) {
+        row.expected = Array.isArray(c.expected)
+          ? c.expected.map(function (v) { return String(v); }).join(', ')
+          : String(c.expected);
+      }
       if (c.source !== undefined) row.source = String(c.source);
       if (c.attribute !== undefined) row.attribute = String(c.attribute);
       return row;
@@ -394,7 +425,14 @@
             if (c.operator !== undefined) node.params.operator = String(c.operator);
             if (c.selector !== undefined) node.params.selector = String(c.selector);
             if (c.value !== undefined) node.params.value = String(c.value);
-            if (c.expected !== undefined) node.params.expected = String(c.expected);
+            // An `in_list` expected arrives as an array; join it the way the
+            // builder's "Allowed values" field displays it, so importing a
+            // workflow and re-saving it does not rewrite the user's own text.
+            if (c.expected !== undefined) {
+              node.params.expected = Array.isArray(c.expected)
+                ? c.expected.map(function (v) { return String(v); }).join(', ')
+                : String(c.expected);
+            }
             if (c.source !== undefined) node.params.source = String(c.source);
             if (c.attribute !== undefined) node.params.attribute = String(c.attribute);
           }

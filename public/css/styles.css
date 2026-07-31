@@ -2406,6 +2406,39 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   border-color: rgba(255, 138, 31, 0.55);
   box-shadow: 0 0 0 3px rgba(255, 138, 31, 0.09);
 }
+/* ---- combobox (free text + chevron menu) — see NdvUI.comboCell ---------- */
+.aria-combo { position: relative; min-width: 0; }
+.aria-combo-input { padding-right: 26px; }
+.aria-combo-caret {
+  position: absolute; top: 0; right: 0; bottom: auto;
+  width: 24px; height: var(--ndv-ctl-h, 30px);
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; padding: 0;
+  color: var(--text-dim); cursor: pointer;
+}
+.aria-combo-caret:hover { color: var(--text); }
+.aria-combo-list {
+  display: none;
+  position: absolute; top: calc(var(--ndv-ctl-h, 30px) + 3px); left: 0; right: 0;
+  z-index: 40; max-height: 186px; overflow: auto;
+  padding: 4px;
+  background: var(--bg-elev-2, #151C25);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+.aria-combo.is-open .aria-combo-list { display: block; }
+.aria-combo-opt {
+  height: 24px; padding: 0 8px; border-radius: 5px;
+  display: flex; align-items: center;
+  font-size: 11.5px; color: var(--text-dim);
+  cursor: pointer; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.aria-combo-opt:hover, .aria-combo-opt.is-active {
+  color: var(--text); background: rgba(255, 255, 255, 0.06);
+}
+
 .aria-input-num { font-variant-numeric: tabular-nums; }
 /* keep the design's plain numeric look: no native spinners */
 .aria-input-num::-webkit-outer-spin-button,
@@ -2738,15 +2771,18 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .cb-path-plus:hover:not(:disabled) { color: var(--primary); border-color: rgba(255,138,31,0.5); }
 .cb-path-plus:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* the group stack */
+/* The group stack.
+   CONTRACT: this is NOT a scroller. `.ndv-pane` is the centre column's single
+   scroller (see the `.ndv-modal.is-designed` block). When the builder took
+   `flex: 1 1 auto; overflow: auto` it also took every spare pixel of the
+   column, which shoved the True/False cards and the Max depth row onto the
+   modal's bottom edge with ~75px of dead air above them — the locked crop has
+   them following the builder immediately. Keep it content-height. */
 .cb-builder {
-  flex: 1 1 auto; min-height: 0;
+  flex: 0 0 auto;
   display: flex; flex-direction: column; gap: 8px;
-  overflow: auto;
   margin: 0 -4px; padding: 2px 4px;
 }
-.cb-builder::-webkit-scrollbar { width: 8px; }
-.cb-builder::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 8px; }
 
 /* ---- one AND group ----------------------------------------------------- */
 .cb-group {
@@ -2756,19 +2792,18 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   padding: 9px 10px 10px;
   display: flex; flex-direction: column; gap: 7px;
 }
-.cb-group-head { display: flex; align-items: center; gap: 8px; }
+.cb-group-head { display: flex; align-items: center; gap: 10px; padding: 0 2px; }
+/* The crop draws the group letter as a PLAIN light glyph — no pill, no orange
+   fill (rule 0.2: the image outranks the prose, which asked for a green AND
+   badge). Fixed width so `A`/`B` line up with the row numbers underneath. */
 .cb-group-badge {
-  width: 17px; height: 17px; flex: 0 0 auto;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 5px;
-  font-size: 10px; font-weight: 800;
-  color: var(--primary);
-  background: rgba(255, 138, 31, 0.13);
-  border: 1px solid rgba(255, 138, 31, 0.3);
+  width: 14px; flex: 0 0 auto;
+  font-size: 11.5px; font-weight: 600;
+  color: var(--text);
 }
 .cb-group-label {
   flex: 1 1 auto; min-width: 0;
-  font-size: 10.5px; color: var(--text-faint);
+  font-size: 11px; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cb-group-head .aria-iconbtn { width: 24px; height: 24px; font-size: 11px; }
@@ -2789,46 +2824,33 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   min-height: 30px; padding: 4px 6px 4px 8px;
   cursor: pointer; min-width: 0;
 }
+/* Round, per the crop (a 22px circle, not the 17px squircle we shipped). */
 .cb-row-num {
-  width: 17px; height: 17px; flex: 0 0 auto;
+  width: 22px; height: 22px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 5px;
-  font-size: 9.5px; font-weight: 700;
+  border-radius: 50%;
+  font-size: 10.5px; font-weight: 600;
   color: var(--text-dim);
   background: #0B0F14; border: 1px solid var(--border);
 }
-.cb-row-chips {
+/* The row summary: PLAIN text tokens on a wide, even pitch — measured at ~28px
+   between tokens on the 1:1 crop, which is what makes neighbouring collapsed
+   rows read as aligned columns. It is NOT a row of coloured pills; those were
+   this file's own invention and rule 0.2 hands it to the image. */
+.cb-row-toks {
   flex: 1 1 auto; min-width: 0;
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 26px;
   overflow: hidden;
 }
-/* Chip colour coding mirrors the preview: selector = code grey, attribute =
-   blue, operator = orange, expected literal = green, source = violet. */
-.cb-chip {
-  font-size: 10px; font-weight: 600;
-  padding: 1px 6px; border-radius: 4px;
-  white-space: nowrap; max-width: 100%;
+.cb-tok {
+  font-size: 11.5px; font-weight: 400;
+  color: var(--text-dim);
+  white-space: nowrap; min-width: 0;
   overflow: hidden; text-overflow: ellipsis;
-  border: 1px solid transparent;
 }
-.cb-chip.tone-selector {
-  font-family: var(--ndv-mono);
-  color: var(--text); background: #0B0F14; border-color: var(--border-strong);
-}
-.cb-chip.tone-value {
-  font-family: var(--ndv-mono);
-  color: var(--text-dim); background: #0B0F14; border-color: var(--border);
-}
-.cb-chip.tone-attribute {
-  font-family: var(--ndv-mono);
-  color: var(--info); background: rgba(43,166,255,0.1); border-color: rgba(43,166,255,0.26);
-}
-.cb-chip.tone-source { color: #C58AF9; background: rgba(197,138,249,0.1); border-color: rgba(197,138,249,0.26); }
-.cb-chip.tone-operator { color: var(--primary); background: rgba(255,138,31,0.1); border-color: rgba(255,138,31,0.28); }
-.cb-chip.tone-expected {
-  font-family: var(--ndv-mono);
-  color: var(--success); background: rgba(46,204,113,0.1); border-color: rgba(46,204,113,0.26);
-}
+/* Only the left-hand target is lifted to full text colour — the crop shows the
+   selector marginally brighter than the operator/value that follow it. */
+.cb-tok.tone-selector, .cb-tok.tone-value { color: var(--text); }
 .cb-row-acts { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
 .cb-row-acts .aria-iconbtn {
   width: 22px; height: 22px; font-size: 11px;
@@ -2844,10 +2866,28 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   margin-top: 2px; padding-top: 9px;
 }
 .cb-row-line { display: grid; gap: 9px 10px; align-items: start; }
-/* Line 1: Left source · [Attribute name] · CSS Selector — the selector cell
-   gets the extra room because it holds the fx + picker buttons. */
-.cb-line-1 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr); }
-.cb-line-1:has(> :nth-child(2):last-child) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr); }
+/* Line 1 holds the LEFT-hand value, and its cell count depends on the row's
+   check kind (NdvModel.CONDITION_KINDS):
+     element  -> 1 cell  (CSS Selector)
+     variable -> 1 cell  (Variable name)
+     content  -> 2 cells (CSS Selector · What to read)
+              -> 3 cells (… · Attribute name), when reading an attribute
+   The selector cell always takes the largest share: it is the longest value in
+   the row AND it carries two inline buttons (element picker + fx), so an equal
+   split truncated `#login-status` to `#login·` while "What to read" sat on
+   whitespace. Counted with :has() rather than a class so the JS stays free of
+   layout knowledge. */
+.cb-line-1 { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.05fr) minmax(0, 1.05fr); }
+.cb-line-1:has(> :nth-child(2):last-child) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); }
+.cb-line-1:has(> :first-child:last-child) { grid-template-columns: minmax(0, 1fr); }
+
+/* The row's primary question spans the full width — it is what every other
+   control in the row depends on, and its one-line hint explains the choice. */
+.cb-kind-cell { margin-bottom: 1px; }
+.cb-kind-cell > .aria-cell-help {
+  font-size: 10.5px; color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* Line 2: Operator · Right value */
 .cb-line-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); }
 .cb-line-2:has(> :first-child:last-child) { grid-template-columns: minmax(0, 1fr); }
@@ -2875,13 +2915,15 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .cb-or-sep::before, .cb-or-sep::after {
   content: ''; flex: 1 1 auto; height: 1px; background: var(--border);
 }
+/* Neutral in the crop — the orange is reserved for the active Path pill and the
+   Run button, so an orange OR competed with them for the eye. */
 .cb-or-pill {
   flex: 0 0 auto;
-  font-size: 9.5px; font-weight: 800; letter-spacing: 0.1em;
-  color: var(--primary);
-  padding: 2px 11px; border-radius: 999px;
-  border: 1px solid rgba(255, 138, 31, 0.38);
-  background: rgba(255, 138, 31, 0.08);
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 3px 14px; border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-0, #0B0F14);
 }
 
 /* ---- dashed "+ OR (New group)" -------------------------------------- */
@@ -2942,13 +2984,10 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 }
 
 /* ---- footer: Max depth · Evaluate mode ------------------------------- */
-.cb-foot {
-  flex: 0 0 auto;
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-  margin-top: 2px;
-}
+/* `.cb-foot` (the Max depth / Evaluate mode strip) was removed with the two
+   dead controls it held — see ndv-nodes.js renderCondition. */
 @media (max-width: 1000px) {
-  .cb-results, .cb-foot { grid-template-columns: 1fr; }
+  .cb-results { grid-template-columns: 1fr; }
 }
 
 /* ============================================
