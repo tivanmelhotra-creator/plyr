@@ -305,3 +305,78 @@ describe('picker session: the persistent server browser', () => {
     expect(liveBrowser).toMatch(/if \(e\.isTrusted === false\) return;/);
   });
 });
+
+/**
+ * The eye is a MODE SWITCH (user request, 2026-07-31).
+ *
+ * The window used to send `{ t: 'picker', on: true }` the moment the session was
+ * ready and never turn it off, so the injected capture-phase `onClick` swallowed
+ * every real click for the whole session: links did not open, forms did not
+ * submit, and the "simulated browser" could only hover. The eye button, mean-
+ * while, only faded the panel — it looked like "hide", so nothing in the UI
+ * offered a way out of picking mode.
+ *
+ * The contract now: element selection is a mode that starts OFF (a real
+ * browser), the eye toggles it, and the panel goes translucent while it is off.
+ */
+describe('picker: browse mode vs element-selection mode', () => {
+  it('does not force the picker on when the session becomes ready', () => {
+    // Comments stripped: the removed line is DOCUMENTED at the call site, and
+    // that explanation has to stay readable.
+    const code = browserView.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    expect(code).not.toContain("send({ t: 'picker', on: true })");
+    // ...it pushes whatever mode the UI is actually in.
+    expect(browserView).toContain('applySelectMode(pickState.selectMode, true)');
+  });
+
+  it('starts in browse mode, not in select mode', () => {
+    expect(browserView).toMatch(/selectMode:\s*false/);
+  });
+
+  it('the eye toggles the mode and drives the page-side picker', () => {
+    expect(browserView).toMatch(/function applySelectMode\(on, quiet\)/);
+    expect(browserView).toContain("send({ t: 'picker', on: ps.selectMode })");
+    expect(browserView).toContain('applySelectMode(!pickState.selectMode)');
+    // It is a toggle, so it has to report its state to assistive tech.
+    expect(browserView).toMatch(/aria-pressed', ps\.selectMode \? 'true' : 'false'/);
+  });
+
+  it('makes the panel translucent while selection is off', () => {
+    expect(browserView).toMatch(/classList\.toggle\('is-browse', !ps\.selectMode\)/);
+    const css = read('public/css/styles.css');
+    expect(css).toMatch(/\.bvp-panel\.is-browse\s*\{\s*opacity:\s*0\.55/);
+    // ...and back to full opacity when the pointer or focus is on it, otherwise
+    // its own controls would be the thing you cannot read.
+    expect(css).toMatch(/\.bvp-panel\.is-browse:hover/);
+    // The cursor states the mode before you click.
+    expect(css).toMatch(/\.bvp-canvas\.is-picking\s*\{\s*cursor:\s*crosshair/);
+  });
+
+  it('sends the keyboard to the page while browsing', () => {
+    // Space/↑/↓ belong to the picker ONLY in select mode; in browse mode they
+    // are how you scroll and how you fill in a login form.
+    expect(browserView).toMatch(/if \(pickState\.selectMode\) \{/);
+    expect(browserView).toMatch(/send\(\{ t: 'type', text: ev\.key \}\)/);
+    expect(browserView).toMatch(/NAMED_KEYS\[ev\.key\]/);
+    // Never steal the real browser's own shortcuts.
+    expect(browserView).toMatch(/if \(ev\.ctrlKey \|\| ev\.metaKey \|\| ev\.altKey\) return;/);
+  });
+
+  it('ships history controls, wired end to end', () => {
+    for (const cmd of ['back', 'forward', 'reload']) {
+      expect(browserView, `client must send ${cmd}`).toContain("send({ t: '" + cmd + "' })");
+      expect(streamServer, `server must handle ${cmd}`).toContain("case '" + cmd + "'");
+      expect(liveBrowser, `LiveBrowser must implement ${cmd}`).toContain('async ' + cmd + '()');
+    }
+    expect(liveBrowser).toContain('goBack(');
+    expect(liveBrowser).toContain('goForward(');
+  });
+
+  it('names both modes in both languages', () => {
+    for (const key of ['bvp.selectOn', 'bvp.selectOff', 'bvp.inBrowse', 'bvp.inSelect',
+      'bvp.kbdBrowse', 'bvp.back', 'bvp.forward', 'bvp.reload']) {
+      const hits = i18n.split("'" + key + "'").length - 1;
+      expect(hits, `${key} must exist in fa AND en`).toBe(2);
+    }
+  });
+});

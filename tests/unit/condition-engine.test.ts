@@ -301,3 +301,57 @@ describe('ConditionEngine — Left source (source / attribute)', () => {
     ] })).toBe(true);
   });
 });
+
+/**
+ * Automa parity (project rule R1, MISSIONS.md — mission 5).
+ *
+ * Automa's `conditionBuilder.compareTypes` offers case-INSENSITIVE twins
+ * (`eqi`, `cni`, `nci`) and JS-truthiness checks (`itr`, `ifl`). The builder now
+ * offers all five, so the engine has to honour them — an operator the UI can
+ * emit but the runtime ignores is worse than no operator at all, because the
+ * workflow silently takes the wrong branch.
+ */
+describe('ConditionEngine — Automa parity operators', () => {
+  const eng = makeEngine();
+
+  it('equals_i folds case away (Automa eqi)', async () => {
+    expect(await eng.evaluate({ operator: 'equals_i', value: 'Sign Out', expected: 'sign out' })).toBe(true);
+    expect(await eng.evaluate({ operator: 'equals_i', value: 'SIGN OUT', expected: 'Sign Out' })).toBe(true);
+    // still a full-string comparison, not a substring one
+    expect(await eng.evaluate({ operator: 'equals_i', value: 'sign out now', expected: 'sign out' })).toBe(false);
+    // and the case-SENSITIVE twin must not have changed
+    expect(await eng.evaluate({ operator: 'equals', value: 'Sign Out', expected: 'sign out' })).toBe(false);
+  });
+
+  it('contains_i / not_contains_i fold case away (Automa cni / nci)', async () => {
+    expect(await eng.evaluate({ operator: 'contains_i', value: 'Total: PAID', expected: 'paid' })).toBe(true);
+    expect(await eng.evaluate({ operator: 'contains', value: 'Total: PAID', expected: 'paid' })).toBe(false);
+    expect(await eng.evaluate({ operator: 'not_contains_i', value: 'Total: PAID', expected: 'draft' })).toBe(true);
+    expect(await eng.evaluate({ operator: 'not_contains_i', value: 'Total: PAID', expected: 'PaId' })).toBe(false);
+  });
+
+  it('is_truthy / is_falsy use JS truthiness, unlike is_true / is_false', async () => {
+    // "did I get a value at all" — the check you want after reading the page
+    expect(await eng.evaluate({ operator: 'is_truthy', value: 'anything' })).toBe(true);
+    expect(await eng.evaluate({ operator: 'is_truthy', value: '' })).toBe(false);
+    expect(await eng.evaluate({ operator: 'is_truthy', value: '   ' })).toBe(false); // trimmed => empty
+    expect(await eng.evaluate({ operator: 'is_truthy', value: 0 })).toBe(false);
+    expect(await eng.evaluate({ operator: 'is_truthy', value: true })).toBe(true);
+
+    expect(await eng.evaluate({ operator: 'is_falsy', value: '' })).toBe(true);
+    expect(await eng.evaluate({ operator: 'is_falsy', value: 0 })).toBe(true);
+    expect(await eng.evaluate({ operator: 'is_falsy', value: 'x' })).toBe(false);
+
+    // the deliberate difference from is_true/is_false: the STRING "false" is a
+    // non-empty string, therefore truthy, while is_true rejects it.
+    expect(await eng.evaluate({ operator: 'is_truthy', value: 'false' })).toBe(true);
+    expect(await eng.evaluate({ operator: 'is_true', value: 'false' })).toBe(false);
+  });
+
+  it('the new operators resolve {{variables}} like every other operator', async () => {
+    const withVars = makeEngine({ label: 'Sign Out' });
+    expect(await withVars.evaluate({
+      operator: 'equals_i', value: '{{label}}', expected: 'sign out',
+    })).toBe(true);
+  });
+});

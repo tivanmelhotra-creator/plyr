@@ -468,6 +468,45 @@ export class LiveBrowserSession {
     }
   }
 
+  /**
+   * Browser history. The picker window is a real browser now (element selection
+   * is a MODE, not the permanent state it used to be), and a browser without
+   * Back is a dead end: following a link into the wrong page used to leave
+   * retyping the URL as the only way out.
+   *
+   * `goBack`/`goForward` resolve to `null` when there is nothing in that
+   * direction, which is not an error — it is the button being a no-op, exactly
+   * as a greyed-out Back is.
+   */
+  async back(): Promise<void> {
+    this.touch();
+    if (!this.page) return;
+    try {
+      await this.page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      this.emit('navigated', { url: this.page.url() });
+    } catch { /* nothing to go back to, or the navigation was aborted */ }
+  }
+
+  async forward(): Promise<void> {
+    this.touch();
+    if (!this.page) return;
+    try {
+      await this.page.goForward({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      this.emit('navigated', { url: this.page.url() });
+    } catch { /* ignore */ }
+  }
+
+  async reload(): Promise<void> {
+    this.touch();
+    if (!this.page) return;
+    try {
+      await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      this.emit('navigated', { url: this.page.url() });
+    } catch (e) {
+      this.emit('error', { message: (e as Error).message });
+    }
+  }
+
   async click(x: number, y: number): Promise<void> {
     this.touch();
     if (!this.cdp) return;

@@ -355,6 +355,19 @@
       '<div class="bvp-shell" role="dialog" aria-modal="true">' +
         '<div class="bvp-bar">' +
           '<span class="bvp-bar-title">' + BIC('target', 15) + ' ' + esc(t('bvp.title')) + '</span>' +
+          // Real history controls. Without them "browse to the page you need"
+          // was a one-way trip: the only way back was retyping the URL, which is
+          // not a thing a browser makes you do — and following a link into the
+          // wrong page is the normal cost of browsing.
+          '<button class="icon-btn bvp-nav" id="bvp-back" type="button" ' +
+            'title="' + esc(t('bvp.back')) + '" aria-label="' + esc(t('bvp.back')) + '">' +
+            BIC('chevron-left', 15) + '</button>' +
+          '<button class="icon-btn bvp-nav" id="bvp-fwd" type="button" ' +
+            'title="' + esc(t('bvp.forward')) + '" aria-label="' + esc(t('bvp.forward')) + '">' +
+            BIC('chevron-right', 15) + '</button>' +
+          '<button class="icon-btn bvp-nav" id="bvp-reload" type="button" ' +
+            'title="' + esc(t('bvp.reload')) + '" aria-label="' + esc(t('bvp.reload')) + '">' +
+            BIC('rotate-cw', 15) + '</button>' +
           '<input class="field-input bvp-url" id="bvp-url" type="text" dir="ltr" ' +
             'placeholder="https://example.com" autocomplete="off" spellcheck="false">' +
           '<button class="btn btn-primary btn-sm" id="bvp-go">' + esc(t('bv.go')) + '</button>' +
@@ -386,9 +399,20 @@
               BIC('move', 13) + '</div>' +
             '<div class="bvp-panel-head">' +
               '<span class="bvp-panel-title">' + esc(t('bvp.title')) + '</span>' +
-              '<button class="icon-btn" id="bvp-ghost" type="button" ' +
-                'title="' + esc(t('bvp.seeThrough')) + '">' + BIC('eye', 14) + '</button>' +
+              // THE EYE IS A MODE SWITCH, not a "hide the panel" button. It used
+              // to only fade the panel to 22% opacity, while the page-side picker
+              // stayed injected for the whole session — which is what made this
+              // window unable to browse: the injected `onClick` swallowed every
+              // real click and turned it into a pick, so links never opened and
+              // forms never submitted. The eye now toggles element-selection
+              // mode: OFF = a real browser (click, follow links, type, scroll),
+              // ON = hover outlines + click picks. See `applySelectMode()`.
+              '<button class="icon-btn bvp-eye" id="bvp-eye" type="button" ' +
+                'aria-pressed="false" title="">' + BIC('eye', 14) + '</button>' +
             '</div>' +
+            // Which of the two modes you are in, spelled out. An icon-only
+            // toggle that changes what every click does needs a label.
+            '<div class="bvp-modeline" id="bvp-modeline"></div>' +
             '<div class="bvp-panel-row">' +
               '<select class="field-input bvp-mode" id="bvp-mode" ' +
                 'aria-label="' + esc(t('bvp.mode')) + '">' +
@@ -439,10 +463,9 @@
                 esc(t('bvp.use')) + '</button>' +
             '</div>' +
             // Automa's footer line. Keyboard control is invisible unless the UI
-            // names the keys, and ours has three of them now.
-            '<p class="bvp-kbd">' + esc(t('bvp.kbdClick')) + ' ' +
-              '<kbd>Space</kbd> ' + esc(t('bvp.kbdLock')) + ' · ' +
-              '<kbd>↑</kbd><kbd>↓</kbd> ' + esc(t('bvp.kbdWalk')) + '</p>' +
+            // names the keys — and the keys only exist in select mode, so this
+            // line is rewritten by `applySelectMode()` rather than fixed here.
+            '<p class="bvp-kbd" id="bvp-kbd"></p>' +
           '</div>' +
         '</div>' +
         // The anonymity note is NOT optional polish. Our picker drives a
@@ -494,6 +517,11 @@
       locked: false,   // a click/traversal happened → stop following the pointer
       edited: false,   // the user typed in the field → stop overwriting it
       mode: (o.mode === 'xpath' ? 'xpath' : 'css'),
+      // Element-selection mode is OFF at open: this window is a real browser
+      // first. You almost always have to get somewhere before there is anything
+      // worth picking — sign in, open a menu, expand a row — and none of that is
+      // possible while every click is being converted into a pick.
+      selectMode: false,
       signedIn: false, // set from the server's `ready` frame, never assumed
       onKeyDoc: null,
       onResize: null
@@ -687,6 +715,56 @@
         tab.setAttribute('aria-selected', p === on ? 'true' : 'false');
       });
     }
+    /**
+     * The one place that decides what a click means.
+     *
+     * `selectMode === false` (the default) is a REAL BROWSER: no picker script
+     * is injected, so the CDP mouse/keyboard events reach the page unmodified —
+     * links open, buttons submit, inputs receive text, and nothing is outlined.
+     * The panel drops to 55% opacity because in that mode it is furniture in
+     * front of the page you are trying to use, and it is not doing anything.
+     *
+     * `selectMode === true` is the picker: the page-side script is injected, so
+     * hover outlines the element under the pointer and a click is swallowed and
+     * reported as a pick instead of being delivered to the page. That swallowing
+     * is the whole point of the mode — and the reason it must not be permanent.
+     *
+     * @param {boolean} on
+     * @param {boolean} [quiet] skip the toast (used for the initial apply)
+     */
+    function applySelectMode(on, quiet) {
+      var ps = pickState;
+      if (!ps) return;
+      ps.selectMode = !!on;
+      send({ t: 'picker', on: ps.selectMode });
+      // Leaving select mode also drops whatever the outline was pinned to; the
+      // stale "#1 Element" panel would otherwise describe a page you have since
+      // navigated away from.
+      if (!ps.selectMode) ps.locked = false;
+
+      var eye = q('bvp-eye');
+      eye.classList.toggle('is-on', ps.selectMode);
+      eye.setAttribute('aria-pressed', ps.selectMode ? 'true' : 'false');
+      eye.title = ps.selectMode ? t('bvp.selectOff') : t('bvp.selectOn');
+      eye.setAttribute('aria-label', eye.title);
+      panel.classList.toggle('is-browse', !ps.selectMode);
+      panel.classList.toggle('is-locked', ps.selectMode && ps.locked);
+      canvas.classList.toggle('is-picking', ps.selectMode);
+
+      var line = q('bvp-modeline');
+      line.className = 'bvp-modeline ' + (ps.selectMode ? 'is-select' : 'is-browse');
+      line.textContent = ps.selectMode ? t('bvp.inSelect') : t('bvp.inBrowse');
+
+      var kbd = q('bvp-kbd');
+      if (ps.selectMode) {
+        kbd.innerHTML = esc(t('bvp.kbdClick')) + ' <kbd>Space</kbd> ' +
+          esc(t('bvp.kbdLock')) + ' · <kbd>↑</kbd><kbd>↓</kbd> ' + esc(t('bvp.kbdWalk'));
+      } else {
+        kbd.textContent = t('bvp.kbdBrowse');
+      }
+      if (!quiet) toast(ps.selectMode ? t('bvp.selectedOn') : t('bvp.selectedOff'), 'info');
+    }
+
     // Reports what the server told us about the persistent context, and keeps
     // the disclosure paragraph in sync with it.
     function setSession(signedIn) {
@@ -735,7 +813,10 @@
         case 'ready':
           setStatus(t('bv.connected'), 'ok');
           setSession(msg.signedIn);             // cookies restored, or anonymous?
-          send({ t: 'picker', on: true });      // the picker IS the point here
+          // Push the CURRENT mode rather than forcing the picker on. This line
+          // used to be `send({ t: 'picker', on: true })`, which is what made the
+          // window un-browsable from its very first frame.
+          applySelectMode(pickState.selectMode, true);
           break;
         case 'session':
           setSession(msg.signedIn);
@@ -790,17 +871,40 @@
       var p = toPoint(ev);
       send({ t: 'scroll', x: p.x, y: p.y, dy: ev.deltaY });
     }, { passive: false });
-    // Keyboard on the focused stage. Space was already here; ↑/↓ were only on the
-    // panel buttons, which is the wrong place for them — walking the DOM is done
-    // while looking at the page, and moving the pointer to a button is exactly
-    // what loses your place.
+    // Keyboard on the focused stage. In SELECT mode the keys drive the picker:
+    // Space locks the hovered element and ↑/↓ walk the DOM (they live here, not
+    // only on the panel buttons, because walking the DOM is done while looking at
+    // the page and moving the pointer to a button is what loses your place).
+    //
+    // In BROWSE mode the same keys have to mean what they mean in a browser —
+    // Space scrolls, arrows scroll, and typing types — otherwise "it behaves like
+    // a real browser" is false the moment you try to fill in a login form.
+    var NAMED_KEYS = {
+      Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
+      Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
+      ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Home: 'Home', End: 'End',
+      PageUp: 'PageUp', PageDown: 'PageDown', ' ': 'Space'
+    };
     stage.addEventListener('keydown', function (ev) {
-      if (ev.key === ' ' || ev.code === 'Space') {
-        ev.preventDefault(); send({ t: 'key', key: 'Space' });
-      } else if (ev.key === 'ArrowUp') {
-        ev.preventDefault(); send({ t: 'pickStep', dir: 'up' });
-      } else if (ev.key === 'ArrowDown') {
-        ev.preventDefault(); send({ t: 'pickStep', dir: 'down' });
+      if (pickState.selectMode) {
+        if (ev.key === ' ' || ev.code === 'Space') {
+          ev.preventDefault(); send({ t: 'key', key: 'Space' });
+        } else if (ev.key === 'ArrowUp') {
+          ev.preventDefault(); send({ t: 'pickStep', dir: 'up' });
+        } else if (ev.key === 'ArrowDown') {
+          ev.preventDefault(); send({ t: 'pickStep', dir: 'down' });
+        }
+        return;
+      }
+      // Never swallow the browser's own shortcuts (copy/paste/devtools): those
+      // belong to the window the user is actually sitting in.
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (NAMED_KEYS[ev.key]) {
+        ev.preventDefault();
+        send({ t: 'key', key: NAMED_KEYS[ev.key] });
+      } else if (ev.key && ev.key.length === 1) {
+        ev.preventDefault();
+        send({ t: 'type', text: ev.key });
       }
     });
     canvas.addEventListener('mousedown', function () { stage.focus(); });
@@ -825,9 +929,12 @@
       send({ t: 'verify', selector: selIn.value || '' });
     });
     q('bvp-copy').addEventListener('click', function () { copyVal(selIn); });
-    q('bvp-ghost').addEventListener('click', function () {
-      panel.classList.toggle('is-ghost');
+    q('bvp-eye').addEventListener('click', function () {
+      applySelectMode(!pickState.selectMode);
     });
+    q('bvp-back').addEventListener('click', function () { send({ t: 'back' }); });
+    q('bvp-fwd').addEventListener('click', function () { send({ t: 'forward' }); });
+    q('bvp-reload').addEventListener('click', function () { send({ t: 'reload' }); });
     q('bvp-tab-attrs').addEventListener('click', function () { setPane('attrs'); });
     q('bvp-tab-cands').addEventListener('click', function () { setPane('cands'); });
     // The persistent session must be resettable from the same window that created

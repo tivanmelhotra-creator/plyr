@@ -438,3 +438,125 @@ describe('every click param the runtime reads is declared in the catalog', () =>
     }
   });
 });
+
+/**
+ * MISSION 5 (MISSIONS.md) — the condition node's option set is measured against
+ * AutomaApp/automa, which is the project's accepted reference for node logic
+ * (rule R1). Automa renders `conditionBuilder.compareTypes` as an <optgroup>
+ * dropdown bucketed basic / number / text / boolean; a flat 26-entry list is a
+ * scan, not a choice, so the grouping is part of the feature, not decoration.
+ *
+ * Everything here is structural: the grouping is pure data, and the two DOM
+ * files are checked by source, because this suite is deliberately DOM-free.
+ */
+describe('condition operators — Automa parity + grouped dropdown', () => {
+  const UI_SRC = readFileSync(
+    join(__dirname, '..', '..', 'public', 'js', 'ndv-ui.js'), 'utf8');
+  const NODES_SRC = readFileSync(
+    join(__dirname, '..', '..', 'public', 'js', 'ndv-nodes.js'), 'utf8');
+  const I18N_SRC = readFileSync(
+    join(__dirname, '..', '..', 'public', 'js', 'i18n.js'), 'utf8');
+
+  /** fa and en are separate objects in i18n.js; a key must appear in each. */
+  function dictSlices(): { fa: string; en: string } {
+    const faAt = I18N_SRC.indexOf('fa: {');
+    const enAt = I18N_SRC.indexOf('en: {');
+    expect(faAt).toBeGreaterThan(-1);
+    expect(enAt).toBeGreaterThan(faAt);
+    return { fa: I18N_SRC.slice(faAt, enAt), en: I18N_SRC.slice(enAt) };
+  }
+
+  /**
+   * Automa compare type -> our operator id. Kept as an explicit table so that
+   * "we match Automa" is a checked claim rather than a comment. Automa ids come
+   * from utils/shared.js -> conditionBuilder.compareTypes.
+   */
+  const AUTOMA_COMPARE: Record<string, string> = {
+    eq: 'equals', eqi: 'equals_i', nq: 'not_equals',
+    gt: 'greater_than', gte: 'greater_equal', lt: 'less_than', lte: 'less_equal',
+    cnt: 'contains', cni: 'contains_i', nct: 'not_contains', nci: 'not_contains_i',
+    stw: 'starts_with', enw: 'ends_with', rgx: 'matches_regex',
+    itr: 'is_truthy', ifl: 'is_falsy',
+  };
+
+  it('offers an operator for every one of Automa\u2019s compare types', () => {
+    const ids = new Set(NM.CONDITION_OPERATORS.map((o) => o.id));
+    const missing = Object.entries(AUTOMA_COMPARE)
+      .filter(([, ours]) => !ids.has(ours))
+      .map(([automa, ours]) => `${automa} -> ${ours}`);
+    expect(missing, `Automa compare types with no Aria operator: ${missing.join(', ')}`)
+      .toEqual([]);
+  });
+
+  it('gives every operator a group, so none can vanish from the dropdown', () => {
+    const groups = new Set(
+      ((NM as unknown as { CONDITION_OPERATOR_GROUPS: { id: string }[] })
+        .CONDITION_OPERATOR_GROUPS).map((g) => g.id));
+    expect(groups.size).toBeGreaterThanOrEqual(4);
+    const ungrouped = (NM.CONDITION_OPERATORS as unknown as { id: string; group?: string }[])
+      .filter((o) => !o.group || !groups.has(o.group))
+      .map((o) => o.id);
+    expect(ungrouped, `operators with no known group: ${ungrouped.join(', ')}`).toEqual([]);
+  });
+
+  it('buckets the operators without losing or duplicating a single one', () => {
+    const grouped = NM as unknown as {
+      groupedOperatorsForKind: (k: string) => { group: string; options: { id: string }[] }[];
+    };
+    for (const kind of ['element', 'content', 'variable']) {
+      const buckets = grouped.groupedOperatorsForKind(kind);
+      // no empty heading may survive (an <optgroup> with no <option> is a lie)
+      expect(buckets.every((b) => b.options.length > 0)).toBe(true);
+      const flat = buckets.flatMap((b) => b.options.map((o) => o.id));
+      // exactly the same set as the ungrouped accessor, in the same order
+      expect(flat).toEqual(NM.operatorsForKind(kind).map((o) => o.id));
+      expect(new Set(flat).size).toBe(flat.length);
+    }
+    // an `element` row can only ever evaluate the four DOM operators, so it
+    // must collapse to ONE bucket rather than showing six empty headings
+    expect(grouped.groupedOperatorsForKind('element')).toHaveLength(1);
+    expect(grouped.groupedOperatorsForKind('content').length).toBeGreaterThan(3);
+  });
+
+  it('translates every operator AND group label in both dictionaries', () => {
+    const dicts = dictSlices();
+    const keys = [
+      ...NM.CONDITION_OPERATORS.map((o) => (o as unknown as { label: string }).label),
+      ...((NM as unknown as { CONDITION_OPERATOR_GROUPS: { label: string }[] })
+        .CONDITION_OPERATOR_GROUPS).map((g) => g.label),
+      'opg.other', // the orphan-safety bucket must be translatable too
+    ];
+    const missFa = [...new Set(keys)].filter((k) => !dicts.fa.includes(`'${k}':`));
+    const missEn = [...new Set(keys)].filter((k) => !dicts.en.includes(`'${k}':`));
+    expect(missFa, `missing from fa: ${missFa.join(', ')}`).toEqual([]);
+    expect(missEn, `missing from en: ${missEn.join(', ')}`).toEqual([]);
+  });
+
+  it('renders the grouped list through a real <optgroup>, not a fake one', () => {
+    // selectCell must accept the { group, options } shape …
+    expect(UI_SRC).toContain("document.createElement('optgroup')");
+    expect(UI_SRC).toContain('Array.isArray(o.options)');
+    // … and refuse to emit a heading with nothing under it
+    expect(UI_SRC).toContain('if (!o.options.length) return;');
+    // … and the condition row must actually USE it
+    expect(NODES_SRC).toContain('m.groupedOperatorsForKind(kind)');
+  });
+
+  /**
+   * The catalog is what `coerceParams` copies on save. An operator the builder
+   * can produce but the catalog does not declare is silently dropped, so the
+   * two lists have to stay in step.
+   */
+  it('declares every builder operator in the action catalog (if + while)', () => {
+    const ids = NM.CONDITION_OPERATORS.map((o) => o.id);
+    for (const action of ['if', 'while']) {
+      const def = catalog.ACTIONS.find((a) => a.id === action);
+      expect(def, `${action} missing from the catalog`).toBeTruthy();
+      const field = def!.fields.find((f) => f.k === 'operator') as
+        (Field & { options?: string[] }) | undefined;
+      expect(field, `${action}.operator field missing`).toBeTruthy();
+      const missing = ids.filter((id) => !(field!.options ?? []).includes(id));
+      expect(missing, `${action}.operator options missing: ${missing.join(', ')}`).toEqual([]);
+    }
+  });
+});

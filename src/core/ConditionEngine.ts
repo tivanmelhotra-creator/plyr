@@ -13,11 +13,12 @@ try {
 
 export type ConditionOperator =
   | 'exists' | 'not_exists' | 'visible' | 'hidden'
-  | 'equals' | 'not_equals' | 'contains' | 'not_contains'
+  | 'equals' | 'equals_i' | 'not_equals'
+  | 'contains' | 'contains_i' | 'not_contains' | 'not_contains_i'
   | 'starts_with' | 'ends_with' | 'matches_regex'
   | 'greater_than' | 'less_than' | 'greater_equal' | 'less_equal'
   | 'is_empty' | 'not_empty'
-  | 'is_true' | 'is_false'
+  | 'is_true' | 'is_false' | 'is_truthy' | 'is_falsy'
   | 'in_list' | 'not_in_list'
   | 'random';
 
@@ -155,12 +156,20 @@ export class ConditionEngine {
       // String comparisons
       case 'equals':
         return strActual === strExpected;
+      // Automa `eqi`: the same comparison with case folded away. Kept next to
+      // its sensitive twin so the two can never drift apart.
+      case 'equals_i':
+        return strActual.toLowerCase() === strExpected.toLowerCase();
       case 'not_equals':
         return strActual !== strExpected;
       case 'contains':
         return strActual.includes(strExpected);
+      case 'contains_i':
+        return strActual.toLowerCase().includes(strExpected.toLowerCase());
       case 'not_contains':
         return !strActual.includes(strExpected);
+      case 'not_contains_i':
+        return !strActual.toLowerCase().includes(strExpected.toLowerCase());
       case 'starts_with':
         return strActual.startsWith(strExpected);
       case 'ends_with':
@@ -187,6 +196,17 @@ export class ConditionEngine {
         return actualValue === true || strActual.toLowerCase() === 'true';
       case 'is_false':
         return actualValue === false || strActual.toLowerCase() === 'false';
+
+      // Automa `itr` / `ifl`: JS TRUTHINESS, deliberately different from
+      // is_true/is_false above. is_true only accepts the boolean true or the
+      // literal string "true"; is_truthy answers "did I get a value at all",
+      // which is the check you want after reading text out of the page.
+      // Note the raw value is tested, not the trimmed string, so `0` and the
+      // empty string are falsy while "false" is truthy — exactly JS rules.
+      case 'is_truthy':
+        return Boolean(typeof actualValue === 'string' ? strActual : actualValue);
+      case 'is_falsy':
+        return !Boolean(typeof actualValue === 'string' ? strActual : actualValue);
 
       // List checks
       case 'in_list':

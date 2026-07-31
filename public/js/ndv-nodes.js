@@ -750,8 +750,13 @@
     // offering `visible` on a content row produced a self-contradicting row.
     var l2 = ui.el('div', 'cb-row-line cb-line-2');
     l2.appendChild(ui.fieldCell(t('cb.operator'),
-      ui.selectCell(m.operatorsForKind(kind).map(function (op) {
-        return { value: op.id, label: t(op.label) };
+      ui.selectCell(m.groupedOperatorsForKind(kind).map(function (bucket) {
+        return {
+          group: t(bucket.group),
+          options: bucket.options.map(function (op) {
+            return { value: op.id, label: t(op.label) };
+          }),
+        };
       }), row.operator, function (v) {
         var was = opMeta;
         row.operator = v; o.onChange();

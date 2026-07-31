@@ -1552,8 +1552,14 @@
     var olTab = root.querySelector('#fe-ol-tab');
     // Sticky across reloads (AppUtil.pref), because closing the OUTLINE only to
     // have it reopen on every navigation is the same complaint as the palette.
-    // The default stays OPEN: it is the editor's only node navigator.
-    var olOpen = AppUtil.pref ? !!AppUtil.pref('feOutlineOpen', true) : true;
+    //
+    // The default is now CLOSED (user request, 2026-07-31). The panel is an
+    // overlay INSIDE the canvas, so opening it by default spent ~236px of
+    // drawing surface, on every visit, on a tree that restates what the canvas
+    // already shows. It is one click away on the `OUTLINE` tab hugging the
+    // canvas edge, and the choice is remembered — so whoever wants it open keeps
+    // it open, and everyone else gets their canvas back.
+    var olOpen = AppUtil.pref ? !!AppUtil.pref('feOutlineOpen', false) : false;
     var olCollapsed = {};   // { 'nodeId|port': true } — pure view state
 
     function olPortLabel(row) {

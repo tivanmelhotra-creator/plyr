@@ -73,6 +73,27 @@ function designedRule(sel: string): string {
   return out.join(';');
 }
 
+/**
+ * Merged declarations of every rule that lists `sel` EXACTLY as one of its
+ * selectors — the variant-agnostic sibling of `designedRule`, for contracts that
+ * are no longer specific to the designed NDV.
+ */
+function ruleFor(sel: string): string {
+  // Comments are stripped FIRST: a prose comment right above a rule ends up in
+  // the selector capture (there is no `}` between them), and any comma inside
+  // that prose would break the exact-selector match.
+  const css = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: string[] = [];
+  const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('([^{}]*' + esc + '[^{}]*)\\{([^{}]*)\\}', 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css))) {
+    if (!m[1].split(',').some((s) => s.trim() === sel)) continue;
+    out.push(m[2]);
+  }
+  return out.join(';');
+}
+
 /** Load the icon registry in a DOM-free sandbox (icons.js guards on `document`). */
 function loadIcons(): any {
   const sandbox: any = { window: {} };
@@ -412,6 +433,29 @@ describe('item D — blocks palette', () => {
     expect(FE).toMatch(/ev\.ctrlKey \|\| ev\.metaKey\) && \(ev\.key === 'k'/);
   });
 
+  /**
+   * The control that hides the panel must not be the LAST thing in it. It used
+   * to sit at the bottom of `.palette-foot`, below five destination links, where
+   * a short viewport could push it under the fold. It now shares the search
+   * row's line at the very top — same line, so the list lost no height.
+   */
+  it('the collapse control sits at the top of the palette, not in the footer', () => {
+    expect(FE).toContain("head.className = 'palette-head'");
+    // The head row is appended before the list, and the button is inside it.
+    expect(FE.indexOf("head.className = 'palette-head'"))
+      .toBeLessThan(FE.indexOf("listWrap.className = 'palette-list'"));
+    expect(FE).toContain("colBtn.className = 'pl-collapse'");
+    expect(FE.indexOf("colBtn.className = 'pl-collapse'"))
+      .toBeLessThan(FE.indexOf("foot.className = 'palette-foot'"));
+    // ...and the footer no longer carries a Collapse link at all.
+    expect(FE).not.toContain('data-pl="collapse"');
+    // An icon-only control still has to say what it does.
+    expect(FE).toContain("colBtn.title = t('pl.collapse')");
+    expect(FE).toContain("colBtn.setAttribute('aria-label', t('pl.collapse'))");
+    // The glyph points at the edge it hides behind, so it flips in RTL.
+    expect(CSS).toMatch(/\[dir="rtl"\] \.pl-collapse > svg\s*\{\s*transform:\s*scaleX\(-1\)/);
+  });
+
   it('favourites persist and the star lives inside the row', () => {
     expect(FE).toContain("var PAL_FAV_KEY = 'ab_palette_favs'");
     expect(FE).toContain('function savePaletteFavs()');
@@ -426,7 +470,7 @@ describe('item D — blocks palette', () => {
       '.palette-group-head', '.pg-ic', '.pg-label', '.pg-count', '.pg-caret',
       '.palette-group-body', '.pg-empty', '.pi-star', '.palette-foot',
       '.pl-link', '.pl-link-ic', '.pl-collapse', '.pl-restore',
-      '.fe-layout.fe-pal-collapsed',
+      '.palette-head', '.fe-layout.fe-pal-collapsed',
     ].forEach((sel) => {
       expect(CSS, `${sel} is emitted but never styled`).toContain(sel);
     });
@@ -437,7 +481,7 @@ describe('item D — blocks palette', () => {
    * that would leave no room for the restore chip and strand the user.
    */
   it('the collapsed rail keeps a restore affordance', () => {
-    expect(CSS).toMatch(/\.fe-layout\.fe-pal-collapsed\s*\{\s*grid-template-columns:\s*64px 1fr/);
+    expect(CSS).toMatch(/\.fe-layout\.fe-pal-collapsed\s*\{\s*grid-template-columns:\s*44px 1fr/);
     expect(FE).toContain('function setPaletteCollapsed(');
     expect(FE).toContain("chip.className = 'pl-restore'");
   });
@@ -721,9 +765,14 @@ describe('shell parity items G4 / G6 / G1 / G8 / G13', () => {
   });
 
   /**
-   * G8. The collapsed rail is the full glyph column the image shows — Favorites,
-   * the six real groups, the five footer destinations, and the expander LAST —
-   * built from the same two tables as the expanded panel.
+   * G8. The collapsed rail is the full glyph column the image shows — the
+   * expander FIRST, then Favorites, the six real groups and the five footer
+   * destinations — built from the same two tables as the expanded panel.
+   *
+   * The expander moved from the bottom edge to the top on 2026-07-31, together
+   * with the collapse button in the expanded panel: the two halves of one toggle
+   * now occupy the same corner instead of trading places across the full height
+   * of the panel every time it is used.
    */
   it('G8 builds the full collapsed rail from real surfaces', () => {
     const rail = FE.slice(FE.indexOf('function railBtn('), FE.indexOf('function applyPaletteCollapsed()'));
@@ -731,8 +780,8 @@ describe('shell parity items G4 / G6 / G1 / G8 / G13', () => {
     expect(rail).toContain('PALETTE_GROUPS.forEach');       // the six groups
     expect(rail).toContain('PALETTE_LINKS.forEach');        // the five links
     expect(rail).toContain("rail.className = 'pl-rail'");
-    // The expander is appended AFTER the links, i.e. it is the last glyph.
-    expect(rail.indexOf("chip.className = 'pl-restore'")).toBeGreaterThan(rail.indexOf('PALETTE_LINKS.forEach'));
+    // The expander is appended BEFORE Favorites, i.e. it is the first glyph.
+    expect(rail.indexOf("chip.className = 'pl-restore'")).toBeLessThan(rail.indexOf("icon: 'star'"));
     // Favorites count is the real number of starred blocks.
     expect(rail).toContain('ACTIONS.filter(function (a) { return paletteFavs[a.id]; }).length');
     // A disabled destination stays disabled AND explained in the rail too.
@@ -743,8 +792,11 @@ describe('shell parity items G4 / G6 / G1 / G8 / G13', () => {
     ['.pl-rail-sep', '.pl-rail-link', '.pl-rail-btn[disabled]'].forEach((sel) => {
       expect(CSS, `${sel} is emitted but never styled`).toContain(sel);
     });
-    // The expander sits at the bottom edge of the column.
-    expect(CSS).toMatch(/\.pl-rail > \.pl-restore\s*\{\s*margin-block-start:\s*auto/);
+    // The expander sits at the TOP of the column, separated from the glyphs it
+    // is not one of, and the rail is narrow enough to be worth collapsing to.
+    expect(CSS).not.toMatch(/\.pl-rail > \.pl-restore\s*\{\s*margin-block-start:\s*auto/);
+    expect(CSS).toMatch(/\.pl-rail > \.pl-restore::after\s*\{/);
+    expect(CSS).toMatch(/\.fe-layout\.fe-pal-collapsed\s*\{\s*grid-template-columns:\s*44px/);
     // Twelve glyphs + the expander = the image's thirteen.
     const groupRows = CATALOG.categories.filter((c: any) =>
       CATALOG.actions.some((a: any) => (a.cat || 'other') === c.id)).length;
@@ -1011,9 +1063,42 @@ describe('G7 — Node Detail View (NDV)', () => {
       expect(rule).toMatch(/min-height:\s*0/);
     });
 
-    it('gives the designed NDV a real height so the columns can place furniture', () => {
-      const rule = designedRule('.ndv-modal.is-designed');
-      expect(rule).toMatch(/(^|\s)height:\s*min\(/);
+    /**
+     * The fixed height used to belong to `.ndv-modal.is-designed` alone, which
+     * is precisely why the modal resized when you moved between a designed node
+     * and a generic one. It is now ONE rule on `.ndv-modal` — 80% of the
+     * viewport in both axes, for every node — so the columns can place fixed
+     * heads and a pinned OUTPUT strip against a height that never depends on
+     * which node is open, and the designed variant has nothing to override.
+     */
+    it('sizes every NDV at 80% of the viewport, designed or not', () => {
+      const base = ruleFor('.ndv-modal');
+      expect(base).toMatch(/(^|\s)width:\s*80vw/);
+      expect(base).toMatch(/(^|\s)height:\s*80vh/);
+      expect(base).toMatch(/max-height:\s*80vh/);
+      // No per-variant size may reintroduce the jump.
+      const designed = designedRule('.ndv-modal.is-designed');
+      expect(designed).not.toMatch(/(^|\s)width:\s*min\(/);
+      expect(designed).not.toMatch(/(^|\s)height:\s*min\(/);
+    });
+
+    /**
+     * ...and the generic path gets the SAME fixed-height contract the designed
+     * one already had, otherwise an 80vh modal would simply mean 80vh of one
+     * outer scroller with the INPUT / Parameters / OUTPUT heads sliding away.
+     */
+    it('gives undesigned NDVs per-column scrolling and pinned heads', () => {
+      const body = ruleFor('.ndv-modal:not(.is-designed) .ndv-body');
+      expect(body).toMatch(/overflow:\s*hidden/);
+      expect(body).toMatch(/min-height:\s*0/);
+      expect(ruleFor('.ndv-modal:not(.is-designed) .ndv')).toMatch(/min-height:\s*0/);
+      const cols = ruleFor('.ndv-modal:not(.is-designed) .ndv-cols');
+      expect(cols).toMatch(/grid-template-rows:\s*minmax\(0,\s*1fr\)/);
+      const col = ruleFor('.ndv-modal:not(.is-designed) .ndv-col');
+      expect(col).toMatch(/overflow:\s*auto/);
+      expect(col).toMatch(/min-height:\s*0/);
+      expect(ruleFor('.ndv-modal:not(.is-designed) .ndv-col-head'))
+        .toMatch(/position:\s*sticky/);
     });
 
     it('completes the min-height:0 chain down to the scrollers', () => {

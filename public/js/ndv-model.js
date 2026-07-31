@@ -125,37 +125,74 @@
     'aria-label', 'aria-expanded', 'aria-checked', 'data-state', 'data-testid',
   ];
 
+  // Operator groups — Automa parity (utils/shared.js -> conditionBuilder
+  // .compareTypes, which renders its dropdown as <optgroup>s: basic / number /
+  // text / boolean). Project rule R1 (MISSIONS.md) makes Automa the reference
+  // for node logic, and a 20-entry flat list is exactly the case an <optgroup>
+  // exists for. Two groups are ours rather than Automa's:
+  //   dom    — our four selector-only operators (Automa expresses these as
+  //            *value types* instead: "Element exists", "Element visible", …)
+  //   state  — is_empty / not_empty, and list — in_list / not_in_list, both of
+  //            which the runtime already implements.
+  // The order of this array IS the order of the dropdown, and 'exists' must
+  // stay first because operatorMeta() falls back to CONDITION_OPERATORS[0].
+  var CONDITION_OPERATOR_GROUPS = [
+    { id: 'dom', label: 'opg.dom' },
+    { id: 'basic', label: 'opg.basic' },
+    { id: 'number', label: 'opg.number' },
+    { id: 'text', label: 'opg.text' },
+    { id: 'state', label: 'opg.state' },
+    // NB: this order IS the dropdown order, and it deliberately mirrors the
+    // order of CONDITION_OPERATORS below, so the grouped and flat views of the
+    // registry can never disagree about which operator comes first.
+    { id: 'boolean', label: 'opg.boolean' },
+    { id: 'list', label: 'opg.list' },
+  ];
+
   // Operator registry. `dom` = evaluated purely against selector presence /
   // visibility (no expected value); `needsExpected` drives whether the design
-  // shows the "Right value" field.
+  // shows the "Right value" field; `group` places it in the dropdown.
   var CONDITION_OPERATORS = [
-    { id: 'exists', label: 'op.exists', dom: true, needsExpected: false },
-    { id: 'not_exists', label: 'op.not_exists', dom: true, needsExpected: false },
-    { id: 'visible', label: 'op.visible', dom: true, needsExpected: false },
-    { id: 'hidden', label: 'op.hidden', dom: true, needsExpected: false },
-    { id: 'equals', label: 'op.equals', dom: false, needsExpected: true },
-    { id: 'not_equals', label: 'op.not_equals', dom: false, needsExpected: true },
-    { id: 'contains', label: 'op.contains', dom: false, needsExpected: true },
-    { id: 'not_contains', label: 'op.not_contains', dom: false, needsExpected: true },
-    { id: 'starts_with', label: 'op.starts_with', dom: false, needsExpected: true },
-    { id: 'ends_with', label: 'op.ends_with', dom: false, needsExpected: true },
-    { id: 'matches_regex', label: 'op.matches_regex', dom: false, needsExpected: true },
-    { id: 'greater_than', label: 'op.greater_than', dom: false, needsExpected: true },
-    { id: 'less_than', label: 'op.less_than', dom: false, needsExpected: true },
-    { id: 'greater_equal', label: 'op.greater_equal', dom: false, needsExpected: true },
-    { id: 'less_equal', label: 'op.less_equal', dom: false, needsExpected: true },
-    { id: 'is_empty', label: 'op.is_empty', dom: false, needsExpected: false },
-    { id: 'not_empty', label: 'op.not_empty', dom: false, needsExpected: false },
-    { id: 'is_true', label: 'op.is_true', dom: false, needsExpected: false },
-    { id: 'is_false', label: 'op.is_false', dom: false, needsExpected: false },
+    { id: 'exists', label: 'op.exists', group: 'dom', dom: true, needsExpected: false },
+    { id: 'not_exists', label: 'op.not_exists', group: 'dom', dom: true, needsExpected: false },
+    { id: 'visible', label: 'op.visible', group: 'dom', dom: true, needsExpected: false },
+    { id: 'hidden', label: 'op.hidden', group: 'dom', dom: true, needsExpected: false },
+    { id: 'equals', label: 'op.equals', group: 'basic', dom: false, needsExpected: true },
+    // Automa `eqi` / `cni` / `nci`: case-INSENSITIVE twins. Not cosmetic — the
+    // most common real comparison is against copy a site may render as
+    // "Sign out", "SIGN OUT" or "Sign Out", and without these the user had to
+    // hand-write a regex (matches_regex) just to ignore case.
+    { id: 'equals_i', label: 'op.equals_i', group: 'basic', dom: false, needsExpected: true },
+    { id: 'not_equals', label: 'op.not_equals', group: 'basic', dom: false, needsExpected: true },
+    { id: 'greater_than', label: 'op.greater_than', group: 'number', dom: false, needsExpected: true },
+    { id: 'greater_equal', label: 'op.greater_equal', group: 'number', dom: false, needsExpected: true },
+    { id: 'less_than', label: 'op.less_than', group: 'number', dom: false, needsExpected: true },
+    { id: 'less_equal', label: 'op.less_equal', group: 'number', dom: false, needsExpected: true },
+    { id: 'contains', label: 'op.contains', group: 'text', dom: false, needsExpected: true },
+    { id: 'contains_i', label: 'op.contains_i', group: 'text', dom: false, needsExpected: true },
+    { id: 'not_contains', label: 'op.not_contains', group: 'text', dom: false, needsExpected: true },
+    { id: 'not_contains_i', label: 'op.not_contains_i', group: 'text', dom: false, needsExpected: true },
+    { id: 'starts_with', label: 'op.starts_with', group: 'text', dom: false, needsExpected: true },
+    { id: 'ends_with', label: 'op.ends_with', group: 'text', dom: false, needsExpected: true },
+    { id: 'matches_regex', label: 'op.matches_regex', group: 'text', dom: false, needsExpected: true },
+    { id: 'is_empty', label: 'op.is_empty', group: 'state', dom: false, needsExpected: false },
+    { id: 'not_empty', label: 'op.not_empty', group: 'state', dom: false, needsExpected: false },
+    { id: 'is_true', label: 'op.is_true', group: 'boolean', dom: false, needsExpected: false },
+    { id: 'is_false', label: 'op.is_false', group: 'boolean', dom: false, needsExpected: false },
+    // Automa `itr` / `ifl`: JS truthiness, which is NOT what is_true/is_false
+    // test. is_true only passes for the literal boolean true or the string
+    // "true"; is_truthy passes for any non-empty, non-zero value — the check
+    // you actually want for "did the page give me a value at all".
+    { id: 'is_truthy', label: 'op.is_truthy', group: 'boolean', dom: false, needsExpected: false },
+    { id: 'is_falsy', label: 'op.is_falsy', group: 'boolean', dom: false, needsExpected: false },
     // BACKEND HAD IT, UI DID NOT (ConditionEngine 'in_list' / 'not_in_list').
     // Real, frequently-needed capability: "status is one of paid, shipped,
     // delivered" previously forced the user to build three OR groups by hand.
     // `list: true` makes the Right value a comma/newline list; graph-serialize
     // turns it into the ARRAY the engine requires (it compares with
     // Array.includes and returns false for a plain string).
-    { id: 'in_list', label: 'op.in_list', dom: false, needsExpected: true, list: true },
-    { id: 'not_in_list', label: 'op.not_in_list', dom: false, needsExpected: true, list: true },
+    { id: 'in_list', label: 'op.in_list', group: 'list', dom: false, needsExpected: true, list: true },
+    { id: 'not_in_list', label: 'op.not_in_list', group: 'list', dom: false, needsExpected: true, list: true },
     // DELIBERATELY NOT SURFACED: the engine also accepts `random`
     // (Math.random() * 100 < expected, an A/B-split coin flip). It is left out
     // of the builder on purpose — a browser-automation workflow whose branch
@@ -333,6 +370,30 @@
   }
 
   /**
+   * The same list, bucketed for an <optgroup> dropdown (Automa parity, rule R1).
+   * Returns [{ group: <i18n key>, options: [operator, …] }, …] in
+   * CONDITION_OPERATOR_GROUPS order, with empty groups dropped — so an
+   * `element` row still shows a single "Element" group rather than six empty
+   * headings. Pure: no DOM, no i18n; the caller translates `group` and
+   * `option.label`.
+   */
+  function groupedOperatorsForKind(kind) {
+    var ops = operatorsForKind(kind);
+    var out = [];
+    CONDITION_OPERATOR_GROUPS.forEach(function (g) {
+      var inGroup = ops.filter(function (o) { return (o.group || 'basic') === g.id; });
+      if (inGroup.length) out.push({ group: g.label, options: inGroup });
+    });
+    // Safety net: an operator added without a known `group` must still be
+    // reachable rather than silently vanishing from the dropdown.
+    var known = {};
+    out.forEach(function (b) { b.options.forEach(function (o) { known[o.id] = true; }); });
+    var orphans = ops.filter(function (o) { return !known[o.id]; });
+    if (orphans.length) out.push({ group: 'opg.other', options: orphans });
+    return out;
+  }
+
+  /**
    * Split a `list: true` Right value into the ARRAY the engine's in_list /
    * not_in_list cases require. Newline OR comma separated, trimmed, blanks
    * dropped, so "paid, shipped" and a pasted column both work.
@@ -501,12 +562,14 @@
     // condition
     CONDITION_SOURCES: CONDITION_SOURCES,
     CONDITION_OPERATORS: CONDITION_OPERATORS,
+    CONDITION_OPERATOR_GROUPS: CONDITION_OPERATOR_GROUPS,
     CONDITION_ATTRIBUTES: CONDITION_ATTRIBUTES,
     CONDITION_MAX_PATHS_V1: CONDITION_MAX_PATHS_V1,
     CONDITION_KINDS: CONDITION_KINDS,
     checkKindOf: checkKindOf,
     applyCheckKind: applyCheckKind,
     operatorsForKind: operatorsForKind,
+    groupedOperatorsForKind: groupedOperatorsForKind,
     contentSources: contentSources,
     parseListValue: parseListValue,
     operatorMeta: operatorMeta,

@@ -753,6 +753,45 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   transform-origin: 0 0;
   width: 0; height: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * MEASURED BUG (fa/RTL): the graph read BACKWARDS — an edge left a node's
+ * OUTPUT and arrived at the next node's OUTPUT side.
+ *
+ * Why: node cards are placed with the PHYSICAL `left: <world x>px` and the
+ * connectors are SVG paths in physical world coordinates (`outPort.x =
+ * node.x + NODE_W`, `inPort.x = node.x`) — neither of which knows about the
+ * writing direction. The ports, however, were anchored with the LOGICAL
+ * `inset-inline-start` / `inset-inline-end`, so under `dir="rtl"` the input dot
+ * jumped to the card's right edge and every output dot (with its `True`/`False`
+ * label and its `+` chip) jumped to the left edge — precisely where the
+ * incoming wire lands. The wires were right; the dots had swapped sides.
+ *
+ * Fix: the graph LAYER is direction-locked. A connection is geometry, not
+ * prose: "output on the trailing edge, input on the leading edge" has to mean
+ * the same thing in every locale, exactly as it does in every other node
+ * editor. So `.fe-svg` + `.fe-world` (cards, ports, port labels, `+` chips,
+ * edge pills, the group frame/toolbar and the box-select rectangle all live
+ * inside them) resolve their logical properties as LTR, while the shell around
+ * the canvas stays fully RTL.
+ *
+ * Text is NOT sacrificed for that: every string inside a card opts into
+ * `unicode-bidi: plaintext`, so a Persian node title still reads right-to-left
+ * (and aligns to its own natural side) inside a left-to-right box.
+ * ------------------------------------------------------------------------ */
+.fe-svg,
+.fe-world { direction: ltr; }
+.fn-title,
+.flow-node-sub,
+.fe-edge-pill,
+.flow-port-label { unicode-bidi: plaintext; }
+/* `unicode-bidi: plaintext` also makes `text-align: start` follow the DETECTED
+ * paragraph direction, which pushed a Persian card title/summary to the card's
+ * right edge — straight under the branch port labels (`If true` / `If false` /
+ * `Next`) that live there. The reordering is what we want; the re-alignment is
+ * not, so the block stays anchored to the icon side. */
+.fn-title,
+.flow-node-sub { text-align: left; }
 .flow-edge {
   fill: none;
   stroke: var(--primary);
@@ -1860,10 +1899,26 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 /* The modal edge is CATEGORY-DERIVED (shell-add-node-palette.md): HTTP/browser
  * family nodes glow cool blue, interaction/logic nodes glow orange. JS sets
  * --ndv-edge per node; the orange below is only the fallback. */
+/* ---- ONE size for every node (user request, 2026-07-31) ------------------
+ * The modal used to be `width: min(1080px, 96vw); max-height: min(760px, 92vh)`,
+ * i.e. CONTENT-sized under a ceiling: `Open URL` (two fields) opened a short
+ * box, `HTTP Request` opened a tall one, and designed nodes opened at a THIRD
+ * size (1180x820). Three consequences, all of them the reported complaint:
+ *   - the modal resized as you moved between nodes, so the INPUT and OUTPUT
+ *     columns — the two panels you read ACROSS nodes — never stayed put;
+ *   - a two-field node wasted the screen it was covering anyway;
+ *   - a field-heavy node still hit the 760px ceiling and scrolled as one block.
+ * It is now exactly 80% of the viewport in both axes for EVERY node, designed
+ * or not, with no content dependency at all. The fixed height is also what lets
+ * each column own its own scrollbar (contract below) instead of the whole modal
+ * being a single scroller whose column heads slide away.
+ * ------------------------------------------------------------------------- */
 .ndv-modal {
   --ndv-edge: #FF8A1F;
-  width: min(1080px, 96vw);
-  max-height: min(760px, 92vh);
+  width: 80vw;
+  height: 80vh;
+  max-width: 80vw;
+  max-height: 80vh;
   display: flex; flex-direction: column;
   background: var(--bg-elev-1, #11161E);
   border: 1px solid color-mix(in srgb, var(--ndv-edge) 24%, transparent);
@@ -1941,7 +1996,69 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .ndv-close:hover { background: var(--bg-elev-2); border-color: var(--border); color: var(--text); }
 .ndv-body { flex: 1 1 auto; overflow: auto; padding: 14px 16px; }
 .ndv-modal .ndv-cols { grid-template-columns: minmax(180px, 0.9fr) minmax(0, 1.5fr) minmax(180px, 0.9fr); }
-@media (max-width: 860px) { .ndv-modal .ndv-cols { grid-template-columns: 1fr; } }
+
+/* ---- fixed-height shell for UNDESIGNED nodes -----------------------------
+ * The designed NDVs (click/if/while) already had this contract; the generic
+ * ones did not, because they had no fixed height to hang it on. Now that every
+ * modal is 80vh, the generic path inherits the same rule: `.ndv-body` stops
+ * being the one scroller and each column scrolls on its own, so the three column
+ * heads (INPUT / Parameters / OUTPUT) stay put exactly as they do in a designed
+ * node. Every flex/grid ancestor between the scroller and the modal needs
+ * `min-height: 0`, otherwise `min-height: auto` refuses to shrink below content.
+ * ------------------------------------------------------------------------- */
+.ndv-modal:not(.is-designed) .ndv-body {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ndv-modal:not(.is-designed) .ndv { flex: 1 1 auto; min-height: 0; }
+.ndv-modal:not(.is-designed) .ndv-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+.ndv-modal:not(.is-designed) .ndv-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+/* The column is the scroller, so its heading has to be pinned to the top of it
+   rather than scrolling away with the fields underneath. `background: inherit`
+   picks up whichever surface the column uses (`.ndv-col-params` differs), so the
+   fields never show through it. */
+.ndv-modal:not(.is-designed) .ndv-col-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: 0 0 auto;
+  margin: -8px -8px 6px;
+  padding: 8px 8px 6px;
+  background: inherit;
+}
+.ndv-modal:not(.is-designed) .ndv-col::-webkit-scrollbar { width: 8px; height: 8px; }
+.ndv-modal:not(.is-designed) .ndv-col::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+}
+.ndv-modal:not(.is-designed) .ndv-col::-webkit-scrollbar-track { background: transparent; }
+
+/* Below the stacking breakpoint the three columns become one column, so a
+   per-column scroller would make three nested scroll areas inside a short
+   modal. Scrolling goes back to the body, and the modal is allowed to be nearly
+   full-screen: on a phone 80% of a 360px viewport is 288px, which is narrower
+   than the fields it has to hold — bigger is the correct answer there, not
+   smaller. */
+@media (max-width: 860px) {
+  .ndv-modal { width: 94vw; max-width: 94vw; height: 92vh; max-height: 92vh; }
+  .ndv-modal .ndv-cols { grid-template-columns: 1fr; }
+  .ndv-modal:not(.is-designed) .ndv-body { overflow: auto; display: block; }
+  .ndv-modal:not(.is-designed) .ndv-cols { grid-template-rows: none; }
+  .ndv-modal:not(.is-designed) .ndv-col { overflow: visible; display: block; }
+  .ndv-modal:not(.is-designed) .ndv-col-head { position: static; margin: 0 0 8px; padding: 0; }
+}
 
 /* Editor shell wrapper */
 /* The ACTIVITY LOG drawer is `position: fixed; bottom: 0`, so its collapsed head
@@ -2026,17 +2143,14 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   --ndv-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* The designed NDV is wider than the generic one (spec: 72-82% viewport). */
-.ndv-modal.is-designed {
-  width: min(1180px, 94vw);
-  /* `height`, not `max-height`: the spec says the modal takes "almost the full
-     usable canvas height", and the three columns can only place their own
-     furniture (fixed heads, pinned OUTPUT status strip) against a height that
-     does not depend on which node is open. `max-height` is kept as the hard
-     ceiling for short viewports. */
-  height: min(820px, 94vh);
-  max-height: 94vh;
-}
+/* Sizing is NOT per-variant any more. The designed NDV used to be its own size
+   (`min(1180px,94vw) x min(820px,94vh)`), which is exactly what made the modal
+   jump when you moved from a designed node to a generic one. Both variants now
+   take the single 80vw x 80vh rule on `.ndv-modal` — the spec's "72-82% of the
+   viewport" band, satisfied by the base rule, so there is nothing to override
+   here. The reason that spec wanted a fixed `height` (columns can only place
+   fixed heads and a pinned OUTPUT status strip against a height that does not
+   depend on which node is open) is now true for every node instead of three. */
 .ndv-modal.is-designed .ndv-body { padding: 0; }
 .ndv-modal.is-designed .ndv { gap: 0; }
 .ndv-modal.is-designed .ndv-cols {
@@ -2133,10 +2247,9 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
    scrolling strips in one short modal would be unusable. Hand the scroll back
    to the body and let the modal size to its content again. */
 @media (max-width: 860px) {
-  .ndv-modal.is-designed {
-    height: auto;
-    max-height: min(820px, 94vh);
-  }
+  /* The stacked layout is taller than it is wide, so a hard height would either
+     clip it or leave a gap; the shared 92vh ceiling from the base rule stays. */
+  .ndv-modal.is-designed { height: auto; }
   .ndv-modal.is-designed .ndv-cols { grid-template-columns: 1fr; grid-template-rows: none; }
   .ndv-modal.is-designed .ndv-body { overflow: auto; display: block; }
   .ndv-modal.is-designed .ndv-pane { overflow: visible; }
@@ -4297,6 +4410,43 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   position: relative;
 }
 
+/* ---- head row: search + collapse ---------------------------------------
+   The collapse control shares the search row's line rather than owning one of
+   its own, so moving it from the footer to the top cost the list ZERO height.
+   ------------------------------------------------------------------------- */
+.palette-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.palette-head > .palette-searchrow { flex: 1 1 auto; min-width: 0; }
+.pl-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition),
+    border-color var(--transition);
+}
+.pl-collapse:hover { background: var(--bg-elev-2); color: var(--text); }
+.pl-collapse:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  color: var(--primary);
+}
+/* `‹` points AT the panel edge it hides behind, so it flips with the writing
+   direction exactly like `.pl-restore` does. */
+[dir="rtl"] .pl-collapse > svg { transform: scaleX(-1); }
+
 /* ---- search row ---------------------------------------------------------- */
 .palette-searchrow {
   position: relative;
@@ -4501,36 +4651,53 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .pl-link:disabled { opacity: 0.4; cursor: not-allowed; }
 .pl-link-ic { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
 .pl-link:hover:not(:disabled) .pl-link-ic { color: var(--primary); }
-.pl-collapse { color: var(--text-faint); }
 
 /* ---- collapsed rail ----------------------------------------------------- */
 /* A third grid variant, kept distinct from `.fe-focus` (which zeroes the column
-   entirely): collapsing leaves a 64px rail — the width the reference shell uses
-   for its category icon strip, and enough for a 40px square target plus the
-   panel's own padding. The palette itself is only HIDDEN, never rebuilt, so the
+   entirely): collapsing leaves a narrow icon rail. It was 64px wide with 40px
+   square targets and 8px of panel padding; measured against the point of
+   collapsing — giving the CANVAS the width back — that was 20px of pure
+   overhead per row, which is why it still "took a lot of space" once collapsed.
+   It is now 44px: a 32px target (still above the 24px minimum for a pointer
+   target, and the same size as the toolbar's own icon buttons) plus 6px of
+   padding on each side. The palette itself is only HIDDEN, never rebuilt, so the
    search text and the open-group set survive a collapse/expand round trip. */
-.fe-layout.fe-pal-collapsed { grid-template-columns: 64px 1fr; }
+.fe-layout.fe-pal-collapsed { grid-template-columns: 44px 1fr; }
 .fe-layout.fe-pal-collapsed > .fe-palette {
-  padding-inline: 8px;
+  padding-inline: 6px;
   align-items: center;
 }
 .fe-layout.fe-pal-collapsed > .fe-palette > *:not(.pl-rail) { display: none; }
-/* G8: the rail is the full 13-glyph column, so it OWNS the panel height and the
-   `»` expander is pushed to the bottom edge (that is where the locked image puts
-   it). `min-height: 0` + `overflow-y: auto` keeps it usable on a short viewport
-   instead of letting the last glyphs fall off screen. */
+/* The rail owns the panel height; `min-height: 0` + `overflow-y: auto` keeps it
+   usable on a short viewport instead of letting the last glyphs fall off screen.
+   The `›` expander is the FIRST child (see `paletteRail()`) so it mirrors the
+   collapse button's position in the expanded panel. */
 .pl-rail {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
 }
-.pl-rail > .pl-restore { margin-block-start: auto; }
+/* A hairline under the expander separates "the control that changes this panel"
+   from "the twelve things inside it". */
+.pl-rail > .pl-restore {
+  margin-block-end: 4px;
+  padding-block-end: 0;
+  position: relative;
+}
+.pl-rail > .pl-restore::after {
+  content: '';
+  position: absolute;
+  inset-inline: -2px;
+  bottom: -5px;
+  height: 1px;
+  background: var(--border);
+}
 /* Divider between "blocks to insert" and "places to go". */
 .pl-rail-sep {
   flex: 0 0 auto;
@@ -4549,8 +4716,8 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -4571,8 +4738,9 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
   padding: 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -4609,8 +4777,10 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
     flex-direction: row; flex-wrap: wrap; justify-content: center;
     flex: 0 0 auto; overflow: visible;
   }
-  /* `margin-block-start: auto` would shove the expander onto its own line. */
-  .pl-rail > .pl-restore { margin-block-start: 0; margin-inline-start: auto; }
+  /* The rail is a wrapping ROW here, so the expander's vertical hairline and
+     bottom margin would sit across the row instead of under one glyph. */
+  .pl-rail > .pl-restore { margin-block-end: 0; margin-inline-end: 4px; }
+  .pl-rail > .pl-restore::after { inset-inline: auto; inset-inline-end: -5px; bottom: 4px; top: 4px; height: auto; width: 1px; }
   .pl-rail-sep { width: 1px; height: 24px; margin: 2px 4px; }
 }
 
@@ -5083,8 +5253,13 @@ body.route-fullbleed .fe-mm-restore {
   max-height: 100%;
   width: auto;
   height: auto;
-  cursor: cell;
+  /* The cursor states WHICH mode you are in before you click. Browse mode is a
+   * page: the default arrow. Select mode is a target: a crosshair. `cell` used to
+   * be permanent, which advertised picking even while the window claimed to be a
+   * browser. */
+  cursor: default;
 }
+.bvp-canvas.is-picking { cursor: crosshair; }
 /* Never intercept the pointer: before the first frame this overlay covered the
  * whole stage, so the very first hover/click of a session hit the message
  * instead of the page. */
@@ -5124,10 +5299,31 @@ body.route-fullbleed .fe-mm-restore {
 /* Locked = a click (or a ↑/↓ step) fixed the element; hover no longer
    overwrites the field. The accent border is the only signal needed. */
 .bvp-panel.is-locked { border-color: var(--primary); }
-/* The panel covers part of the page; the eye button fades it instead of
-   closing it, so the target underneath stays clickable. */
-.bvp-panel.is-ghost { opacity: 0.22; }
-.bvp-panel.is-ghost:hover { opacity: 1; }
+/* BROWSE mode: element selection is off, so the panel has nothing to say and is
+   sitting in front of a page the user is trying to read and click. It steps back
+   to 55% — "slightly transparent", not the old 22% ghost, which was unreadable
+   and made the panel look broken — and comes back to full opacity the moment the
+   pointer enters it or anything inside it takes focus. */
+.bvp-panel.is-browse { opacity: 0.55; }
+.bvp-panel.is-browse:hover,
+.bvp-panel.is-browse:focus-within { opacity: 1; }
+/* The eye is a pressed/unpressed mode switch, so it has to LOOK pressed. */
+.bvp-eye.is-on {
+  background: var(--primary-soft);
+  border-color: rgba(255, 138, 31, 0.45);
+  color: var(--primary);
+}
+/* One line naming the current mode, directly under the title. */
+.bvp-modeline {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+.bvp-modeline.is-select { color: var(--primary); }
+/* History controls sit in the bar with the URL field. */
+.bvp-bar .bvp-nav { flex: 0 0 auto; }
+[dir="rtl"] .bvp-bar .bvp-nav > svg { transform: scaleX(-1); }
+[dir="rtl"] .bvp-bar #bvp-reload > svg { transform: none; }
 /* The drag handle. Sits half-outside the panel's top edge, which is why the
  * panel must NOT clip its overflow — the scrolling is delegated to the panes. */
 .bvp-grip {
