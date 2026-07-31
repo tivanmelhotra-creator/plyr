@@ -1,5 +1,8 @@
 # HANDOFF 14 — backend↔UI parity, and progressive disclosure in the Condition NDV
 
+> **SUPERSEDED by `15-HANDOFF-element-picker-automa-research.md`.** Its § 0 rules
+> (0.1–0.9) and every unfinished item of its § 4 are carried forward there.
+
 **Supersedes:** `13-HANDOFF-ndv-reachability-scroll-density.md` (still the source of
 truth for everything in its § 0 that is not amended below).
 

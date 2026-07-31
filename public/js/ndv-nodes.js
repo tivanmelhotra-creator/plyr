@@ -120,10 +120,16 @@
 
   // A target-picker button: hands the selector field over to the live Element
   // Picker when the browser view is available, otherwise explains why not.
-  function pickerBtn(onPicked) {
+  //
+  // `getOpts` is read at CLICK time, not at build time, so the picker always
+  // opens seeded with what the field holds right now (and in the selector
+  // dialect the node is set to) instead of a stale snapshot.
+  function pickerBtn(onPicked, getOpts) {
     return UI().iconBtn('target', t('ndv.pickElement'), 'is-picker', function () {
       if (window.BrowserView && typeof window.BrowserView.requestPick === 'function') {
-        window.BrowserView.requestPick(onPicked);
+        var opts = {};
+        try { opts = (typeof getOpts === 'function' ? getOpts() : null) || {}; } catch (e) {}
+        window.BrowserView.requestPick(onPicked, opts);
         return;
       }
       if (U() && U().toast) U().toast(t('ndv.pickHint'), 'info');
@@ -329,7 +335,18 @@
       placeholder: '#next-button',
       exprContext: exprCtx,
       onChange: function (v) { set('selector', v); },
-      buttons: [pickerBtn(function (sel) { set('selector', sel); if (ctx.onStructureChange) ctx.onStructureChange(); })],
+      buttons: [pickerBtn(function (sel) {
+        set('selector', sel);
+        if (ctx.onStructureChange) ctx.onStructureChange();
+      }, function () {
+        // `text` has no picker dialect (there is nothing to compute), so the
+        // panel falls back to CSS and the user can still switch to XPath.
+        return {
+          value: p.selector,
+          mode: p.selectorType === 'xpath' ? 'xpath' : 'css',
+          url: ctx.pageUrl || '',
+        };
+      })],
     });
     var selCell = ui.fieldCell(selLabel, selField, t('click.selectorHelp'));
     selCell.querySelector('.aria-cell-label').appendChild(ui.el('span', 'aria-microtag', p.selectorType.toUpperCase()));
@@ -516,6 +533,7 @@
         rowNumber += 1;
         group.appendChild(conditionRow({
           row: row, index: rowNumber, exprCtx: exprCtx,
+          pageUrl: ctx.pageUrl || '',
           footer: ri === lastExpanded ? makeAddAnd() : null,
           onChange: commit,
           onToggleCollapse: function () { row.collapsed = !row.collapsed; restructure(); },
@@ -689,7 +707,20 @@
         placeholder: '#login-status',
         exprContext: o.exprCtx,
         onChange: function (v) { row.selector = v; o.onChange(); },
-        buttons: [pickerBtn(function (sel) { row.selector = sel; o.onChange(); rebuild(); })],
+        buttons: [pickerBtn(function (sel) {
+          row.selector = sel; o.onChange(); rebuild();
+        }, function () {
+          // No `selectorType` param on this path ON PURPOSE: ConditionEngine
+          // calls page.locator(selector) directly, and Playwright already
+          // sniffs a leading `//` as XPath — so one field accepts both and an
+          // extra dropdown would be a control the backend never reads.
+          var v = String(row.selector || '');
+          return {
+            value: v,
+            mode: /^\s*(\/\/|\.\.|\()/.test(v) ? 'xpath' : 'css',
+            url: o.pageUrl || '',
+          };
+        })],
       });
       l1.appendChild(ui.fieldCell(t('cb.cssSelector'), selHost, null, null,
         { info: t('cb.cssSelectorHelp') }));

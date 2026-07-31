@@ -272,18 +272,6 @@
       send({ t: 'picker', on: pickerOn });
     }
 
-    function copyVal(input) {
-      try {
-        input.select();
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(input.value);
-        } else {
-          document.execCommand('copy');
-        }
-        toast(t('bv.copied'), 'success');
-      } catch (e) { toast(t('bv.copyFail'), 'error'); }
-    }
-
     function addStep(action) {
       if (!state || !state.lastPick) return;
       var sel = state.lastPick.css || '';
@@ -319,10 +307,358 @@
     setStatus(t('bv.disconnected'), '');
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // requestPick(onPicked, opts) — the crosshair button on any selector field.
+  // ----------------------------------------------------------------------
+  // Opens a modal that streams the real page and floats a small picker panel
+  // over it (the shape Automa uses inside the target tab). Hovering previews,
+  // clicking locks, ↑/↓ walk the DOM, the double-check button counts matches,
+  // and "Use this selector" hands the string back to the caller's field.
+  //
+  // Deliberately a MODAL over our own app, not an injected panel: the page is
+  // rendered by the server browser onto a <canvas>, so there is no page DOM
+  // here to inject into — and our CSP (`script-src 'self'`) would forbid it.
+  // ══════════════════════════════════════════════════════════════════════
+
+  var pickState = null;          // { ws, overlay, onPicked, ... }
+  var URL_MEMO = 'abPickerUrl';  // last page a selector was picked from
+
+  function memoUrl(v) {
+    try {
+      if (v === undefined) return localStorage.getItem(URL_MEMO) || '';
+      localStorage.setItem(URL_MEMO, v);
+    } catch (e) {}
+    return v || '';
+  }
+
+  function closePick() {
+    if (!pickState) return;
+    var ps = pickState;
+    pickState = null;
+    if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
+    if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
+    if (ps.overlay && ps.overlay.parentNode) ps.overlay.parentNode.removeChild(ps.overlay);
+  }
+
+  function pickerMarkup() {
+    return '' +
+      '<div class="bvp-shell" role="dialog" aria-modal="true">' +
+        '<div class="bvp-bar">' +
+          '<span class="bvp-bar-title">' + BIC('target', 15) + ' ' + esc(t('bvp.title')) + '</span>' +
+          '<input class="field-input bvp-url" id="bvp-url" type="text" ' +
+            'placeholder="https://example.com" autocomplete="off" spellcheck="false">' +
+          '<button class="btn btn-primary btn-sm" id="bvp-go">' + esc(t('bv.go')) + '</button>' +
+          '<span class="badge bvp-status" id="bvp-status">—</span>' +
+          '<button class="icon-btn bvp-close" id="bvp-close" type="button" ' +
+            'title="' + esc(t('bvp.cancel')) + '" aria-label="' + esc(t('bvp.cancel')) + '">' +
+            BIC('x', 15) + '</button>' +
+        '</div>' +
+        '<div class="bvp-stage" id="bvp-stage" tabindex="0">' +
+          '<canvas class="bvp-canvas" id="bvp-canvas"></canvas>' +
+          '<div class="bvp-empty" id="bvp-empty">' + esc(t('bvp.needUrl')) + '</div>' +
+          '<div class="bvp-panel" id="bvp-panel">' +
+            '<div class="bvp-panel-head" id="bvp-drag">' +
+              '<span class="bvp-panel-title">' + esc(t('bvp.title')) + '</span>' +
+              '<button class="icon-btn" id="bvp-ghost" type="button" ' +
+                'title="' + esc(t('bvp.seeThrough')) + '">' + BIC('eye', 14) + '</button>' +
+            '</div>' +
+            '<div class="bvp-panel-row">' +
+              '<select class="field-input bvp-mode" id="bvp-mode" ' +
+                'aria-label="' + esc(t('bvp.mode')) + '">' +
+                '<option value="css">' + esc(t('bvp.modeCss')) + '</option>' +
+                '<option value="xpath">' + esc(t('bvp.modeXpath')) + '</option>' +
+              '</select>' +
+              '<button class="icon-btn" id="bvp-up" type="button" ' +
+                'title="' + esc(t('bvp.parent')) + '">' + BIC('chevron-up', 14) + '</button>' +
+              '<button class="icon-btn" id="bvp-down" type="button" ' +
+                'title="' + esc(t('bvp.child')) + '">' + BIC('chevron-down', 14) + '</button>' +
+            '</div>' +
+            '<div class="bvp-panel-row">' +
+              '<input class="field-input bvp-sel" id="bvp-sel" type="text" ' +
+                'spellcheck="false" autocomplete="off" ' +
+                'placeholder="' + esc(t('bvp.selPlaceholder')) + '">' +
+              '<button class="icon-btn" id="bvp-verify" type="button" ' +
+                'title="' + esc(t('bvp.verify')) + '">' + BIC('check', 14) + '</button>' +
+              '<button class="icon-btn" id="bvp-copy" type="button" ' +
+                'title="' + esc(t('bvp.copy')) + '">' + BIC('copy', 14) + '</button>' +
+            '</div>' +
+            '<div class="bvp-count" id="bvp-count"></div>' +
+            '<div class="bvp-panel-sub">' + esc(t('bvp.attributes')) + '</div>' +
+            '<div class="bvp-attrs" id="bvp-attrs"></div>' +
+            '<div class="bvp-panel-foot">' +
+              '<button class="btn btn-primary btn-sm" id="bvp-use">' +
+                esc(t('bvp.use')) + '</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<p class="bvp-hint">' + esc(t('bvp.hint')) + '</p>' +
+      '</div>';
+  }
+
+  function requestPick(onPicked, opts) {
+    if (typeof onPicked !== 'function') return;
+    closePick();
+    var o = opts || {};
+
+    var overlay = document.createElement('div');
+    overlay.className = 'bvp-backdrop';
+    overlay.innerHTML = pickerMarkup();
+    document.body.appendChild(overlay);
+
+    var q = function (id) { return overlay.querySelector('#' + id); };
+    var urlIn = q('bvp-url');
+    var canvas = q('bvp-canvas');
+    var stage = q('bvp-stage');
+    var empty = q('bvp-empty');
+    var statusB = q('bvp-status');
+    var panel = q('bvp-panel');
+    var modeSel = q('bvp-mode');
+    var selIn = q('bvp-sel');
+    var countEl = q('bvp-count');
+    var attrsEl = q('bvp-attrs');
+    var ctx = canvas.getContext('2d');
+
+    pickState = {
+      ws: null, overlay: overlay, onPicked: onPicked,
+      last: null,      // last payload (hover or pick)
+      locked: false,   // a click/traversal happened → stop following the pointer
+      edited: false,   // the user typed in the field → stop overwriting it
+      mode: (o.mode === 'xpath' ? 'xpath' : 'css'),
+      onKeyDoc: null
+    };
+    modeSel.value = pickState.mode;
+    // Seed the field with whatever the caller's input already held, so the
+    // picker refines an existing selector instead of blanking it.
+    if (o.value) { selIn.value = String(o.value); pickState.edited = true; }
+    urlIn.value = o.url || memoUrl();
+
+    function setStatus(label, cls) {
+      statusB.className = 'badge bvp-status ' + (cls || '');
+      statusB.textContent = label;
+    }
+    function send(obj) {
+      var ps = pickState;
+      if (ps && ps.ws && ps.ws.readyState === WebSocket.OPEN) {
+        try { ps.ws.send(JSON.stringify(obj)); } catch (e) {}
+      }
+    }
+    function toPoint(ev) {
+      var rect = canvas.getBoundingClientRect();
+      var sx = canvas.width / rect.width || 1;
+      var sy = canvas.height / rect.height || 1;
+      return { x: (ev.clientX - rect.left) * sx, y: (ev.clientY - rect.top) * sy };
+    }
+    function selectorOf(data) {
+      if (!data) return '';
+      return pickState.mode === 'xpath' ? (data.xpath || '') : (data.css || '');
+    }
+    function renderCount(n, invalid) {
+      if (n === undefined || n === null) { countEl.textContent = ''; countEl.className = 'bvp-count'; return; }
+      if (invalid || n < 0) {
+        countEl.textContent = t('bvp.matchBad');
+        countEl.className = 'bvp-count is-bad';
+      } else if (n === 0) {
+        countEl.textContent = t('bvp.matchNone');
+        countEl.className = 'bvp-count is-bad';
+      } else if (n === 1) {
+        countEl.textContent = t('bvp.matchOne');
+        countEl.className = 'bvp-count is-ok';
+      } else {
+        countEl.textContent = String(n) + ' ' + t('bvp.matchMany');
+        countEl.className = 'bvp-count is-warn';
+      }
+    }
+    function renderAttrs(list) {
+      attrsEl.innerHTML = '';
+      if (!list || !list.length) {
+        attrsEl.appendChild(rowEl('muted bvp-attr-empty', t('bvp.noAttrs'), ''));
+        return;
+      }
+      list.forEach(function (a) {
+        attrsEl.appendChild(rowEl('bvp-attr', a.name, a.value));
+      });
+    }
+    function rowEl(cls, name, value) {
+      var d = document.createElement('div');
+      d.className = cls;
+      if (!value && !name) return d;
+      var k = document.createElement('span');
+      k.className = 'bvp-attr-name';
+      k.textContent = name;
+      d.appendChild(k);
+      if (value !== '') {
+        var v = document.createElement('span');
+        v.className = 'bvp-attr-value';
+        v.textContent = value;
+        d.appendChild(v);
+      }
+      return d;
+    }
+    // One paint routine for both channels; `locked` decides whether the
+    // pointer is still allowed to move the answer.
+    function paint(data, locked) {
+      pickState.last = data;
+      panel.classList.toggle('is-locked', !!locked);
+      if (locked) { pickState.locked = true; pickState.edited = false; }
+      if (!pickState.edited) selIn.value = selectorOf(data);
+      renderCount(data.count);
+      renderAttrs(data.attrs);
+      q('bvp-up').disabled = !data.hasParent;
+      q('bvp-down').disabled = !data.hasChild;
+    }
+
+    function drawFrame(b64) {
+      var img = new Image();
+      img.onload = function () {
+        if (canvas.width !== img.width || canvas.height !== img.height) {
+          canvas.width = img.width; canvas.height = img.height;
+        }
+        ctx.drawImage(img, 0, 0);
+      };
+      img.src = 'data:image/jpeg;base64,' + b64;
+      empty.style.display = 'none';
+    }
+
+    function onMessage(raw) {
+      var msg;
+      try { msg = JSON.parse(raw); } catch (e) { return; }
+      if (!msg || !msg.t) return;
+      switch (msg.t) {
+        case 'frame': drawFrame(msg.data); break;
+        case 'ready':
+          setStatus(t('bv.connected'), 'ok');
+          send({ t: 'picker', on: true });      // the picker IS the point here
+          break;
+        case 'navigated': setStatus(t('bv.connected'), 'ok'); break;
+        case 'hover':
+          if (!pickState.locked) paint(msg, false);
+          break;
+        case 'pick': paint(msg, true); break;
+        case 'verified': renderCount(msg.count); break;
+        case 'expired': setStatus(t('bv.expired'), 'warn'); break;
+        case 'error': setStatus(String(msg.message || 'error'), 'bad'); break;
+      }
+    }
+
+    function connect() {
+      var url = (urlIn.value || '').trim();
+      if (!url) { urlIn.focus(); return; }
+      memoUrl(url);
+      if (pickState.ws && pickState.ws.readyState === WebSocket.OPEN) {
+        send({ t: 'navigate', url: url });
+        return;
+      }
+      if (!window.WebSocket) { setStatus(t('bv.noWs'), 'bad'); return; }
+      setStatus(t('bv.connecting'), 'warn');
+      var ws;
+      try { ws = new WebSocket(wsUrl(effectiveUserId(), API.getKey())); }
+      catch (e) { setStatus(t('bv.error'), 'bad'); return; }
+      pickState.ws = ws;
+      ws.onopen = function () { send({ t: 'navigate', url: url }); };
+      ws.onmessage = function (m) { onMessage(m.data); };
+      ws.onerror = function () { setStatus(t('bv.error'), 'bad'); };
+      ws.onclose = function () { if (pickState) setStatus(t('bv.disconnected'), ''); };
+    }
+
+    // ---- wiring ---------------------------------------------------------
+    var lastMove = 0;
+    canvas.addEventListener('mousemove', function (ev) {
+      var now = Date.now();
+      if (now - lastMove < 70) return;   // ~14 moves/sec is plenty for a preview
+      lastMove = now;
+      var p = toPoint(ev);
+      send({ t: 'move', x: p.x, y: p.y });
+    });
+    canvas.addEventListener('click', function (ev) {
+      var p = toPoint(ev);
+      send({ t: 'click', x: p.x, y: p.y });   // the page script converts it to a pick
+    });
+    canvas.addEventListener('wheel', function (ev) {
+      ev.preventDefault();
+      var p = toPoint(ev);
+      send({ t: 'scroll', x: p.x, y: p.y, dy: ev.deltaY });
+    }, { passive: false });
+    stage.addEventListener('keydown', function (ev) {
+      if (ev.key === ' ' || ev.code === 'Space') { ev.preventDefault(); send({ t: 'key', key: 'Space' }); }
+    });
+    canvas.addEventListener('mousedown', function () { stage.focus(); });
+
+    q('bvp-go').addEventListener('click', connect);
+    urlIn.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); connect(); }
+    });
+    q('bvp-close').addEventListener('click', closePick);
+    overlay.addEventListener('mousedown', function (e) {
+      if (e.target === overlay) closePick();      // click the backdrop = cancel
+    });
+    modeSel.addEventListener('change', function () {
+      pickState.mode = modeSel.value === 'xpath' ? 'xpath' : 'css';
+      pickState.edited = false;
+      if (pickState.last) selIn.value = selectorOf(pickState.last);
+    });
+    selIn.addEventListener('input', function () { pickState.edited = true; });
+    q('bvp-up').addEventListener('click', function () { send({ t: 'pickStep', dir: 'up' }); });
+    q('bvp-down').addEventListener('click', function () { send({ t: 'pickStep', dir: 'down' }); });
+    q('bvp-verify').addEventListener('click', function () {
+      send({ t: 'verify', selector: selIn.value || '' });
+    });
+    q('bvp-copy').addEventListener('click', function () { copyVal(selIn); });
+    q('bvp-ghost').addEventListener('click', function () {
+      panel.classList.toggle('is-ghost');
+    });
+    q('bvp-use').addEventListener('click', function () {
+      var val = (selIn.value || '').trim();
+      if (!val) { selIn.focus(); return; }
+      var cb = pickState.onPicked;
+      closePick();
+      cb(val);
+    });
+
+    // Drag the panel out of the way (it sits over the page image).
+    var drag = null;
+    q('bvp-drag').addEventListener('mousedown', function (ev) {
+      var r = panel.getBoundingClientRect();
+      var s = stage.getBoundingClientRect();
+      drag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top, s: s };
+      ev.preventDefault();
+    });
+    document.addEventListener('mousemove', function (ev) {
+      if (!drag || !pickState) return;
+      panel.style.left = Math.max(0, Math.min(drag.s.width - 40, ev.clientX - drag.s.left - drag.dx)) + 'px';
+      panel.style.top = Math.max(0, Math.min(drag.s.height - 40, ev.clientY - drag.s.top - drag.dy)) + 'px';
+      panel.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', function () { drag = null; });
+
+    pickState.onKeyDoc = function (ev) {
+      if (ev.key === 'Escape') { ev.preventDefault(); closePick(); }
+    };
+    document.addEventListener('keydown', pickState.onKeyDoc, true);
+
+    setStatus(t('bv.disconnected'), '');
+    renderAttrs(null);
+    if (urlIn.value) connect(); else urlIn.focus();
+  }
+
+  // Shared clipboard helper (used by the modal; render() has its own closure
+  // copy because it also selects the readonly result fields).
+  function copyVal(input) {
+    try {
+      input.select();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(input.value);
+      } else {
+        document.execCommand('copy');
+      }
+      toast(t('bv.copied'), 'success');
+    } catch (e) { toast(t('bv.copyFail'), 'error'); }
+  }
+
   function stop() {
     if (state && state.ws) { try { state.ws.close(); } catch (e) {} }
     state = null;
+    closePick();
   }
 
-  window.BrowserView = { render: render, stop: stop };
+  window.BrowserView = { render: render, stop: stop, requestPick: requestPick };
 })();

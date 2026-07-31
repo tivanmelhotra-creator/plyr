@@ -13,8 +13,9 @@ import { authorizeLive } from './LiveServer';
 // ----------------------------------------------------------------
 // Each connection owns one interactive LiveBrowserSession. Outbound:
 // JSON control events + binary-ish JSON screencast frames (base64).
-// Inbound: JSON commands { t: 'navigate'|'click'|'type'|'key'|
-// 'scroll'|'picker', ... } which are replayed on the server browser.
+// Inbound: JSON commands { t: 'navigate'|'click'|'move'|'type'|'key'|
+// 'scroll'|'picker'|'pickStep'|'verify', ... } which are replayed on
+// the server browser.
 //
 // Auth re-uses authorizeLive (same rules as the live event channel):
 // env/admin key => full access; user key => must own the userId.
@@ -149,6 +150,9 @@ export class BrowserStreamServer {
       case 'click':
         await session.click(num(msg.x), num(msg.y));
         break;
+      case 'move':
+        await session.move(num(msg.x), num(msg.y));
+        break;
       case 'scroll':
         await session.scroll(num(msg.x), num(msg.y), num(msg.dy));
         break;
@@ -160,6 +164,14 @@ export class BrowserStreamServer {
         break;
       case 'picker':
         await session.setPicker(!!msg.on);
+        break;
+      // Element-picker refinements (the ↑/↓ arrows and the double-check button
+      // in the picker panel). Both answer on the picker's own channels.
+      case 'pickStep':
+        await session.pickStep(String(msg.dir || 'up'));
+        break;
+      case 'verify':
+        await session.verifySelector(String(msg.selector || ''));
         break;
       default:
         // unknown command: ignore

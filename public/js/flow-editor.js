@@ -2180,7 +2180,24 @@
       },
       onParamsChange: function () { renderNodes(); renderFieldFeedback(); },
       onStructureChange: function () { renderInspector(); },
+      // Where the Element Picker should open. A selector only means something
+      // on a page, and the workflow already says which page: the first `goto`
+      // that carries a literal URL. Expressions are skipped — {{...}} is not
+      // resolvable before a run, so guessing would be worse than asking.
+      pageUrl: firstLiteralUrl(),
     };
+  }
+
+  // First `goto` URL in the graph that is a plain literal (no {{expression}}).
+  function firstLiteralUrl() {
+    var ids = Object.keys(state.nodes || {});
+    for (var i = 0; i < ids.length; i++) {
+      var n = state.nodes[ids[i]];
+      if (!n || n.action !== 'goto') continue;
+      var u = n.params && n.params.url ? String(n.params.url).trim() : '';
+      if (u && u.indexOf('{{') < 0) return u;
+    }
+    return '';
   }
 
   function renderAll() {

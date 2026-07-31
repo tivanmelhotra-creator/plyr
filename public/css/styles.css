@@ -4992,3 +4992,169 @@ body.route-fullbleed .fe-mm-restore {
   .fe-selbtn span { display: none; }
   .fe-selbtn { padding: 0 6px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Element Picker modal (browser-view.js → BrowserView.requestPick).
+   Opened by the crosshair button on any selector field. The page itself is
+   a server-rendered <canvas> stream, so the "small panel" Automa injects
+   into the target tab is drawn by US, floating over the canvas.
+   ═══════════════════════════════════════════════════════════════════════ */
+.bvp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 800;                      /* above the NDV, below toasts */
+  background: rgba(4, 7, 11, 0.72);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vh 2vw;
+}
+.bvp-shell {
+  width: min(1280px, 96vw);
+  max-height: 96vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.bvp-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+.bvp-bar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bvp-url { flex: 1; min-width: 160px; }
+.bvp-status { white-space: nowrap; }
+.bvp-close { margin-inline-start: 0.15rem; }
+
+/* The page image. `cell` cursor = picker armed (same signal as the
+   standalone Live Browser view). */
+.bvp-stage {
+  position: relative;
+  flex: 1;
+  min-height: 320px;
+  background: #0a0d12;
+  overflow: hidden;
+  outline: none;
+}
+.bvp-canvas { display: block; width: 100%; height: auto; cursor: cell; }
+.bvp-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+/* ---- the floating panel ------------------------------------------------ */
+.bvp-panel {
+  position: absolute;
+  top: 12px;
+  inset-inline-end: 12px;
+  width: 306px;
+  max-height: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+}
+/* Locked = a click (or a ↑/↓ step) fixed the element; hover no longer
+   overwrites the field. The accent border is the only signal needed. */
+.bvp-panel.is-locked { border-color: var(--primary); }
+/* The panel covers part of the page; the eye button fades it instead of
+   closing it, so the target underneath stays clickable. */
+.bvp-panel.is-ghost { opacity: 0.22; }
+.bvp-panel.is-ghost:hover { opacity: 1; }
+.bvp-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  cursor: move;
+  user-select: none;
+}
+.bvp-panel-title { font-weight: 600; }
+.bvp-panel-row { display: flex; align-items: center; gap: 0.3rem; }
+.bvp-panel-row .field-input { flex: 1; min-width: 0; }
+.bvp-mode { flex: 0 0 auto; width: 8.4rem; }
+.bvp-sel { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.78rem; }
+.bvp-count { min-height: 1.1em; font-size: 0.75rem; color: var(--text-dim); }
+.bvp-count.is-ok { color: var(--success); }
+.bvp-count.is-warn { color: var(--warn); }
+.bvp-count.is-bad { color: var(--danger); }
+.bvp-panel-sub {
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.bvp-attrs { flex: 1; min-height: 2rem; max-height: 200px; overflow: auto; }
+.bvp-attr {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.18rem 0;
+  border-bottom: 1px dashed var(--border);
+}
+.bvp-attr-name {
+  flex: 0 0 5.6rem;
+  color: var(--info);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bvp-attr-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bvp-attr-empty { padding: 0.3rem 0; }
+.bvp-panel-foot { display: flex; }
+.bvp-panel-foot .btn { flex: 1; }
+.bvp-hint {
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+/* Phones / short windows: the panel becomes a bottom sheet so it never
+   eats the page image it is meant to help you read. */
+@media (max-width: 720px) {
+  .bvp-panel {
+    inset-inline: 8px;
+    top: auto;
+    bottom: 8px;
+    width: auto;
+  }
+  .bvp-attrs { max-height: 110px; }
+}
