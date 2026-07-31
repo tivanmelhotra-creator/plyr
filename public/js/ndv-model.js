@@ -36,13 +36,93 @@
   // controls; they are serialised to the backend SimpleCondition as
   // { source, attribute } (see graph-serialize.js + ConditionEngine).
 
-  // Left-source options. `text` is the v1 default (backend reads innerText).
+  // ---- CHECK KIND: the one question a condition row really asks -------------
+  //
+  // AUDIT (src/core/ConditionEngine.ts evaluateSimple) — the runtime has exactly
+  // THREE evaluation paths, and each one ignores different fields:
+  //
+  //   1. DOM path      (operator ∈ exists|not_exists|visible|hidden, L111)
+  //      reads ONLY `selector`. `source` and `attribute` are never touched.
+  //   2. variable path (source === 'variable', L140)
+  //      reads the run variable NAMED BY `value`. `selector` is never touched.
+  //   3. content path  (readFromElement, L211)
+  //      reads `selector` through `source` (+ `attribute` when source is
+  //      'attribute').
+  //
+  // The old NDV showed all five controls (Left source · Attribute name · CSS
+  // Selector · Operator · Right value) for every row, which meant that in path
+  // 1 the user configured a "Left source" the engine throws away, and in path 2
+  // a "CSS Selector" the engine throws away. That is not just clutter, it is a
+  // UI that LIES about what the run will do.
+  //
+  // `kind` fixes it and costs nothing: it is DERIVED from the row that is
+  // already stored (never persisted, never serialised), so the params.groups
+  // contract and every saved workflow stay byte-identical.
+  var CONDITION_KINDS = [
+    { id: 'element', label: 'cbk.element', hint: 'cbk.elementHint' },
+    { id: 'content', label: 'cbk.content', hint: 'cbk.contentHint' },
+    { id: 'variable', label: 'cbk.variable', hint: 'cbk.variableHint' },
+  ];
+
+  /** Which of the runtime's three paths this row will take. Pure derivation. */
+  function checkKindOf(row) {
+    if (!row) return 'element';
+    if (operatorMeta(row.operator).dom) return 'element';
+    if (row.source === 'variable') return 'variable';
+    return 'content';
+  }
+
+  /**
+   * Move a row to another kind, keeping every field that still has a meaning
+   * and clearing only the ones the new path cannot use. Returns a NEW row.
+   *
+   * Clearing matters: leaving a stale `selector` on a variable row would show
+   * the user a value that the engine ignores — the same lie in reverse.
+   */
+  function applyCheckKind(row, kind) {
+    var next = normalizeRow(row);
+    if (kind === 'element') {
+      if (!operatorMeta(next.operator).dom) next.operator = 'exists';
+      next.source = 'text';       // engine default; unused on this path
+      next.attribute = '';
+      next.expected = '';
+      next.value = '';
+    } else if (kind === 'variable') {
+      if (operatorMeta(next.operator).dom) next.operator = 'equals';
+      next.source = 'variable';
+      next.attribute = '';
+      next.selector = '';         // never read on this path
+    } else {
+      if (operatorMeta(next.operator).dom) next.operator = 'equals';
+      if (next.source === 'variable') next.source = 'text';
+      next.value = '';            // only the variable path uses `value`
+    }
+    return next;
+  }
+
+  // What to read out of the matched element — the design's "Left source", minus
+  // `variable`, which is now the separate `variable` KIND rather than a value
+  // hidden inside an unrelated dropdown.
   var CONDITION_SOURCES = [
     { id: 'text', label: 'cbs.text', needsAttribute: false },
     { id: 'attribute', label: 'cbs.attribute', needsAttribute: true },
     { id: 'value', label: 'cbs.value', needsAttribute: false },
     { id: 'html', label: 'cbs.html', needsAttribute: false },
     { id: 'variable', label: 'cbs.variable', needsAttribute: false },
+  ];
+
+  /** The sources offered for the `content` kind (i.e. everything DOM-backed). */
+  function contentSources() {
+    return CONDITION_SOURCES.filter(function (s) { return s.id !== 'variable'; });
+  }
+
+  // Suggestions for the design's `Attribute name` chevron menu. NOT a closed
+  // set — the field stays free text because the runtime reads any attribute
+  // (`getAttribute(name)`), so a <select> here would remove a real capability.
+  var CONDITION_ATTRIBUTES = [
+    'textContent', 'innerText', 'value', 'href', 'src', 'alt', 'title',
+    'id', 'class', 'name', 'type', 'placeholder', 'checked', 'disabled',
+    'aria-label', 'aria-expanded', 'aria-checked', 'data-state', 'data-testid',
   ];
 
   // Operator registry. `dom` = evaluated purely against selector presence /
@@ -68,6 +148,26 @@
     { id: 'not_empty', label: 'op.not_empty', dom: false, needsExpected: false },
     { id: 'is_true', label: 'op.is_true', dom: false, needsExpected: false },
     { id: 'is_false', label: 'op.is_false', dom: false, needsExpected: false },
+    // BACKEND HAD IT, UI DID NOT (ConditionEngine 'in_list' / 'not_in_list').
+    // Real, frequently-needed capability: "status is one of paid, shipped,
+    // delivered" previously forced the user to build three OR groups by hand.
+    // `list: true` makes the Right value a comma/newline list; graph-serialize
+    // turns it into the ARRAY the engine requires (it compares with
+    // Array.includes and returns false for a plain string).
+    { id: 'in_list', label: 'op.in_list', dom: false, needsExpected: true, list: true },
+    { id: 'not_in_list', label: 'op.not_in_list', dom: false, needsExpected: true, list: true },
+    // DELIBERATELY NOT SURFACED: the engine also accepts `random`
+    // (Math.random() * 100 < expected, an A/B-split coin flip). It is left out
+    // of the builder on purpose — a browser-automation workflow whose branch
+    // depends on a coin flip cannot be reproduced, diffed or debugged, and the
+    // "why did last night's run take the other path?" support cost is real.
+    // The engine keeps it so hand-written / imported JSON still runs; the
+    // builder simply refuses to help you shoot yourself in the foot.
+    // Equally NOT surfaced: CompositeCondition.not — every operator here
+    // already ships its negative twin (exists/not_exists, equals/not_equals,
+    // in_list/not_in_list, …), so a NOT toggle would be a second way to say the
+    // same thing, which is exactly the kind of duplicate control that makes a
+    // builder feel arbitrary.
   ];
 
   function operatorMeta(id) {
@@ -104,6 +204,13 @@
 
   // Parse whatever is stored on the node into a clean [[row,…],…] structure.
   // Falls back to the legacy flat params (selector/operator/value/expected).
+  //
+  // Collapse default (locked crop, ndv-condition-final.webp): the FIRST row of
+  // the FIRST group is expanded and every other row is a one-line summary. Only
+  // applied when the stored data carries no explicit `collapsed` flag at all —
+  // i.e. a legacy workflow or a graph deserialised from the backend. Once the
+  // user expands/collapses anything, writeGroups persists the flags and this
+  // never overrides them again.
   function readGroups(params) {
     params = params || {};
     var raw = params.groups;
@@ -112,11 +219,22 @@
       try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
     }
     var groups = [];
+    var sawFlag = false;
     if (Array.isArray(parsed)) {
       parsed.forEach(function (rows) {
         if (!Array.isArray(rows)) return;
-        var clean = rows.map(normalizeRow);
+        var clean = rows.map(function (r) {
+          if (r && typeof r === 'object' && 'collapsed' in r) sawFlag = true;
+          return normalizeRow(r);
+        });
         if (clean.length) groups.push(clean);
+      });
+    }
+    if (!sawFlag) {
+      groups.forEach(function (rows, gi) {
+        rows.forEach(function (row, ri) {
+          row.collapsed = !(gi === 0 && ri === 0);
+        });
       });
     }
     if (!groups.length) {
@@ -200,10 +318,44 @@
   // the UI can label the disabled `+ Add path` control honestly.
   var CONDITION_MAX_PATHS_V1 = 1;
 
-  var EVALUATE_MODES = [
-    { id: 'first', label: 'cb.evalFirst' },
-    { id: 'all', label: 'cb.evalAll' },
-  ];
+  /**
+   * The operators offered for a given check kind.
+   *
+   * This is what makes the row honest: the `element` kind can ONLY be given the
+   * four operators the engine's DOM branch understands, and the other two kinds
+   * can only be given comparison operators — previously all 19 were listed for
+   * every row, so picking `visible` while "Left source: Element attribute" was
+   * set produced a row whose own controls contradicted each other.
+   */
+  function operatorsForKind(kind) {
+    var wantDom = kind === 'element';
+    return CONDITION_OPERATORS.filter(function (o) { return !!o.dom === wantDom; });
+  }
+
+  /**
+   * Split a `list: true` Right value into the ARRAY the engine's in_list /
+   * not_in_list cases require. Newline OR comma separated, trimmed, blanks
+   * dropped, so "paid, shipped" and a pasted column both work.
+   */
+  function parseListValue(raw) {
+    return String(raw == null ? '' : raw)
+      .split(/[\n,]/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+  }
+
+  // REMOVED (frontend-only decoration): `EVALUATE_MODES` and the `maxDepth`
+  // number backed the NDV footer's "Evaluate mode" / "Max depth" controls.
+  // A stack-wide audit found NO backend reference to either key — not in
+  // ConditionEngine, not in the pipeline, not in the schemas. They were knobs
+  // that changed nothing:
+  //   · `maxDepth` guarded "recursive evaluation depth", but this builder can
+  //     only ever emit two levels (`any` of `all`), so any value ≥ 2 was
+  //     identical and values < 2 still did nothing.
+  //   · `evaluateMode: first|all` described short-circuiting, which is simply
+  //     how the engine's `any`/`all` already behave — not a user decision.
+  // They are gone from the model, the NDV, the action catalog and the
+  // serialiser rather than being "implemented" to justify themselves.
 
   // =========================================================================
   // 2. Click Element model (ndv-click-element-final.md § 5)
@@ -349,8 +501,14 @@
     // condition
     CONDITION_SOURCES: CONDITION_SOURCES,
     CONDITION_OPERATORS: CONDITION_OPERATORS,
+    CONDITION_ATTRIBUTES: CONDITION_ATTRIBUTES,
     CONDITION_MAX_PATHS_V1: CONDITION_MAX_PATHS_V1,
-    EVALUATE_MODES: EVALUATE_MODES,
+    CONDITION_KINDS: CONDITION_KINDS,
+    checkKindOf: checkKindOf,
+    applyCheckKind: applyCheckKind,
+    operatorsForKind: operatorsForKind,
+    contentSources: contentSources,
+    parseListValue: parseListValue,
     operatorMeta: operatorMeta,
     sourceMeta: sourceMeta,
     blankRow: blankRow,

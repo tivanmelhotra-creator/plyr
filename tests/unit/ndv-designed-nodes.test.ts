@@ -32,7 +32,8 @@ interface SimpleCondition {
   operator: string;
   selector?: string;
   value?: string;
-  expected?: string;
+  /** `in_list` / `not_in_list` carry a real ARRAY (ConditionEngine requires it). */
+  expected?: string | string[];
   source?: string;
   attribute?: string;
 }
@@ -51,6 +52,11 @@ interface Serializer {
 
 interface Model {
   isDesigned: (action: string) => boolean;
+  CONDITION_OPERATORS: { id: string; dom?: boolean; list?: boolean }[];
+  CONDITION_KINDS: { id: string }[];
+  checkKindOf: (row: Record<string, unknown>) => string;
+  applyCheckKind: (row: Record<string, unknown>, kind: string) => Record<string, string>;
+  operatorsForKind: (kind: string) => { id: string }[];
   DESIGNED_NODES: Record<string, unknown>;
   CLICK_DEFAULTS: Record<string, unknown>;
   conditionSummary: (params: Record<string, unknown>, t?: (k: string) => string) => string;
@@ -172,11 +178,123 @@ describe('click NDV — every designed control is declared in the catalog', () =
 
 describe('condition NDV — if / while declare the Condition Builder params', () => {
   const required = ['groups', 'source', 'attribute', 'selector', 'operator',
-    'value', 'expected', 'maxDepth', 'evaluateMode'];
+    'value', 'expected'];
 
   it.each(['if', 'while'])('%s declares every builder param', (action) => {
     const declared = fieldKeys(action);
     expect(required.filter((k) => !declared.includes(k))).toEqual([]);
+  });
+
+  /**
+   * BACKEND ↔ UI PARITY GUARD.
+   *
+   * This test used to require `maxDepth` and `evaluateMode` too, which is how
+   * two controls that no backend code reads survived for so long: the design
+   * showed them, so the UI built them, so the test froze them in place.
+   *
+   * The rule now runs the other way round — a param may only be offered if
+   * something actually consumes it. `maxDepth` guarded a recursion depth the
+   * builder cannot reach (it emits at most `any` of `all`), and `evaluateMode`
+   * described the short-circuiting that `any`/`all` already do. Neither appears
+   * anywhere in src/, so both are gone from the catalog and the NDV.
+   */
+  it.each(['if', 'while'])('%s offers no param the backend never reads', (action) => {
+    const declared = fieldKeys(action);
+    expect(declared).not.toContain('maxDepth');
+    expect(declared).not.toContain('evaluateMode');
+  });
+
+  /**
+   * The reverse leg of the same parity rule: every operator the runtime
+   * implements must be reachable from the UI, except the ones deliberately
+   * withheld. `in_list` / `not_in_list` were implemented in ConditionEngine but
+   * had no way to be produced by the editor at all.
+   *
+   * `random` is the one intentional omission — a branch decided by
+   * Math.random() makes a run unreproducible, so the builder refuses to offer
+   * it while the engine still honours hand-written JSON that uses it.
+   */
+  it('surfaces every engine operator except the intentionally withheld ones', () => {
+    const engine = readFileSync(
+      join(__dirname, '..', '..', 'src', 'core', 'ConditionEngine.ts'), 'utf8');
+    const typeBlock = engine.slice(
+      engine.indexOf('export type ConditionOperator'),
+      engine.indexOf('// Which part of the matched element'));
+    const engineOps = Array.from(typeBlock.matchAll(/'([a-z_]+)'/g)).map((m) => m[1]);
+    expect(engineOps).toContain('in_list');
+    expect(engineOps).toContain('random');
+
+    const uiOps: string[] = NM.CONDITION_OPERATORS.map((o: any) => o.id);
+    const WITHHELD = ['random'];
+    const missing = engineOps.filter(
+      (op) => !uiOps.includes(op) && !WITHHELD.includes(op));
+    expect(missing, 'engine operators the builder cannot produce').toEqual([]);
+    for (const op of WITHHELD) expect(uiOps).not.toContain(op);
+  });
+
+  /**
+   * `in_list` / `not_in_list` are only useful if they reach the engine in the
+   * shape it tests for: ConditionEngine compares with `Array.isArray(expected)
+   * && expected.includes(...)`, so a comma string would silently evaluate to
+   * false forever. The builder edits one text field; the serialiser is the
+   * single place that turns it into an array.
+   */
+  it('serialises an in_list row to a real array and round-trips the text', () => {
+    const rows = [[{ source: 'text', selector: '.status', operator: 'in_list',
+      expected: 'paid, shipped , delivered', value: '', attribute: '' }]];
+    const cond: any = GS.buildCondition({ groups: JSON.stringify(rows) });
+    expect(cond.operator).toBe('in_list');
+    expect(cond.expected).toEqual(['paid', 'shipped', 'delivered']);
+
+    const twoRows = [[
+      { selector: '.a', operator: 'exists', source: 'text', attribute: '', value: '', expected: '' },
+      { selector: '.status', operator: 'not_in_list', source: 'text', attribute: '',
+        value: '', expected: 'draft\nvoid' },
+    ]];
+    const composite: any = GS.buildCondition({ groups: JSON.stringify(twoRows) });
+    expect(composite.all[1].expected).toEqual(['draft', 'void']);
+    // and back again, as the comma list the user typed
+    const back = GS.conditionToGroups(composite)!;
+    expect(back[0][1].expected).toBe('draft, void');
+  });
+
+  /**
+   * The three check kinds are DERIVED, never stored: they exist so the NDV can
+   * hide the fields the chosen runtime path ignores. If they were persisted,
+   * every saved workflow would need a migration — and the serialised shape must
+   * stay byte-identical, which is what this pins.
+   */
+  it('derives the check kind from the row and never serialises it', () => {
+    expect(NM.checkKindOf({ operator: 'visible', source: 'text' })).toBe('element');
+    expect(NM.checkKindOf({ operator: 'equals', source: 'variable' })).toBe('variable');
+    expect(NM.checkKindOf({ operator: 'equals', source: 'attribute' })).toBe('content');
+
+    // switching to `variable` must drop the selector the engine would ignore
+    const asVar = NM.applyCheckKind(
+      { operator: 'equals', source: 'text', selector: '.x', expected: 'y' }, 'variable');
+    expect(asVar.source).toBe('variable');
+    expect(asVar.selector).toBe('');
+    // switching to `element` must drop source/attribute the DOM branch ignores
+    const asEl = NM.applyCheckKind(
+      { operator: 'contains', source: 'attribute', attribute: 'href', selector: '.x' }, 'element');
+    expect(asEl.operator).toBe('exists');
+    expect(asEl.attribute).toBe('');
+
+    const cond: any = GS.buildCondition({
+      groups: JSON.stringify([[NM.applyCheckKind(
+        { operator: 'exists', selector: '.x' }, 'element')]]),
+    });
+    expect(Object.keys(cond).sort()).toEqual(['operator', 'selector']);
+    expect('kind' in cond).toBe(false);
+  });
+
+  /** Only the four DOM operators may be offered for an `element` row. */
+  it('offers only the operators each kind can evaluate', () => {
+    expect(NM.operatorsForKind('element').map((o: any) => o.id))
+      .toEqual(['exists', 'not_exists', 'visible', 'hidden']);
+    const content = NM.operatorsForKind('content').map((o: any) => o.id);
+    expect(content).not.toContain('visible');
+    expect(content).toContain('in_list');
   });
 
   it('marks the groups blob as internal so no generic editor renders raw JSON', () => {

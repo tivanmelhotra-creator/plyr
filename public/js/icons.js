@@ -90,6 +90,12 @@
     hourglass: ['<path d="M7 3h10"/>', '<path d="M7 21h10"/>', '<path d="M17 3v3.3a5 5 0 0 1-2.1 4.1L12 12l-2.9 1.6A5 5 0 0 0 7 17.7V21"/>', '<path d="M7 3v3.3a5 5 0 0 0 2.1 4.1L12 12l2.9 1.6a5 5 0 0 1 2.1 4.1V21"/>'],
     'image-frame': ['<rect x="3" y="4" width="18" height="16" rx="2"/>', '<path d="m5.5 17.5 4.2-4.2 2.8 2.8 3.2-3.2 3.3 3.3"/>', '<circle cx="9" cy="9" r="1.4"/>'],
     infinity: ['<path d="M12 12c-1.9-2.6-3.4-3.9-5.4-3.9a3.9 3.9 0 0 0 0 7.8c2 0 3.5-1.3 5.4-3.9z"/>', '<path d="M12 12c1.9 2.6 3.4 3.9 5.4 3.9a3.9 3.9 0 0 0 0-7.8c-2 0-3.5 1.3-5.4 3.9z"/>'],
+    // `info` is a lowercase "i" in a circle (dot ABOVE the stem). It is NOT
+    // interchangeable with `help-circle` (a "?") or `alert-circle` (a "!",
+    // i.e. stem above dot): cropping ndv-condition-final.webp 1:1 at the field
+    // labels shows an ⓘ next to every one of them, so the NDV field hints use
+    // this glyph and `help-circle` stays for real "how do I…" affordances.
+    info: ['<circle cx="12" cy="12" r="9"/>', '<path d="M12 11.2v5.3"/>', '<path d="M12 7.7h.01"/>'],
     keyboard: ['<rect x="2.5" y="6" width="19" height="12" rx="2"/>', '<path d="M6.5 10h.01"/>', '<path d="M10 10h.01"/>', '<path d="M13.5 10h.01"/>', '<path d="M17.5 10h.01"/>', '<path d="M8 14h8"/>'],
     layers: ['<path d="m12 3 9 4.6-9 4.6-9-4.6z"/>', '<path d="m3 12.5 9 4.6 9-4.6"/>', '<path d="m3 16.9 9 4.6 9-4.6"/>'],
     layout: ['<rect x="3" y="4" width="7" height="7" rx="1.5"/>', '<rect x="14" y="4" width="7" height="7" rx="1.5"/>', '<rect x="3" y="15" width="7" height="5" rx="1.5"/>', '<rect x="14" y="15" width="7" height="5" rx="1.5"/>'],

@@ -18,7 +18,11 @@
    The 5th argument is a comma-separated list of interaction steps, applied in
    order before the shot:
        '.some-btn'         click it
-       'dbl:.flow-node'    double-click it (this is how the NDV opens)
+       'dbl:.flow-node'    double-click it (this is how the NDV opens in the UI)
+       'ndv:if'            open the NDV of the first node with that action, and
+       'ndv:#n3'           …or of an explicit node id, via FlowEditor.openNdv —
+                           the same entry point the double-click handler uses,
+                           but without depending on canvas hit-testing
        'key:Escape'        press a key
 
    Env:
@@ -31,6 +35,11 @@
                        serializer output — never a hand-drawn mock. `UI_SEED=list`
                        prints the available ids.
        UI_WAIT=<ms>    extra settle time before the shot (default 1200)
+       UI_STEPS=<json> a REAL backend `steps[]` array (JSON) pushed through
+                       FlowEditor.loadSteps(), for graphs no template covers
+                       (e.g. an `if` node, needed to render the Condition NDV).
+                       Takes precedence over UI_SEED. This is still the product's
+                       own deserializer — not a hand-drawn mock.
    ============================================================ */
 'use strict';
 
@@ -43,6 +52,7 @@ const base = process.env.UI_BASE || 'http://localhost:8788/index.html';
 const clicks = (process.argv[5] || '').split(',').filter(Boolean);
 const lang = process.env.UI_LANG || '';
 const seed = process.env.UI_SEED || '';
+const rawSteps = process.env.UI_STEPS || '';
 const wait = parseInt(process.env.UI_WAIT, 10) || 1200;
 
 (async () => {
@@ -68,7 +78,21 @@ const wait = parseInt(process.env.UI_WAIT, 10) || 1200;
   // so what gets compared against docs/uiux/*.webp is the actual serializer
   // layout. Without this the editor renders its (correct) empty state, which
   // says nothing about node cards, ports, connectors or the minimap.
-  if (seed) {
+  if (rawSteps) {
+    const info = await page.evaluate((json) => {
+      const FE = window.FlowEditor;
+      if (!FE || !FE.loadSteps) return { error: 'FlowEditor.loadSteps missing' };
+      let steps;
+      try { steps = JSON.parse(json); } catch (e) { return { error: 'UI_STEPS bad JSON: ' + e.message }; }
+      if (!Array.isArray(steps)) return { error: 'UI_STEPS is not an array' };
+      FE.loadSteps(steps);
+      if (FE.fitToScreen) FE.fitToScreen();
+      return { loaded: 'UI_STEPS', steps: steps.length };
+    }, rawSteps);
+    console.log('steps  :', JSON.stringify(info));
+    if (info && info.error) errors.push('STEPS ' + info.error);
+    await page.waitForTimeout(600);
+  } else if (seed) {
     const info = await page.evaluate((id) => {
       const T = window.TEMPLATES;
       const FE = window.FlowEditor;
@@ -86,12 +110,32 @@ const wait = parseInt(process.env.UI_WAIT, 10) || 1200;
     await page.waitForTimeout(600);
   }
 
-  // A step may be `selector`, `dbl:selector` (the NDV opens on double-click) or
-  // `key:Escape`. Anything that fails is reported rather than swallowed: a shot
-  // of a panel that never opened looks exactly like a shot of a broken panel.
+  // A step may be `selector`, `dbl:selector` (the NDV opens on double-click),
+  // `ndv:<action>` / `ndv:#<nodeId>` (open the NDV through the editor's own
+  // FlowEditor.openNdv, no hit-testing involved) or `key:Escape`. Anything that
+  // fails is reported rather than swallowed: a shot of a panel that never
+  // opened looks exactly like a shot of a broken panel.
   for (const step of clicks) {
     try {
-      if (step.startsWith('dbl:')) {
+      if (step.startsWith('ndv:')) {
+        const res = await page.evaluate((ref) => {
+          const FE = window.FlowEditor;
+          if (!FE || !FE.openNdv) return { error: 'FlowEditor.openNdv missing' };
+          const st = FE.getState && FE.getState();
+          if (!st || !st.nodes) return { error: 'no graph state' };
+          let id = null;
+          if (ref.charAt(0) === '#') {
+            id = ref.slice(1);
+          } else {
+            // first node whose action matches, in insertion order
+            id = Object.keys(st.nodes).filter((k) => st.nodes[k].action === ref)[0] || null;
+          }
+          if (!id || !st.nodes[id]) return { error: 'no node for ' + ref };
+          return { opened: FE.openNdv(id), id: id };
+        }, step.slice(4));
+        if (res && res.error) errors.push('STEP ndv: ' + res.error);
+        else if (res && !res.opened) errors.push('STEP ndv: openNdv refused ' + res.id);
+      } else if (step.startsWith('dbl:')) {
         await page.dblclick(step.slice(4), { timeout: 2000 });
       } else if (step.startsWith('key:')) {
         await page.keyboard.press(step.slice(4));

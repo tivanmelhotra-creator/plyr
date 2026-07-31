@@ -1,6 +1,12 @@
 # HANDOFF 13 — NDV: reachability, the scroll contract, and the density pass
 
-> **STATUS: CURRENT.** This file supersedes
+> **STATUS: SUPERSEDED by
+> `14-HANDOFF-backend-ui-parity-condition-disclosure.md`.** Read that file
+> first: it amends rule 0.2 and adds rule 0.9 (backend↔UI parity — a control may
+> only ship if something consumes it). Everything in § 0 below that HANDOFF 14
+> does not amend is still in force.
+>
+> This file supersedes
 > `12-HANDOFF-shell-parity-brand-mark-fa-980.md`, which supersedes
 > `11-HANDOFF-labels-fit-prefs-render-compare.md`.
 > Read § 0 first — it is the standing rule set — then § 5 for what to do next.

@@ -485,20 +485,38 @@
       }
       var group = ui.el('div', 'cb-group');
 
+      // CONTRACT (ndv-condition-final.webp, 1:1 crop of both group heads): the
+      // group header holds ONLY the letter badge and the "all conditions must be
+      // met (AND)" label — there is NO group-level delete button on the right.
+      // Removing a group stays possible because deleting a group's last row
+      // splices the group out (see onDelete below), so the trash icon here was
+      // redundant as well as off-design. Do not re-add it.
       var gh = ui.el('div', 'cb-group-head');
       gh.appendChild(ui.el('span', 'cb-group-badge', GROUP_LETTERS[gi] || String(gi + 1)));
       gh.appendChild(ui.el('span', 'cb-group-label', t('cb.allMustMatch')));
-      if (groups.length > 1) {
-        gh.appendChild(ui.iconBtn('trash', t('cb.removeGroup'), 'is-danger', function () {
-          groups.splice(gi, 1); restructure();
-        }));
-      }
       group.appendChild(gh);
+
+      // `+ AND` placement, straight off the locked crop: it closes the body of
+      // the LAST EXPANDED row (group A in ndv-condition-final.webp puts it
+      // under row 1's controls, above the collapsed row 2), and only falls back
+      // to the group's own bottom when every row in the group is collapsed
+      // (group B in the same crop).
+      function makeAddAnd() {
+        var b = ui.el('button', 'cb-add-and', '+ ' + t('cb.and'));
+        b.type = 'button';
+        b.addEventListener('click', function () {
+          rows.push(m.blankRow()); restructure();
+        });
+        return b;
+      }
+      var lastExpanded = -1;
+      rows.forEach(function (row, ri) { if (!row.collapsed) lastExpanded = ri; });
 
       rows.forEach(function (row, ri) {
         rowNumber += 1;
         group.appendChild(conditionRow({
           row: row, index: rowNumber, exprCtx: exprCtx,
+          footer: ri === lastExpanded ? makeAddAnd() : null,
           onChange: commit,
           onToggleCollapse: function () { row.collapsed = !row.collapsed; restructure(); },
           onClone: function () {
@@ -513,12 +531,7 @@
         }));
       });
 
-      var addAnd = ui.el('button', 'cb-add-and', '+ ' + t('cb.and'));
-      addAnd.type = 'button';
-      addAnd.addEventListener('click', function () {
-        rows.push(m.blankRow()); restructure();
-      });
-      group.appendChild(addAnd);
+      if (lastExpanded < 0) group.appendChild(makeAddAnd());
       builder.appendChild(group);
     });
 
@@ -536,24 +549,26 @@
     res.appendChild(resultCard(false, isIf));
     col.appendChild(res);
 
-    // ---- Max depth · Evaluate mode -------------------------------------
-    var foot = ui.el('div', 'cb-foot');
-    var depthVal = node.params.maxDepth != null ? String(node.params.maxDepth) : '5';
-    foot.appendChild(ui.fieldCell(t('cb.maxDepth'),
-      ui.selectCell([
-        { value: '3', label: '3' },
-        { value: '5', label: '5 (' + t('cb.recommended') + ')' },
-        { value: '8', label: '8' },
-      ], depthVal, function (v) { node.params.maxDepth = parseInt(v, 10); commit(); })));
-    var evalVal = node.params.evaluateMode || 'first';
-    foot.appendChild(ui.fieldCell(t('cb.evaluateMode'),
-      ui.selectCell([
-        { value: 'first', label: t('cb.evalFirst') },
-        { value: 'all', label: t('cb.evalAll') },
-      ], evalVal, function (v) { node.params.evaluateMode = v; commit(); })));
-    col.appendChild(foot);
-
-    // `while` keeps its own extra parameter (max iterations) below the builder.
+    // ---- REMOVED: "Max depth" · "Evaluate mode" -------------------------
+    // ndv-condition-final.webp draws both of these under the true/false cards,
+    // and they were built to match it. A stack-wide audit then showed that
+    // NEITHER key is read anywhere in the backend — not in ConditionEngine, not
+    // in the pipeline, not in the request schemas. They were two dropdowns that
+    // could not change the outcome of a run:
+    //   · "Max depth 3/5/8" guarded recursion depth, but this builder emits at
+    //     most `any` of `all` — two levels — so every value behaved the same.
+    //   · "Evaluate mode: first match / evaluate all" described short-circuit
+    //     behaviour, which is already what `any`/`all` do; it was never a
+    //     decision the user needed to make.
+    // A control that cannot affect the result is worse than a missing one: it
+    // spends the user's attention and then teaches them that the panel's
+    // settings are not to be trusted. So they are deleted here, in the action
+    // catalog and in the model, instead of being given a fake implementation to
+    // justify the pixels. This is the one place where the mock is deliberately
+    // NOT followed, and it is recorded in the handoff's audit section.
+    //
+    // `while` keeps its own extra parameter (max iterations) below the builder —
+    // that one IS read by the runtime, which is exactly the difference.
     if (node.action === 'while') {
       var wf = ui.section(t('cb.loopGuard'), 1);
       wf.body.appendChild(ui.fieldCell(t('p.maxIterations'),
@@ -600,11 +615,13 @@
     // -- header ----------------------------------------------------------
     var head = ui.el('div', 'cb-row-head');
     head.appendChild(ui.el('span', 'cb-row-num', String(o.index)));
-    var chips = ui.el('div', 'cb-row-chips');
+    // The crop draws the summary as PLAIN, evenly spaced text tokens — no
+    // coloured pills. `docs/uiux/*.webp` outranks the prose (standing rule 0.2).
+    var toks = ui.el('div', 'cb-row-toks');
     m.rowChips(row).forEach(function (c) {
-      chips.appendChild(ui.el('span', 'cb-chip tone-' + c.kind, c.i18n ? t(c.i18n) : c.text));
+      toks.appendChild(ui.el('span', 'cb-tok tone-' + c.kind, c.i18n ? t(c.i18n) : c.text));
     });
-    head.appendChild(chips);
+    head.appendChild(toks);
     var acts = ui.el('div', 'cb-row-acts');
     acts.appendChild(ui.iconBtn('copy', t('cb.cloneRow'), '', o.onClone));
     acts.appendChild(ui.iconBtn('trash', t('cb.removeRow'), 'is-danger', o.onDelete));
@@ -619,60 +636,113 @@
 
     if (row.collapsed) return wrap;
 
-    // -- line 1: Left source · Attribute name · CSS Selector -------------
+    // -- PROGRESSIVE DISCLOSURE -------------------------------------------
+    //
+    // The row used to render all five controls at once (Left source · Attribute
+    // name · CSS Selector · Operator · Right value), which made a beginner face
+    // five decisions to express "is this button on the page?" — and, worse, two
+    // of those five were read by the runtime only on OTHER code paths, so the
+    // panel showed settings that the run would silently ignore.
+    //
+    // Now the row asks ONE question first — "what do you want to check?" — and
+    // then shows exactly the fields the chosen path consumes. The three choices
+    // are not invented UI categories: they are the runtime's own three branches
+    // (NdvModel.CONDITION_KINDS documents the mapping to ConditionEngine).
+    //
+    //   element  → CSS Selector · Operator                        (2 fields)
+    //   content  → CSS Selector · Read · [Attribute] · Op · [Value] (3–5)
+    //   variable → Variable · Operator · [Value]                  (2–3)
+    //
+    // `kind` is derived from the stored row, never persisted, so params.groups
+    // and every already-saved workflow are untouched.
+    var kind = m.checkKindOf(row);
     var body = ui.el('div', 'cb-row-body');
+
+    var kindCell = ui.fieldCell(t('cb.checkKind'),
+      ui.selectCell(m.CONDITION_KINDS.map(function (k) {
+        return { value: k.id, label: t(k.label) };
+      }), kind, function (v) {
+        if (v === kind) return;
+        var next = m.applyCheckKind(row, v);
+        Object.keys(next).forEach(function (k) { row[k] = next[k]; });
+        o.onChange();
+        rebuild();
+      }), t(m.CONDITION_KINDS.filter(function (k) { return k.id === kind; })[0].hint),
+      null, { info: t('cb.checkKindHelp') });
+    kindCell.className += ' cb-kind-cell';
+    body.appendChild(kindCell);
+
+    // -- line 1: the LEFT-hand value ---------------------------------------
     var l1 = ui.el('div', 'cb-row-line cb-line-1');
-    l1.appendChild(ui.fieldCell(t('cb.leftSource'),
-      ui.selectCell(m.CONDITION_SOURCES.map(function (s) {
-        return { value: s.id, label: t(s.label) };
-      }), row.source, function (v) {
-        row.source = v; o.onChange();
-        // showing/hiding the Attribute field is a structural change
-        if (m.sourceMeta(v).needsAttribute !== srcMeta.needsAttribute) {
-          if (o.onToggleCollapse) { /* keep expanded */ }
-          rebuild();
+    if (kind === 'variable') {
+      // The engine reads the variable NAMED BY `value` and never touches the
+      // DOM here, so there is deliberately no selector field on this path.
+      l1.appendChild(ui.fieldCell(t('cb.variableName'), exprField({
+        value: row.value,
+        placeholder: 'status',
+        exprContext: o.exprCtx,
+        onChange: function (v) { row.value = v; o.onChange(); },
+      }), null, null, { info: t('cb.variableNameHelp') }));
+    } else {
+      var selHost = exprField({
+        value: row.selector,
+        placeholder: '#login-status',
+        exprContext: o.exprCtx,
+        onChange: function (v) { row.selector = v; o.onChange(); },
+        buttons: [pickerBtn(function (sel) { row.selector = sel; o.onChange(); rebuild(); })],
+      });
+      l1.appendChild(ui.fieldCell(t('cb.cssSelector'), selHost, null, null,
+        { info: t('cb.cssSelectorHelp') }));
+      if (kind === 'content') {
+        // "Left source" renamed to what it actually asks: WHICH PART of the
+        // matched element to read. `variable` is not offered here — it is the
+        // separate kind above, instead of a value smuggled into this dropdown.
+        l1.appendChild(ui.fieldCell(t('cb.readWhat'),
+          ui.selectCell(m.contentSources().map(function (s) {
+            return { value: s.id, label: t(s.label) };
+          }), row.source, function (v) {
+            row.source = v; o.onChange();
+            if (m.sourceMeta(v).needsAttribute !== srcMeta.needsAttribute) rebuild();
+          }), null, null, { info: t('cb.readWhatHelp') }));
+        if (srcMeta.needsAttribute) {
+          l1.appendChild(ui.fieldCell(t('cb.attributeName'),
+            ui.comboCell(row.attribute, m.CONDITION_ATTRIBUTES, 'textContent',
+              function (v) { row.attribute = v; o.onChange(); }),
+            null, null, { info: t('cb.attributeNameHelp') }));
         }
-      })));
-    if (srcMeta.needsAttribute) {
-      l1.appendChild(ui.fieldCell(t('cb.attributeName'),
-        ui.textCell(row.attribute, 'textContent', function (v) { row.attribute = v; o.onChange(); })));
+      }
     }
-    var selHost = exprField({
-      value: row.selector,
-      placeholder: '#login-status',
-      exprContext: o.exprCtx,
-      onChange: function (v) { row.selector = v; o.onChange(); },
-      buttons: [pickerBtn(function (sel) { row.selector = sel; o.onChange(); rebuild(); })],
-    });
-    l1.appendChild(ui.fieldCell(t('cb.cssSelector'), selHost));
     body.appendChild(l1);
 
     // -- line 2: Operator · Right value ----------------------------------
+    // Only the operators the chosen path can actually evaluate are listed:
+    // offering `visible` on a content row produced a self-contradicting row.
     var l2 = ui.el('div', 'cb-row-line cb-line-2');
     l2.appendChild(ui.fieldCell(t('cb.operator'),
-      ui.selectCell(m.CONDITION_OPERATORS.map(function (op) {
+      ui.selectCell(m.operatorsForKind(kind).map(function (op) {
         return { value: op.id, label: t(op.label) };
       }), row.operator, function (v) {
+        var was = opMeta;
         row.operator = v; o.onChange();
-        if (m.operatorMeta(v).needsExpected !== opMeta.needsExpected) rebuild();
-      })));
+        var now = m.operatorMeta(v);
+        if (now.needsExpected !== was.needsExpected || !!now.list !== !!was.list) rebuild();
+      }), null, null, { info: t('cb.operatorHelp') }));
     if (opMeta.needsExpected) {
-      l2.appendChild(ui.fieldCell(t('cb.rightValue'), exprField({
-        value: row.expected,
-        placeholder: 'logged-out',
-        exprContext: o.exprCtx,
-        onChange: function (v) { row.expected = v; o.onChange(); },
-      })));
-    } else if (!row.selector) {
-      // no selector + no expected -> allow a raw left value (variable form)
-      l2.appendChild(ui.fieldCell(t('p.value'), exprField({
-        value: row.value,
-        placeholder: '{{ $json.status }}',
-        exprContext: o.exprCtx,
-        onChange: function (v) { row.value = v; o.onChange(); },
-      })));
+      // `in_list` / `not_in_list` compare against a LIST, so the field's own
+      // label, placeholder and helper say so — the serialiser splits it on
+      // commas/newlines into the array the engine requires.
+      l2.appendChild(ui.fieldCell(opMeta.list ? t('cb.valueList') : t('cb.rightValue'),
+        exprField({
+          value: row.expected,
+          placeholder: opMeta.list ? 'paid, shipped, delivered' : 'logged-out',
+          exprContext: o.exprCtx,
+          onChange: function (v) { row.expected = v; o.onChange(); },
+        }), opMeta.list ? t('cb.valueListHelp') : null, null,
+        { info: opMeta.list ? t('cb.valueListHelp') : t('cb.rightValueHelp') }));
     }
     body.appendChild(l2);
+    // the group's `+ AND`, when this is its last expanded row (see makeAddAnd)
+    if (o.footer) body.appendChild(o.footer);
     wrap.appendChild(body);
 
     function rebuild() {

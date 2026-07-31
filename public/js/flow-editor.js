@@ -2127,8 +2127,12 @@
         'offsetX', 'offsetY', 'modAlt', 'modCtrl', 'modShift', 'human', 'force'];
     }
     if (action === 'if' || action === 'while') {
+      // `maxDepth` / `evaluateMode` were dropped: the audit found no backend
+      // reader for either, so they were controls that could not change a run.
+      // They stay in graph-serialize's CONDITION_ONLY_PARAMS strip list only so
+      // workflows saved by an older build shed them cleanly on re-save.
       return ['groups', 'selector', 'operator', 'value', 'expected', 'source',
-        'attribute', 'maxDepth', 'evaluateMode', 'maxIterations'];
+        'attribute', 'maxIterations'];
     }
     return [];
   }
@@ -4400,6 +4404,27 @@
      * longer there.
      */
     syncDock: publishDockGutter,
+    /**
+     * Open / close the NDV for a node id without a pointer gesture.
+     *
+     * The NDV was previously reachable only through a double-click on the card,
+     * which made it unrenderable for the screenshot harness (tools/ui-shot.js)
+     * and for any DOM-level probe: `dbl:` steps depend on card hit-testing,
+     * canvas transform and z-order. Exposing the same internal entry point the
+     * double-click handler uses (openNdv, flow-editor.js § NDV) keeps ONE code
+     * path — this is not a test-only shortcut, the UI calls the identical
+     * function. Returns true when a panel is now open.
+     *
+     * `openNdv` deliberately refuses the Start node (action '__start__') and
+     * unknown ids, exactly as the canvas does.
+     */
+    openNdv: function (nodeId) {
+      openNdv(nodeId);
+      return ndvOpen === nodeId;
+    },
+    closeNdv: function () { closeNdv(); return ndvOpen == null; },
+    /** Which node's NDV is open right now (null when none). */
+    ndvOpenFor: function () { return ndvOpen; },
     /** Select a node AND bring it into view — the outline is a navigator (§ 6). */
     revealNode: function (nodeId) {
       if (!state || !state.nodes[nodeId]) return false;

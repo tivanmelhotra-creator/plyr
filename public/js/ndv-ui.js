@@ -14,6 +14,7 @@
  *   toggleRow(...)    label · info dot · switch (orange when on)
  *   numberCell(...)   compact numeric field
  *   selectCell(...)   dark dropdown with chevron
+ *   comboCell(...)    free-text field + chevron menu of suggestions
  *   iconBtn(...)      square icon button (fx / target picker / collapse …)
  *   checkbox(...)     `Alt` / `Ctrl / Cmd` / `Shift` style checkbox
  *   dataTree(...)     INPUT column tree (expandable groups + typed values)
@@ -124,10 +125,13 @@
   }
 
   // Attach a small ⓘ info dot with a tooltip to a label row.
+  // The glyph is `info` (an "i"), not `help-circle` (a "?"): the locked designs
+  // (ndv-click-element-final.webp, ndv-condition-final.webp) draw an ⓘ beside
+  // every field label, and at 12px the two are only distinguishable by that.
   function withInfo(labelEl, tip) {
     if (!tip) return labelEl;
     var dot = el('span', 'aria-info');
-    dot.innerHTML = window.Icons ? window.Icons.svg('help-circle', { size: 13 }) : '?';
+    dot.innerHTML = window.Icons ? window.Icons.svg('info', { size: 13 }) : 'i';
     dot.title = tip;
     labelEl.appendChild(dot);
     return labelEl;
@@ -157,6 +161,106 @@
     inp.value = value != null ? String(value) : '';
     if (onInput) inp.addEventListener('input', function () { onInput(inp.value); });
     return inp;
+  }
+
+  // ---- combobox: free text + a chevron menu of suggestions -----------------
+  // The locked Condition NDV crop draws `Attribute name` with the SAME chevron
+  // as the `Left source` <select> beside it, but an attribute name is
+  // open-ended (`data-state`, `aria-checked`, …), so a real <select> would
+  // silently drop a capability the runtime has. This is the honest match: it
+  // LOOKS like the select in the design and still accepts anything typed.
+  // a11y: role=combobox + aria-expanded on the input, role=listbox/option on
+  // the popup, ArrowDown/ArrowUp/Enter/Escape wired.
+  function comboCell(value, options, placeholder, onChange) {
+    var wrap = el('div', 'aria-combo');
+    var inp = el('input', 'aria-input aria-combo-input');
+    inp.type = 'text';
+    inp.placeholder = placeholder || '';
+    inp.value = value != null ? String(value) : '';
+    inp.setAttribute('role', 'combobox');
+    inp.setAttribute('aria-expanded', 'false');
+    inp.setAttribute('aria-autocomplete', 'list');
+    var btn = el('button', 'aria-combo-caret');
+    btn.type = 'button';
+    btn.tabIndex = -1;
+    btn.setAttribute('aria-hidden', 'true');
+    // No character fallback on purpose: the caret is decorative (aria-hidden),
+    // icons.js is guaranteed to be the FIRST front-end script (icons.test.ts),
+    // and the product font stack has no coverage for glyphs like U+2304 — a
+    // fallback would render an empty box, which is worse than an empty button.
+    btn.innerHTML = window.Icons ? window.Icons.svg('chevron-down', { size: 12 }) : '';
+    var list = el('div', 'aria-combo-list');
+    list.setAttribute('role', 'listbox');
+    wrap.appendChild(inp);
+    wrap.appendChild(btn);
+    wrap.appendChild(list);
+
+    var open = false;
+    var active = -1;
+    var opts = (options || []).map(function (o) {
+      return typeof o === 'string' ? { value: o, label: o } : o;
+    });
+
+    function paintActive() {
+      var kids = list.children;
+      for (var i = 0; i < kids.length; i++) {
+        kids[i].classList.toggle('is-active', i === active);
+        kids[i].setAttribute('aria-selected', i === active ? 'true' : 'false');
+      }
+    }
+    function build() {
+      list.innerHTML = '';
+      opts.forEach(function (o, i) {
+        var row = el('div', 'aria-combo-opt', o.label);
+        row.setAttribute('role', 'option');
+        row.addEventListener('mousedown', function (ev) {
+          ev.preventDefault();
+          pick(i);
+        });
+        list.appendChild(row);
+      });
+      paintActive();
+    }
+    function setOpen(next) {
+      open = next === true;
+      wrap.classList.toggle('is-open', open);
+      inp.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) { build(); } else { active = -1; }
+    }
+    function pick(i) {
+      var o = opts[i];
+      if (!o) return;
+      inp.value = String(o.value);
+      setOpen(false);
+      if (onChange) onChange(inp.value);
+      inp.focus();
+    }
+    btn.addEventListener('click', function () { setOpen(!open); });
+    inp.addEventListener('input', function () {
+      if (onChange) onChange(inp.value);
+    });
+    inp.addEventListener('keydown', function (ev) {
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        if (!open) { setOpen(true); active = 0; } else { active = Math.min(active + 1, opts.length - 1); }
+        paintActive();
+      } else if (ev.key === 'ArrowUp' && open) {
+        ev.preventDefault();
+        active = Math.max(active - 1, 0);
+        paintActive();
+      } else if (ev.key === 'Enter' && open && active >= 0) {
+        ev.preventDefault();
+        pick(active);
+      } else if (ev.key === 'Escape' && open) {
+        ev.preventDefault();
+        setOpen(false);
+      }
+    });
+    inp.addEventListener('blur', function () {
+      // a mousedown on an option already picked it; this only closes the popup.
+      setTimeout(function () { setOpen(false); }, 0);
+    });
+    return wrap;
   }
 
   // ---- compact numeric input ----------------------------------------------
@@ -408,6 +512,7 @@
     withInfo: withInfo,
     selectCell: selectCell,
     textCell: textCell,
+    comboCell: comboCell,
     numberCell: numberCell,
     toggle: toggle,
     toggleRow: toggleRow,
