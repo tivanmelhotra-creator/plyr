@@ -7,6 +7,7 @@ import {
   interactiveContextOptions,
   saveStorageState,
 } from './BrowserProfile';
+import { RealChrome } from './RealChrome';
 
 // Apply stealth plugin
 chromium.use(stealth());
@@ -191,6 +192,17 @@ export class GlobalBrowser {
     userId: string,
     viewport?: { width: number; height: number },
   ): Promise<BrowserContext> {
+    // REAL CHROME MODE
+    // ----------------
+    // A throwaway context can never load an extension, so when the operator has
+    // asked for real extensions we hand back the shared PERSISTENT Chrome
+    // instead. Same profile as the remote desktop, which is the entire point:
+    // cookies a user imports through their cookie extension are immediately the
+    // cookies this picker — and every automation run — sees.
+    if (RealChrome.isEnabled()) {
+      return RealChrome.getContext();
+    }
+
     if (!this.instance || !this.instance.isConnected()) {
       await this.initialize();
     }
@@ -211,6 +223,11 @@ export class GlobalBrowser {
   static async saveAndCloseContext(context: BrowserContext, userId: string): Promise<boolean> {
     let saved = false;
     try { saved = await saveStorageState(context, userId); } catch { saved = false; }
+    // The shared real-Chrome context outlives every session that borrows it.
+    // Closing it here would shut the browser the user is watching in the remote
+    // desktop, and evict every other live session with it. Its state is already
+    // durable in the on-disk profile, so there is nothing to close for.
+    if (RealChrome.isSharedContext(context)) return saved;
     await this.closeContext(context);
     return saved;
   }
@@ -297,6 +314,9 @@ export class GlobalBrowser {
    * ✅ NEW: Close a specific context safely
    */
   static async closeContext(context: BrowserContext): Promise<void> {
+    // Guard the shared persistent context here too: closeContext is called from
+    // several places (GC, error paths) that have no idea the context is shared.
+    if (RealChrome.isSharedContext(context)) return;
     try {
       // Close all pages first
       for (const page of context.pages()) {

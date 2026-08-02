@@ -6,6 +6,7 @@ import type { QuotaManager } from '../core/QuotaManager';
 import { createHealthRoutes } from './health.routes';
 import { createUserRoutes } from './user.routes';
 import { createAdminRoutes } from './admin.routes';
+import { createBrowserRoutes } from './browser.routes';
 
 interface RoutesDeps {
   queue: Queue;
@@ -29,6 +30,9 @@ export const createAllRoutes = (deps: RoutesDeps) => {
       profileManager: deps.profileManager,
       quotaManager: deps.quotaManager
     }),
+    // Real Chrome / extensions / cookies / remote desktop. No deps: it talks
+    // to process-level singletons (RealChrome, Desktop) rather than to Redis.
+    browser: createBrowserRoutes(),
     admin: createAdminRoutes({
       queue: deps.queue,
       connection: deps.connection,
@@ -43,3 +47,4 @@ export const createAllRoutes = (deps: RoutesDeps) => {
 export { createHealthRoutes } from './health.routes';
 export { createUserRoutes } from './user.routes';
 export { createAdminRoutes } from './admin.routes';
+export { createBrowserRoutes } from './browser.routes';

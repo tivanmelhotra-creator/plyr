@@ -231,6 +231,7 @@ app.use('/quota', asyncAuthMiddleware);
 app.use('/me', asyncAuthMiddleware);
 app.use('/workflows', asyncAuthMiddleware);
 app.use('/workspace', asyncAuthMiddleware);
+app.use('/browser', asyncAuthMiddleware);
 
 // Block check
 const blockCheck = asyncBlockCheck(connection);
@@ -242,6 +243,7 @@ app.use('/quota', blockCheck);
 app.use('/me', blockCheck);
 app.use('/workflows', blockCheck);
 app.use('/workspace', blockCheck);
+app.use('/browser', blockCheck);
 
 // ============================================
 // INITIALIZATION
@@ -278,6 +280,7 @@ const routes = createAllRoutes({
 
 app.use('/', routes.health);
 app.use('/', routes.user);
+app.use('/', routes.browser);
 app.use('/admin', routes.admin);
 
 // ============================================
