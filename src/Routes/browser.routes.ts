@@ -30,6 +30,8 @@ import { RealChrome, RealChromeError } from '../core/RealChrome';
 import { Desktop, DesktopError } from '../core/Desktop';
 import {
   installExtensionArchive,
+  installExtensionFromStore,
+  webStoreIdFromInput,
   listExtensions,
   removeExtension,
   ExtensionError,
@@ -212,6 +214,38 @@ export const createBrowserRoutes = (): Router => {
       } catch (e) { sendError(res, e); }
     },
   );
+
+  /**
+   * Install straight from a Chrome Web Store link.
+   *
+   * This is the whole point of the feature: the operator pastes the store URL
+   * of, say, a cookie extension and the server fetches, unpacks and pins it —
+   * no .crx hunting, and no remote desktop to click "Add to Chrome" in.
+   */
+  router.post('/browser/extensions/store', async (req, res) => {
+    try {
+      const input = String((req.body && (req.body.url ?? req.body.id)) || '').trim();
+      if (!input) {
+        return fail(res, 400, 'No Chrome Web Store link was provided.',
+          'POST { "url": "https://chromewebstore.google.com/detail/<slug>/<id>" }.');
+      }
+      if (!webStoreIdFromInput(input)) {
+        return fail(res, 400,
+          'That does not look like a Chrome Web Store link.',
+          'Open the extension in the Web Store and copy the address bar, or paste its 32-letter id.');
+      }
+
+      const ext = await installExtensionFromStore(config.REAL_CHROME_EXTENSIONS_DIR, input);
+      res.json({
+        success: true,
+        extension: ext,
+        restartRequired: RealChrome.isRunning(),
+        message: RealChrome.isRunning()
+          ? `Installed ${ext.name} v${ext.version}. Restart the browser to load it — Chrome only reads extensions at launch.`
+          : `Installed ${ext.name} v${ext.version}. It will load the next time the browser starts.`,
+      });
+    } catch (e) { sendError(res, e); }
+  });
 
   router.delete('/browser/extensions/:id', async (req, res) => {
     try {

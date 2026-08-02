@@ -248,18 +248,81 @@
     // ── 3. Extensions ───────────────────────────────────────────────────────
     var s3 = section(body, t('rc.extensions', 'Extensions'));
 
+    // Install from the Web Store first: it is the path that needs nothing from
+    // the user but a link they already have open.
+    note(s3, t('rc.storeHint',
+      'Paste a Chrome Web Store link and the server downloads, unpacks and ' +
+      'installs the extension itself. No .crx hunting and no remote desktop.'));
+
+    var storeRow = el('div', 'rc-row rc-store');
+    var storeInput = document.createElement('input');
+    storeInput.type = 'text';
+    storeInput.className = 'rc-input';
+    storeInput.placeholder = t('rc.storePlaceholder',
+      'https://chromewebstore.google.com/detail/…');
+    storeInput.spellcheck = false;
+    // Pasting a long URL into a narrow field is unreadable; the title shows all.
+    storeInput.addEventListener('input', function () {
+      storeInput.title = storeInput.value;
+    });
+
+    var storeBtn = btn(t('rc.installStore', 'Install'), 'btn btn-primary btn-sm');
+
+    function installFromStore() {
+      var value = storeInput.value.trim();
+      if (!value) {
+        toast(t('rc.storeEmpty', 'Paste a Chrome Web Store link first.'), 'warn');
+        storeInput.focus();
+        return;
+      }
+      setBusy(storeBtn, true, t('rc.installing', 'installing…'));
+      storeInput.disabled = true;
+      window.API.post('/browser/extensions/store', { url: value })
+        .then(function (res) {
+          toast(res.message || t('rc.installed', 'Installed.'), 'ok');
+          storeInput.value = '';
+          return refresh();
+        })
+        .catch(function (e) { toast(e.message, 'error'); })
+        .then(function () {
+          setBusy(storeBtn, false);
+          storeInput.disabled = false;
+        });
+    }
+
+    storeBtn.addEventListener('click', installFromStore);
+    // Enter is what everybody presses after pasting a URL.
+    storeInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); installFromStore(); }
+    });
+
+    storeRow.appendChild(storeInput);
+    storeRow.appendChild(storeBtn);
+    s3.appendChild(storeRow);
+
     var list = el('div', 'rc-list');
     var exts = rc.extensions || [];
     if (!exts.length) {
       note(list, t('rc.noExtensions',
-        'No extensions loaded. Upload a .crx or .zip below, then restart the browser — ' +
-        'Chrome only reads extensions at launch.'));
+        'No extensions loaded. Install one from the Web Store above, or upload a ' +
+        '.crx / .zip — then restart the browser, because Chrome only reads ' +
+        'extensions at launch.'));
     } else {
       exts.forEach(function (ext) {
         var row = el('div', 'rc-ext');
         var meta = el('div', 'rc-ext-meta');
         meta.appendChild(el('div', 'rc-ext-name', ext.name));
-        meta.appendChild(el('div', 'rc-ext-ver', 'v' + ext.version + ' · MV' + ext.manifestVersion));
+        var sub = 'v' + ext.version + ' · MV' + ext.manifestVersion;
+        meta.appendChild(el('div', 'rc-ext-ver', sub));
+        if (ext.runtimeId) {
+          // The id is what a workflow step needs to build a chrome-extension://
+          // URL by hand, so it must be visible and selectable, not just implied.
+          var idRow = el('div', 'rc-ext-id', ext.runtimeId);
+          idRow.title = t('rc.extIdHint',
+            'The id Chrome assigns this extension. Store installs keep the ' +
+            'official id, so chrome-extension:// links stay valid.');
+          meta.appendChild(idRow);
+        }
         row.appendChild(meta);
 
         var openBtn = btn(t('rc.open', 'Open here'), 'btn btn-sm');
@@ -333,8 +396,9 @@
     // ── 4. Remote desktop ───────────────────────────────────────────────────
     var s4 = section(body, t('rc.desktop', 'Remote desktop'));
     note(s4, t('rc.desktopHint',
-      'The full Chrome window over noVNC — the only way to click the extension ' +
-      'toolbar button or a native file dialog.'));
+      'Optional. Installing from the Web Store above and opening an extension ' +
+      'with “Open here” covers almost everything. This is only for a native OS ' +
+      'file dialog or the toolbar button itself, and needs extra packages.'));
 
     var dRow = el('div', 'rc-row');
     var dChip = el('span', 'badge ' + (desk.running ? 'ok' : ''),
@@ -342,7 +406,13 @@
     dRow.appendChild(dChip);
 
     if (desk.missing && desk.missing.length) {
-      note(s4, desk.installHint || ('Missing: ' + desk.missing.join(', ')), 'warn');
+      // Deliberately NOT styled as a warning. Nothing is broken: the desktop is
+      // an optional extra now that extensions install from the store, and an
+      // orange block here reads as "your setup is wrong" for a feature most
+      // people never need.
+      note(s4, t('rc.desktopOptional',
+        'Not installed — and not needed for extensions.') + ' ' +
+        (desk.installHint || ('Missing: ' + desk.missing.join(', '))));
     } else if (desk.running) {
       var openDesk = btn(t('rc.openDesktop', 'Open desktop'), 'btn btn-primary btn-sm');
       openDesk.addEventListener('click', function () {

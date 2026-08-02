@@ -5731,6 +5731,47 @@ body.route-fullbleed .fe-mm-restore {
 }
 .rc-ext-ver { color: var(--text-dim); font-size: 0.72rem; }
 
+/* The extension id is copy-paste material for hand-written
+   chrome-extension:// URLs, so it is selectable and monospaced rather than
+   decorative. */
+.rc-ext-id {
+  margin-top: 2px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  opacity: 0.75;
+  user-select: all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: ltr;
+}
+
+/* Store install: the URL field takes every spare pixel, the button never
+   shrinks below its label. */
+.rc-store { flex-wrap: nowrap; }
+.rc-store .rc-input { flex: 1; min-width: 0; }
+.rc-store .btn { flex: 0 0 auto; }
+
+.rc-input {
+  padding: 6px 9px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.78rem;
+  /* A store URL is latin text even when the panel is Persian. */
+  direction: ltr;
+  text-align: left;
+}
+.rc-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.rc-input:disabled { opacity: 0.6; }
+.rc-input::placeholder { color: var(--text-dim); opacity: 0.7; }
+
 .rc-toast {
   margin: 8px 12px 12px;
   padding: 7px 9px;
@@ -5744,4 +5785,5 @@ body.route-fullbleed .fe-mm-restore {
 
 /* Extension ids and chrome-extension:// URLs are latin even in an RTL UI. */
 [dir="rtl"] .rc-ext-name,
+[dir="rtl"] .rc-ext-id,
 [dir="rtl"] .rc-ext-ver { direction: ltr; text-align: right; }

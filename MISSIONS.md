@@ -14,6 +14,10 @@
 **Repo:** `jalil-ahmadi2/plyr` · **Branch:** `genspark_ai_developer` · **PR:** #20
 **Last updated:** 2026-08-02
 
+> 🚩 **جلسه‌ی جدید بدون سابقه‌ی چت؟ اول [`NEXT-SESSION.md`](./NEXT-SESSION.md) را بخوان.**
+> آنجا وضعیت دقیق فعلی، تنها ماموریت باز، تله‌های محیطی (core dump، RAM، CRLF در
+> `.env`)، و دستور بالا آوردن پروژه در یک جا جمع شده است.
+
 ---
 
 ## 0. Standing project rules / قواعد ثابت پروژه
@@ -42,6 +46,7 @@ These apply to **every** future change, not just the items below.
 | 6 | Simulated browser must browse for real; eye = element-select mode | ✅ Done |
 | 7 | Condition node with multiple prioritised paths + neutral `next` | ✅ Done |
 | 8 | Standing rule: always cross-check Automa when settling node options | ✅ Done (documented as **R1** above) |
+| 9 | Install a Chrome extension by pasting its Web Store link (no remote desktop) | ✅ Done |
 
 ---
 
@@ -242,6 +247,56 @@ table). Concretely, the reference surfaces are:
 
 ---
 
+### ✅ 9. Install an extension from a Chrome Web Store link
+
+**Asked (verbatim):** *«این مشکل رو داشتم و ظاهرا دردسرش زیاده — من فقط نیازه که
+براش آدرس پلاگین رو بدم نصبش کنه خودش … و بتونه پلای‌رایت ازش استفاده کنه»*, with
+the J2TEAM Cookies store links.
+
+**Problem:** getting an extension in required either a `.crx` file the Web Store
+never offers you, or the whole noVNC remote-desktop stack
+(`xvfb x11vnc novnc websockify`), which was reported as *stopped* behind a red
+"install the virtual display stack" hint.
+
+**Delivered:** a URL field in `Real Chrome ▸ Extensions`. The server downloads
+the signed `.crx` from Google's own update endpoint, unpacks it, pins its
+identity and hands it to Playwright via `--load-extension`. Only `xvfb` (or
+`REAL_CHROME_HEADLESS=true`) is needed — **no VNC stack at all**.
+
+Four traps handled, each covered by tests:
+
+1. **The wrong signing key.** A store `.crx` carries several proofs (developer +
+   Google publisher). Taking the first yields a well-formed but WRONG id — on
+   the owner's extension, `lfoeajg…` instead of `okpidco…`. `crxPublicKey()`
+   reads `signed_header_data` for the authoritative `crx_id` and returns the key
+   that hashes to it, or `null` rather than guessing.
+2. **Path-derived ids.** Chrome ids an unpacked extension by its absolute path,
+   so `chrome-extension://<id>/…` URLs in saved workflows would die on redeploy.
+   The signing key is written into the manifest as `key`, pinning the official
+   Web Store id permanently.
+3. **`__MSG_appName__`.** Most store manifests localise their name; `describe()`
+   resolves placeholders from `_locales/`, so the panel shows "J2TEAM Cookies".
+4. **Id disagreement.** `RealChrome.loadedExtensions()` used the path id, which
+   would have made "Open here" navigate nowhere for a pinned extension. It now
+   prefers the manifest-key id and exposes it as `runtimeId`.
+
+| Layer | File |
+|-------|------|
+| Core | `src/core/ChromeExtensions.ts` — store URL parsing, CRX3 protobuf reader, key pinning, `_locales` name resolution, download + install |
+| Browser | `src/core/RealChrome.ts` — key-aware runtime id |
+| API | `src/Routes/browser.routes.ts` — `POST /browser/extensions/store` |
+| UI | `public/js/real-chrome.js`, `public/js/i18n.js` (fa+en), `public/css/styles.css` |
+| Tests | `tests/unit/webstore-install.test.ts` — 28 offline tests |
+
+**Verified live:** both of the owner's URL forms install; the browser starts with
+`runtimeId = okpidcojinmlaakglciglbpcpajaibco`; the popup renders in a page with
+`chrome.cookies` available — which is why the canvas "Open here" button is enough
+and the desktop is now marked optional.
+
+**Full write-up:** [`docs/uiux/18-HANDOFF-webstore-extension-install.md`](docs/uiux/18-HANDOFF-webstore-extension-install.md).
+
+---
+
 ## 3. Open missions / ماموریت‌های باقی‌مانده
 
 ### 🟡 5. Condition node: full option parity with Automa
@@ -348,7 +403,9 @@ Every shot must report `errors: none`.
 | `tests/unit/condition-engine.test.ts` | ✅ 38/38 |
 | `tests/unit/ndv-designed-nodes.test.ts` | ✅ 30/30 |
 | `tests/unit/condition-paths.test.ts` | ✅ 29/29 |
-| full `npx vitest run` | ✅ **43 files / 949 tests** |
+| `tests/unit/webstore-install.test.ts` | ✅ 28/28 |
+| full `npx vitest run` | ✅ **44 files / 977 tests** |
 | `node tools/ui-shot.js` (3 shots) | ✅ `errors: none` |
 | line endings | ✅ `public/**` LF, `src/**` CRLF preserved |
 | Git | branch `genspark_ai_developer`, PR **#20** open against `main` |
+| Live smoke test | ✅ store install + browser launch + popup render |
