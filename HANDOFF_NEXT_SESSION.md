@@ -79,7 +79,8 @@ public/js/flow-editor.js  ← شل + بوم + فال‌بک عمومی برای 
 ```
 
 ### API عمومی هر ماژول
-- `window.NdvModel` = `{ CONDITION_SOURCES, CONDITION_OPERATORS, CONDITION_MAX_PATHS_V1:1, EVALUATE_MODES, operatorMeta, sourceMeta, blankRow, normalizeRow, readGroups, writeGroups, rowChips, rowIsBlank, conditionSummary, CLICK_DEFAULTS, CLICK_SELECTOR_TYPES, CLICK_TYPES, CLICK_BUTTONS, normalizeClickParams, clickPayloadPreview, DESIGNED_NODES:{click,if,while}, isDesigned }`
+- `window.NdvModel` = `{ CONDITION_SOURCES, CONDITION_OPERATORS, CONDITION_MAX_PATHS:20, CONDITION_MAX_PATHS_V1:1, EVALUATE_MODES, operatorMeta, sourceMeta, blankRow, normalizeRow, readGroups, writeGroups, rowChips, rowIsBlank, conditionSummary, groupsSummary, normalizePath, readPaths, writePaths, isMultiPath, pathLabel, pathsSummary, CLICK_DEFAULTS, CLICK_SELECTOR_TYPES, CLICK_TYPES, CLICK_BUTTONS, normalizeClickParams, clickPayloadPreview, DESIGNED_NODES:{click,if,while}, isDesigned }`
+  - مسیرهای شرطی (mission 7): `readPaths/writePaths` روی `params.paths` (JSON) کار می‌کنند و برای تک‌مسیر هیچ کلیدی نمی‌نویسند — جزئیات در `docs/uiux/17-HANDOFF-condition-paths.md`.
 - `window.NdvUI` = `{ el, t, esc, segmented, runSelector, searchField, section, fieldCell, withInfo, selectCell, textCell, numberCell, toggle, toggleRow, checkbox, iconBtn, treeFrom, dataTree, dragChips, outputEmpty, outputIllustration, statusStrip }`
 - `window.NdvNodes` = `{ renderInput, renderOutput, renderCenter, exprField, pickerBtn, conditionRow }` — `renderCenter` برای اکشن بدون دیزاین **false** برمی‌گرداند.
 

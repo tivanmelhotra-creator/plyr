@@ -11,8 +11,8 @@
 > تیک‌خورده تمام شده‌اند، آیتم‌های بدون تیک برای جلسات بعدی مانده‌اند و برای هر
 > کدام نقشه‌ی دقیق پیاده‌سازی (فایل + شماره خط) نوشته شده است.
 
-**Repo:** `jalil-ahmadi2/plyr` · **Branch:** `genspark_ai_developer` · **PR:** #18
-**Last updated:** 2026-07-31
+**Repo:** `jalil-ahmadi2/plyr` · **Branch:** `genspark_ai_developer` · **PR:** #20
+**Last updated:** 2026-08-02
 
 ---
 
@@ -40,7 +40,7 @@ These apply to **every** future change, not just the items below.
 | 4 | Menu collapse control at the top + slimmer collapsed rail | ✅ Done |
 | 5 | Condition node option parity with Automa (grouped value types + operators) | 🟡 Part 1 done (operators) · part 2 open (value types) |
 | 6 | Simulated browser must browse for real; eye = element-select mode | ✅ Done |
-| 7 | Condition node with multiple prioritised paths + neutral `next` | ⬜ Open |
+| 7 | Condition node with multiple prioritised paths + neutral `next` | ✅ Done |
 | 8 | Standing rule: always cross-check Automa when settling node options | ✅ Done (documented as **R1** above) |
 
 ---
@@ -183,6 +183,38 @@ is **not** injected — the client simply never turned it off.
 
 ---
 
+### ✅ 7. Condition node with multiple prioritised paths
+
+**Asked (verbatim):** *«نود شرطی یه بخش path داره که نمیشه جدید اضافه کرد … هر
+کدوم از path ها با اولویت بالا از بالا به پایین به ترتیب چک میشه، درست باشه اون
+مسیر رو میره وگرنه بعدی چک میشه. اگر هیچ کدوم کار نکرد و مسیری فعال نشه، از مسیر
+خنثا یعنی next میره.»*
+
+**Delivered:** N ordered paths (cap 20, Automa's own cap), evaluated top → bottom,
+**first true path wins and routes exclusively**; when nothing matches, execution
+leaves through the neutral `next` port. The two hard-disabled `+ Add path`
+controls are gone — the NDV now shows a real list with add / rename / reorder
+(↑ ↓) / delete, visible priority numbers and a non-deletable neutral trailing row.
+
+| Layer | File | Change |
+|-------|------|--------|
+| Model | `public/js/ndv-model.js` | `CONDITION_MAX_PATHS`, `normalizePath`, `readPaths`, `writePaths`, `isMultiPath`, `pathLabel`, `pathsSummary`; `groupsSummary` split out of `conditionSummary`. |
+| Catalog | `public/js/actions.js` | `if` declares `{ k:'paths', internal:true }` — undeclared params are dropped by `coerceParams`. |
+| Serializer | `public/js/graph-serialize.js` | `parsePaths` / `pathPortId`, multi-path `buildNode`, import in `stepsToGraph`, path rows in `outlineTree`, path-aware `empty-if`, `'paths'` in `CONDITION_ONLY_PARAMS`. |
+| Canvas | `public/js/flow-editor.js` | `path:<id>` ports + neutral `next`, priority labels, `clipPortLabel`, `tone-path` edge pills, card summary. |
+| NDV | `public/js/ndv-nodes.js` | Real path list, `pathResultCard`, `neutralResultCard`; active index kept in a module-level `ACTIVE_PATH` map, never on the serialised node. |
+| i18n / CSS | `public/js/i18n.js`, `public/css/styles.css` | 14 new `cb.*` keys + `port.path` (fa+en), `cb.addPathV2` retired, `val.emptyIf` reworded; path-list + result-card + pill styles. |
+| Backend | `src/types.ts`, `src/validation.ts`, `src/pipeline.ts` | `ConditionPath` type, `mapStep` recursion into `paths[].steps`, exported `pickConditionPath()` and the exclusive routing branch (`break stepLoop`) in `executeStepGroup`. |
+| Tests | `tests/unit/condition-paths.test.ts` | 29 tests: model, serializer, validation, runtime. |
+
+**Backwards compatible:** a single-path node writes **no** `paths` key and still
+serialises to the classic `{ condition, then, else }`, so every saved workflow is
+byte-identical.
+
+**Full write-up:** [`docs/uiux/17-HANDOFF-condition-paths.md`](docs/uiux/17-HANDOFF-condition-paths.md).
+
+---
+
 ### ✅ 8. Standing rule — always cross-check Automa
 
 **Asked:** *«حتما موقع تنظیم اپشن های هر نود به پروژه automa … مراجعه کن، چون منطق
@@ -287,69 +319,13 @@ Automa's `conditionBuilder.valueTypes` is the second dropdown, grouped *value* /
 
 ---
 
-### ⬜ 7. Condition node with multiple prioritised paths
-
-**Asked (verbatim):** *«نود شرطی یه بخش path داره که نمیشه جدید اضافه کرد … هر
-کدوم از path ها با اولویت بالا از بالا به پایین به ترتیب چک میشه، درست باشه اون
-مسیر رو میره وگرنه بعدی چک میشه. اگر هیچ کدوم کار نکرد و مسیری فعال نشه، از مسیر
-خنثا یعنی next میره.»*
-
-So: **N ordered paths, evaluated top → bottom, first true path is the route
-taken; if none match, execution leaves through the neutral `next` port.**
-
-**Why it is blocked today** (both anchors confirmed by reading the files):
-
-* `public/js/ndv-model.js:319` — `var CONDITION_MAX_PATHS_V1 = 1;` with the
-  comment *"v1 runtime executes a single path … kept as a constant so the UI can
-  label the disabled `+ Add path` control honestly."*
-* `public/js/ndv-nodes.js:457` — `renderCondition()` builds `.cb-addpath` with
-  `addPath.disabled = true` and `.cb-path-plus` with `pathPlus.disabled = true`
-  (title `cb.addPathV2`). This is exactly the "path section with no way to add a
-  new one" that was reported.
-
-**Design decided (Automa-parity, list-engine friendly):**
-
-* **Model:** the node holds an ordered `paths` array — `[{ id, name, groups }]` —
-  where `groups` is the existing AND/OR structure. One default path keeps every
-  saved workflow byte-identical.
-* **Ports** (`public/js/flow-editor.js` → `portsOf()` ~line 428):
-  * exactly 1 path → keep today's `then` / `else` / `next` (`اگر درست` /
-    `اگر نادرست` / `بعدی`) so nothing existing breaks;
-  * ≥ 2 paths → one `path:<id>` port per path, labelled with the path name,
-    plus `next` as the **neutral / fallback** port (no `else`).
-* **Serialisation** (`public/js/graph-serialize.js`):
-  `{ action:'if', paths:[{ id, name, condition, steps:[…] }] }`; a single-path
-  node still serialises to the legacy `{ action:'if', condition, then, else }`.
-* **Runtime** (`src/pipeline.ts`, the `if` branch at ~line 981 inside
-  `executeStepGroup`, which is labelled `stepLoop:` at line 893):
-  when `step.paths` is a non-empty array, evaluate each path's condition in
-  order; the **first** truthy one runs its `steps` and then leaves the group
-  (exclusive routing — the neutral chain must not also run); if none match, fall
-  through so the steps following the node (the `next` chain) execute.
-  Note `executeStepGroup` already has a control-signal convention
-  (`res.return` / `res.break`) to build on.
-* **Validation** (`src/validation.ts`): `StepInput` (~line 32) needs
-  `paths?: { id, name, condition, steps }[]`, and `mapStep` (~line 240) must
-  recurse into `paths[].steps` exactly like it does for `then` / `else` / `cases`.
-  Anything not mapped there is stripped before it reaches the pipeline.
-* **UI** (`public/js/ndv-nodes.js:457`): lift the two `disabled` flags, make the
-  `.cb-pathrow` a real list — add / rename / reorder (↑↓) / delete, priority
-  numbers visible, Automa's cap of 20 — and show the neutral path as a
-  non-deletable trailing row so the fallback is never invisible.
-* **Also touch:** `public/css/styles.css` (path-list styles),
-  `public/js/i18n.js` (fa + en path keys, and retire `cb.addPathV2`),
-  `NdvModel.conditionSummary` + the canvas card summary, and
-  `graph-serialize.js → outlineTree` so the Outline shows each path.
-
----
-
 ## 4. How to verify / روش تست
 
 ```bash
 cd /home/user/webapp
 npx tsc --noEmit                       # TypeScript
 node --check public/js/flow-editor.js  # and every touched client file
-npx vitest run                         # baseline: 39 files / 847 tests
+npx vitest run                         # baseline: 43 files / 949 tests
 node tools/ui-preview-server.js 8788 &                       # visual harness
 UI_LANG=fa node tools/ui-shot.js '/editor' .ui-shots/fa.png 1440x900
 node tools/picker-panel-shot.js                              # picker panel
@@ -371,6 +347,8 @@ Every shot must report `errors: none`.
 | `tests/unit/editor-shell.test.ts` | ✅ 67/67 |
 | `tests/unit/condition-engine.test.ts` | ✅ 38/38 |
 | `tests/unit/ndv-designed-nodes.test.ts` | ✅ 30/30 |
-| full `npx vitest run` | ✅ **39 files / 866 tests** |
-| line endings | ✅ `public/**` LF, `ConditionEngine.ts` CRLF preserved |
-| Git | branch `genspark_ai_developer`, PR **#18** open against `main` |
+| `tests/unit/condition-paths.test.ts` | ✅ 29/29 |
+| full `npx vitest run` | ✅ **43 files / 949 tests** |
+| `node tools/ui-shot.js` (3 shots) | ✅ `errors: none` |
+| line endings | ✅ `public/**` LF, `src/**` CRLF preserved |
+| Git | branch `genspark_ai_developer`, PR **#20** open against `main` |

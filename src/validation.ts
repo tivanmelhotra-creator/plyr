@@ -36,6 +36,12 @@ export interface StepInput {
   condition?: any;
   then?: StepInput[];
   else?: StepInput[];
+  /**
+   * Mission 7 — ordered, first-match-wins branches of an `if` step. Anything
+   * not mapped in mapStep() below is stripped before it reaches the pipeline,
+   * so this MUST stay in sync with the recursion at the bottom of this file.
+   */
+  paths?: { id?: string; name?: string; condition?: any; steps?: StepInput[] }[];
   steps?: StepInput[];
   catch?: StepInput[];
   finally?: StepInput[];
@@ -210,6 +216,7 @@ export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[
         catch: _______,
         finally: ________,
         cases: _________,
+        paths: __________,
         ...rest
       } = step;
 
@@ -236,6 +243,25 @@ export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[
           cleanStep.cases[key] = steps.map((s: any, i: number) => mapStep(s, i));
         }
       }
+    }
+
+    // Mission 7 — recurse into every prioritised path. A path keeps only the
+    // four fields the runtime understands (id / name / condition / steps); its
+    // nested steps go through the very same validation as any other branch.
+    if (Array.isArray(step.paths)) {
+      cleanStep.paths = step.paths
+        .filter((p: any) => p && typeof p === 'object')
+        .map((p: any, pi: number) => {
+          const cleanPath: { id?: string; name?: string; condition?: any; steps?: StepInput[] } = {};
+          if (typeof p.id === 'string') cleanPath.id = p.id.trim().slice(0, 24);
+          if (typeof p.name === 'string') cleanPath.name = p.name.slice(0, 120);
+          if (p.condition) cleanPath.condition = p.condition;
+          if (Array.isArray(p.steps)) {
+            cleanPath.steps = p.steps.map((s: any, i: number) => mapStep(s, i));
+          }
+          if (!cleanPath.id) cleanPath.id = `p${pi + 1}`;
+          return cleanPath;
+        });
     }
 
     // Recursive validation for nested steps

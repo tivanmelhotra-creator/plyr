@@ -274,6 +274,10 @@
       branches: [{ id: 'then', label: 'port.then' }, { id: 'else', label: 'port.else' }],
       fields: [
         { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
+        // Mission 7: the ORDERED path list ([{id,name,groups}]) as JSON. Like
+        // `groups` it is an internal blob — never a raw text input — and it MUST
+        // be declared here or coerceParams() would drop it silently on save.
+        { k: 'paths', label: 'cb.paths', type: 'string', internal: true },
         { k: 'source', label: 'cb.readWhat', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable'] },
         { k: 'attribute', label: 'cb.attributeName', type: 'string', ph: 'textContent' },
         { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },

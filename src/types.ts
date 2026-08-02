@@ -61,6 +61,22 @@ export interface ActiveContextEntry {
 // ============================================
 // Automation Step
 // ============================================
+/**
+ * One prioritised branch of an `if` step (mission 7).
+ *
+ * Paths are evaluated TOP -> DOWN and the FIRST one whose condition is true is
+ * the route taken; if none match, the run leaves through the neutral chain (the
+ * steps that follow the `if` in its own group), which is the canvas `next` port.
+ */
+export interface ConditionPath {
+  /** Stable id — the canvas keys its `path:<id>` edge port on it. */
+  id?: string;
+  /** User-visible name; falls back to "Path <n>" in the UI. */
+  name?: string;
+  condition?: Condition;
+  steps?: AutomationStep[];
+}
+
 export interface AutomationStep {
   action: string;
   params?: Record<string, unknown>;
@@ -68,6 +84,8 @@ export interface AutomationStep {
   condition?: Condition;
   then?: AutomationStep[];
   else?: AutomationStep[];
+  /** Mission 7: ordered, first-match-wins branches of an `if` step. */
+  paths?: ConditionPath[];
   steps?: AutomationStep[];
   catch?: AutomationStep[];
   finally?: AutomationStep[];

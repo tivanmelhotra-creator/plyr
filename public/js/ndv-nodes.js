@@ -454,40 +454,143 @@
   // =========================================================================
   var GROUP_LETTERS = 'ABCDEFGH';
 
+  // Which path the builder is currently editing, per node. Deliberately kept
+  // OUT of `node` — it is view state, and anything hung on a node object ends
+  // up inside the saved workflow JSON.
+  var ACTIVE_PATH = {};
+
   function renderCondition(col, ctx) {
     var ui = UI();
     var m = M();
     var node = ctx.node;
-    var groups = m.readGroups(node.params);
     var exprCtx = ctx.exprContext || { json: {}, index: 0 };
+    // `while` loops on ONE condition — prioritised paths are an `if` feature.
+    var multiCapable = node.action === 'if';
+    var paths = multiCapable ? m.readPaths(node.params)
+      : [{ id: 'p1', name: '', groups: m.readGroups(node.params) }];
+    var nodeKey = node.id || node.action;
+    var active = ACTIVE_PATH[nodeKey] || 0;
+    if (active >= paths.length || active < 0) active = 0;
+    ACTIVE_PATH[nodeKey] = active;
+    var groups = paths[active].groups;
 
     function commit() {
-      m.writeGroups(node.params, groups);
+      if (multiCapable) m.writePaths(node.params, paths);
+      else m.writeGroups(node.params, groups);
       if (ctx.onParamsChange) ctx.onParamsChange();
     }
     function restructure() {
       commit();
       if (ctx.onStructureChange) ctx.onStructureChange();
     }
+    function selectPath(i) {
+      ACTIVE_PATH[nodeKey] = i;
+      restructure();
+    }
 
-    // ---- builder header: title · Path 1 pill · + Add path ---------------
+    // ---- builder header: title · which path · + Add path ----------------
+    // Mission 7: paths are REAL now. The header states which one the rows below
+    // belong to, because the builder's contents change with the selection and a
+    // silent switch would look like the conditions had been rewritten.
     var head = ui.el('div', 'cb-head');
-    head.appendChild(ui.el('div', 'cb-head-title', t('cb.builder')));
+    var headTitle = t('cb.builder');
+    if (multiCapable && paths.length > 1) {
+      headTitle += ' — ' + m.pathLabel(paths[active], active, t);
+    }
+    head.appendChild(ui.el('div', 'cb-head-title', headTitle));
+    var atCap = paths.length >= m.CONDITION_MAX_PATHS;
     var addPath = ui.el('button', 'cb-addpath', '+ ' + t('cb.addPath'));
     addPath.type = 'button';
-    addPath.disabled = true; // v1 runtime = single path (true/false) — spec §2
-    addPath.title = t('cb.addPathV2');
+    addPath.disabled = !multiCapable || atCap;
+    addPath.title = !multiCapable ? t('cb.addPathWhile')
+      : (atCap ? t('cb.addPathCap') : t('cb.addPathHelp'));
+    function appendPath() {
+      if (!multiCapable || paths.length >= m.CONDITION_MAX_PATHS) return;
+      var used = {};
+      paths.forEach(function (p) { used[p.id] = true; });
+      var id = 'p' + (paths.length + 1);
+      while (used[id]) id = 'p' + (parseInt(id.slice(1), 10) + 1);
+      paths.push({ id: id, name: '', groups: [[m.blankRow()]] });
+      selectPath(paths.length - 1);
+    }
+    addPath.addEventListener('click', appendPath);
     head.appendChild(addPath);
     col.appendChild(head);
 
+    // ---- the ordered path list ------------------------------------------
+    // Priority is the whole point: row 1 is checked first, and the first path
+    // that matches wins. The neutral row closes the list so the fallback is
+    // never invisible.
     var pathRow = ui.el('div', 'cb-pathrow');
-    var pathPill = ui.el('span', 'cb-path-pill on', t('cb.path') + ' 1');
-    pathRow.appendChild(pathPill);
-    var pathPlus = ui.el('button', 'cb-path-plus', '+');
-    pathPlus.type = 'button';
-    pathPlus.disabled = true;
-    pathPlus.title = t('cb.addPathV2');
-    pathRow.appendChild(pathPlus);
+    var list = ui.el('div', 'cb-pathlist');
+    paths.forEach(function (p, i) {
+      var item = ui.el('div', 'cb-pathitem' + (i === active ? ' is-active' : ''));
+
+      var prio = ui.el('button', 'cb-path-pill' + (i === active ? ' on' : ''), String(i + 1));
+      prio.type = 'button';
+      prio.title = t('cb.pathPriority') + ' ' + (i + 1);
+      prio.setAttribute('aria-pressed', i === active ? 'true' : 'false');
+      prio.addEventListener('click', function () { selectPath(i); });
+      item.appendChild(prio);
+
+      var name = ui.el('input', 'cb-path-name');
+      name.type = 'text';
+      name.value = p.name || '';
+      name.placeholder = t('cb.path') + ' ' + (i + 1);
+      name.setAttribute('aria-label', t('cb.pathName'));
+      name.addEventListener('focus', function () {
+        if (i !== active) selectPath(i);
+      });
+      name.addEventListener('input', function () {
+        p.name = name.value;
+        commit();               // rename only — no re-render, keep the caret
+      });
+      item.appendChild(name);
+
+      if (multiCapable) {
+        var up = ui.iconBtn('chevron-up', t('cb.pathUp'), 'cb-path-move', function () {
+          if (i === 0) return;
+          paths.splice(i - 1, 0, paths.splice(i, 1)[0]);
+          selectPath(i - 1);
+        });
+        up.disabled = i === 0;
+        item.appendChild(up);
+
+        var down = ui.iconBtn('chevron-down', t('cb.pathDown'), 'cb-path-move', function () {
+          if (i >= paths.length - 1) return;
+          paths.splice(i + 1, 0, paths.splice(i, 1)[0]);
+          selectPath(i + 1);
+        });
+        down.disabled = i >= paths.length - 1;
+        item.appendChild(down);
+
+        var del = ui.iconBtn('trash', t('cb.pathDelete'), 'cb-path-del', function () {
+          if (paths.length <= 1) return;
+          paths.splice(i, 1);
+          selectPath(Math.max(0, i - 1));
+        });
+        // The last remaining path cannot go: a condition node with no condition
+        // is not a condition node. Deleting IT means deleting the node.
+        del.disabled = paths.length <= 1;
+        if (del.disabled) del.title = t('cb.pathDeleteLast');
+        item.appendChild(del);
+      }
+      list.appendChild(item);
+    });
+
+    if (multiCapable) {
+      var neutral = ui.el('div', 'cb-pathitem is-neutral');
+      neutral.appendChild(ui.el('span', 'cb-path-pill neutral', '—'));
+      var ntext = ui.el('div', 'cb-path-neutral-text');
+      ntext.appendChild(ui.el('span', 'cb-path-neutral-title', t('cb.neutralPath')));
+      ntext.appendChild(ui.el('span', 'cb-path-neutral-sub', t('cb.neutralPathSub')));
+      neutral.appendChild(ntext);
+      list.appendChild(neutral);
+    }
+    pathRow.appendChild(list);
+    if (multiCapable && paths.length > 1) {
+      pathRow.appendChild(ui.el('div', 'cb-path-hint', t('cb.pathOrder')));
+    }
     col.appendChild(pathRow);
 
     var builder = ui.el('div', 'cb-builder');
@@ -560,11 +663,22 @@
     });
     builder.appendChild(addGroup);
 
-    // ---- true / false result cards -------------------------------------
+    // ---- result cards ----------------------------------------------------
+    // One path  -> the classic true/false pair (`then` / `else` ports).
+    // N paths   -> one card per path, in priority order, plus the neutral
+    //              `next` card: exactly the ports the canvas draws.
     var isIf = node.action === 'if';
     var res = ui.el('div', 'cb-results');
-    res.appendChild(resultCard(true, isIf));
-    res.appendChild(resultCard(false, isIf));
+    if (multiCapable && paths.length > 1) {
+      res.classList.add('is-paths');
+      paths.forEach(function (p, i) {
+        res.appendChild(pathResultCard(p, i, i === active));
+      });
+      res.appendChild(neutralResultCard());
+    } else {
+      res.appendChild(resultCard(true, isIf));
+      res.appendChild(resultCard(false, isIf));
+    }
     col.appendChild(res);
 
     // ---- REMOVED: "Max depth" · "Evaluate mode" -------------------------
@@ -598,6 +712,37 @@
 
     commit();
     return true;
+  }
+
+  // Mission 7 — the result card of ONE prioritised path: its priority, its
+  // name, the summary of what it tests, and the canvas port it leaves through.
+  function pathResultCard(path, index, isActive) {
+    var ui = UI();
+    var m = M();
+    var card = ui.el('div', 'cb-result-card path' + (isActive ? ' is-active' : ''));
+    card.appendChild(ui.el('span', 'cb-result-prio', String(index + 1)));
+    var texts = ui.el('div', 'cb-result-texts');
+    texts.appendChild(ui.el('div', 'cb-result-title', m.pathLabel(path, index, t)));
+    var sum = m.groupsSummary(path.groups, t);
+    texts.appendChild(ui.el('div', 'cb-result-sub', sum || t('cb.pathEmpty')));
+    texts.appendChild(ui.el('span', 'cb-result-pill',
+      t('cb.outputPort') + ' ' + m.pathLabel(path, index, t)));
+    card.appendChild(texts);
+    return card;
+  }
+
+  // The neutral fallback: taken when NO path matched. Non-configurable by
+  // design — it is the absence of a match, not a condition of its own.
+  function neutralResultCard() {
+    var ui = UI();
+    var card = ui.el('div', 'cb-result-card neutral');
+    card.appendChild(ui.el('span', 'cb-result-prio', '—'));
+    var texts = ui.el('div', 'cb-result-texts');
+    texts.appendChild(ui.el('div', 'cb-result-title', t('cb.neutralPath')));
+    texts.appendChild(ui.el('div', 'cb-result-sub', t('cb.neutralPathSub')));
+    texts.appendChild(ui.el('span', 'cb-result-pill', t('cb.outputPort') + ' ' + t('port.next')));
+    card.appendChild(texts);
+    return card;
   }
 
   function resultCard(isTrue, isIf) {
