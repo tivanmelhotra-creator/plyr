@@ -1,12 +1,13 @@
 'use strict';
 
-import type { BrowserContext, Page, CDPSession } from 'playwright';
+import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
 import { GlobalBrowser } from './GlobalBrowser';
 import {
   installConsentAutoDismiss,
   hasSavedSession,
   clearStorageState,
 } from './BrowserProfile';
+import { resolveUpload, discardUploads } from './RemoteUploads';
 
 // ════════════════════════════════════════════════════════════════
 // LiveBrowser (Step 12) — interactive, streamable browser sessions.
@@ -344,6 +345,16 @@ export class LiveBrowserSession {
   private frameSink: FrameSink | null = null;
   private eventSink: EventSink | null = null;
   private pickerOn = false;
+  /**
+   * A file dialog the page opened and that is now waiting on us.
+   *
+   * Only one can be outstanding: Chrome will not open a second dialog while the
+   * first is up, and holding a list would only create the question of which one
+   * a user's file was meant for.
+   */
+  private pendingChooser: FileChooser | null = null;
+  /** Uploads handed to a chooser in this session, deleted when it ends. */
+  private consumedUploads: string[] = [];
   private idleTimer: NodeJS.Timeout | null = null;
   private closed = false;
   public readonly userId: string;
@@ -391,6 +402,41 @@ export class LiveBrowserSession {
           : 'pick';
       this.emit(kind, payload as unknown as Record<string, unknown>);
     }).catch(() => {});
+
+    // ── The file dialog the canvas can never show ───────────────────────────
+    // A native "choose a file" window is drawn by the OS, not by the page, so
+    // no screencast at any resolution can contain it — and the file it browses
+    // is on the SERVER's disk, which is not where the user's file is. Attaching
+    // this listener makes Playwright intercept the dialog instead of opening
+    // it, which turns "nothing happens when I click Import" into a question the
+    // UI can ask: which of YOUR files?
+    this.page.on('filechooser', (chooser) => {
+      this.pendingChooser = chooser;
+      void (async () => {
+        // The accept filter belongs to the input, and repeating it in the UI is
+        // what stops someone uploading a .png into a cookie importer.
+        let accept = '';
+        let name = '';
+        try {
+          const el = chooser.element();
+          accept = (await el.getAttribute('accept')) || '';
+          name = (await el.getAttribute('name')) || '';
+        } catch { /* the element may already be gone; the prompt still stands */ }
+        this.emit('filechooser', {
+          multiple: chooser.isMultiple(),
+          accept,
+          name,
+        });
+      })();
+    });
+
+    // Reading the page's clipboard needs permission, and the page's own
+    // clipboard is the ONLY place some extensions put their output (a cookie
+    // exporter's "Export" is a `navigator.clipboard.writeText` — on the server,
+    // where the user cannot reach it). Best-effort: a context that refuses the
+    // grant still supports selection-based copy.
+    await this.context.grantPermissions(['clipboard-read', 'clipboard-write'])
+      .catch(() => { /* older Chromium, or an origin that cannot be granted */ });
 
     // CDP screencast (JPEG frames).
     this.cdp = await this.context.newCDPSession(this.page);
@@ -582,6 +628,140 @@ export class LiveBrowserSession {
     } catch { /* ignore */ }
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // Clipboard bridge
+  //
+  // Two machines, two clipboards. Ctrl+C in the canvas copies from the LOCAL
+  // browser (which holds a JPEG of a page, i.e. nothing), and the remote page's
+  // own clipboard lives on the server where nobody can paste from it. Both
+  // directions therefore have to be carried explicitly over the socket.
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Paste the user's local clipboard text into the remote page.
+   *
+   * Both halves matter. `Input.insertText` puts the text where the cursor is —
+   * that is a paste as far as any input, textarea or contenteditable is
+   * concerned. Writing the remote clipboard as well serves the OTHER kind of
+   * paste: an extension with a "Load from clipboard" button reads
+   * `navigator.clipboard.readText()`, and would otherwise read whatever the
+   * server last copied.
+   */
+  async paste(text: string): Promise<void> {
+    this.touch();
+    const value = String(text || '');
+    if (!value) return;
+    if (this.page) {
+      await this.page.evaluate(
+        (v: string) => navigator.clipboard.writeText(v).catch(() => {}),
+        value,
+      ).catch(() => { /* no permission: the insert below is still a paste */ });
+    }
+    if (this.cdp) {
+      try { await this.cdp.send('Input.insertText', { text: value }); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Read text out of the remote page and answer on the `clipboard` channel.
+   *
+   * Order matters: the SELECTION comes first because it is what a user means by
+   * Ctrl+C, and the page clipboard is the fallback because that is where a
+   * "copy to clipboard" button in the page has just put its output. An empty
+   * answer is still sent — the UI has to be able to say "there was nothing to
+   * copy" instead of silently doing nothing.
+   */
+  async readClipboard(): Promise<void> {
+    this.touch();
+    if (!this.page) return;
+    let text = '';
+    let source = 'selection';
+    try {
+      text = await this.page.evaluate(() => {
+        const a = document.activeElement as HTMLInputElement | null;
+        // An input's selection is NOT part of window.getSelection().
+        if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')
+          && typeof a.selectionStart === 'number' && a.selectionStart !== a.selectionEnd) {
+          return String(a.value).slice(a.selectionStart, a.selectionEnd ?? undefined);
+        }
+        return String(window.getSelection() || '');
+      });
+    } catch { /* page navigated mid-read */ }
+
+    if (!text) {
+      source = 'clipboard';
+      try {
+        text = await this.page.evaluate(
+          () => navigator.clipboard.readText().catch(() => ''),
+        );
+      } catch { /* permission denied; answer with the empty string */ }
+    }
+    this.emit('clipboard', { text: String(text || ''), source });
+  }
+
+  /** Select everything in the focused field/page — the other half of Ctrl+A. */
+  async selectAll(): Promise<void> {
+    this.touch();
+    if (!this.page) return;
+    try {
+      await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+    } catch { /* ignore */ }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // File chooser
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Hand uploaded files to the dialog the page is waiting on.
+   *
+   * Tokens, never paths: see RemoteUploads. Anything that fails to resolve is
+   * dropped rather than passed through, so a crafted token cannot make Chrome
+   * read a file the uploader never uploaded.
+   */
+  async acceptFiles(tokens: string[]): Promise<void> {
+    this.touch();
+    const chooser = this.pendingChooser;
+    if (!chooser) {
+      this.emit('fileChooserDone', { ok: false, reason: 'no_pending_chooser' });
+      return;
+    }
+    this.pendingChooser = null;
+
+    const paths: string[] = [];
+    for (const token of Array.isArray(tokens) ? tokens.slice(0, 10) : []) {
+      // Async: the token names a directory and the file inside it keeps the
+      // user's own name, so the real path has to be read off the disk.
+      try { paths.push(await resolveUpload(this.userId, String(token))); }
+      catch { /* not a token we minted, or already swept */ }
+    }
+    if (!paths.length) {
+      await chooser.setFiles([]).catch(() => {});
+      this.emit('fileChooserDone', { ok: false, reason: 'no_valid_files' });
+      return;
+    }
+
+    try {
+      await chooser.setFiles(chooser.isMultiple() ? paths : [paths[0]]);
+      // Remember, do not delete yet: Chrome reads the file when the page asks,
+      // which can be long after setFiles resolves.
+      this.consumedUploads.push(...(tokens || []).map(String));
+      this.emit('fileChooserDone', { ok: true, count: paths.length });
+    } catch (e) {
+      this.emit('fileChooserDone', { ok: false, reason: (e as Error).message });
+    }
+  }
+
+  /** Dismiss the dialog. `setFiles([])` is what "Cancel" means to the page. */
+  async cancelFileChooser(): Promise<void> {
+    this.touch();
+    const chooser = this.pendingChooser;
+    this.pendingChooser = null;
+    if (!chooser) return;
+    await chooser.setFiles([]).catch(() => {});
+    this.emit('fileChooserDone', { ok: false, reason: 'cancelled' });
+  }
+
   private async injectPicker(): Promise<void> {
     if (!this.page) return;
     try { await this.page.evaluate(PICKER_SCRIPT); } catch { /* ignore */ }
@@ -643,6 +823,13 @@ export class LiveBrowserSession {
     if (this.closed) return;
     this.closed = true;
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+    // A file the user uploaded for one dialog must not outlive the window they
+    // uploaded it in: cookie exports are credentials.
+    if (this.consumedUploads.length) {
+      const tokens = this.consumedUploads.splice(0);
+      await discardUploads(this.userId, tokens).catch(() => {});
+    }
+    this.pendingChooser = null;
     try { if (this.cdp) await this.cdp.send('Page.stopScreencast').catch(() => {}); } catch { /* ignore */ }
     try { if (this.cdp) await this.cdp.detach().catch(() => {}); } catch { /* ignore */ }
     try { if (this.page) await this.page.close().catch(() => {}); } catch { /* ignore */ }

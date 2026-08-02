@@ -5310,6 +5310,75 @@ body.route-fullbleed .fe-mm-restore {
   pointer-events: none;
 }
 
+/* ---- remote clipboard & file transfer (RemoteIO) ----------------------- */
+/* The canvas is a video of a browser on another machine, so the page's own
+ * "choose a file" dialog is drawn there and browses THAT disk — invisible and
+ * useless here. This bar replaces it: it appears when the remote page opens a
+ * file chooser, and hands the chosen local file across the socket. It is
+ * anchored to the bottom of the stage rather than centred so it never covers
+ * the button the user just pressed. */
+.rio-filebar {
+  position: absolute;
+  inset-inline: 12px;
+  bottom: 12px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+  /* The stage's other overlay (`.bvp-empty`) is `pointer-events: none` so it
+   * cannot eat the first click of a session. This one is the exception:
+   * clicking it is the entire point. */
+  pointer-events: auto;
+}
+.rio-filebar .rio-ico {
+  display: inline-flex;
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+.rio-filebar .rio-text {
+  display: flex;
+  flex-direction: column;
+  gap: .1rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.rio-filebar .rio-text b { font-weight: 600; }
+/* The `accept` list is a machine-readable spec (".json, .txt"), always LTR even
+ * in the Persian UI, and shown because "wrong file type" is otherwise a silent
+ * rejection by the page. */
+.rio-filebar .rio-accept {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  direction: ltr;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rio-filebar .rio-status {
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+/* Hidden, not removed: the visible button forwards its click here because a
+ * bare file input cannot be styled and cannot be labelled in two languages. */
+.rio-filebar .rio-input {
+  display: none;
+}
+/* Dragging a file onto the canvas is the gesture people try first. Without a
+ * target highlight there is no way to tell whether the drop will be accepted or
+ * will make the LOCAL browser navigate away to the file. */
+.bvp-stage.rio-dropping,
+#bv-stage.rio-dropping {
+  outline: 2px dashed var(--primary);
+  outline-offset: -6px;
+}
+
 /* ---- the floating panel ------------------------------------------------ */
 .bvp-panel {
   position: absolute;

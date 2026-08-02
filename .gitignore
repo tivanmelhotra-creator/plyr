@@ -13,6 +13,9 @@ dist/
 # ───────── Runtime data ─────────
 logs/
 profiles/
+# Files a user pushed across from their own machine so the remote page's file
+# dialog could receive them. Swept on a TTL; never source.
+uploads/
 *.log
 
 # ───────── Redis bundled binaries (Windows) ─────────
@@ -36,5 +39,10 @@ dump.rdb
 # A killed Chrome/node can drop a multi-hundred-MB `core` in the repo root.
 # It is never a deliverable, and on a small box it silently eats all the RAM
 # and disk that the test suite needs. Ignore it so it is never committed.
-core
-core.*
+#
+# ANCHORED to the repo root (`/core`), not bare `core`. A bare pattern matches a
+# DIRECTORY of that name at any depth, so it silently swallowed every new file
+# under `src/core/` — already-tracked files kept working, which is what made it
+# invisible: only brand-new modules vanished, and only from `git status`.
+/core
+/core.*

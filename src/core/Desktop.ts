@@ -47,7 +47,15 @@ export type DesktopComponent = 'xvfb' | 'x11vnc' | 'novnc';
 
 export interface DesktopStatus {
   enabled: boolean;
+  /** All three components up: the screen is both alive AND viewable. */
   running: boolean;
+  /**
+   * Only the X display (Xvfb) is up. This is the part Chrome actually needs;
+   * x11vnc/noVNC merely let a human LOOK at it. Reported separately so the UI
+   * can say "the browser can run, you just cannot watch it" instead of the far
+   * more alarming (and wrong) "remote desktop: stopped".
+   */
+  displayRunning: boolean;
   display: string;
   vncPort: number;
   novncPort: number;
@@ -64,6 +72,31 @@ export interface DesktopStatus {
 const INSTALL_HINT =
   'Install the virtual display stack: sudo apt-get install -y xvfb x11vnc novnc websockify ' +
   '(or run: bash scripts/desktop.sh install).';
+
+/** Just the display. Chrome needs this one; the other two are for watching. */
+export const DISPLAY_INSTALL_HINT =
+  'Install the virtual display: sudo apt-get install -y xvfb ' +
+  '(or run: bash scripts/desktop.sh install).';
+
+/**
+ * The message a user gets when a headed Chrome has nowhere to draw.
+ *
+ * Pure on purpose: the wording is the whole value of this feature — an operator
+ * who reads "run scripts/desktop.sh start" and runs it only to be told `Xvfb:
+ * command not found` has been sent in a circle — so it is unit-tested rather
+ * than left to chance inside a spawn path that no test can reach.
+ */
+export function displayGuidance(missing: string[], display: string): string {
+  const xvfbMissing = missing.includes('Xvfb');
+  return (
+    `Chrome needs a screen to draw on and none is available on ${display}. ` +
+    'Extensions only load in a headed Chrome, so this machine needs a virtual X server. ' +
+    (xvfbMissing
+      ? `Xvfb is not installed — ${DISPLAY_INSTALL_HINT}`
+      : 'Start it with: bash scripts/desktop.sh start') +
+    ' Alternatively set REAL_CHROME_HEADLESS=true, which starts faster but loads NO extensions.'
+  );
+}
 
 /** Candidate locations of noVNC's static files across distributions. */
 const NOVNC_ROOTS = [
@@ -127,33 +160,53 @@ export class Desktop {
     return '';
   }
 
-  /**
-   * Start Xvfb → x11vnc → websockify, skipping anything already listening.
-   *
-   * Idempotent on purpose: the UI button is going to be pressed twice, and a
-   * second Xvfb on the same display would fail with a lock error that reads
-   * like a real problem.
-   */
-  static async start(): Promise<DesktopStatus> {
+  /** Which of the three binaries are not installed. */
+  static async missingBinaries(): Promise<string[]> {
     const missing: string[] = [];
     for (const bin of ['Xvfb', 'x11vnc', 'websockify']) {
       if (!(await which(bin))) missing.push(bin);
     }
-    if (missing.length) {
-      this.lastError = `Missing: ${missing.join(', ')}. ${INSTALL_HINT}`;
+    return missing;
+  }
+
+  /** Is there an X display to draw on right now? */
+  static async displayUp(): Promise<boolean> {
+    const displayNum = this.display.replace(/^:/, '').split('.')[0];
+    // The lock file is X's own "this display is taken" marker, and the socket
+    // proves a server is actually listening on it. Either is enough evidence
+    // for a display we did not start ourselves (an operator's own Xvfb, a real
+    // desktop session, an X forwarded over SSH).
+    const lock = await fs.stat(`/tmp/.X${displayNum}-lock`).then(() => true).catch(() => false);
+    if (lock) return true;
+    return fs.stat(`/tmp/.X11-unix/X${displayNum}`).then(() => true).catch(() => false);
+  }
+
+  /**
+   * Bring up ONLY the X display — the single thing a headed Chrome requires.
+   *
+   * Split out of `start()` because the two needs are not the same need: Chrome
+   * needs the pixels to exist, a human needs to see them. Bundling them meant a
+   * box with xvfb but without x11vnc/websockify (very common — those two are
+   * exactly what people refuse to install on a server) could not run a headed
+   * Chrome AT ALL, and failed with "Missing: x11vnc, websockify": a message
+   * about a viewer, shown to someone who only asked for a browser.
+   */
+  static async ensureDisplay(): Promise<void> {
+    if (await this.displayUp()) {
+      process.env.DISPLAY = this.display;
+      return;
+    }
+
+    if (!(await which('Xvfb'))) {
+      this.lastError = `Missing: Xvfb. ${DISPLAY_INSTALL_HINT}`;
       throw new DesktopError(this.lastError);
     }
 
     const display = this.display;
     const displayNum = display.replace(/^:/, '').split('.')[0];
-
-    // ── Xvfb ────────────────────────────────────────────────────────────────
-    // X's own lock file is the reliable "is this display taken" signal; a stale
-    // one from a killed process is removed only when no process holds it.
     const lock = `/tmp/.X${displayNum}-lock`;
-    const displayBusy = await fs.stat(lock).then(() => true).catch(() => false);
 
-    if (!displayBusy && !this.procs.has('xvfb')) {
+    if (!this.procs.has('xvfb')) {
       const w = config.REAL_CHROME_WINDOW_WIDTH || 1280;
       const h = config.REAL_CHROME_WINDOW_HEIGHT || 800;
       this.spawnTracked('xvfb', 'Xvfb', [
@@ -168,6 +221,31 @@ export class Desktop {
 
     // Chrome (and anything else we spawn later) must see this display.
     process.env.DISPLAY = display;
+  }
+
+  /**
+   * Start Xvfb → x11vnc → websockify, skipping anything already listening.
+   *
+   * Idempotent on purpose: the UI button is going to be pressed twice, and a
+   * second Xvfb on the same display would fail with a lock error that reads
+   * like a real problem.
+   */
+  static async start(): Promise<DesktopStatus> {
+    // The display first and on its own: when the viewer packages are missing we
+    // still want the screen up, because that is the half that unblocks Chrome.
+    await this.ensureDisplay();
+
+    const missing: string[] = [];
+    for (const bin of ['x11vnc', 'websockify']) {
+      if (!(await which(bin))) missing.push(bin);
+    }
+    if (missing.length) {
+      this.lastError = `Missing: ${missing.join(', ')}. ${INSTALL_HINT}`;
+      throw new DesktopError(this.lastError);
+    }
+
+    const display = this.display;
+
 
     // ── x11vnc ──────────────────────────────────────────────────────────────
     if (!(await portOpen(config.DESKTOP_VNC_PORT))) {
@@ -280,8 +358,7 @@ export class Desktop {
       if (!(await which(bin))) missing.push(bin);
     }
 
-    const displayNum = this.display.replace(/^:/, '').split('.')[0];
-    const xvfbUp = await fs.stat(`/tmp/.X${displayNum}-lock`).then(() => true).catch(() => false);
+    const xvfbUp = await this.displayUp();
     const vncUp = await portOpen(config.DESKTOP_VNC_PORT);
     const novncUp = await portOpen(config.DESKTOP_NOVNC_PORT);
 
@@ -294,6 +371,7 @@ export class Desktop {
     return {
       enabled: config.DESKTOP_ENABLED === true,
       running: xvfbUp && vncUp && novncUp,
+      displayRunning: xvfbUp,
       display: this.display,
       vncPort: config.DESKTOP_VNC_PORT,
       novncPort: config.DESKTOP_NOVNC_PORT,

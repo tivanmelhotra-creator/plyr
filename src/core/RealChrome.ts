@@ -50,6 +50,7 @@ import {
   extensionLaunchArgs,
   type InstalledExtension,
 } from './ChromeExtensions';
+import { Desktop, displayGuidance } from './Desktop';
 import {
   parseCookieFile,
   type CookieImportResult,
@@ -274,11 +275,11 @@ export class RealChrome {
       // ("Target page, context or browser has been closed" / "Missing X server")
       // tells the user nothing about what to do.
       if (/X server|DISPLAY|cannot open display/i.test(msg)) {
+        // Name the package, not just the script. "Run scripts/desktop.sh start"
+        // is a circle for the (very common) case where the script itself then
+        // says `Xvfb: command not found`.
         throw new RealChromeError(
-          `Chrome could not open a display (${env.DISPLAY || 'unset'}). Extensions need a ` +
-          'headed browser, so this machine needs a virtual X server. Run ' +
-          '`bash scripts/desktop.sh start` first, or set REAL_CHROME_HEADLESS=true ' +
-          '(extensions will NOT load in that mode).',
+          `${displayGuidance(await Desktop.missingBinaries(), env.DISPLAY || 'unset')}`,
         );
       }
       if (/ProcessSingleton|already running|SingletonLock/i.test(msg)) {

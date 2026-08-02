@@ -127,6 +127,10 @@
 
     var ctx = canvas.getContext('2d');
     var pickerOn = false;
+    // Clipboard + file transfer across the local/remote boundary. Created on
+    // connect and torn down on disconnect, so a half-answered "the page wants a
+    // file" prompt can never outlive the session it belonged to.
+    var rio = null;
     // The page's logical size (CDP device px), used to map canvas clicks.
     var pageW = 1280, pageH = 720;
 
@@ -209,6 +213,9 @@
       var msg;
       try { msg = JSON.parse(raw); } catch (e) { return; }
       if (!msg || !msg.t) return;
+      // Clipboard/file messages first. They are owned entirely by RemoteIO, and
+      // routing them here keeps this switch from growing a second vocabulary.
+      if (rio && rio.onMessage(msg)) return;
       switch (msg.t) {
         case 'frame':
           drawFrame(msg.data, msg.width, msg.height);
@@ -259,6 +266,14 @@
       // `pendingUrl` is flushed by the 'ready' event (see handleMessage): the
       // page does not exist yet at `onopen`.
       state = { ws: ws, lastPick: null, pendingUrl: (urlInput.value || '').trim() };
+      if (window.RemoteIO && !rio) {
+        rio = window.RemoteIO.attach({
+          stage: stage, host: stage, send: send,
+          // Same identity as the socket line above, or the upload lands in a
+          // directory this session never looks in.
+          userId: uid
+        });
+      }
       ws.onopen = function () {
         setStatus(t('bv.connecting'), 'warn'); // wait for 'ready'
       };
@@ -268,12 +283,20 @@
         setStatus(t('bv.disconnected'), '');
         setEnabled(false);
         state = null;
+        dropRemoteIo();
       };
+    }
+
+    function dropRemoteIo() {
+      if (!rio) return;
+      try { rio.detach(); } catch (e) {}
+      rio = null;
     }
 
     function disconnect() {
       if (state && state.ws) { try { state.ws.close(); } catch (e) {} }
       state = null;
+      dropRemoteIo();
       setEnabled(false);
       setStatus(t('bv.disconnected'), '');
     }
@@ -353,6 +376,7 @@
     var ps = pickState;
     pickState = null;
     if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
+    if (ps.rio) { try { ps.rio.detach(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
     // The re-clamp listener holds the overlay's DOM alive; drop it with the modal.
     if (ps.onResize) window.removeEventListener('resize', ps.onResize);
@@ -390,6 +414,15 @@
           '<button class="icon-btn bvp-forget" id="bvp-forget" type="button" ' +
             'title="' + esc(t('bvp.forget')) + '" aria-label="' + esc(t('bvp.forget')) + '">' +
             BIC('cookie', 15) + '</button>' +
+          // Pull the REMOTE clipboard onto this machine. Ctrl+C already does
+          // this from the keyboard, but the case that needs a button has no
+          // keystroke at all: an extension's "Export" writes straight to the
+          // server's clipboard with navigator.clipboard.writeText(), and
+          // without this the copied text is stranded on a machine the user
+          // cannot see.
+          '<button class="icon-btn bvp-clip" id="bvp-clip" type="button" ' +
+            'title="' + esc(t('rio.pull')) + '" aria-label="' + esc(t('rio.pull')) + '">' +
+            BIC('clipboard', 15) + '</button>' +
           // Real Chrome. The canvas below is a screencast of a PAGE, so it can
           // never show an extension popup, chrome://extensions or a native file
           // dialog — they are not drawn by the page. This button is the way out
@@ -541,6 +574,7 @@
       selectMode: false,
       signedIn: false, // set from the server's `ready` frame, never assumed
       pendingUrl: '',  // first URL to load, sent once the server says 'ready'
+      rio: null,       // clipboard + file bridge, created with the socket
       onKeyDoc: null,
       onResize: null
     };
@@ -826,6 +860,9 @@
       var msg;
       try { msg = JSON.parse(raw); } catch (e) { return; }
       if (!msg || !msg.t) return;
+      // Clipboard and file-dialog traffic belongs to RemoteIO; give it first
+      // refusal so those flows stay in one place instead of half here.
+      if (pickState && pickState.rio && pickState.rio.onMessage(msg)) return;
       switch (msg.t) {
         case 'frame': drawFrame(msg.data); break;
         case 'ready':
@@ -884,6 +921,19 @@
       catch (e) { setStatus(t('bv.error'), 'bad'); return; }
       pickState.ws = ws;
       pickState.pendingUrl = url;   // flushed by the 'ready' event
+      if (window.RemoteIO && !pickState.rio) {
+        pickState.rio = window.RemoteIO.attach({
+          stage: stage,
+          host: stage,
+          send: send,
+          // Same identity as the socket, or the upload lands in a directory
+          // this session never looks in.
+          userId: effectiveUserId,
+          // While the crosshair is armed every key means "walk the DOM", so the
+          // clipboard shortcuts must stand down rather than fight the picker.
+          isBusy: function () { return !!(pickState && pickState.selectMode); }
+        });
+      }
       ws.onopen = function () { setStatus(t('bv.connecting'), 'warn'); };
       ws.onmessage = function (m) { onMessage(m.data); };
       ws.onerror = function () { setStatus(t('bv.error'), 'bad'); };
@@ -949,6 +999,10 @@
     q('bvp-go').addEventListener('click', connect);
     urlIn.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); connect(); }
+    });
+    q('bvp-clip').addEventListener('click', function () {
+      if (pickState && pickState.rio) pickState.rio.pullClipboard();
+      else toast(t('rio.notConnected'), 'info');
     });
     q('bvp-close').addEventListener('click', closePick);
     overlay.addEventListener('mousedown', function (e) {

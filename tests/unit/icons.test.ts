@@ -35,7 +35,7 @@ const JS_ALL = [
   'actions.js', 'templates.js', 'i18n.js', 'api.js', 'expression.js',
   'graph-serialize.js', 'ndv-model.js', 'ndv-ui.js', 'ndv-nodes.js',
   'flow-editor.js', 'live.js', 'live-view.js', 'run-state.js', 'run-panel.js',
-  'browser-view.js', 'real-chrome.js', 'views.js', 'app.js',
+  'browser-view.js', 'remote-io.js', 'real-chrome.js', 'views.js', 'app.js',
 ];
 
 /**

@@ -206,6 +206,30 @@ export class BrowserStreamServer {
       case 'key':
         await session.key(String(msg.key || ''));
         break;
+      // ── Clipboard bridge ──────────────────────────────────────────────
+      // The canvas is a picture of a browser on another machine, so Ctrl+C and
+      // Ctrl+V cross a machine boundary that nothing else in this protocol
+      // crosses: the text has to travel as a message.
+      case 'paste':
+        await session.paste(String(msg.text || ''));
+        break;
+      case 'copy':
+        await session.readClipboard();
+        break;
+      case 'selectAll':
+        await session.selectAll();
+        break;
+      // ── Remote file upload ────────────────────────────────────────────
+      // `tokens`, never paths — see RemoteUploads for why a path here would be
+      // an arbitrary-file-read on the server.
+      case 'fileAccept':
+        await session.acceptFiles(
+          Array.isArray(msg.tokens) ? (msg.tokens as unknown[]).map(String) : [],
+        );
+        break;
+      case 'fileCancel':
+        await session.cancelFileChooser();
+        break;
       case 'picker':
         await session.setPicker(!!msg.on);
         break;
