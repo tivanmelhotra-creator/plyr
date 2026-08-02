@@ -217,6 +217,15 @@
           setStatus(t('bv.connected'), 'ok');
           hint.textContent = msg.url || '';
           setEnabled(true);
+          // The first navigation is sent HERE, not from `onopen`. The server
+          // needs ~½ second to boot the page behind the socket, and a command
+          // that arrives before it is ready is lost — which is what made
+          // "type a URL, press Connect, nothing loads" the normal experience.
+          if (state && state.pendingUrl) {
+            var pu = state.pendingUrl;
+            state.pendingUrl = '';
+            send({ t: 'navigate', url: pu });
+          }
           break;
         case 'navigated':
           hint.textContent = msg.url || '';
@@ -247,11 +256,11 @@
       setStatus(t('bv.connecting'), 'warn');
       var ws;
       try { ws = new WS(url); } catch (e) { setStatus(t('bv.error'), 'bad'); return; }
-      state = { ws: ws, lastPick: null };
+      // `pendingUrl` is flushed by the 'ready' event (see handleMessage): the
+      // page does not exist yet at `onopen`.
+      state = { ws: ws, lastPick: null, pendingUrl: (urlInput.value || '').trim() };
       ws.onopen = function () {
         setStatus(t('bv.connecting'), 'warn'); // wait for 'ready'
-        var startUrl = (urlInput.value || '').trim();
-        if (startUrl) send({ t: 'navigate', url: startUrl });
       };
       ws.onmessage = function (m) { handleMessage(m.data); };
       ws.onerror = function () { setStatus(t('bv.error'), 'bad'); };
@@ -523,6 +532,7 @@
       // possible while every click is being converted into a pick.
       selectMode: false,
       signedIn: false, // set from the server's `ready` frame, never assumed
+      pendingUrl: '',  // first URL to load, sent once the server says 'ready'
       onKeyDoc: null,
       onResize: null
     };
@@ -813,6 +823,18 @@
         case 'ready':
           setStatus(t('bv.connected'), 'ok');
           setSession(msg.signedIn);             // cookies restored, or anonymous?
+          // THE FIRST NAVIGATION HAPPENS HERE, not in `onopen`.
+          // `session.start()` on the server boots a context + page + screencast
+          // (~½ second). A command sent before that resolves used to be dropped
+          // on the floor, so the picker window came up on `about:blank` and the
+          // URL the user typed never loaded — the "the simulated browser won't
+          // open google.com" bug. The server now queues early commands too;
+          // this keeps the client correct on its own.
+          if (pickState.pendingUrl) {
+            var pu = pickState.pendingUrl;
+            pickState.pendingUrl = '';
+            send({ t: 'navigate', url: pu });
+          }
           // Push the CURRENT mode rather than forcing the picker on. This line
           // used to be `send({ t: 'picker', on: true })`, which is what made the
           // window un-browsable from its very first frame.
@@ -822,7 +844,13 @@
           setSession(msg.signedIn);
           if (msg.cleared) toast(t('bvp.forgotten'), 'success');
           break;
-        case 'navigated': setStatus(t('bv.connected'), 'ok'); break;
+        case 'navigated':
+          setStatus(t('bv.connected'), 'ok');
+          // Follow the page. Clicking a link inside the window used to leave a
+          // stale address in the bar, so "where am I?" had no answer. Never
+          // overwrite what the user is currently typing into the field.
+          if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
+          break;
         case 'hover':
           if (!pickState.locked) paint(msg, false);
           break;
@@ -847,7 +875,8 @@
       try { ws = new WebSocket(wsUrl(effectiveUserId(), API.getKey())); }
       catch (e) { setStatus(t('bv.error'), 'bad'); return; }
       pickState.ws = ws;
-      ws.onopen = function () { send({ t: 'navigate', url: url }); };
+      pickState.pendingUrl = url;   // flushed by the 'ready' event
+      ws.onopen = function () { setStatus(t('bv.connecting'), 'warn'); };
       ws.onmessage = function (m) { onMessage(m.data); };
       ws.onerror = function () { setStatus(t('bv.error'), 'bad'); };
       ws.onclose = function () { if (pickState) setStatus(t('bv.disconnected'), ''); };

@@ -116,6 +116,36 @@ export class BrowserStreamServer {
     ws.on('close', () => { void cleanup(); });
     ws.on('error', () => { /* close handler cleans up */ });
 
+    // ════════════════════════════════════════════════════════════════
+    // The message listener is attached BEFORE `session.start()`, and
+    // anything that arrives while the browser is still booting is
+    // QUEUED instead of dropped.
+    //
+    // WHY: `session.start()` launches a context + page + CDP screencast,
+    // which takes ~300-900 ms. The client sends its first command from
+    // `ws.onopen` — for the Element Picker window that command is the
+    // `navigate` carrying the URL the user typed (browser-view.js
+    // `connect()`). `ws` only delivers frames to listeners registered at
+    // the time they arrive, so with the listener attached after `start()`
+    // that first navigate was silently thrown away: the picker window
+    // opened on `about:blank`, the address never loaded, and the only
+    // symptom was a black stage — no error anywhere.
+    // ════════════════════════════════════════════════════════════════
+    let started = false;
+    const pending: Array<{ t?: string; [k: string]: unknown }> = [];
+    ws.on('message', (raw: RawData) => {
+      let msg: { t?: string; [k: string]: unknown };
+      try { msg = JSON.parse(String(raw)); } catch { return; }
+      if (!msg || typeof msg.t !== 'string') return;
+      if (!started) {
+        // Cap the queue: a client that spams while we boot must not grow
+        // an unbounded buffer. 50 is far more than a real open sends.
+        if (pending.length < 50) pending.push(msg);
+        return;
+      }
+      void this.handleCommand(session, msg);
+    });
+
     // Start the browser session (creates context/page + screencast).
     try {
       await session.start();
@@ -126,12 +156,14 @@ export class BrowserStreamServer {
       return;
     }
 
-    ws.on('message', (raw: RawData) => {
-      let msg: { t?: string; [k: string]: unknown };
-      try { msg = JSON.parse(String(raw)); } catch { return; }
-      if (!msg || typeof msg.t !== 'string') return;
-      void this.handleCommand(session, msg);
-    });
+    started = true;
+    // Replay in arrival order, sequentially: `navigate` then `picker` must
+    // not race, or the picker script is injected into the page we are
+    // leaving.
+    for (const msg of pending.splice(0)) {
+      if (session.isClosed()) break;
+      await this.handleCommand(session, msg).catch(() => {});
+    }
   }
 
   private async handleCommand(

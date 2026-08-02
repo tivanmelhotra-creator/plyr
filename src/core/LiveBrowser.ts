@@ -420,9 +420,18 @@ export class LiveBrowserSession {
       everyNthFrame: 1,
     });
 
-    // Re-inject picker after navigations if it was on.
+    // Re-inject picker after navigations if it was on, and tell the client
+    // where we ended up.
+    //
+    // The `navigated` event used to be emitted ONLY by our own navigate/back/
+    // forward/reload commands, so the moment the user followed a link or a
+    // form redirected them, the address bar in the picker window kept showing
+    // the page they had left. That is not a cosmetic detail: the URL bar is
+    // how you know where you are before you start picking selectors.
     this.page.on('framenavigated', async (frame) => {
-      if (frame === this.page!.mainFrame() && this.pickerOn) {
+      if (frame !== this.page!.mainFrame()) return;
+      this.emit('navigated', { url: frame.url() });
+      if (this.pickerOn) {
         await this.injectPicker().catch(() => {});
       }
     });

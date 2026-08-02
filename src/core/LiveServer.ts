@@ -59,6 +59,23 @@ export const authorizeLive = async (
   if (!config.API_KEYS_ENABLED) {
     return { ok: true };
   }
+  // ============================================================
+  // Single-user self-hosted mode (DEPLOYMENT_MODE=single, the DEFAULT).
+  // ------------------------------------------------------------
+  // One shared API_TOKEN authenticates the whole instance and resolves to
+  // the fixed identity `local` (see middleware/auth.ts § SINGLE-USER MODE).
+  // There is no Redis key record for it and it is NOT in config.API_KEYS,
+  // so the multi-tenant path below rejected it with `invalid_api_key` and
+  // the upgrade was answered 403 — which killed BOTH WebSocket channels on
+  // the default deployment: /browser/ws (Live Browser View + the Element
+  // Picker: no frames, no navigation) and /live/ws (live run events).
+  // The token is instance-wide, so any userId it asks for is its own.
+  if (config.IS_SINGLE_USER) {
+    if (apiKey && config.API_TOKEN && apiKey === config.API_TOKEN) {
+      return { ok: true };
+    }
+    return { ok: false, reason: apiKey ? 'invalid_api_key' : 'missing_api_key' };
+  }
   if (!apiKey) {
     return { ok: false, reason: 'missing_api_key' };
   }
