@@ -4,7 +4,7 @@ import { URL } from 'url';
 import { chromium } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import { config, PlanConfig } from './config';
-import type { AutomationContext, JobResult, StepOutput, CancelChecker, AutomationStep } from './types';
+import type { AutomationContext, JobResult, StepOutput, CancelChecker, AutomationStep, ConditionPath } from './types';
 import type { ProfileManager } from './core/ProfileManager';
 import { ModuleLoader } from './core/ModuleLoader';
 import { ConditionEngine } from './core/ConditionEngine';
@@ -234,6 +234,31 @@ function sanitizeSelector(selector: string): string {
     throw new SecurityError('Invalid selector detected');
   }
   return selector;
+}
+
+// ━━━ PRIORITISED CONDITION PATHS (mission 7) ━━━
+// An `if` step may carry an ORDERED list of paths. This picks the winner:
+// paths are tried top -> down and the FIRST one whose condition evaluates true
+// wins; -1 means "no path matched", which routes the run through the neutral
+// `next` chain. Evaluation SHORT-CIRCUITS — a lower-priority path is never
+// evaluated once a higher one matched, because evaluating a DOM condition has
+// side effects in time (waits) and cost, and because a user reading the graph
+// expects exactly one branch to be tested to completion.
+//
+// Exported so the routing rule can be unit-tested without a browser.
+export async function pickConditionPath(
+  paths: ConditionPath[] | undefined,
+  evaluate: (condition: any) => boolean | Promise<boolean>
+): Promise<number> {
+  if (!Array.isArray(paths)) return -1;
+  for (let i = 0; i < paths.length; i++) {
+    const p = paths[i];
+    // A path without a condition can never claim the route (it would silently
+    // swallow every run); it is skipped, not treated as "true".
+    if (!p || !p.condition) continue;
+    if (await evaluate(p.condition)) return i;
+  }
+  return -1;
 }
 
 // ━━━ RICH CLICK HELPERS (docs/uiux/ndv-click-element-final.md §5) ━━━
@@ -978,6 +1003,34 @@ export async function runPipeline(params: {
         // ════════════════════════════════════════════════════════════════
         // 3. IF
         // ════════════════════════════════════════════════════════════════
+        // Mission 7 — N PRIORITISED PATHS.
+        // The paths are evaluated top -> down and the FIRST one whose
+        // condition is true is the route taken: its steps run and the group is
+        // left, so the neutral chain that follows this node cannot also run
+        // (exclusive routing — that is what "the flow goes down that path"
+        // means on the canvas). When NO path matches, execution falls through
+        // to the steps after this node, which is the neutral `next` port.
+        if (step.action === 'if' && Array.isArray(step.paths) && step.paths.length > 0) {
+          const taken = await pickConditionPath(step.paths, (c) => engine.evaluate(c));
+          if (taken >= 0) {
+            const p = step.paths[taken];
+            const label = p.name || p.id || `path ${taken + 1}`;
+            log(`[IF] Path ${taken + 1}/${step.paths.length} matched: ${pipelineSafeLog(String(label))}`);
+            context.onEvent?.('step.path', { index: globalStepNumber + 1, action: 'if', path: p.id || `p${taken + 1}`, name: p.name || '', priority: taken + 1 });
+            if (Array.isArray(p.steps) && p.steps.length) {
+              const pres = await executeStepGroup(p.steps);
+              // A control signal (return/break/continue) from inside the path
+              // outranks the routing and propagates as it always has.
+              if (pres) return pres;
+            }
+          }
+          if (taken < 0) {
+            log(`[IF] No path matched — leaving through the neutral 'next' port`);
+            continue stepLoop;
+          }
+          break stepLoop;
+        }
+
         if (step.action === 'if' && step.condition) {
           const result = await engine.evaluate(step.condition);
 

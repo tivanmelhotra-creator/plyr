@@ -2859,30 +2859,65 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .cb-addpath:hover:not(:disabled) { color: var(--primary); border-color: rgba(255,138,31,0.5); }
 .cb-addpath:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* path chip row: [ Path 1 ] [ + ] */
-.cb-pathrow { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+/* The ORDERED path list (mission 7).
+   One row per path — [priority] [name] [↑] [↓] [trash] — closed by the neutral
+   row. The priority badge keeps the original `.cb-path-pill` look, so a
+   single-path node reads exactly like the locked crop while a multi-path node
+   grows into a real list. */
+.cb-pathrow { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.cb-pathlist { display: flex; flex-direction: column; gap: 4px; }
+.cb-pathitem {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 4px; border-radius: 8px;
+  border: 1px solid transparent;
+}
+.cb-pathitem.is-active { border-color: rgba(255,138,31,0.35); background: rgba(255,138,31,0.06); }
+.cb-pathitem.is-neutral { opacity: 0.85; }
 .cb-path-pill {
-  height: 22px; padding: 0 11px;
-  display: inline-flex; align-items: center;
+  height: 22px; min-width: 26px; padding: 0 9px;
+  display: inline-flex; align-items: center; justify-content: center;
   border-radius: 6px;
   font-size: 11px; font-weight: 700;
   color: var(--text-faint);
   background: #0B0F14; border: 1px solid var(--border);
+  cursor: pointer; font-family: inherit; transition: var(--transition);
 }
+button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31,0.5); }
 .cb-path-pill.on {
   color: #14100a;
   background: linear-gradient(180deg, #FF9A1F, #FF8A1F);
   border-color: transparent;
 }
-.cb-path-plus {
-  width: 22px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center;
+.cb-path-pill.neutral { cursor: default; border-style: dashed; }
+.cb-path-name {
+  flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 8px;
   background: #0B0F14; border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text-faint); font: inherit; font-size: 12px; line-height: 1;
-  cursor: pointer; transition: var(--transition);
+  color: var(--text); font: inherit; font-size: 12px;
 }
-.cb-path-plus:hover:not(:disabled) { color: var(--primary); border-color: rgba(255,138,31,0.5); }
-.cb-path-plus:disabled { opacity: 0.4; cursor: not-allowed; }
+.cb-path-name:focus { outline: none; border-color: rgba(255,138,31,0.55); }
+.cb-path-move, .cb-path-del { flex: 0 0 auto; }
+.cb-path-move:disabled, .cb-path-del:disabled { opacity: 0.3; cursor: not-allowed; }
+.cb-path-neutral-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cb-path-neutral-title { font-size: 11px; font-weight: 700; color: var(--text-dim); }
+.cb-path-neutral-sub { font-size: 10px; color: var(--text-faint); }
+.cb-path-hint { font-size: 10px; color: var(--text-faint); padding: 0 4px; }
+/* priority badge on a path result card */
+.cb-result-card.path .cb-result-prio,
+.cb-result-card.neutral .cb-result-prio {
+  width: 20px; height: 20px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; font-size: 11px; font-weight: 700;
+  color: var(--text-dim); background: #0B0F14; border: 1px solid var(--border);
+}
+.cb-result-card.path.is-active { border-color: rgba(255,138,31,0.45); }
+/* `.cb-results` is a two-column grid for the true/false pair; the prioritised
+   path list is a single column so the rows read top-to-bottom in the same order
+   the runtime evaluates them. */
+.cb-results.is-paths { grid-template-columns: 1fr; }
+/* mid-wire pill for a prioritised path edge */
+.fe-edge-pill.tone-path {
+  color: #FFB870; border-color: rgba(255,138,31,0.45); background: #14100a;
+}
 
 /* The group stack.
    CONTRACT: this is NOT a scroller. `.ndv-pane` is the centre column's single

@@ -339,9 +339,15 @@
   // Returns '' when nothing is configured yet, so the card can fall back to its
   // "no parameters" hint instead of claiming a meaningless `Exists` condition.
   function conditionSummary(params, translate) {
+    return groupsSummary(readGroups(params), translate);
+  }
+
+  // The same one-liner for an ALREADY PARSED groups array — a multi-path node
+  // summarises each of its paths, and those groups never live in `params`.
+  function groupsSummary(groups, translate) {
     var tr = typeof translate === 'function' ? translate : function (k) { return k; };
-    var parts = readGroups(params).map(function (rows) {
-      return rows.filter(function (row) { return !rowIsBlank(row); }).map(function (row) {
+    var parts = (groups || []).map(function (rows) {
+      return (rows || []).filter(function (row) { return !rowIsBlank(row); }).map(function (row) {
         return rowChips(row).map(function (c) {
           return c.i18n ? tr(c.i18n) : c.text;
         }).join(' ');
@@ -350,10 +356,122 @@
     return parts.join(' OR ');
   }
 
-  // v1 runtime executes a single path (shell-editor-condition-ndv.md §2:
-  // "multi-path UI is v2; v1 runtime = true/false only"). Kept as a constant so
-  // the UI can label the disabled `+ Add path` control honestly.
+  // =========================================================================
+  // 2b. PRIORITISED PATHS  (mission 7)
+  // =========================================================================
+  // An `if` node holds an ORDERED list of paths. They are evaluated top → down;
+  // the FIRST one whose condition is true is the route taken, and if none match
+  // the run leaves through the neutral `next` port. One path keeps the classic
+  // true/false shape, so every workflow saved before this feature is untouched.
+  //
+  //   path = { id: 'p1', name: '', groups: [[row, …], …] }
+  //
+  // `id` is what the canvas edge port is keyed on (`path:<id>`), so it must be
+  // stable across renames and safe inside a port string (no ':').
+  var CONDITION_MAX_PATHS = 20;      // Automa's own cap on condition paths
+  var PATH_ID_RE = /^[A-Za-z0-9_-]{1,24}$/;
+  // Kept so older callers/tests that asked "how many paths does v1 run?" still
+  // resolve; the runtime is no longer limited to one.
   var CONDITION_MAX_PATHS_V1 = 1;
+
+  function nextPathId(used) {
+    var n = 1;
+    while (used['p' + n]) n += 1;
+    return 'p' + n;
+  }
+
+  // One path, defensively normalised: a usable id, a string name and at least
+  // one (possibly blank) condition row so the builder always has something to
+  // draw.
+  function normalizePath(raw, used) {
+    used = used || {};
+    var src = (raw && typeof raw === 'object') ? raw : {};
+    var id = typeof src.id === 'string' && PATH_ID_RE.test(src.id) && !used[src.id]
+      ? src.id : nextPathId(used);
+    used[id] = true;
+    var groups = [];
+    if (Array.isArray(src.groups)) {
+      src.groups.forEach(function (rows) {
+        if (!Array.isArray(rows)) return;
+        var clean = rows.map(normalizeRow);
+        if (clean.length) groups.push(clean);
+      });
+    }
+    if (!groups.length) groups = [[blankRow()]];
+    return {
+      id: id,
+      name: typeof src.name === 'string' ? src.name : '',
+      groups: groups,
+    };
+  }
+
+  // Read the ordered path list off a node's params. ALWAYS returns ≥ 1 path:
+  // a node that never used the feature yields a single path carrying its
+  // existing `groups`, which is what makes the migration free.
+  function readPaths(params) {
+    params = params || {};
+    var raw = params.paths;
+    var parsed = raw;
+    if (typeof raw === 'string') {
+      try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+    }
+    var used = {};
+    var out = [];
+    if (Array.isArray(parsed)) {
+      parsed.forEach(function (p) {
+        if (out.length >= CONDITION_MAX_PATHS) return;
+        out.push(normalizePath(p, used));
+      });
+    }
+    if (!out.length) out = [{ id: 'p1', name: '', groups: readGroups(params) }];
+    return out;
+  }
+
+  // Write the path list back. Path 1 is ALSO mirrored into the legacy
+  // `groups` + flat fields, so a single-path node serialises byte-identically
+  // to what it did before this feature existed, and `params.paths` is removed
+  // entirely in that case (rule: never persist redundant state).
+  function writePaths(params, paths) {
+    params = params || {};
+    var used = {};
+    var clean = (paths || []).slice(0, CONDITION_MAX_PATHS)
+      .map(function (p) { return normalizePath(p, used); });
+    if (!clean.length) clean = [{ id: 'p1', name: '', groups: [[blankRow()]] }];
+    writeGroups(params, clean[0].groups);
+    if (clean.length > 1) {
+      params.paths = JSON.stringify(clean.map(function (p) {
+        return { id: p.id, name: p.name, groups: p.groups };
+      }));
+    } else if (params.paths !== undefined) {
+      delete params.paths;
+    }
+    return params;
+  }
+
+  function isMultiPath(params) {
+    return readPaths(params).length > 1;
+  }
+
+  // Display label for a path: the user's name, else "Path <n>".
+  function pathLabel(path, index, translate) {
+    var tr = typeof translate === 'function' ? translate : function (k) { return k; };
+    var nm = path && typeof path.name === 'string' ? path.name.trim() : '';
+    return nm || (tr('cb.path') + ' ' + (index + 1));
+  }
+
+  // Canvas-card summary for a MULTI-path node: "P1 … · P2 …". Blank paths are
+  // skipped, so an unconfigured extra path cannot invent a meaningless clause.
+  function pathsSummary(params, translate) {
+    var tr = typeof translate === 'function' ? translate : function (k) { return k; };
+    var paths = readPaths(params);
+    if (paths.length <= 1) return conditionSummary(params, translate);
+    var parts = [];
+    paths.forEach(function (p, i) {
+      var s = groupsSummary(p.groups, translate);
+      if (s) parts.push(pathLabel(p, i, tr) + ': ' + s);
+    });
+    return parts.join(' · ');
+  }
 
   /**
    * The operators offered for a given check kind.
@@ -565,6 +683,7 @@
     CONDITION_OPERATOR_GROUPS: CONDITION_OPERATOR_GROUPS,
     CONDITION_ATTRIBUTES: CONDITION_ATTRIBUTES,
     CONDITION_MAX_PATHS_V1: CONDITION_MAX_PATHS_V1,
+    CONDITION_MAX_PATHS: CONDITION_MAX_PATHS,
     CONDITION_KINDS: CONDITION_KINDS,
     checkKindOf: checkKindOf,
     applyCheckKind: applyCheckKind,
@@ -580,7 +699,15 @@
     writeGroups: writeGroups,
     rowChips: rowChips,
     conditionSummary: conditionSummary,
+    groupsSummary: groupsSummary,
     rowIsBlank: rowIsBlank,
+    // prioritised paths (mission 7)
+    normalizePath: normalizePath,
+    readPaths: readPaths,
+    writePaths: writePaths,
+    isMultiPath: isMultiPath,
+    pathLabel: pathLabel,
+    pathsSummary: pathsSummary,
     // click
     CLICK_DEFAULTS: CLICK_DEFAULTS,
     CLICK_SELECTOR_TYPES: CLICK_SELECTOR_TYPES,

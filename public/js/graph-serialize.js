@@ -103,7 +103,7 @@
   // were UI-only knobs that changed nothing about the run. They stay in this
   // strip list for one release so that a workflow saved by an older build does
   // not carry two orphan params into `step.params` when it is re-serialised.
-  var CONDITION_ONLY_PARAMS = ['groups', 'selector', 'operator', 'value',
+  var CONDITION_ONLY_PARAMS = ['groups', 'paths', 'selector', 'operator', 'value',
     'expected', 'source', 'attribute', 'maxDepth', 'evaluateMode'];
 
   // Operators whose `expected` the engine compares with Array.includes and so
@@ -179,28 +179,75 @@
     return buildSimpleCondition(params);
   }
 
+  // -------- prioritised paths (mission 7) ------------------------------------
+  // An `if` node may carry an ORDERED list of paths on `params.paths` (JSON):
+  //   [{ id, name, groups: [[row,…],…] }, …]
+  // Evaluated top → down at runtime; first true path wins; if none match the
+  // run leaves through the neutral `next` port. Returns null for the classic
+  // single-path node so its serialised shape is byte-identical to before.
+  //
+  // This parser is deliberately standalone (it does NOT reach for NdvModel):
+  // graph-serialize.js is the boundary the backend sees and is unit-tested on
+  // its own, so it must be able to read a graph without the NDV layer loaded.
+  var PATH_ID_RE = /^[A-Za-z0-9_-]{1,24}$/;
+  function parsePaths(params) {
+    params = params || {};
+    var raw = params.paths;
+    if (!raw) return null;
+    var arr = raw;
+    if (typeof raw === 'string') {
+      try { arr = JSON.parse(raw); } catch (e) { return null; }
+    }
+    if (!Array.isArray(arr)) return null;
+    var used = {};
+    var out = [];
+    arr.forEach(function (p) {
+      if (!p || typeof p !== 'object') return;
+      var id = typeof p.id === 'string' && PATH_ID_RE.test(p.id) && !used[p.id] ? p.id : null;
+      if (!id) { id = 'p' + (out.length + 1); if (used[id]) return; }
+      used[id] = true;
+      out.push({
+        id: id,
+        name: typeof p.name === 'string' ? p.name : '',
+        groups: Array.isArray(p.groups) ? p.groups : null,
+      });
+    });
+    // A single path IS the classic true/false node — do not switch shapes.
+    return out.length > 1 ? out : null;
+  }
+
+  // The canvas port id that carries a path's branch.
+  function pathPortId(id) { return 'path:' + id; }
+
   // Reverse of buildCondition: reconstruct editor `groups` from a stored
   // composite condition. Returns null when the condition is a plain simple
   // condition (legacy editor fields are used instead).
+  // One backend SimpleCondition -> one editor row. Hoisted to module scope
+  // because the multi-path importer needs the same conversion for a path whose
+  // condition is a bare simple condition (conditionToGroups returns null there,
+  // and a path has no legacy flat fields to fall back to).
+  function simpleRowFromCondition(c) {
+    var row = { operator: (c && c.operator) || 'exists' };
+    if (!c || typeof c !== 'object') return row;
+    if (c.selector !== undefined) row.selector = String(c.selector);
+    if (c.value !== undefined) row.value = String(c.value);
+    // `in_list` / `not_in_list` arrive as a real ARRAY (see splitListValue).
+    // Join them back with ", " so the row edits as the same comma list the
+    // user typed — `String(['a','b'])` would give "a,b" without the space and
+    // an object array would give "[object Object]".
+    if (c.expected !== undefined) {
+      row.expected = Array.isArray(c.expected)
+        ? c.expected.map(function (v) { return String(v); }).join(', ')
+        : String(c.expected);
+    }
+    if (c.source !== undefined) row.source = String(c.source);
+    if (c.attribute !== undefined) row.attribute = String(c.attribute);
+    return row;
+  }
+
   function conditionToGroups(cond) {
     if (!cond || typeof cond !== 'object') return null;
-    function simpleRow(c) {
-      var row = { operator: c.operator || 'exists' };
-      if (c.selector !== undefined) row.selector = String(c.selector);
-      if (c.value !== undefined) row.value = String(c.value);
-      // `in_list` / `not_in_list` arrive as a real ARRAY (see splitListValue).
-      // Join them back with ", " so the row edits as the same comma list the
-      // user typed — `String(['a','b'])` would give "a,b" without the space and
-      // an object array would give "[object Object]".
-      if (c.expected !== undefined) {
-        row.expected = Array.isArray(c.expected)
-          ? c.expected.map(function (v) { return String(v); }).join(', ')
-          : String(c.expected);
-      }
-      if (c.source !== undefined) row.source = String(c.source);
-      if (c.attribute !== undefined) row.attribute = String(c.attribute);
-      return row;
-    }
+    var simpleRow = simpleRowFromCondition;
     function groupRows(c) {
       // one group: either {all:[simple...]} or a single simple condition
       if (c && Array.isArray(c.all)) {
@@ -291,6 +338,27 @@
     var params = coerceParams(action, node.params);
 
     if (action === 'if') {
+      // Mission 7 — N prioritised paths. The runtime evaluates `paths` in
+      // order and takes the FIRST true one; `then`/`else` are not emitted at
+      // all in that shape, so there is no way for both routings to fire.
+      var paths = parsePaths(node.params || {});
+      if (paths) {
+        var pStep = {
+          action: 'if',
+          condition: buildCondition({ groups: JSON.stringify(paths[0].groups || []) }),
+          paths: paths.map(function (p) {
+            var entry = {
+              id: p.id,
+              condition: buildCondition({ groups: JSON.stringify(p.groups || []) }),
+            };
+            if (p.name) entry.name = p.name;
+            var steps = walkChain(graph, node.id, pathPortId(p.id), {});
+            if (steps.length) entry.steps = steps;
+            return entry;
+          }),
+        };
+        return { step: pStep, continueId: portTarget(graph, node.id, 'next') };
+      }
       var step = { action: 'if', condition: buildCondition(node.params || {}) };
       var thenSteps = walkChain(graph, node.id, 'then', {});
       var elseSteps = walkChain(graph, node.id, 'else', {});
@@ -410,6 +478,22 @@
             node.params[k] = String(s.params[k]);
           });
         }
+        // Mission 7 — a multi-path `if` round-trips through `params.paths`.
+        // Each path's backend condition is turned back into builder groups, so
+        // re-opening an imported workflow shows the same ordered list.
+        var importedPaths = null;
+        if (s.action === 'if' && Array.isArray(s.paths) && s.paths.length > 1) {
+          importedPaths = s.paths.map(function (p, pi) {
+            var pg = (p && p.condition) ? conditionToGroups(p.condition) : null;
+            if (!pg && p && p.condition) pg = [[simpleRowFromCondition(p.condition)]];
+            return {
+              id: (p && typeof p.id === 'string' && PATH_ID_RE.test(p.id)) ? p.id : ('p' + (pi + 1)),
+              name: (p && typeof p.name === 'string') ? p.name : '',
+              groups: pg || [[{ operator: 'exists' }]],
+            };
+          });
+          node.params.paths = JSON.stringify(importedPaths);
+        }
         // reconstruct editor-only fields from condition for if/while
         if ((s.action === 'if' || s.action === 'while') && s.condition && typeof s.condition === 'object') {
           var c = s.condition;
@@ -466,7 +550,11 @@
           branchY = r.nextY;
           if (r.right > branchRight) branchRight = r.right;
         }
-        if (s.action === 'if') {
+        if (s.action === 'if' && importedPaths) {
+          importedPaths.forEach(function (p, pi) {
+            lane(s.paths[pi] && s.paths[pi].steps, 'path:' + p.id);
+          });
+        } else if (s.action === 'if') {
           lane(s.then, 'then');
           lane(s.else, 'else');
         } else if (s.action === 'switch' && s.cases && typeof s.cases === 'object') {
@@ -565,9 +653,18 @@
           errors.push({ code: 'foreach-items', nodeId: id, message: 'val.foreachItems' });
         }
       }
-      // if needs at least one branch
+      // if needs at least one branch — for a multi-path node, at least one of
+      // its `path:<id>` ports must lead somewhere (the neutral `next` port is
+      // not a branch: leaving every path empty means the node decides nothing).
       if (node.action === 'if') {
-        if (!portTarget(graph, id, 'then') && !portTarget(graph, id, 'else')) {
+        var ifPaths = parsePaths(node.params || {});
+        if (ifPaths) {
+          var anyPath = false;
+          for (var pi = 0; pi < ifPaths.length; pi++) {
+            if (portTarget(graph, id, pathPortId(ifPaths[pi].id))) { anyPath = true; break; }
+          }
+          if (!anyPath) warnings.push({ code: 'empty-if', nodeId: id, message: 'val.emptyIf' });
+        } else if (!portTarget(graph, id, 'then') && !portTarget(graph, id, 'else')) {
           warnings.push({ code: 'empty-if', nodeId: id, message: 'val.emptyIf' });
         }
       }
@@ -643,6 +740,16 @@
         for (var i = 0; i < ports.length; i++) {
           if (ports[i] && ports[i].id !== 'next') branchPorts.push(ports[i]);
         }
+        // A multi-path `if` replaces then/else with one `path:<id>` port per
+        // path, in priority order, so the outline mirrors the canvas.
+        if (node.action === 'if') {
+          var np = parsePaths(node.params || {});
+          if (np) {
+            branchPorts = np.map(function (p) {
+              return { id: pathPortId(p.id), label: 'port.path' };
+            });
+          }
+        }
         // `switch` fans out through dynamic `case:<value>` ports, which are not
         // declared in the catalog — read them off the edges instead.
         if (node.action === 'switch') {
@@ -691,6 +798,8 @@
     coerceParams: coerceParams,
     buildCondition: buildCondition,
     conditionToGroups: conditionToGroups,
+    parsePaths: parsePaths,
+    pathPortId: pathPortId,
     CONDITION_ONLY_PARAMS: CONDITION_ONLY_PARAMS,
     OUTLINE_MAX_ROWS: OUTLINE_MAX_ROWS,
   };

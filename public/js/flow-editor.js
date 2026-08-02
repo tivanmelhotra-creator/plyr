@@ -425,8 +425,41 @@
   // Step 24: ports of a node. Branching actions expose multiple output ports
   // (then/else, body/done, try/catch/finally, switch cases). Returns a list of
   // { id, label } where the first is at the top.
+  // Longest port label the card can hold without colliding with its own text.
+  var PORT_LABEL_MAX = 14;
+  function clipPortLabel(s) {
+    var str = String(s == null ? '' : s);
+    return str.length > PORT_LABEL_MAX ? (str.slice(0, PORT_LABEL_MAX - 1) + '…') : str;
+  }
+
   function portsOf(node) {
     if (node.action === '__start__') return [{ id: 'next', label: 'port.next' }];
+    // Mission 7 — a condition node with ≥ 2 prioritised paths replaces
+    // then/else with one `path:<id>` port per path, in priority order, and
+    // keeps `next` as the NEUTRAL fallback taken when no path matches.
+    var gs = GS();
+    if (node.action === 'if' && gs && gs.parsePaths) {
+      var mp = gs.parsePaths(node.params || {});
+      if (mp) {
+        var pports = mp.map(function (p, i) {
+          return {
+            id: gs.pathPortId(p.id),
+            label: 'port.path',
+            // Literal text wins over the i18n key so a renamed path reads as
+            // itself on the canvas — always prefixed with its PRIORITY, which
+            // is the one thing a reader of the graph must be able to see.
+            // Clipped, because a port label sits INSIDE the card's right edge:
+            // an unclipped 60-character path name would print straight over the
+            // node's own title and summary.
+            text: (p.name && p.name.trim())
+              ? ((i + 1) + '. ' + clipPortLabel(p.name.trim()))
+              : (t('cb.path') + ' ' + (i + 1)),
+          };
+        });
+        pports.push({ id: 'next', label: 'port.next' });
+        return pports;
+      }
+    }
     var base = (CAT.branchesOf ? CAT.branchesOf(node.action) : [{ id: 'next', label: 'port.next' }]);
     // if/switch/try also expose an implicit 'next' (main-chain continuation).
     var act = actionById(node.action);
@@ -738,6 +771,16 @@
     catch: { i18n: 'pill.catch', tone: 'false' },
   };
 
+  // Display text of a `path:<id>` port on a given node (its name, else
+  // "Path n"). Returns '' when the node no longer owns that port.
+  function pathPortText(node, portId) {
+    var ports = portsOf(node);
+    for (var i = 0; i < ports.length; i++) {
+      if (ports[i].id === portId) return ports[i].text || '';
+    }
+    return '';
+  }
+
   // Midpoint of the cubic above (t = 0.5) — where the pill is anchored.
   function curveMidpoint(x1, y1, x2, y2) {
     var dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
@@ -777,11 +820,17 @@
       // Mid-wire branch pill (`True` / `False`) — an HTML chip in the world
       // layer so it inherits the canvas transform and stays crisp at any zoom.
       var pill = EDGE_PILL_PORTS[port];
+      // A prioritised condition path gets a pill too, showing its PRIORITY
+      // number — the whole point of the feature is that order is visible.
+      if (!pill && port.indexOf('path:') === 0) {
+        var pTxt = pathPortText(from, port);
+        if (pTxt) pill = { text: pTxt, tone: 'path' };
+      }
       if (pill) {
         var mid = curveMidpoint(p1.x, p1.y, p2.x, p2.y);
         var chip = document.createElement('span');
         chip.className = 'fe-edge-pill tone-' + pill.tone;
-        chip.textContent = t(pill.i18n);
+        chip.textContent = pill.text ? pill.text : t(pill.i18n);
         chip.style.left = mid.x + 'px';
         chip.style.top = mid.y + 'px';
         dom.world.appendChild(chip);
@@ -824,7 +873,11 @@
   function nodeCardSummary(node, act) {
     if (node.action === 'if' || node.action === 'while') {
       if (window.NdvModel && window.NdvModel.conditionSummary) {
-        var s = window.NdvModel.conditionSummary(node.params || {}, t);
+        // A multi-path `if` summarises EVERY path in priority order, so the
+        // card cannot claim to test only the first one.
+        var s = (node.action === 'if' && window.NdvModel.pathsSummary)
+          ? window.NdvModel.pathsSummary(node.params || {}, t)
+          : window.NdvModel.conditionSummary(node.params || {}, t);
         if (s) return s;
       }
     }
@@ -970,8 +1023,10 @@
       if (branching) {
         var lbl = document.createElement('span');
         lbl.className = 'flow-port-label port-' + p.id.replace(/[^a-z0-9]+/gi, '-');
-        // case:<v> labels show the raw case value
-        lbl.textContent = p.id.indexOf('case:') === 0 ? p.id.slice(5) : t(p.label);
+        // A port may carry LITERAL text (a renamed condition path); `case:<v>`
+        // labels show the raw case value; everything else is an i18n key.
+        lbl.textContent = p.text ? p.text
+          : (p.id.indexOf('case:') === 0 ? p.id.slice(5) : t(p.label));
         lbl.style.top = (portY(node, p.id) - node.y - 9) + 'px';
         card.appendChild(lbl);
       }
