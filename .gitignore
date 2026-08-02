@@ -31,3 +31,10 @@ dump.rdb
 # Diagnostic renders from tools/ui-shot.js and tools/picker-panel-shot.js.
 # Measurement artefacts, not deliverables.
 .ui-shots/
+
+# ───────── Crash dumps ─────────
+# A killed Chrome/node can drop a multi-hundred-MB `core` in the repo root.
+# It is never a deliverable, and on a small box it silently eats all the RAM
+# and disk that the test suite needs. Ignore it so it is never committed.
+core
+core.*

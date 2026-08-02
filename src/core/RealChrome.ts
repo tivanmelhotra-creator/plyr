@@ -308,13 +308,17 @@ export class RealChrome {
 
   /** Extensions Chrome is currently running with, plus their chrome-extension URLs. */
   static loadedExtensions(): Array<InstalledExtension & {
-    url: string; popupUrl: string; optionsUrl: string;
+    url: string; popupUrl: string; optionsUrl: string; runtimeId: string;
   }> {
     return this.loaded.map((e) => {
-      const id = unpackedExtensionId(e.dir);
+      // A manifest `key` overrides the path-derived id, and store installs pin
+      // one deliberately. Guessing the path id for those would build
+      // chrome-extension:// URLs that resolve to nothing at all.
+      const id = e.extensionId || unpackedExtensionId(e.dir);
       const base = `chrome-extension://${id}/`;
       return {
         ...e,
+        runtimeId: id,
         url: base,
         popupUrl: e.popup ? base + e.popup : '',
         optionsUrl: e.optionsPage ? base + e.optionsPage : '',
@@ -330,7 +334,9 @@ export class RealChrome {
    * a tab works: an extension page has the same privileges wherever it renders.
    */
   static extensionPageUrl(id: string): string {
-    const found = this.loadedExtensions().find((e) => e.id === id || e.name === id);
+    const found = this.loadedExtensions().find(
+      (e) => e.id === id || e.name === id || e.runtimeId === id || e.storeId === id,
+    );
     if (!found) return '';
     return found.popupUrl || found.optionsUrl || found.url;
   }
