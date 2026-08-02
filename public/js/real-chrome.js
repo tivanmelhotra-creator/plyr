@@ -405,7 +405,23 @@
       desk.running ? t('rc.running', 'running') : t('rc.stopped', 'stopped'));
     dRow.appendChild(dChip);
 
-    if (desk.missing && desk.missing.length) {
+    // The screen and the viewer are two different things, and only the screen
+    // decides whether Chrome can start at all. Say which one is missing.
+    if (desk.displayRunning && !desk.running) {
+      note(s4, t('rc.displayOnly',
+        'The virtual screen is up, so the browser and its extensions work — you ' +
+        'just cannot watch the full Chrome window (x11vnc/websockify are not installed).'));
+    } else if (!desk.displayRunning && desk.missing &&
+               desk.missing.indexOf('Xvfb') !== -1 && rc.enabled && !rc.headless) {
+      // This one IS a warning: with no display a headed Chrome cannot start,
+      // which is the single failure people hit and cannot diagnose.
+      note(s4, t('rc.displayMissing',
+        'There is no screen to draw on. A headed Chrome — the only kind that loads ' +
+        'extensions — cannot start without one: install Xvfb, or set ' +
+        'REAL_CHROME_HEADLESS=true (no extensions in that mode).'), 'warn');
+    }
+
+    if (desk.missing && desk.missing.length && !desk.displayRunning) {
       // Deliberately NOT styled as a warning. Nothing is broken: the desktop is
       // an optional extra now that extensions install from the store, and an
       // orange block here reads as "your setup is wrong" for a feature most
@@ -433,7 +449,7 @@
           .then(function () { setBusy(stopDesk, false); });
       });
       dRow.appendChild(stopDesk);
-    } else {
+    } else if (!desk.missing || !desk.missing.length) {
       var startDesk = btn(t('rc.startDesktop', 'Start desktop'), 'btn btn-sm');
       startDesk.addEventListener('click', function () {
         setBusy(startDesk, true, t('rc.starting', 'starting…'));

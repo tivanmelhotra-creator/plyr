@@ -27,7 +27,7 @@ import path from 'path';
 
 import { config } from '../config';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
-import { Desktop, DesktopError } from '../core/Desktop';
+import { Desktop, DesktopError, displayGuidance } from '../core/Desktop';
 import {
   installExtensionArchive,
   installExtensionFromStore,
@@ -43,6 +43,10 @@ import {
   type CookieImportResult,
 } from '../core/CookieImport';
 import { sessionStatePath, loadStorageState } from '../core/BrowserProfile';
+import { saveUpload, UploadError, MAX_UPLOAD_BYTES } from '../core/RemoteUploads';
+// The same gate /browser/ws uses. Uploads must be scoped to the identity the
+// socket runs as, so they must be authorized by the identical rule.
+import { authorizeLive } from '../core/LiveServer';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 
 /**
@@ -56,6 +60,24 @@ import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 function resolveUserId(req: AuthenticatedRequest): string {
   if (config.IS_SINGLE_USER) return SINGLE_USER_ID;
   return req.apiKeyUserId || SINGLE_USER_ID;
+}
+
+/**
+ * The API key as the auth middleware accepted it.
+ *
+ * Repeated here rather than exported from the middleware because the middleware
+ * consumes the key and keeps only the resolved user; the upload route needs the
+ * key itself to re-run `authorizeLive` against a *different* userId. All three
+ * accepted forms must be honoured, or the header-only clients would work and
+ * the query-param ones (the picker's own socket URL style) would 403.
+ */
+function apiKeyOf(req: AuthenticatedRequest): string | undefined {
+  const header = req.headers['x-api-key'];
+  if (typeof header === 'string' && header.length > 0) return header;
+  if (req.query.api_key) return String(req.query.api_key);
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) return auth.substring(7).trim();
+  return undefined;
 }
 
 function fail(res: Response, status: number, error: string, hint = ''): void {
@@ -137,8 +159,31 @@ export const createBrowserRoutes = (): Router => {
     try {
       if (!config.REAL_CHROME_HEADLESS) {
         const desktop = await Desktop.status();
-        if (!desktop.running && desktop.missing.length === 0) {
-          await Desktop.start().catch(() => { /* reported by RealChrome below */ });
+        if (!desktop.running) {
+          // Try the full stack first (a display + a way to watch it), but never
+          // let a missing VIEWER stop the BROWSER: x11vnc/websockify are how a
+          // human looks at the screen, Xvfb *is* the screen. Falling back to the
+          // display alone is the difference between "extensions work, you just
+          // cannot watch them" and the dead end this used to be.
+          try {
+            await Desktop.start();
+          } catch {
+            try {
+              await Desktop.ensureDisplay();
+            } catch {
+              // No screen and no way to make one. Answer with the command to
+              // run rather than letting Chrome fail with "Missing X server",
+              // which names no package and no next step.
+              const st = await Desktop.status();
+              if (!st.displayRunning) {
+                return fail(
+                  res, 503,
+                  displayGuidance(st.missing, st.display),
+                  st.installHint,
+                );
+              }
+            }
+          }
         }
       }
       await RealChrome.getContext();
@@ -402,6 +447,59 @@ export const createBrowserRoutes = (): Router => {
       res.send(JSON.stringify(out, null, 2));
     } catch (e) { sendError(res, e); }
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Remote file upload
+  //
+  // The counterpart of the picker's file-chooser prompt: the page asked for a
+  // file, the file is on the USER's machine, and Chrome is on this one. The
+  // bytes come here first; the WebSocket then hands the resulting token to the
+  // waiting dialog. The client never learns a path — see core/RemoteUploads.
+  //
+  // WHY THIS TAKES ?userId AND THE COOKIE ROUTES ABOVE DO NOT
+  // ---------------------------------------------------------
+  // Uploads are stored per identity and resolved again by the SOCKET, and the
+  // socket runs as the `userId` in its own query string (authorizeLive gates
+  // it). Scoping the upload with `resolveUserId(req)` instead — the rule the
+  // profile routes use — put the file under `local` while the session looked
+  // for it under its own id, and the hand-over died with a bare ENOENT that
+  // surfaced as "Import still does nothing". So the two must agree, and the
+  // way to agree is to accept the same parameter behind the same gate: the key
+  // must own the id, exactly as it must to open the socket at all.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  router.post(
+    '/browser/uploads',
+    express.raw({ type: () => true, limit: MAX_UPLOAD_BYTES }),
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const body = req.body as Buffer;
+        if (!Buffer.isBuffer(body) || body.length === 0) {
+          return fail(res, 400, 'No file was uploaded.',
+            'POST the file bytes as the raw request body, with ?name=<filename>.');
+        }
+        const asked = String(req.query.userId || '').trim();
+        let owner = resolveUserId(req);
+        if (asked && asked !== owner) {
+          const auth = await authorizeLive(apiKeyOf(req), asked);
+          if (!auth.ok) {
+            return fail(res, 403, 'This API key may not upload for that user.',
+              'Use the same userId the browser socket was opened with.');
+          }
+          owner = asked;
+        }
+        const stored = await saveUpload(
+          owner,
+          String(req.query.name || 'file'),
+          body,
+        );
+        res.json({ success: true, ...stored });
+      } catch (e) {
+        if (e instanceof UploadError) return fail(res, 400, e.message);
+        sendError(res, e);
+      }
+    },
+  );
 
   // ─────────────────────────────────────────────────────────────────────────
   // Remote desktop
