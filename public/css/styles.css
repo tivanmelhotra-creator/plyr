@@ -5599,3 +5599,114 @@ body.route-fullbleed .fe-mm-restore {
   .bvp-attrs,
   .bvp-cands { max-height: 110px; }
 }
+
+/* ============================================================================
+   Real Chrome panel  (public/js/real-chrome.js)
+
+   A popover anchored under the picker toolbar's Real Chrome button. It is a
+   control surface, not a document: dense rows, no decoration, and every
+   destructive or slow action visibly disabled while it runs.
+   ============================================================================ */
+.rc-panel {
+  position: fixed;
+  z-index: 1200;
+  width: 372px;
+  max-width: calc(100vw - 16px);
+  /* The picker modal is already tall; cap this and scroll rather than pushing
+     the last section (the desktop controls) off-screen. */
+  max-height: min(72vh, 640px);
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.rc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev);
+  z-index: 1;
+}
+.rc-title { font-weight: 600; flex: 1; }
+
+.rc-body { padding: 4px 12px 12px; }
+
+.rc-section { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.rc-section:last-child { border-bottom: 0; }
+.rc-section-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.rc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+/* The real <input type=file> is kept in the DOM (a detached one cannot open a
+   picker in Safari) but never shown; a styled button clicks it. */
+.rc-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.rc-note {
+  margin-top: 6px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  font-size: 0.78rem;
+}
+.rc-note.is-warn  { color: var(--warn); }
+.rc-note.is-error { color: var(--danger); }
+
+.rc-list { display: flex; flex-direction: column; gap: 6px; }
+
+.rc-ext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.rc-ext-meta { flex: 1; min-width: 0; }
+.rc-ext-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rc-ext-ver { color: var(--text-dim); font-size: 0.72rem; }
+
+.rc-toast {
+  margin: 8px 12px 12px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  font-size: 0.78rem;
+}
+.rc-toast.is-error { color: var(--danger); }
+.rc-toast.is-warn  { color: var(--warn); }
+.rc-toast.is-ok    { color: var(--success); }
+
+/* Extension ids and chrome-extension:// URLs are latin even in an RTL UI. */
+[dir="rtl"] .rc-ext-name,
+[dir="rtl"] .rc-ext-ver { direction: ltr; text-align: right; }

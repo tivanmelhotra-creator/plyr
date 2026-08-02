@@ -225,6 +225,131 @@ docker compose down           # توقف
 
 ---
 
+## مرورگر واقعی Chrome (افزونه‌ها، کوکی‌ها و دسکتاپ ریموت)
+
+> نیاز اصلی: «شبیه‌ساز کافی نیست — ما به یک **کروم واقعی** نیاز داریم که بشود روی آن **افزونهٔ کروم** (مثلاً افزونهٔ خروجی/ورودی کوکی) نصب کرد و آن را از طریق یک **پورت** بالا آورد.»
+
+در حالت پیش‌فرض، مرورگرِ تعاملی یک Chromium معمولیِ Playwright است که افزونه نمی‌پذیرد. با فعال‌کردن **Real Chrome** به‌جای آن یک
+`chromium.launchPersistentContext()` با یک **user-data-dir واقعی** بالا می‌آید که:
+
+- افزونه‌های کروم (MV2/MV3) را واقعاً **load** می‌کند،
+- کوکی‌ها و `localStorage` و storage افزونه‌ها را **بین ری‌استارت‌ها نگه می‌دارد**،
+- روی یک **پورت DevTools (CDP)** در دسترس قرار می‌گیرد تا از بیرون هم بشود به همان مرورگر وصل شد،
+- همان context را به پیکرِ داخل UI (آیکن ➕ crosshair در پنل مرورگر) می‌دهد، پس چیزی که می‌بینید دقیقاً همان مرورگری است که اتوماسیون با آن اجرا می‌شود.
+
+### فعال‌سازی
+
+در `.env`:
+
+```bash
+REAL_CHROME_ENABLED=true
+REAL_CHROME_HEADLESS=false          # افزونه‌ها فقط در حالت headed لود می‌شوند
+REAL_CHROME_DISPLAY=:99             # روی سرورِ بدون مانیتور، نیاز به Xvfb دارد
+REAL_CHROME_DEBUG_PORT=9222         # 0 = خاموش؛ >0 = پورت DevTools/CDP
+REAL_CHROME_DEBUG_BIND=127.0.0.1    # فقط اگر واقعاً لازم است 0.0.0.0 کنید
+REAL_CHROME_USER_DATA_DIR=./profiles/chrome-profile
+REAL_CHROME_EXTENSIONS_DIR=./profiles/extensions
+REAL_CHROME_WINDOW_WIDTH=1280
+REAL_CHROME_WINDOW_HEIGHT=800
+```
+
+> ⚠️ `REAL_CHROME_DEBUG_BIND=0.0.0.0` یعنی هر کسی که به آن پورت برسد کنترل کامل مرورگر (و همهٔ نشست‌های لاگین‌شده) را دارد.
+> فقط پشت فایروال/تونل SSH استفاده کنید.
+
+### اجرا روی سرورِ بدون صفحه‌نمایش (Xvfb + VNC)
+
+افزونه‌ها در Chrome فقط در حالت headed لود می‌شوند، پس روی سرور به یک X server نیاز است:
+
+```bash
+sudo ./scripts/desktop.sh install    # نصب xvfb / x11vnc / novnc / websockify
+./scripts/desktop.sh start           # Xvfb :99 + x11vnc :5900 + noVNC :6080
+./scripts/desktop.sh status
+./scripts/desktop.sh stop
+```
+
+اگر فقط Xvfb کافی است (یعنی پنجرهٔ واقعی را لازم ندارید و از پیکرِ داخل UI استفاده می‌کنید)، همان `DESKTOP_ENABLED=false` بماند و
+تنها Xvfb را بالا بیاورید. برای دیدنِ پنجرهٔ واقعی کروم در مرورگر خودتان:
+
+```bash
+DESKTOP_ENABLED=true
+DESKTOP_VNC_PORT=5900
+DESKTOP_NOVNC_PORT=6080
+DESKTOP_VNC_PASSWORD=<یک رمز قوی>   # خالی = بدون رمز (خطرناک)
+```
+
+سپس `http://<host>:6080/vnc.html?autoconnect=1&resize=remote`.
+
+### نصب افزونه
+
+از پنل UI: در نوار ابزار پنجرهٔ مرورگر روی آیکن **Real Chrome** (لایه‌ها) بزنید → بخش **Extensions** → آپلود فایل `.crx` یا `.zip`.
+یا به‌صورت دستی، پوشهٔ unpacked افزونه را داخل `REAL_CHROME_EXTENSIONS_DIR` بگذارید:
+
+```
+profiles/extensions/
+  my-cookie-extension/
+    manifest.json
+    popup.html
+    ...
+```
+
+بعد از هر نصب/حذف، **Restart** بزنید تا کروم دوباره با `--load-extension` بالا بیاید.
+
+> نکتهٔ فنی: `--load-extension` بدون `--disable-extensions-except` و بدون حذف `--disable-extensions` پیش‌فرضِ Playwright
+> (`ignoreDefaultArgs: ['--disable-extensions']`) **بی‌صدا** بی‌اثر می‌شود. این سه با هم در `RealChrome` اعمال شده‌اند.
+
+### باز کردن popup افزونه بدون VNC
+
+popup یک افزونه در واقع یک صفحهٔ عادیِ افزونه است. شناسهٔ یک افزونهٔ unpacked قطعی است
+(`sha256(absolute path)` → ۱۶ بایت اول → نگاشت هر nibble با `0→a … f→p`)، پس می‌توان مستقیم به
+`chrome-extension://<id>/popup.html` رفت. دکمهٔ **Open here** در لیست افزونه‌ها همین کار را می‌کند و popup
+با تمام دسترسی‌های افزونه (`chrome.cookies` و …) داخل همان پیکرِ UI رندر می‌شود — بدون نیاز به VNC.
+
+### ورود/خروج کوکی (بدون افزونه هم کار می‌کند)
+
+بخش **Cookies** در همان پنل، فایل کوکی را می‌گیرد و هم به مرورگرِ زنده اعمال می‌کند و هم داخل پروفایل ذخیره می‌کند
+(پس **اجراهای صف‌شده هم لاگین می‌مانند**). فرمت‌های پشتیبانی‌شده:
+
+| فرمت | منبع معمول |
+|------|------------|
+| `cookie-editor` | افزونهٔ Cookie-Editor / EditThisCookie (آرایهٔ JSON) |
+| `storage-state` | خروجی `storageState` خود Playwright |
+| `netscape` | فایل‌های `cookies.txt` (curl/wget/yt-dlp) |
+
+تفاوت‌های رایج به‌صورت خودکار اصلاح می‌شود: `sameSite: no_restriction/unspecified`، `expirationDate` اعشاری یا میلی‌ثانیه‌ای،
+`hostOnly` در مقابل دامنهٔ با نقطهٔ ابتدایی، و اجباری‌بودن `Secure` برای `SameSite=None`.
+خروجی هم با دکمهٔ **Export** به فرمت Cookie-Editor گرفته می‌شود.
+
+### API
+
+همهٔ مسیرها پشت همان احراز هویت معمول (`x-api-key` / `Authorization: Bearer`) هستند:
+
+| متد | مسیر | کار |
+|-----|------|-----|
+| `GET` | `/browser/status` | وضعیت کروم، نسخه، پورت DevTools، وضعیت دسکتاپ |
+| `POST` | `/browser/start` \| `/stop` \| `/restart` | کنترل چرخهٔ عمر کروم |
+| `GET` | `/browser/extensions` | لیست افزونه‌ها + `popupUrl` هرکدام |
+| `POST` | `/browser/extensions/upload?name=<slug>` | آپلود `.crx`/`.zip` (بدنهٔ raw) |
+| `DELETE` | `/browser/extensions/:name` | حذف افزونه |
+| `POST` | `/browser/cookies/import` | ورود کوکی (`{ text }` یا بدنهٔ متنی) |
+| `GET` | `/browser/cookies/export` | خروجی کوکی به فرمت Cookie-Editor |
+| `POST` | `/browser/desktop/start` \| `/stop` | کنترل Xvfb + VNC + noVNC |
+
+### اتصال ابزار بیرونی به همان مرورگر
+
+با `REAL_CHROME_DEBUG_PORT=9222`:
+
+```bash
+curl http://127.0.0.1:9222/json/version
+```
+
+و از کد:
+
+```js
+const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
+```
+
+---
+
 ## مستندات API
 
 فهرست کامل endpointها، احراز هویت و نمونه‌ها در [`docs/API.md`](./docs/API.md). مشخصات ماشین‌خوانِ OpenAPI 3.0 (مناسب برای import در n8n/Swagger UI/Postman) در [`docs/openapi.yaml`](./docs/openapi.yaml).

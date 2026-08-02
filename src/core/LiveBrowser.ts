@@ -468,7 +468,20 @@ export class LiveBrowserSession {
     if (!this.page) return;
     let target = String(url || '').trim();
     if (!target) return;
-    if (!/^https?:\/\//i.test(target)) target = 'https://' + target;
+    // A Chrome extension's popup is also an extension PAGE, so navigating this
+    // tab to chrome-extension://<id>/popup.html renders the extension's own UI
+    // with the extension's own privileges. That is how a cookie import/export
+    // extension can be driven from inside this canvas, which otherwise can only
+    // ever show web pages — an extension's toolbar popup is not part of any
+    // page and cannot be screencast.
+    //
+    // The allowlist is exactly two schemes. `file://` is deliberately NOT here:
+    // the navigate command arrives over a WebSocket, and letting it read the
+    // server's filesystem would turn the picker into an exfiltration tool.
+    const EXPLICIT_SCHEME = /^(chrome-extension:\/\/|about:)/i;
+    if (!/^https?:\/\//i.test(target) && !EXPLICIT_SCHEME.test(target)) {
+      target = 'https://' + target;
+    }
     try {
       await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
       this.emit('navigated', { url: this.page.url() });

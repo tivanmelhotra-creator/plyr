@@ -390,6 +390,14 @@
           '<button class="icon-btn bvp-forget" id="bvp-forget" type="button" ' +
             'title="' + esc(t('bvp.forget')) + '" aria-label="' + esc(t('bvp.forget')) + '">' +
             BIC('cookie', 15) + '</button>' +
+          // Real Chrome. The canvas below is a screencast of a PAGE, so it can
+          // never show an extension popup, chrome://extensions or a native file
+          // dialog — they are not drawn by the page. This button is the way out
+          // of that ceiling: import a cookie export, load a real extension, or
+          // open the whole Chrome window over noVNC.
+          '<button class="icon-btn bvp-chrome" id="bvp-chrome" type="button" ' +
+            'title="' + esc(t('rc.title')) + '" aria-label="' + esc(t('rc.title')) + '">' +
+            BIC('layers', 15) + '</button>' +
           '<button class="icon-btn bvp-close" id="bvp-close" type="button" ' +
             'title="' + esc(t('bvp.cancel')) + '" aria-label="' + esc(t('bvp.cancel')) + '">' +
             BIC('x', 15) + '</button>' +
@@ -972,6 +980,30 @@
     q('bvp-forget').addEventListener('click', function () {
       send({ t: 'forgetSession' });
     });
+    // The Real Chrome panel needs a way to point THIS canvas at a URL, because
+    // its most useful action — "open the extension's popup here" — is a
+    // navigation to a chrome-extension:// page. Handing it `send` directly would
+    // leak the socket, so it gets one narrow callback instead.
+    var chromeBtn = q('bvp-chrome');
+    if (chromeBtn) {
+      chromeBtn.addEventListener('click', function () {
+        if (!window.RealChromePanel) return;
+        window.RealChromePanel.open({
+          anchor: chromeBtn,
+          onNavigate: function (url) {
+            urlIn.value = url;
+            // connect() — NOT send() — because the picker does not open a
+            // socket until there is somewhere to go. Opening the panel first
+            // and clicking "Open here" is a perfectly normal order of
+            // operations, and send() on a socket that was never created is a
+            // silent no-op that leaves the canvas blank and the status stuck on
+            // "Disconnected" (caught by tools/probe-real-chrome-ui.js).
+            // connect() already routes to navigate when the socket IS open.
+            connect();
+          },
+        });
+      });
+    }
     q('bvp-use').addEventListener('click', function () {
       var val = (selIn.value || '').trim();
       if (!val) { selIn.focus(); return; }
