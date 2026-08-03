@@ -5279,10 +5279,9 @@ body.route-fullbleed .fe-mm-restore {
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev-2);
 }
-/* One tab is not a tab bar, it is chrome eating the page. The + button lives in
- * the strip, so the strip comes back the instant a second tab exists — and a
- * new tab is still reachable meanwhile from the Real Chrome panel. */
-.bvp-tabstrip.is-solo { display: none; }
+/* The strip is always shown, like Chrome's. It used to hide itself while there
+ * was a single tab, which hid the + button along with it and left no way to
+ * open the second tab that would have brought it back. */
 /* Scrolls rather than wraps. Wrapping would move the page image down by a whole
  * row the moment the seventh tab opened, i.e. the layout would jump while the
  * user was mid-click. `scrollbar-width: thin` keeps the row 30px tall. */
@@ -5296,18 +5295,93 @@ body.route-fullbleed .fe-mm-restore {
   overflow-y: hidden;
   scrollbar-width: thin;
 }
+/* Chrome-like widths. Chrome STRETCHES tabs to fill the strip while there are
+ * few of them, then shrinks them evenly as the count rises, down to a floor
+ * where only the mark and the X remain. So `flex: 1 1 0` (grow AND shrink from a
+ * zero basis) rather than `0 1 auto`, and the ceiling comes from
+ * `--bvp-tabmax`, which renderTabs() lowers as tabs are added. The effect is
+ * that two tabs are wide and readable, ten are narrow but ALL still visible,
+ * and none of them ever scroll out of reach — a tab you have to scroll to find
+ * is a tab you will forget you left open. */
 .bvp-tabitem {
   display: inline-flex;
   align-items: center;
   gap: 0.1rem;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 13rem;
+  flex: 1 1 0;
+  min-width: 3.1rem;
+  max-width: var(--bvp-tabmax, 13rem);
   padding-inline-start: 0.15rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   font-size: 0.78rem;
+  /* The reorder drag needs the chip itself to be the drag handle, and a browser
+   * text-selection started on a tab name fights the drag for the pointer. */
+  user-select: none;
+}
+/* A pinned tab shrinks to its mark, exactly like Chrome's: pinning means "this
+ * one stays, and stays out of the way". */
+.bvp-tabitem.is-pinned {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 4.4rem;
+}
+/* The carried tab, and the slot it would land in. Both are needed: without the
+ * ghost you cannot tell which tab you picked up, and without the marker you
+ * cannot tell where releasing would put it. */
+.bvp-tabitem.is-dragging { opacity: 0.4; }
+.bvp-tabitem.is-dropslot { box-shadow: inset 2px 0 0 0 var(--primary); }
+
+/* ── The favicon slot, which doubles as the loading spinner ──────────────────
+ * One slot answers both "which site is this?" and "is it still working?".
+ * Chrome swaps the favicon for a spinning arc while a tab loads, and that swap
+ * is the point: two separate slots would widen every tab for no gain. */
+.bvp-tabmark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-dim);
+}
+.bvp-tabfav {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 2px;
+  object-fit: contain;
+}
+/* The spin. A gapped arc is what makes the rotation legible — a full ring looks
+ * static however fast it turns. */
+.bvp-tabmark.is-spin { color: var(--primary); }
+.bvp-tabmark.is-spin svg { animation: bvp-spin 0.9s linear infinite; }
+@keyframes bvp-spin { to { transform: rotate(360deg); } }
+/* Respect the user's setting. A perpetual spinner is a real accessibility
+ * problem, so when animation is unwelcome the arc simply holds still and the
+ * colour carries the meaning. */
+@media (prefers-reduced-motion: reduce) {
+  .bvp-tabmark.is-spin svg,
+  .bvp-heal-mark.is-spin svg { animation: none; }
+}
+
+/* ── The audio indicator ────────────────────────────────────────────────────
+ * Chrome shows a speaker on any tab making noise, and clicking it mutes that
+ * tab. It is a BUTTON because that is the only reason anyone hunts for it:
+ * silencing the tab WITHOUT having to switch to it first. */
+.bvp-tabsound {
+  flex: 0 0 auto;
+  padding: 0.1rem;
+  opacity: 0.8;
+  color: var(--primary);
+}
+.bvp-tabsound:hover { opacity: 1; }
+.bvp-tabsound.is-muted { color: var(--text-dim); opacity: 0.6; }
+.bvp-tabpin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 0.1rem;
+  color: var(--text-dim);
+  opacity: 0.7;
 }
 .bvp-tabitem.is-on {
   border-color: var(--primary);
@@ -5778,6 +5852,359 @@ body.route-fullbleed .fe-mm-restore {
 /* The "this is a signed-out browser" disclosure. Dimmer than the hint so it
  * reads as a caveat, but present on every open — see AUTH-GAP. */
 .bvp-anon { color: var(--text-faint, #5E6876); }
+
+/* ── Zoom control ───────────────────────────────────────────────────────────
+ * The percentage is a BUTTON (click = back to 100%), because a zoom you cannot
+ * read is a zoom you cannot undo — and since every click coordinate is divided
+ * by this number, a user who does not know they are at 67% has no way to explain
+ * why the page feels wrong. */
+.bvp-zoomgrp {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.bvp-zoomlvl {
+  min-width: 2.9rem;
+  padding: 0.12rem 0.2rem;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  direction: ltr;
+}
+.bvp-zoomlvl:hover { color: var(--text); }
+/* Anything other than 100% is called out. A page at 67% that merely looks
+ * "small" is a page the user will try to fix by resizing the window forever. */
+.bvp-zoomlvl.is-off-default { color: var(--primary); font-weight: 600; }
+
+/* A history arrow that would do nothing is dimmed rather than hidden: hiding it
+ * would make the toolbar reflow every time you navigate, and reflowing buttons
+ * under a moving pointer is how you click the wrong one. */
+.bvp-nav.is-dim { opacity: 0.35; cursor: default; }
+.bvp-nav:disabled { pointer-events: none; }
+/* Reload spins while a navigation is in flight. Most "reload doesn't work"
+ * reports are a reload that DID work on a slow page with nothing on screen to
+ * prove it. */
+.bvp-nav.is-busy svg { animation: bvp-spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .bvp-nav.is-busy svg { animation: none; }
+}
+
+/* ============================================================================
+   Page dialogs, credentials, and the self-healing panel
+   ----------------------------------------------------------------------------
+   All three are drawn OVER the canvas, because that is where Chrome puts them:
+   they belong to the page you are looking at and they BLOCK it. Rendering them
+   beside the page would say the opposite — that the page is still usable, which
+   is exactly the lie that made an unanswered dialog look like a frozen tab.
+   ========================================================================= */
+.bvp-modal,
+.bvp-heal {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  /* Dim the page behind it. The dim is the thing that says "blocked": without it
+   * a modal reads as a floating note the user may ignore. */
+  background: color-mix(in srgb, #000 46%, transparent);
+}
+/* `is-off` rather than building on demand. A modal constructed at the moment its
+ * event arrives is a modal that can fail to construct — and a page dialog that
+ * fails to appear is a tab locked forever with no explanation, which is the bug
+ * this whole panel exists to end. */
+.bvp-modal.is-off,
+.bvp-heal.is-off { display: none; }
+
+.bvp-modal-card,
+.bvp-heal-card {
+  width: min(30rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev-2);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+.bvp-modal-head,
+.bvp-heal-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.bvp-modal-icon { display: inline-flex; color: var(--primary); }
+.bvp-modal-title,
+.bvp-heal-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+}
+/* WHO is asking. A modal that says "re-enter your password" without naming the
+ * site is a phishing surface, not a convenience — so this line is structural,
+ * not decoration. */
+.bvp-modal-from {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  direction: ltr;
+  text-align: start;
+  word-break: break-all;
+}
+/* The page's own text. Pre-wrap because an `alert()` may contain newlines that
+ * carry its meaning, and a scroll cap because a page can pass a novel. */
+.bvp-modal-body {
+  max-height: 11rem;
+  overflow-y: auto;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bvp-modal-input { width: 100%; }
+.bvp-modal-input.is-off { display: none; }
+.bvp-modal-note {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--text-faint, #5E6876);
+  line-height: 1.5;
+}
+.bvp-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+/* ── The self-healing checklist ─────────────────────────────────────────────
+ * The answer to "it said I must restart, I pressed it, nothing happened, and I
+ * had no idea what was going on." Every step the server takes is named, ticked
+ * when it finishes, and carries a measured ETA while it runs. */
+.bvp-heal-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.bvp-heal-step {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.bvp-heal-step.is-done { color: var(--text); }
+.bvp-heal-step.is-failed { color: var(--danger, #e5484d); }
+.bvp-heal-mark { display: inline-flex; flex: 0 0 auto; }
+.bvp-heal-step.is-done .bvp-heal-mark { color: var(--success, #30a46c); }
+.bvp-heal-step.is-running .bvp-heal-mark { color: var(--primary); }
+.bvp-heal-mark.is-spin svg { animation: bvp-spin 0.9s linear infinite; }
+.bvp-heal-label { flex: 1 1 auto; min-width: 0; }
+/* The ETA. Rounded UP from a measured figure, and shown only while a step is
+ * actually running — a leftover "about 6 seconds" beside a finished step would
+ * make the whole panel untrustworthy. */
+.bvp-heal-meta {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: var(--text-faint, #5E6876);
+  font-variant-numeric: tabular-nums;
+}
+.bvp-heal-note {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-faint, #5E6876);
+}
+.bvp-heal-spin { display: inline-flex; color: var(--primary); }
+.bvp-heal-spin svg { animation: bvp-spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .bvp-heal-spin svg { animation: none; }
+}
+
+/* ============================================================================
+   The download shelf  (Chrome's download bar)
+   ----------------------------------------------------------------------------
+   Bottom of the window, appears the moment a download starts, stays until it is
+   dismissed. It has to exist at all because the bytes land on the SERVER's disk:
+   without a shelf, a download in this browser is a file the user never learns
+   about and could never open. Hence the fetch button on every finished row —
+   a shelf that only NAMED files would be decoration.
+   ========================================================================= */
+.bvp-shelf {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+.bvp-shelf.is-off { display: none; }
+.bvp-shelf-icon { display: inline-flex; flex: 0 0 auto; color: var(--text-dim); }
+/* Scrolls rather than wraps, for the same reason the tab strip does: wrapping
+ * would move the page image up by a whole row mid-click. */
+.bvp-shelf-items {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.bvp-dl {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 20rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  font-size: 0.75rem;
+}
+.bvp-dl.is-completed { border-color: color-mix(in srgb, var(--success, #30a46c) 55%, var(--border)); }
+.bvp-dl.is-failed { border-color: color-mix(in srgb, var(--danger, #e5484d) 55%, var(--border)); }
+.bvp-dl-name {
+  min-width: 0;
+  max-width: 10rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+  /* Filenames are LTR even under fa: an RTL filename puts its extension on the
+   * wrong side, which makes `cookies.json` unreadable. */
+  direction: ltr;
+}
+.bvp-dl-meta {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+}
+.bvp-dl-bar {
+  flex: 0 0 auto;
+  position: relative;
+  width: 3.5rem;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.bvp-dl-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--primary);
+  transition: width 0.18s linear;
+}
+/* No Content-Length means no percentage. An indeterminate stripe reads as
+ * "working"; a bar frozen at 0% reads as "broken" — and only one of those is
+ * true. */
+.bvp-dl-bar.is-indet .bvp-dl-fill {
+  width: 40%;
+  animation: bvp-indet 1.1s ease-in-out infinite;
+}
+@keyframes bvp-indet {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bvp-dl-bar.is-indet .bvp-dl-fill { animation: none; width: 100%; opacity: 0.5; }
+}
+.bvp-dl-get { flex: 0 0 auto; padding: 0.1rem; color: var(--primary); }
+.bvp-dl-drop { flex: 0 0 auto; padding: 0.1rem; opacity: 0.5; }
+.bvp-dl-drop:hover { opacity: 1; color: var(--danger, #e5484d); }
+.bvp-shelf-clear,
+.bvp-shelf-hide { flex: 0 0 auto; padding: 0.15rem; opacity: 0.6; }
+.bvp-shelf-clear:hover,
+.bvp-shelf-hide:hover { opacity: 1; }
+
+/* ============================================================================
+   Context menus  (the page's, and the tab strip's)
+   ----------------------------------------------------------------------------
+   Chrome's real context menu is drawn by the browser process, so it can never
+   appear in a screencast of a page — it has to be rebuilt in HTML. It is
+   `position: fixed` and a sibling of the shell rather than a child of the stage,
+   so it can overhang the canvas edge instead of being clipped by it: a menu
+   opened near the bottom right that gets cut in half is worse than no menu.
+   ========================================================================= */
+.bvp-ctx {
+  position: fixed;
+  z-index: 9;
+  min-width: 12rem;
+  max-width: 18rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+.bvp-ctx.is-off { display: none; }
+.bvp-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.34rem 0.45rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: start;
+  cursor: pointer;
+}
+.bvp-ctx-item:hover { background: var(--bg-elev); }
+/* Disabled, not hidden. An entry that vanishes teaches the user the menu is
+ * unpredictable; a greyed one teaches them the rule ("there is nothing to the
+ * right of this tab"). */
+.bvp-ctx-item.is-disabled,
+.bvp-ctx-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.bvp-ctx-item.is-disabled:hover,
+.bvp-ctx-item:disabled:hover { background: none; }
+.bvp-ctx-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 1rem;
+  color: var(--text-dim);
+}
+.bvp-ctx-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bvp-ctx-sep {
+  height: 1px;
+  margin: 0.22rem 0.3rem;
+  background: var(--border);
+}
 
 /* Phones / short windows: the panel becomes a bottom sheet so it never
    eats the page image it is meant to help you read. */

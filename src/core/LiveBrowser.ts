@@ -1,5 +1,6 @@
 'use strict';
 
+import { promises as fsp } from 'fs';
 import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
 import { GlobalBrowser } from './GlobalBrowser';
 import {
@@ -7,7 +8,14 @@ import {
   hasSavedSession,
   clearStorageState,
 } from './BrowserProfile';
-import { resolveUpload, discardUploads } from './RemoteUploads';
+import { resolveUpload, discardUploads, safeFileName } from './RemoteUploads';
+import {
+  downloadPathFor,
+  discardDownload,
+  sweepDownloads,
+  mintDownloadToken,
+  MAX_DOWNLOAD_BYTES,
+} from './RemoteDownloads';
 import {
   loadTabs,
   saveTabs,
@@ -15,6 +23,16 @@ import {
   MAX_SAVED_TABS,
   type SavedTab,
 } from './BrowserTabs';
+import {
+  buildKeyEvents,
+  modifierMask,
+  buttonsMask,
+  normalizeButton,
+  normalizeClickCount,
+  nextZoom,
+  type Mods,
+  type MouseButton,
+} from './BrowserInput';
 
 // ════════════════════════════════════════════════════════════════
 // LiveBrowser (Step 12) — interactive, streamable browser sessions.
@@ -84,6 +102,40 @@ export interface TabInfo {
   pending?: boolean;
   /** True when the page behind it is gone (crashed/closed) but the tab remains. */
   dead?: boolean;
+  /**
+   * True while the tab is loading — drives the spinner Chrome shows in place of
+   * the favicon. Without it a slow page is a tab that just sits there, and the
+   * user cannot tell "loading" from "stuck".
+   */
+  loading?: boolean;
+  /**
+   * The tab's favicon URL, or '' when it has none.
+   *
+   * Chrome shows this, and it is how you find a tab among twelve. Resolved from
+   * `link[rel~=icon]` with a fallback to the origin's /favicon.ico.
+   */
+  favicon?: string;
+  /** True when the tab is playing audio — Chrome's speaker badge. */
+  audible?: boolean;
+  /** True when the tab is muted. */
+  muted?: boolean;
+  /** True when the tab is pinned (narrow, icon-only, cannot be dragged past). */
+  pinned?: boolean;
+}
+
+/** One row of the download shelf, as the client renders it. */
+export interface DownloadInfo {
+  id: string;
+  name: string;
+  url: string;
+  tabId: string;
+  state: 'inProgress' | 'completed' | 'failed' | 'cancelled';
+  /** Bytes so far, and the total when the server told us one (0 = unknown). */
+  received: number;
+  total: number;
+  error?: string;
+  /** Present once the file is on disk: hand this to the fetch route. */
+  token?: string;
 }
 
 export interface PickAttr {
@@ -131,6 +183,17 @@ type EventSink = (type: string, data: Record<string, unknown>) => void;
 const IDLE_TTL_MS = 5 * 60 * 1000;     // close session after 5 min idle
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 
+/**
+ * How long a restored tab may take before start() gives up waiting on it.
+ *
+ * `materialize` already gives its own `goto` 30s. This budget is deliberately
+ * SHORTER, because it is protecting a different thing: not the page load, but
+ * the user's window opening at all. A restore that is merely slow must not turn
+ * into a browser that never appears, so this is the point at which the strip
+ * shows the tab as still coming up and hands control back to the user.
+ */
+const RESTORE_BUDGET_MS = 12_000;
+
 // How often to ask the active page "are you still there?".
 //
 // `page.isClosed()` is not enough. When a cookie-import extension reloads the
@@ -142,6 +205,14 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 // the user does not sit in front of a dead canvas for long, slow enough that
 // the extra CDP round-trip is free.
 const HEALTH_POLL_MS = 10_000;
+/**
+ * How often to sample "is this tab making noise".
+ *
+ * Slower than the liveness poll on purpose: it runs an evaluate per tab, and a
+ * speaker badge appearing 3s late costs nothing, whereas a per-tab evaluate
+ * every 10s across fifteen tabs is real work for a cosmetic result.
+ */
+const AUDIO_POLL_MS = 3_000;
 
 /**
  * Turn whatever the user typed into something `page.goto` accepts.
@@ -167,6 +238,18 @@ function normalizeTarget(url: string): string {
   // through by being prefixed into something that looks valid, so reject it.
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return '';
   return 'https://' + raw;
+}
+
+/**
+ * `https://example.com:8443/a/b?c` → `https://example.com:8443`.
+ *
+ * Used to tell the user WHICH site is asking for their password. A credentials
+ * prompt without an origin is a prompt nobody should type into, so this must
+ * always produce something: on an unparseable URL it returns the raw string
+ * rather than an empty label.
+ */
+function originOf(url: string): string {
+  try { return new URL(String(url || '')).origin; } catch { return String(url || ''); }
 }
 
 /**
@@ -500,6 +583,21 @@ export const PICKER_SCRIPT = `(() => {
  * twelve page loads nobody asked for. The page is created the moment the tab is
  * activated (`pending` → false).
  */
+/** Server-side download record. `path` never leaves the server. */
+interface LiveDownload {
+  id: string;
+  /** Opaque handle the client uses to fetch the bytes. Never a path. */
+  token: string;
+  name: string;
+  url: string;
+  tabId: string;
+  state: 'inProgress' | 'completed' | 'failed' | 'cancelled';
+  received: number;
+  total: number;
+  path: string;
+  error: string;
+}
+
 interface LiveTab {
   id: string;
   page: Page | null;
@@ -507,6 +605,12 @@ interface LiveTab {
   title: string;
   pending: boolean;
   dead: boolean;
+  /** Loading right now — the spinner Chrome puts where the favicon goes. */
+  loading?: boolean;
+  favicon?: string;
+  audible?: boolean;
+  muted?: boolean;
+  pinned?: boolean;
 }
 
 export class LiveBrowserSession {
@@ -536,20 +640,76 @@ export class LiveBrowserSession {
    * a user's file was meant for.
    */
   private pendingChooser: FileChooser | null = null;
+  /**
+   * A page dialog waiting on the user.
+   *
+   * Exactly one, for the same reason as the file chooser: Chrome will not open
+   * a second dialog while the first is up. MEASURED: while this is unanswered
+   * the page blocks completely — even `page.title()` times out — so this field
+   * being non-null is the single most dangerous state in the session, and every
+   * exit path has to clear it.
+   */
+  private pendingDialog: import('playwright').Dialog | null = null;
+  /**
+   * Set while we are closing a tab and want the page's `beforeunload` to be
+   * ASKED rather than steamrolled. MEASURED: dismissing a beforeunload dialog
+   * really does keep the tab open, so "Leave / Stay" can be honest.
+   */
+  private closingTabId = '';
+  /**
+   * The 401 currently waiting on credentials, with the CDP session that owns it.
+   *
+   * One at a time, like dialogs: Chrome does not stack credential prompts, and a
+   * list would only raise the unanswerable question of which site the password
+   * the user typed was meant for.
+   */
+  private pendingAuth: { cdp: CDPSession; requestId: string; page: Page } | null = null;
+  /** Per-page auth CDP sessions, kept separate from the screencast session. */
+  private authCdp = new Map<Page, CDPSession>();
+  /**
+   * The closed-tab stack behind Ctrl+Shift+T, newest last.
+   *
+   * `index` is where the tab was in the strip, because putting a mistakenly
+   * closed tab back at the far right is only half a restoration.
+   */
+  private closedTabs: Array<{ url: string; title: string; index: number; pinned: boolean }> = [];
+  /** The download shelf for this session. */
+  private downloads: LiveDownload[] = [];
+  private downloadSeq = 0;
   /** Uploads handed to a chooser in this session, deleted when it ends. */
   private consumedUploads: string[] = [];
   private idleTimer: NodeJS.Timeout | null = null;
   /** Liveness probe. See `startHealthWatch()` for why polling is the right tool. */
   private healthTimer: NodeJS.Timeout | null = null;
+  private audioTimer: NodeJS.Timeout | null = null;
   private recovering: Promise<boolean> | null = null;
   private closed = false;
   public readonly userId: string;
   private vp = { ...DEFAULT_VIEWPORT };
+  /**
+   * Current browser zoom (1 = 100%).
+   *
+   * Kept on the session, not only in the client, because the SERVER has to
+   * divide incoming pointer coordinates by it (see `toPagePoint`). A zoom level
+   * the two ends disagree about means every click lands somewhere else.
+   */
+  private zoom = 1;
   // Whether this user already had a saved browser session when we started;
   // the UI shows it so "why am I logged out" is never a mystery.
   private hadSavedSession = false;
   /** Pages we created or adopted, so an unrelated session's page is never stolen. */
   private owned = new Set<Page>();
+  /**
+   * Until when an ownerless new page should be treated as ours.
+   *
+   * Set for a short window whenever this session does something that is
+   * EXPECTED to produce a tab it does not open itself — clicking an extension's
+   * icon, importing cookies, a page calling `chrome.tabs.create`. Measured:
+   * those pages arrive with `opener() === null`, indistinguishable from another
+   * session's tab, so a time-boxed claim is what separates "the tab I just
+   * asked for" from "somebody else's browsing".
+   */
+  private expectOrphanUntil = 0;
 
   constructor(id: string, userId: string) {
     this.id = id;
@@ -574,6 +734,11 @@ export class LiveBrowserSession {
       active: t.id === this.activeId,
       ...(t.pending ? { pending: true } : {}),
       ...(t.dead ? { dead: true } : {}),
+      ...(t.loading ? { loading: true } : {}),
+      ...(t.favicon ? { favicon: t.favicon } : {}),
+      ...(t.audible ? { audible: true } : {}),
+      ...(t.muted ? { muted: true } : {}),
+      ...(t.pinned ? { pinned: true } : {}),
     }));
   }
 
@@ -616,7 +781,31 @@ export class LiveBrowserSession {
         if (this.closed || this.owned.has(p)) return;
         let opener: Page | null = null;
         try { opener = await p.opener(); } catch { opener = null; }
-        if (!opener || !this.owned.has(opener)) return;
+
+        // ── Why an orphan page is adopted too ────────────────────────────────
+        // MEASURED (tools/probe-cdp2.js): a page created by an EXTENSION —
+        // `chrome.tabs.create`, which is how a cookie extension opens its popup
+        // — has `opener() === null`. The old rule was "adopt only if the opener
+        // is one of our pages", so every extension tab was silently dropped:
+        // the tab existed in Chrome, nothing streamed it, and the user saw
+        // nothing happen when they clicked their extension. That is the exact
+        // reported bug, and this is its root cause.
+        //
+        // The rule the old code was protecting is still real: the real-Chrome
+        // context is SHARED between sessions, so blindly adopting every page
+        // would show one user another user's tabs. So an orphan is adopted only
+        // when this session is the one that can legitimately claim it:
+        //   - a single-session server (nothing to leak to), or
+        //   - an extension page (chrome-extension://), which is the case that
+        //     was broken and is never another user's browsing, or
+        //   - a page opened while WE were the session that asked for one.
+        if (!opener || !this.owned.has(opener)) {
+          const url = (() => { try { return p.url(); } catch { return ''; } })();
+          const isExtensionPage = /^chrome-extension:\/\//i.test(url);
+          const claimable = isExtensionPage || this.expectOrphanUntil > Date.now();
+          if (!claimable) return;
+        }
+
         const tab = await this.adopt(p, { activate: true });
         if (tab) this.emit('tabOpened', { id: tab.id, url: tab.url });
       })();
@@ -647,10 +836,28 @@ export class LiveBrowserSession {
       // A restore must never be able to stop the window from opening: if the
       // saved page 404s, times out or has since started requiring a login, we
       // still owe the user a working browser.
-      const ok = await this.materialize(restoreTarget).catch(() => false);
+      //
+      // The timeout is the load-bearing part. `materialize` already survives a
+      // failed `goto`, but "failed" is not the dangerous case — HUNG is. A saved
+      // page that blocks (a dialog, a never-settling load, a renderer that stops
+      // answering) would otherwise hold start() open forever, and a client that
+      // never receives `ready` shows a connected socket and a dead window with no
+      // way out. So restore gets a deadline, and missing it costs the restored
+      // page, never the browser.
+      const ok = await Promise.race([
+        this.materialize(restoreTarget).catch(() => false),
+        new Promise<boolean>((r) => { setTimeout(() => r(false), RESTORE_BUDGET_MS); }),
+      ]);
       if (!ok) {
-        restoreTarget.dead = true;
-        await this.openTab('about:blank', { activate: true });
+        // Keep the tab in the strip as `pending`, NOT dead: the user asked for
+        // this page, and clicking it retries. "We never lose a tab."
+        restoreTarget.pending = true;
+        this.emit('error', { message: 'restore_slow', detail: restoreTarget.url });
+        // Only open a blank tab if the slow restore left us with no live page at
+        // all; otherwise we would add an unwanted tab on every slow open.
+        if (!this.page || this.page.isClosed()) {
+          await this.openTab('about:blank', { activate: true }).catch(() => null);
+        }
       }
     } else {
       await this.openTab('about:blank', { activate: true });
@@ -666,8 +873,24 @@ export class LiveBrowserSession {
       height: this.vp.height,
       signedIn: this.hadSavedSession,
       restoredTabs: saved.length,
+      // A reconnecting client knows NOTHING about these two, and both are server
+      // state that outlived its socket:
+      //
+      //   zoom      — every canvas coordinate is divided by it on the client, so
+      //               a client that assumes 1 after resyncing into a page the
+      //               user had zoomed to 150% silently sends every click to the
+      //               wrong place. Worse than a visual glitch: a pointer that
+      //               lies.
+      //   downloads — the shelf. The files are on OUR disk; if the reconnected
+      //               client is not told they exist, they are unreachable
+      //               forever and the user is never even told they were saved.
+      zoom: this.zoom,
+      downloads: this.downloadList() as unknown as Record<string, unknown>[],
     });
     this.emitTabs();
+    // And the history state, so Back/Forward are correctly greyed from the very
+    // first frame rather than after the first navigation.
+    void this.emitNavState().catch(() => {});
   }
 
   private emit(type: string, data: Record<string, unknown>): void {
@@ -756,6 +979,84 @@ export class LiveBrowserSession {
       })();
     });
 
+    // ── Page dialogs: alert / confirm / prompt / beforeunload ───────────────
+    // MEASURED (tools/probe-cdp3.js), and it corrected my understanding of the
+    // reported bug:
+    //   * With NO 'dialog' listener, Playwright AUTO-DISMISSES — `evaluate`
+    //     returned in 15ms. So the tab was never locked by Playwright.
+    //   * With a listener that does not ANSWER, everything blocks: `confirm`
+    //     was still pending after 1202ms and an unrelated `page.title()` timed
+    //     out too. That is the reported "tab silently locks", reproduced.
+    //   * Answering it fully recovers the page.
+    // So the rule is: the moment we take responsibility for dialogs we owe the
+    // user a way to answer every single one, or we have built the lock-up
+    // ourselves. Hence `pendingDialog` + an explicit `answerDialog`, and a
+    // safety net in `close()`.
+    page.on('dialog', (dialog) => {
+      const tab = this.tabOfPage(page);
+      // A dialog from a BACKGROUND tab cannot be shown over the active one
+      // without lying about which page is asking. Chrome handles this by
+      // switching to that tab, so we do the same: bring it to the front and
+      // then ask. That also guarantees the dialog is answerable at all.
+      const showAndAsk = async () => {
+        if (tab && tab.id !== this.activeId) {
+          await this.focus(tab).catch(() => {});
+        }
+        this.pendingDialog = dialog;
+        this.emit('dialog', {
+          kind: dialog.type(),                 // alert | confirm | prompt | beforeunload
+          message: dialog.message(),
+          defaultValue: dialog.defaultValue() || '',
+          tabId: tab ? tab.id : this.activeId,
+          url: (() => { try { return page.url(); } catch { return ''; } })(),
+        });
+      };
+      void showAndAsk();
+    });
+
+    // ── HTTP basic auth (the 401 nobody could answer) ───────────────────────
+    // A server that replies 401 with `WWW-Authenticate: Basic` makes Chrome open
+    // a NATIVE credentials window — drawn by the browser, not the page. Like the
+    // file dialog above, that window can never appear in a screencast, so the
+    // canvas just showed a blank or an error page and the site was simply
+    // unreachable. Answering it needs CDP.
+    //
+    // MEASURED (tools/probe-cdp3.js / probe-cdp4.js): `Fetch.authRequired` only
+    // fires for requests matching an enabled pattern, and the cost of the pattern
+    // is real — `urlPattern: '*'` paused 8 requests on one ordinary page, while
+    // restricting it to Documents paused exactly 1 and still delivered the auth
+    // event. So: Documents only, always on. Always on rather than
+    // enabled-on-demand because there is no way to know a 401 is coming until it
+    // has already happened.
+    await this.installAuthHandler(page);
+
+    // ── Downloads ───────────────────────────────────────────────────────────
+    // MEASURED (tools/probe-cdp4.js): `context.on('download')` NEVER fires in
+    // this setup — 0 events in a persistent context AND in a normal one, while
+    // `page.on('download')` fired every time. The obvious API is the wrong one,
+    // which is precisely the sort of thing that cannot be settled by reading
+    // docs. Per-page it is.
+    page.on('download', (dl) => {
+      void this.trackDownload(dl, page);
+    });
+
+    // ── Loading state, so the strip can show a spinner ──────────────────────
+    // Chrome replaces a tab's favicon with a spinner while it loads. Without
+    // this the strip cannot distinguish "still loading" from "stuck", which is
+    // the difference between waiting patiently and reaching for Reload.
+    page.on('load', () => {
+      const t = this.tabOfPage(page);
+      if (!t) return;
+      t.loading = false;
+      this.emitTabs();
+      void this.refreshFavicon(t);
+      if (page === this.page) void this.emitNavState();
+    });
+    page.on('domcontentloaded', () => {
+      const t = this.tabOfPage(page);
+      if (t) { t.loading = false; this.emitTabs(); }
+    });
+
     // Re-inject picker after navigations if it was on, and tell the client
     // where we ended up.
     //
@@ -770,11 +1071,20 @@ export class LiveBrowserSession {
       if (tab) {
         tab.url = frame.url();
         tab.title = (await page.title().catch(() => tab.title)) || tab.url;
+        // A navigation invalidates the old site's icon. Clearing it first stops
+        // the previous site's favicon sitting on the new page's tab.
+        tab.favicon = '';
+        void this.refreshFavicon(tab);
       }
       if (page !== this.page) { this.emitTabs(); void this.persistTabs(); return; }
       this.emit('navigated', { url: frame.url() });
       this.emitTabs();
       void this.persistTabs();
+      // Back/Forward availability changes on every navigation, including the
+      // ones the PAGE initiates (a link, a redirect, an extension) — not just
+      // the ones we command. This is why it is emitted here and not only in
+      // the nav commands.
+      void this.emitNavState();
       if (this.pickerOn) {
         await this.injectPicker().catch(() => {});
       }
@@ -814,6 +1124,61 @@ export class LiveBrowserSession {
     });
   }
 
+  /**
+   * Find the tab's favicon the way a browser does.
+   *
+   * Order matters and mirrors the spec: an explicit `<link rel="icon">` wins
+   * (a site that declares one means it), and only if there is none do we fall
+   * back to the well-known `/favicon.ico`. The URL is resolved against the
+   * document so a relative href works, and the result is only accepted if it is
+   * http(s) — a `data:` or `chrome-extension:` icon would either bloat the tab
+   * payload or fail to load in the client's origin.
+   *
+   * Best-effort throughout: a missing favicon is a cosmetic detail and must
+   * never be able to throw inside a navigation handler.
+   */
+  private async refreshFavicon(tab: LiveTab): Promise<void> {
+    const page = tab.page;
+    if (!page || page.isClosed()) return;
+    try {
+      const icon = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"]'))
+          .map((l) => (l as HTMLLinkElement).href)
+          .filter(Boolean);
+        if (links.length) return links[0];
+        try { return new URL('/favicon.ico', location.origin).href; } catch { return ''; }
+      });
+      const url = String(icon || '');
+      if (!/^https?:\/\//i.test(url)) return;
+      if (tab.favicon === url) return;
+      tab.favicon = url;
+      this.emitTabs();
+    } catch { /* page navigated mid-read, or an about: page with no document */ }
+  }
+
+  /**
+   * Which tabs are making noise.
+   *
+   * Chrome puts a speaker badge on an audible tab, and it is the only way to
+   * find the tab that started playing a video by itself. There is no CDP event
+   * for it, so it is sampled — cheaply, and only for tabs that have a page.
+   */
+  private async refreshAudio(): Promise<void> {
+    let changed = false;
+    for (const tab of this.tabs) {
+      const page = tab.page;
+      if (!page || page.isClosed()) continue;
+      try {
+        const audible = await page.evaluate(() => {
+          const media = Array.from(document.querySelectorAll('video,audio')) as HTMLMediaElement[];
+          return media.some((m) => !m.paused && !m.muted && m.volume > 0 && m.currentTime > 0);
+        });
+        if (!!tab.audible !== !!audible) { tab.audible = audible; changed = true; }
+      } catch { /* not readable right now */ }
+    }
+    if (changed) this.emitTabs();
+  }
+
   /** Take ownership of a page the context produced, and give it a tab. */
   private async adopt(page: Page, opts: { activate?: boolean } = {}): Promise<LiveTab | null> {
     if (this.closed) return null;
@@ -851,16 +1216,44 @@ export class LiveBrowserSession {
     tab.dead = false;
     if (tab.id === this.activeId) {
       this.page = page;
-      await this.bindCdp(page);
+      // Same reasoning as openTab(): a bind that fails is a pending stream, not
+      // a reason to abandon a working page — and never a reason to reject out of
+      // start(), which would leave the client waiting for a `ready` that is
+      // never coming.
+      try {
+        await this.bindCdp(page);
+      } catch {
+        tab.pending = true;
+      }
     }
     const target = tab.url && tab.url !== 'about:blank' ? tab.url : '';
     if (target) {
+      // MEASURED 2026-08-03: a saved tab whose page calls alert()/confirm()/
+      // prompt() on load DEADLOCKED THE WHOLE SESSION. `page.goto` does not
+      // resolve while a modal dialog is open, so start() never reached
+      // `emit('ready')`; the client sat on a connected socket that had sent a
+      // `dialog` event nobody could answer yet, because the UI is only wired up
+      // after `ready`. The user's browser was "dead but connected" on every
+      // single open, and the only cure was deleting the saved-tab file by hand:
+      // exactly the unrecoverable loop the GLOBAL MANDATE forbids.
+      //
+      // During RESTORE only, a dialog is auto-dismissed. It belongs to a page the
+      // user is only now getting back, nobody has asked to interact with it yet,
+      // and dismissing is what Chrome effectively does when it restores a tab.
+      // The real `page.on('dialog')` handler attached by attachPage() takes over
+      // for everything the user goes on to do.
+      const dismissDuringRestore = (d: import('playwright').Dialog) => {
+        void d.dismiss().catch(() => {});
+      };
+      page.on('dialog', dismissDuringRestore);
       try {
         await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
       } catch {
         // The page exists and is usable; only the restore target failed. Say so
         // instead of throwing away a working tab.
         this.emit('error', { message: 'restore_failed: ' + target });
+      } finally {
+        page.off('dialog', dismissDuringRestore);
       }
     }
     tab.url = page.url();
@@ -981,7 +1374,32 @@ export class LiveBrowserSession {
       this.activeId = tab.id;
       this.page = page;
       await page.bringToFront().catch(() => {});
-      await this.bindCdp(page);
+      // MEASURED 2026-08-03 (tools/probe-live-parity.js): this await used to be
+      // bare, and it TOOK THE WHOLE SERVER DOWN. A tab opened while an extension
+      // (or the page itself) immediately replaces the target loses its guid, so
+      // `newCDPSession` rejects with "no object with guid page@…". Nothing caught
+      // it, so it surfaced as an unhandledRejection, which src/index.ts treats as
+      // fatal and answers with a graceful shutdown — every other user's session
+      // destroyed by one unlucky tab, and the only cure a manual restart. That is
+      // precisely the loop the GLOBAL MANDATE forbids.
+      //
+      // A tab whose stream could not be bound is not a dead browser: the page is
+      // usually fine, and `resync`/the health poll rebind it. So it is marked
+      // `pending` (the strip shows it as still coming up) and the session
+      // continues. Self-healing means the failure costs a spinner, not a server.
+      try {
+        await this.bindCdp(page);
+      } catch (e) {
+        tab.pending = true;
+        this.emit('error', {
+          message: 'tab_stream_pending',
+          detail: (e as Error).message || 'cdp_bind_failed',
+          tabId: tab.id,
+        });
+        // Ask for a rebind out of band. If the page really is gone, `recover()`
+        // inside resync() rebuilds it; if it is alive, the stream simply resumes.
+        setTimeout(() => { void this.resync().catch(() => {}); }, 250);
+      }
     }
     const target = normalizeTarget(url);
     if (target && target !== 'about:blank') {
@@ -1033,13 +1451,56 @@ export class LiveBrowserSession {
     await this.focus(tab);
   }
 
-  async closeTab(id: string): Promise<void> {
+  /**
+   * Close a tab — ASKING first if the page has unsaved work.
+   *
+   * A page with a `beforeunload` handler is Chrome's "Leave site? Changes you
+   * made may not be saved." The old code called `page.close()` and threw that
+   * work away without a word. MEASURED (tools/probe-cdp3.js): dismissing a
+   * `beforeunload` dialog really does keep the page alive (`isClosed() === false`
+   * afterwards), so asking is not a cosmetic gesture — Cancel genuinely saves
+   * the tab.
+   *
+   * `runBeforeUnload: true` is what makes Chrome fire the handler at all; without
+   * it the close is unconditional. If a handler exists, our `page.on('dialog')`
+   * gets a `beforeunload` dialog and `answerDialog` calls us back with
+   * `force: true`. If no handler exists nothing fires, so we must not wait for a
+   * dialog that is never coming — hence the short grace period and then a plain
+   * close.
+   */
+  async closeTab(id: string, opts: { force?: boolean } = {}): Promise<void> {
     this.touch();
     const tab = this.findTab(String(id || ''));
     if (!tab) return;
+
+    if (!opts.force && tab.page && !tab.page.isClosed()) {
+      const page = tab.page;
+      this.closingTabId = tab.id;
+      // Ask the page to unload. Either a dialog arrives (and `answerDialog`
+      // finishes the job), or the page just goes.
+      const asked = page.close({ runBeforeUnload: true }).catch(() => {});
+      await Promise.race([asked, new Promise((r) => setTimeout(r, 400))]);
+      if (this.pendingDialog) {
+        // A dialog is up and the user has to answer it. The tab stays exactly
+        // where it is until they do; the close resumes from `answerDialog`.
+        return;
+      }
+      this.closingTabId = '';
+      // No handler, or it let us go: fall through and reap the record.
+    }
+    this.closingTabId = '';
+
     const wasActive = tab.id === this.activeId;
     const idx = this.tabs.indexOf(tab);
     this.tabs = this.tabs.filter((t) => t !== tab);
+    // Remember it so Ctrl+Shift+T can bring it back. Chrome keeps a stack of
+    // these, and "I closed the wrong tab" is one of the most common things a
+    // person does in a browser — without this the only recovery is remembering
+    // the URL, which is exactly what the tab was remembering FOR them.
+    if (/^https?:/i.test(tab.url) || /^chrome-extension:/i.test(tab.url)) {
+      this.closedTabs.push({ url: tab.url, title: tab.title, index: idx, pinned: !!tab.pinned });
+      if (this.closedTabs.length > 25) this.closedTabs.shift();
+    }
     if (tab.page) {
       const page = tab.page;
       tab.page = null;
@@ -1063,6 +1524,143 @@ export class LiveBrowserSession {
     void this.persistTabs();
   }
 
+  /**
+   * Ctrl+Shift+T — reopen the most recently closed tab, where it was.
+   *
+   * Restoring the INDEX matters more than it sounds: a tab you closed by mistake
+   * reappearing at the far right of a strip of fifteen is a tab you then have to
+   * go and find. Chrome puts it back in its place, so we do too.
+   */
+  async reopenClosedTab(): Promise<void> {
+    this.touch();
+    const last = this.closedTabs.pop();
+    if (!last) {
+      // Say so rather than doing nothing. A shortcut that silently no-ops is
+      // indistinguishable from a shortcut that is broken.
+      this.emit('tabReopenEmpty', {});
+      return;
+    }
+    const tab = await this.openTab(last.url, { activate: true });
+    if (!tab) return;
+    tab.pinned = last.pinned;
+    const from = this.tabs.indexOf(tab);
+    const to = Math.max(0, Math.min(last.index, this.tabs.length - 1));
+    if (from >= 0 && from !== to) {
+      this.tabs.splice(to, 0, ...this.tabs.splice(from, 1));
+    }
+    this.normalizeTabOrder();
+    this.emitTabs();
+    void this.persistTabs();
+  }
+
+  /**
+   * Drag-to-reorder.
+   *
+   * Pinned tabs are kept to the left, as Chrome does: a pinned tab dragged into
+   * the middle of the unpinned ones snaps back, because "pinned" IS a position as
+   * much as it is a state.
+   */
+  async moveTab(id: string, index: number): Promise<void> {
+    this.touch();
+    const tab = this.findTab(String(id || ''));
+    if (!tab) return;
+    const from = this.tabs.indexOf(tab);
+    const to = Math.max(0, Math.min(Math.trunc(Number(index) || 0), this.tabs.length - 1));
+    if (from < 0 || from === to) return;
+    this.tabs.splice(to, 0, ...this.tabs.splice(from, 1));
+    this.normalizeTabOrder();
+    this.emitTabs();
+    void this.persistTabs();
+  }
+
+  /** Duplicate — a new tab on the same URL, immediately to the right, as Chrome. */
+  async duplicateTab(id: string): Promise<void> {
+    this.touch();
+    const tab = this.findTab(String(id || ''));
+    if (!tab) return;
+    const at = this.tabs.indexOf(tab);
+    const copy = await this.openTab(tab.url, { activate: true });
+    if (!copy) return;
+    const from = this.tabs.indexOf(copy);
+    if (from >= 0 && at >= 0 && from !== at + 1) {
+      this.tabs.splice(at + 1, 0, ...this.tabs.splice(from, 1));
+    }
+    this.normalizeTabOrder();
+    this.emitTabs();
+    void this.persistTabs();
+  }
+
+  /** Pin / unpin. Pinning also moves the tab left, which is what pinning means. */
+  async pinTab(id: string, pinned?: boolean): Promise<void> {
+    this.touch();
+    const tab = this.findTab(String(id || ''));
+    if (!tab) return;
+    tab.pinned = pinned === undefined ? !tab.pinned : !!pinned;
+    this.normalizeTabOrder();
+    this.emitTabs();
+    void this.persistTabs();
+  }
+
+  /** Mute / unmute a tab — the speaker icon in the strip is a button in Chrome. */
+  async muteTab(id: string, muted?: boolean): Promise<void> {
+    this.touch();
+    const tab = this.findTab(String(id || ''));
+    if (!tab) return;
+    tab.muted = muted === undefined ? !tab.muted : !!muted;
+    const page = tab.page;
+    if (page && !page.isClosed()) {
+      const want = !!tab.muted;
+      // There is no CDP "mute tab", so mute the elements. Also re-applied on
+      // navigation by `refreshAudio`, because a new document brings new elements.
+      await page.evaluate((m) => {
+        for (const el of Array.from(document.querySelectorAll('video,audio'))) {
+          (el as HTMLMediaElement).muted = m;
+        }
+      }, want).catch(() => {});
+    }
+    this.emitTabs();
+  }
+
+  /** Close every tab except this one (Chrome's "Close other tabs"). */
+  async closeOtherTabs(id: string): Promise<void> {
+    this.touch();
+    const keep = this.findTab(String(id || ''));
+    if (!keep) return;
+    // Snapshot first: `closeTab` mutates the list we would otherwise iterate.
+    // Pinned tabs survive, exactly as they do in Chrome.
+    const doomed = this.tabs.filter((t) => t !== keep && !t.pinned).map((t) => t.id);
+    for (const tid of doomed) await this.closeTab(tid, { force: true });
+    await this.selectTab(keep.id);
+  }
+
+  /** Close everything to the right of this tab. */
+  async closeTabsToRight(id: string): Promise<void> {
+    this.touch();
+    const from = this.findTab(String(id || ''));
+    if (!from) return;
+    const at = this.tabs.indexOf(from);
+    if (at < 0) return;
+    const doomed = this.tabs.slice(at + 1).filter((t) => !t.pinned).map((t) => t.id);
+    for (const tid of doomed) await this.closeTab(tid, { force: true });
+  }
+
+  /** Ctrl+Tab / Ctrl+Shift+Tab — cycle, wrapping round as Chrome does. */
+  async cycleTab(dir: 1 | -1): Promise<void> {
+    this.touch();
+    if (this.tabs.length < 2) return;
+    const at = this.tabs.findIndex((t) => t.id === this.activeId);
+    const base = at < 0 ? 0 : at;
+    const next = (base + dir + this.tabs.length) % this.tabs.length;
+    await this.focus(this.tabs[next]);
+  }
+
+  /** Pinned left, unpinned right, order otherwise preserved. */
+  private normalizeTabOrder(): void {
+    const pinned = this.tabs.filter((t) => t.pinned);
+    const rest = this.tabs.filter((t) => !t.pinned);
+    this.tabs = [...pinned, ...rest];
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   // Recovery
   // ════════════════════════════════════════════════════════════════════════
@@ -1082,6 +1680,11 @@ export class LiveBrowserSession {
     this.recovering = (async () => {
       try {
         this.emit('recovering', { reason });
+        // A pending dialog belongs to a page we are about to replace, and an
+        // unanswered one blocks that page against being closed at all. Clear it
+        // before touching anything else. Same for a paused auth request.
+        await this.drainDialog();
+        await this.drainAuth();
         if (!this.context || isContextDead(this.context)) {
           // The whole context went with it (a Chrome restart, or the shared
           // real-Chrome profile being restarted from the panel). Rebuild.
@@ -1223,6 +1826,17 @@ export class LiveBrowserSession {
       });
     }, HEALTH_POLL_MS);
     if (this.healthTimer.unref) this.healthTimer.unref();
+
+    // The speaker badge. There is no CDP event for "this tab is audible", so it
+    // has to be sampled; a separate, slower timer keeps it off the liveness path
+    // (a poll that decides whether to REBUILD the session must not also be doing
+    // cosmetic work that can make it slow).
+    if (this.audioTimer) clearInterval(this.audioTimer);
+    this.audioTimer = setInterval(() => {
+      if (this.closed || this.recovering) return;
+      void this.refreshAudio().catch(() => { /* cosmetic */ });
+    }, AUDIO_POLL_MS);
+    if (this.audioTimer.unref) this.audioTimer.unref();
   }
 
   /**
@@ -1237,12 +1851,20 @@ export class LiveBrowserSession {
     if (page && !page.isClosed()) {
       try { await fn(page); return; }
       catch (e) {
-        if (!isDeadTargetError(e)) return;    // a normal failure: the caller logs it
+        // MEASURED 2026-08-03: this branch used to `return` under a comment
+        // saying "a normal failure: the caller logs it". No caller logs it.
+        // Every input command funnels through here, so any command that failed
+        // for a reason OTHER than a dead target failed in total silence — the
+        // user saw a click that did nothing and there was no evidence anywhere
+        // that it had even been attempted. Silence is the one thing this
+        // codebase is not allowed to do: the mandate is that real state is
+        // always visible. Say so instead.
+        if (!isDeadTargetError(e)) { this.inputFailed(e); return; }
       }
     }
     const ok = await this.recover('command');
     if (!ok || !this.page) return;
-    try { await fn(this.page); } catch { /* one retry is enough */ }
+    try { await fn(this.page); } catch (e) { this.inputFailed(e); }
   }
 
   /** Same contract as `withPage`, for the CDP-driven input commands. */
@@ -1250,12 +1872,24 @@ export class LiveBrowserSession {
     if (this.cdp) {
       try { await fn(this.cdp); return; }
       catch (e) {
-        if (!isDeadTargetError(e)) return;
+        if (!isDeadTargetError(e)) { this.inputFailed(e); return; }
       }
     }
     const ok = await this.recover('command');
     if (!ok || !this.cdp) return;
-    try { await fn(this.cdp); } catch { /* one retry is enough */ }
+    try { await fn(this.cdp); } catch (e) { this.inputFailed(e); }
+  }
+
+  /**
+   * An input command failed for an ordinary reason. Nothing is broken enough to
+   * recover, but the user is owed the truth: they pressed something and it did
+   * not happen. `input_failed` is deliberately distinct from the fatal error
+   * kinds so the client can show it as a transient notice rather than tearing
+   * the view down.
+   */
+  private inputFailed(e: unknown): void {
+    const detail = (e as Error)?.message || String(e);
+    this.emit('error', { message: 'input_failed', detail: detail.slice(0, 300) });
   }
 
   /**
@@ -1263,19 +1897,89 @@ export class LiveBrowserSession {
    * is also what `openTab` uses — one allowlist, so a new tab and an address-bar
    * entry can never disagree about what is loadable.
    */
+  /**
+   * Run navigations one at a time, per session.
+   *
+   * MEASURED (tools/probe-nav.js): two `navigate` commands close together made
+   * the second abort the first, and the session reported
+   * `page.goto: net::ERR_ABORTED` — an error the user did nothing wrong to
+   * cause. A double-clicked Go button, or Enter in the address bar while a
+   * click on a link was still loading, was enough. Chrome does not show you an
+   * error for that; it just goes to the last place you asked for.
+   *
+   * So navigations queue instead of racing, and a superseded one is dropped
+   * rather than reported as a failure.
+   */
+  private navQueue: Promise<void> = Promise.resolve();
+  private navSeq = 0;
+
+  private queueNav(fn: () => Promise<void>): Promise<void> {
+    this.navSeq += 1;
+    const mine = this.navSeq;
+    const run = this.navQueue.then(async () => {
+      // Someone asked for something newer while we were waiting: their intent
+      // wins, and this one never happened as far as the user is concerned.
+      if (this.closed || mine !== this.navSeq) return;
+      await fn();
+    });
+    // Keep the chain alive even when a link fails, or one bad navigation would
+    // wedge every later one.
+    this.navQueue = run.catch(() => {});
+    return run;
+  }
+
+  /** True while a navigation this session started is still in flight. */
+  private navigating = false;
+
+  /**
+   * Run a navigation with honest progress reporting.
+   *
+   * The user's mandate: whenever they have to wait, the UI must say what is
+   * happening. So a navigation announces itself, and always announces its end —
+   * including when it ends in a failure, because a spinner that never stops is
+   * the thing that made them feel "dazed and confused".
+   */
+  private async runNav(label: string, fn: (page: Page) => Promise<unknown>): Promise<void> {
+    await this.queueNav(async () => {
+      this.navigating = true;
+      this.emit('navStart', { kind: label, tabId: this.activeId });
+      const tab = this.findTab(this.activeId);
+      if (tab) tab.loading = true;
+      this.emitTabs();
+      try {
+        await this.withPage(async (page) => {
+          try {
+            await fn(page);
+            this.emit('navigated', { url: page.url() });
+          } catch (e) {
+            if (isDeadTargetError(e)) throw e;   // let withPage recover and retry
+            const msg = (e as Error).message || '';
+            // A navigation that was replaced by a newer one is not a failure the
+            // user needs to see — it is them changing their mind.
+            if (/ERR_ABORTED|net::ERR_ABORTED/.test(msg)) return;
+            this.emit('error', { message: msg });
+          }
+        });
+      } finally {
+        this.navigating = false;
+        const t = this.findTab(this.activeId);
+        if (t) t.loading = false;
+        await this.syncActiveTab();
+        this.emit('navEnd', { kind: label, tabId: this.activeId });
+      }
+    });
+  }
+
   async navigate(url: string): Promise<void> {
     this.touch();
     const target = normalizeTarget(url);
-    if (!target) return;
-    await this.withPage(async (page) => {
-      try {
-        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        this.emit('navigated', { url: page.url() });
-        await this.syncActiveTab();
-      } catch (e) {
-        if (isDeadTargetError(e)) throw e;   // let withPage recover and retry
-        this.emit('error', { message: (e as Error).message });
-      }
+    if (!target) {
+      // Silence here is what made a mistyped address look like a dead browser.
+      this.emit('error', { message: 'unsupported_url' });
+      return;
+    }
+    await this.runNav('navigate', async (page) => {
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
     });
   }
 
@@ -1287,6 +1991,42 @@ export class LiveBrowserSession {
     tab.title = (await tab.page.title().catch(() => '')) || tab.url;
     this.emitTabs();
     void this.persistTabs();
+    await this.emitNavState();
+  }
+
+  /**
+   * Tell the client whether Back and Forward would actually DO anything.
+   *
+   * Measured (tools/probe-nav.js): the old session never sent this, so the
+   * client could not grey the buttons out and could not explain a no-op. The
+   * user's report that "back/forward don't work correctly" is exactly this —
+   * pressing Back at the start of history silently re-emitted
+   * `navigated(about:blank)`, which looks like a broken button rather than the
+   * end of the history list.
+   *
+   * There is no CDP "canGoBack", so it is derived from the real history:
+   * `Page.getNavigationHistory` returns the entries and the current index.
+   */
+  private async emitNavState(): Promise<void> {
+    const state = await this.navState();
+    this.emit('navState', state as unknown as Record<string, unknown>);
+  }
+
+  private async navState(): Promise<{ canGoBack: boolean; canGoForward: boolean; url: string; zoom: number }> {
+    const url = this.page && !this.page.isClosed() ? this.page.url() : 'about:blank';
+    let canGoBack = false;
+    let canGoForward = false;
+    if (this.cdp) {
+      try {
+        const hist = await this.cdp.send('Page.getNavigationHistory') as {
+          currentIndex: number;
+          entries: Array<{ url: string }>;
+        };
+        canGoBack = hist.currentIndex > 0;
+        canGoForward = hist.currentIndex < hist.entries.length - 1;
+      } catch { /* a dead target answers nothing; both stay false, which is honest */ }
+    }
+    return { canGoBack, canGoForward, url, zoom: this.zoom };
   }
 
   /**
@@ -1299,41 +2039,191 @@ export class LiveBrowserSession {
    * direction, which is not an error — it is the button being a no-op, exactly
    * as a greyed-out Back is.
    */
+  /**
+   * Back / Forward.
+   *
+   * Both check FIRST whether there is anywhere to go, and say so rather than
+   * pretending. `goBack` resolving to `null` at the start of history used to be
+   * followed by an unconditional `navigated` event carrying the SAME url, which
+   * is indistinguishable from a broken button — the reported symptom.
+   */
   async back(): Promise<void> {
     this.touch();
-    await this.withPage(async (page) => {
+    const st = await this.navState();
+    if (!st.canGoBack) {
+      this.emit('navBlocked', { kind: 'back', reason: 'history_start' });
+      await this.emitNavState();
+      return;
+    }
+    await this.runNav('back', async (page) => {
       await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 });
-      this.emit('navigated', { url: page.url() });
-      await this.syncActiveTab();
     });
   }
 
   async forward(): Promise<void> {
     this.touch();
-    await this.withPage(async (page) => {
+    const st = await this.navState();
+    if (!st.canGoForward) {
+      this.emit('navBlocked', { kind: 'forward', reason: 'history_end' });
+      await this.emitNavState();
+      return;
+    }
+    await this.runNav('forward', async (page) => {
       await page.goForward({ waitUntil: 'domcontentloaded', timeout: 30000 });
-      this.emit('navigated', { url: page.url() });
-      await this.syncActiveTab();
     });
   }
 
-  async reload(): Promise<void> {
+  /** Reload. `hard` bypasses the cache, which is what Ctrl+Shift+R means. */
+  async reload(opts: { hard?: boolean } = {}): Promise<void> {
     this.touch();
-    await this.withPage(async (page) => {
+    if (opts.hard) {
+      // Playwright's reload() always uses the cache; a real hard reload is a
+      // CDP call, and the user asking for one usually means "the cached copy is
+      // wrong", so quietly giving them a soft reload would be the wrong answer.
+      let done = false;
+      await this.withCdp(async (cdp) => {
+        await cdp.send('Page.reload', { ignoreCache: true });
+        done = true;
+      });
+      if (done) {
+        this.emit('navStart', { kind: 'reloadHard', tabId: this.activeId });
+        // Give the load a moment to settle, then report where we ended up.
+        await this.withPage(async (page) => {
+          await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+          this.emit('navigated', { url: page.url() });
+        });
+        await this.syncActiveTab();
+        this.emit('navEnd', { kind: 'reloadHard', tabId: this.activeId });
+        return;
+      }
+    }
+    await this.runNav('reload', async (page) => {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-      this.emit('navigated', { url: page.url() });
-      await this.syncActiveTab();
     });
   }
 
-  async click(x: number, y: number): Promise<void> {
+  /**
+   * Map a point the client measured on the CANVAS into the page's own
+   * coordinate space.
+   *
+   * Zoom makes this necessary. Measured (tools/probe-zoom.js): while a device
+   * metrics override is active the page's layout is `viewport / zoom` wide, and
+   * CDP input coordinates are in that layout space — while the canvas the user
+   * clicked is still viewport-sized. Sending the raw canvas point at 150% zoom
+   * therefore lands 1.5x too far right and down, so every click after a zoom
+   * would hit the wrong element and the browser would look broken. The probe
+   * proved both directions: divided → hit, undivided → miss.
+   */
+  private toPagePoint(x: number, y: number): { x: number; y: number } {
+    const z = this.zoom || 1;
+    return { x: Math.round(Number(x) / z), y: Math.round(Number(y) / z) };
+  }
+
+  /**
+   * A click, with everything Chrome puts on one: which button, how many times,
+   * and which modifiers were held.
+   *
+   * The old signature was `click(x, y)` with `button:'left', clickCount:1`
+   * hardcoded, which made Ctrl+Click, Shift+Click, middle-click, right-click,
+   * double-click and triple-click all impossible — six ordinary browser
+   * gestures behind one missing parameter.
+   *
+   * Sending clickCount 1..n rather than just n is what Chromium expects: the
+   * count RISES across a multi-click, exactly as a real mouse reports it.
+   * Measured: cc=2 on a word selects that word, cc=3 selects the paragraph.
+   */
+  async click(
+    x: number,
+    y: number,
+    opts: { button?: unknown; clickCount?: unknown; mods?: Mods } = {},
+  ): Promise<void> {
     this.touch();
-    const px = Math.round(x);
-    const py = Math.round(y);
+    const p = this.toPagePoint(x, y);
+    const button = normalizeButton(opts.button);
+    const count = normalizeClickCount(opts.clickCount);
+    const modifiers = modifierMask(opts.mods);
     await this.withCdp(async (cdp) => {
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: py });
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 1 });
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1 });
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: p.x, y: p.y, modifiers, buttons: 0,
+      });
+      for (let i = 1; i <= count; i += 1) {
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mousePressed', x: p.x, y: p.y, button,
+          buttons: buttonsMask(button), clickCount: i, modifiers,
+        });
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x: p.x, y: p.y, button,
+          buttons: 0, clickCount: i, modifiers,
+        });
+      }
+    });
+  }
+
+  /**
+   * A drag: press, move in steps, release.
+   *
+   * One CDP call per phase would not do it — Blink starts a selection or a drag
+   * only when it sees intermediate `mouseMoved` events WITH the button still
+   * held (`buttons: 1`). Measured: press → 10 moves → release selects a text
+   * range; press → release does nothing. This is the same primitive behind text
+   * selection, a range slider, HTML5 drag & drop and dragging a file onto a
+   * drop zone, so it is worth getting exactly right once.
+   */
+  async drag(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    opts: { button?: unknown; mods?: Mods; steps?: number } = {},
+  ): Promise<void> {
+    this.touch();
+    const a = this.toPagePoint(from.x, from.y);
+    const b = this.toPagePoint(to.x, to.y);
+    const button = normalizeButton(opts.button);
+    const modifiers = modifierMask(opts.mods);
+    // Enough steps that Blink treats it as a gesture, few enough to stay cheap.
+    const steps = Math.min(Math.max(Math.round(Number(opts.steps) || 12), 4), 30);
+    // MEASURED (tools/probe-live-parity.js, 2026-08-03): sending press → moves →
+    // release with NO gap made both drag-to-select-text and drag-a-slider do
+    // nothing at all. `Input.dispatchMouseEvent` resolves as soon as the browser
+    // process has accepted the event, NOT when the renderer has handled it, so a
+    // tight loop delivers the whole path inside one compositor frame and Blink
+    // treats it as a single teleport rather than a gesture. A human drag spans
+    // hundreds of milliseconds; Blink's selection and its slider both need to
+    // observe the pointer at intermediate positions to build a range or track a
+    // thumb. So each step yields long enough for a frame to be produced.
+    const gap = (ms: number) => new Promise<void>((r) => { setTimeout(r, ms); });
+    await this.withCdp(async (cdp) => {
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: a.x, y: a.y, modifiers, buttons: 0,
+      });
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: a.x, y: a.y, button,
+        buttons: buttonsMask(button), clickCount: 1, modifiers,
+      });
+      // Let the press land and focus/hit-test settle before the pointer leaves.
+      await gap(24);
+      for (let i = 1; i <= steps; i += 1) {
+        // MEASURED 2026-08-03: `button: 'none'` on the moves (what DevTools sends,
+        // since `button` names the button that CHANGED state and during a move
+        // none did) was tried here and made things WORSE — it broke the slider
+        // that `button: 'left'` gets right, taking the probe from 66/67 to 65/67.
+        // So Blink wants the held button named on the move. Keep it.
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: Math.round(a.x + ((b.x - a.x) * i) / steps),
+          y: Math.round(a.y + ((b.y - a.y) * i) / steps),
+          button, buttons: buttonsMask(button), modifiers,
+        });
+        // ~16ms is one frame at 60Hz. Cheap, and it is the difference between a
+        // gesture Blink acts on and a jump it ignores.
+        await gap(16);
+      }
+      // The release must not race the last move either: a slider commits its
+      // value on the release, and it has to see the final position first.
+      await gap(16);
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: b.x, y: b.y, button,
+        buttons: 0, clickCount: 1, modifiers,
+      });
     });
   }
 
@@ -1344,22 +2234,169 @@ export class LiveBrowserSession {
   // NOT routed through `withCdp`: a hover fires ~14 times a second, and letting
   // each one trigger a recovery would turn a single dead page into a storm of
   // context rebuilds. The health poll and the next real click both notice.
-  async move(x: number, y: number): Promise<void> {
+  async move(x: number, y: number, opts: { mods?: Mods; buttons?: number } = {}): Promise<void> {
     this.touch();
     if (!this.cdp) return;
+    const p = this.toPagePoint(x, y);
     try {
       await this.cdp.send('Input.dispatchMouseEvent', {
-        type: 'mouseMoved', x: Math.round(x), y: Math.round(y),
+        type: 'mouseMoved', x: p.x, y: p.y,
+        modifiers: modifierMask(opts.mods),
+        buttons: Number(opts.buttons) || 0,
       });
     } catch { /* ignore */ }
   }
 
-  async scroll(x: number, y: number, dy: number): Promise<void> {
+  /**
+   * Wheel scroll in BOTH axes.
+   *
+   * `deltaX` was hardcoded to 0, which silently removed horizontal scrolling —
+   * Shift+Wheel, a trackpad swipe, and any horizontally scrolling pane (a wide
+   * table, a timeline, a code block) had no way to move. Measured: a `deltaX`
+   * of 260 moves `scrollX` to 260.
+   */
+  async scroll(
+    x: number,
+    y: number,
+    dy: number,
+    opts: { dx?: number; mods?: Mods } = {},
+  ): Promise<void> {
     this.touch();
+    const p = this.toPagePoint(x, y);
     await this.withCdp(async (cdp) => {
       await cdp.send('Input.dispatchMouseEvent', {
-        type: 'mouseWheel', x: Math.round(x), y: Math.round(y), deltaX: 0, deltaY: Math.round(dy),
+        type: 'mouseWheel', x: p.x, y: p.y,
+        deltaX: Math.round(Number(opts.dx) || 0),
+        deltaY: Math.round(Number(dy) || 0),
+        modifiers: modifierMask(opts.mods),
       });
+    });
+  }
+
+  /**
+   * Pinch zoom, for a trackpad pinch or a touch gesture on the canvas.
+   *
+   * This is the one place `synthesizePinchGesture` is right: it is a GESTURE,
+   * not a zoom level. Ctrl +/-/0 go through `setZoom` instead, because those
+   * must reflow the page (see `setZoom`).
+   */
+  async pinch(x: number, y: number, scale: number): Promise<void> {
+    this.touch();
+    const p = this.toPagePoint(x, y);
+    const s = Math.min(Math.max(Number(scale) || 1, 0.2), 8);
+    await this.withCdp(async (cdp) => {
+      await cdp.send('Input.synthesizePinchGesture', { x: p.x, y: p.y, scaleFactor: s });
+    });
+  }
+
+  /**
+   * Browser zoom — Ctrl+Plus / Ctrl+Minus / Ctrl+0.
+   *
+   * Uses `Emulation.setDeviceMetricsOverride`, NOT `setPageScaleFactor`.
+   * Measured (tools/probe-zoom.js): `setPageScaleFactor` is pinch zoom, so it
+   * physically cannot go below 100% on a desktop page (asking for 0.8 reads
+   * back 1.0) and does not reflow the page at all. Real zoom changes the layout
+   * width: at 125% a 1000px viewport lays out at 800px, at 80% at 1250px, and
+   * `clearDeviceMetricsOverride` restores 100% exactly.
+   *
+   * The level is echoed to the client because the client MUST know it to scale
+   * pointer coordinates — see `toPagePoint`.
+   */
+  async setZoom(dirOrLevel: 'in' | 'out' | 'reset' | number): Promise<void> {
+    this.touch();
+    const level = typeof dirOrLevel === 'number'
+      ? Math.min(Math.max(dirOrLevel, 0.25), 5)
+      : nextZoom(this.zoom, dirOrLevel);
+    await this.withCdp(async (cdp) => {
+      if (Math.abs(level - 1) < 1e-6) {
+        await cdp.send('Emulation.clearDeviceMetricsOverride');
+      } else {
+        await cdp.send('Emulation.setDeviceMetricsOverride', {
+          width: Math.round(this.vp.width / level),
+          height: Math.round(this.vp.height / level),
+          deviceScaleFactor: level,
+          mobile: false,
+        });
+      }
+      this.zoom = level;
+      this.emit('zoom', { level });
+    });
+  }
+
+  /**
+   * What is under the pointer, so the client can draw a context menu whose
+   * items make sense for the thing right-clicked.
+   *
+   * Chrome's own context menu is drawn by the OS and can never appear in a
+   * screencast, so the menu has to be HTML on the client. But a menu that shows
+   * "Open link in new tab" over a paragraph, or omits "Copy" over a selection,
+   * is a stage prop. This asks the page what is actually there — link href,
+   * image src, whether an editable field or a selection is involved — and the
+   * client builds the real menu from the answer.
+   */
+  async contextMenuAt(x: number, y: number): Promise<void> {
+    this.touch();
+    const p = this.toPagePoint(x, y);
+    // Fire the real event too: a page with its own custom menu (Google Docs,
+    // a file manager, a canvas app) must still see the right-click.
+    await this.withCdp(async (cdp) => {
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: p.x, y: p.y, button: 'right',
+        buttons: buttonsMask('right'), clickCount: 1,
+      });
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: p.x, y: p.y, button: 'right',
+        buttons: 0, clickCount: 1,
+      });
+    });
+    let info: Record<string, unknown> = {};
+    await this.withPage(async (page) => {
+      info = await page.evaluate(({ px, py }: { px: number; py: number }) => {
+        const el = document.elementFromPoint(px, py) as HTMLElement | null;
+        const link = el ? (el.closest('a[href]') as HTMLAnchorElement | null) : null;
+        const img = el ? (el.closest('img') as HTMLImageElement | null) : null;
+        const media = el ? (el.closest('video,audio') as HTMLMediaElement | null) : null;
+        const editable = !!(el && (
+          el.isContentEditable
+          || el.tagName === 'INPUT'
+          || el.tagName === 'TEXTAREA'
+        ));
+        const sel = String(window.getSelection() || '');
+        return {
+          tag: el ? el.tagName.toLowerCase() : '',
+          linkUrl: link ? link.href : '',
+          linkText: link ? (link.textContent || '').trim().slice(0, 80) : '',
+          imageUrl: img ? img.currentSrc || img.src : '',
+          mediaUrl: media ? media.currentSrc || media.src : '',
+          editable,
+          selection: sel.slice(0, 200),
+          hasSelection: sel.trim().length > 0,
+        };
+      }, { px: p.x, py: p.y });
+    });
+    // `x`/`y` echoed back in CANVAS space: that is where the menu must appear.
+    this.emit('contextMenu', { x: Math.round(Number(x)), y: Math.round(Number(y)), ...info });
+  }
+
+  /**
+   * Expand the current selection to a word or a paragraph.
+   *
+   * `Selection.modify` is Blink's own word/paragraph boundary logic, so this
+   * gives the client an exact-selection path that does not depend on hitting a
+   * glyph rather than the space between two words.
+   */
+  async expandSelection(unit: 'word' | 'paragraph'): Promise<void> {
+    this.touch();
+    const granularity = unit === 'paragraph' ? 'paragraph' : 'word';
+    await this.withPage(async (page) => {
+      await page.evaluate((g: string) => {
+        const s = window.getSelection();
+        if (!s || !s.rangeCount) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sm = s as any;
+        sm.modify('move', 'backward', g);
+        sm.modify('extend', 'forward', g);
+      }, granularity);
     });
   }
 
@@ -1371,11 +2408,29 @@ export class LiveBrowserSession {
     });
   }
 
-  // Send a single special key (Enter, Backspace, Tab, etc.).
-  async key(name: string): Promise<void> {
+  /**
+   * Send ONE keystroke — any key, with any modifiers.
+   *
+   * This replaces `page.keyboard.press(name)`, which could only take a key NAME
+   * and therefore could not express "Ctrl+Shift+K" or "the character ب", and
+   * was fed by a client-side allowlist of nine key names that dropped anything
+   * with Ctrl/Alt/Meta held. Between them that removed most of a keyboard:
+   * Home/End/PageUp/PageDown, F1-F11, every non-Latin character, and every
+   * shortcut a page or an extension might listen for.
+   *
+   * `buildKeyEvents` supplies what Chromium actually requires — the physical
+   * `code`, the virtual key code accelerators match on, and the editing
+   * `commands` without which Ctrl+A/C/V/X/Z arrive but do nothing. All measured
+   * in tools/probe-input-real.js (9/9).
+   */
+  async key(name: string, mods: Mods = {}, opts: { autoRepeat?: boolean } = {}): Promise<void> {
     this.touch();
-    await this.withPage(async (page) => {
-      await page.keyboard.press(name);
+    const spec = buildKeyEvents(String(name || ''), mods, opts);
+    if (!spec.events.length) return;
+    await this.withCdp(async (cdp) => {
+      for (const ev of spec.events) {
+        await cdp.send('Input.dispatchKeyEvent', ev);
+      }
     });
   }
 
@@ -1454,12 +2509,17 @@ export class LiveBrowserSession {
     this.emit('clipboard', { text: String(text || ''), source });
   }
 
-  /** Select everything in the focused field/page — the other half of Ctrl+A. */
+  /**
+   * Select everything in the focused field/page — the other half of Ctrl+A.
+   *
+   * Routed through the same key translator as every other keystroke, so there
+   * is ONE implementation of "Ctrl+A" rather than two that can drift apart.
+   * The translator names the `selectAll` editing command, which is the part
+   * Chromium actually acts on (measured: without it the event arrives and
+   * nothing is selected).
+   */
   async selectAll(): Promise<void> {
-    this.touch();
-    await this.withPage(async (page) => {
-      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
-    });
+    await this.key('a', process.platform === 'darwin' ? { meta: true } : { ctrl: true });
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1504,6 +2564,313 @@ export class LiveBrowserSession {
     } catch (e) {
       this.emit('fileChooserDone', { ok: false, reason: (e as Error).message });
     }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Downloads
+  //
+  // Chrome shows a shelf with a name, a size and a progress bar, and the file
+  // ends up somewhere you can open it. Here the file lands on the SERVER, so the
+  // shelf also has to offer a way to fetch it — otherwise a download is a file
+  // the user can neither see nor reach.
+  //
+  // Two channels, because measurement showed neither is sufficient alone:
+  //   * `page.on('download')` (probe-cdp4) is the only Playwright event that
+  //     fires at all here — `context.on('download')` never did. It gives the
+  //     suggested filename and can save the bytes.
+  //   * page-level CDP `Browser.downloadProgress` (probe-cdp2) is the only
+  //     source of INTERMEDIATE progress — 7 events with real receivedBytes /
+  //     totalBytes. Without it a progress bar can only jump 0 -> 100.
+  // They conflict if both own the file (measured: with CDP behavior set,
+  // `saveAs` fails), so Playwright saves the bytes and CDP only reports.
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Record a download and stream its progress to the client.
+   *
+   * `suggestedFilename` is sanitised before it touches the filesystem: it comes
+   * from a remote server's Content-Disposition, so treating it as a path would
+   * be a directory-traversal bug with extra steps.
+   */
+  private async trackDownload(dl: import('playwright').Download, page: Page): Promise<void> {
+    const tab = this.tabOfPage(page);
+    this.downloadSeq += 1;
+    const id = `d${this.downloadSeq}`;
+    const suggested = String(dl.suggestedFilename() || 'download');
+    // The name shown on the shelf. Sanitised HERE and not only at save time,
+    // because it is also going into the UI, and a name with a bidi override in
+    // it can make `report.exe` read as `report.txt` on the shelf.
+    const safe = safeFileName(suggested) || 'download';
+    const entry: LiveDownload = {
+      id,
+      // A token, minted per download, is what the client is given. The id is a
+      // per-session counter and would collide across sessions on disk.
+      token: mintDownloadToken(),
+      name: safe,
+      url: (() => { try { return dl.url(); } catch { return ''; } })(),
+      tabId: tab ? tab.id : this.activeId,
+      state: 'inProgress',
+      received: 0,
+      total: 0,
+      path: '',
+      error: '',
+    };
+    this.downloads.push(entry);
+    // Cap the shelf: a page in a download loop must not grow this without bound.
+    if (this.downloads.length > 40) this.downloads.splice(0, this.downloads.length - 40);
+    this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+
+    try {
+      const target = await downloadPathFor(this.userId, entry.token, safe);
+      await dl.saveAs(target);
+      entry.path = target;
+      entry.state = 'completed';
+      try {
+        const st = await fsp.stat(target);
+        entry.received = st.size;
+        entry.total = st.size;
+      } catch { /* size is a nicety, not a requirement */ }
+      if (entry.total > MAX_DOWNLOAD_BYTES) {
+        // Over the cap: delete it rather than keep a quarter-gigabyte the user
+        // did not agree to store, and say why instead of offering a dead link.
+        await discardDownload(this.userId, entry.token).catch(() => {});
+        entry.state = 'failed';
+        entry.path = '';
+        entry.error = 'download_too_large';
+      }
+      void sweepDownloads(this.userId).catch(() => { /* best-effort housekeeping */ });
+    } catch (e) {
+      // A cancelled or failed download must SAY so. A shelf row stuck at
+      // "in progress" forever is the kind of thing that makes a user wait for
+      // something that is never going to happen.
+      entry.state = 'failed';
+      entry.error = (e as Error).message || 'download_failed';
+    }
+    this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+  }
+
+  private downloadInfo(d: LiveDownload): DownloadInfo {
+    return {
+      id: d.id,
+      name: d.name,
+      url: d.url,
+      tabId: d.tabId,
+      state: d.state,
+      received: d.received,
+      total: d.total,
+      ...(d.error ? { error: d.error } : {}),
+      // A token, never a path: the fetch route resolves it, so the client can
+      // never name a file on the server's disk.
+      ...(d.state === 'completed' ? { token: d.token } : {}),
+    };
+  }
+
+  /** The shelf, for a client that just connected or resynced. */
+  downloadList(): DownloadInfo[] {
+    return this.downloads.map((d) => this.downloadInfo(d));
+  }
+
+  /**
+   * Resolve a download token to a path on disk, for the fetch route.
+   *
+   * Deliberately looks the token up in THIS session's own list rather than
+   * trusting the token's shape: a token that was minted for another user is not
+   * in here, so there is no way to reach it even though the on-disk layout would
+   * technically allow the name to resolve.
+   */
+  downloadFile(token: string): { path: string; name: string } | null {
+    const d = this.downloads.find((x) => x.token === String(token || ''));
+    if (!d || d.state !== 'completed' || !d.path) return null;
+    return { path: d.path, name: d.name };
+  }
+
+  /** Forget one shelf row (Chrome's little x on a download) and delete the file. */
+  clearDownload(token: string): void {
+    this.touch();
+    const tok = String(token || '');
+    const gone = this.downloads.filter((d) => d.token === tok);
+    this.downloads = this.downloads.filter((d) => d.token !== tok);
+    for (const d of gone) {
+      // Removing the row removes the file too. Keeping the bytes after the user
+      // dismissed the row would be storing something they believe is gone.
+      void discardDownload(this.userId, d.token).catch(() => {});
+    }
+    this.emit('downloadCleared', { token: tok, id: gone[0] ? gone[0].id : '' });
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Page dialogs
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Answer the dialog the page is blocked on.
+   *
+   * `accept` maps to OK, anything else to Cancel; `text` is the prompt's value.
+   * MEASURED: `accept('typed value')` really delivers that string to the page's
+   * `window.prompt`, and `accept()` makes `window.confirm` return true — so the
+   * UI's OK/Cancel buttons mean exactly what they say.
+   *
+   * Errors are swallowed deliberately: a dialog whose page has since navigated
+   * away can no longer be answered, and the only thing that matters then is
+   * that we stop believing one is pending.
+   */
+  async answerDialog(accept: boolean, text = ''): Promise<void> {
+    this.touch();
+    const dialog = this.pendingDialog;
+    this.pendingDialog = null;
+    if (!dialog) return;
+    const kind = dialog.type();
+    try {
+      if (accept) await dialog.accept(String(text || ''));
+      else await dialog.dismiss();
+    } catch { /* the page moved on; nothing left to answer */ }
+    this.emit('dialogDone', { kind, accepted: !!accept });
+
+    // A beforeunload we raised because the USER asked to close the tab: OK means
+    // "leave", so the close they wanted now goes through. Cancel means "stay",
+    // and the tab must survive — which is the behaviour the mandate asked for
+    // ("beforeunload on tab close must ASK, not silently close").
+    if (kind === 'beforeunload' && this.closingTabId) {
+      const id = this.closingTabId;
+      this.closingTabId = '';
+      if (accept) await this.closeTab(id, { force: true });
+      else this.emit('tabCloseCancelled', { id });
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // HTTP basic auth
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Intercept 401s on this page so the credentials prompt becomes answerable.
+   *
+   * The interception is deliberately narrow. `Fetch.enable` with a pattern
+   * means every matching request is PAUSED until we continue it, which is a
+   * latency tax on the whole page and a hang risk if we ever fail to answer.
+   * Measured cost: `'*'` = 8 pauses on one page, Document-only = 1, and the auth
+   * event arrived either way. So Document-only, and every non-auth pause is
+   * continued immediately and unconditionally.
+   *
+   * Its own CDP session, not the screencast one: the screencast session is torn
+   * down and rebuilt on every tab switch, and auth must keep working on a
+   * background tab that is still loading.
+   */
+  private async installAuthHandler(page: Page): Promise<void> {
+    if (!this.context) return;
+    try {
+      const cdp = await this.context.newCDPSession(page);
+      this.authCdp.set(page, cdp);
+
+      cdp.on('Fetch.requestPaused', (ev: { requestId: string }) => {
+        // Not an auth pause: let it through at once. A paused request the user
+        // is waiting on is indistinguishable from a hung server.
+        void cdp.send('Fetch.continueRequest', { requestId: ev.requestId }).catch(() => {});
+      });
+
+      cdp.on('Fetch.authRequired', (ev: {
+        requestId: string;
+        request: { url: string };
+        authChallenge: { origin?: string; realm?: string; scheme?: string; source?: string };
+      }) => {
+        const proxy = ev.authChallenge && ev.authChallenge.source === 'Proxy';
+        this.pendingAuth = { cdp, requestId: ev.requestId, page };
+        const tab = this.tabOfPage(page);
+        // The UI needs the origin and the realm to be honest about WHO is asking.
+        // "Enter your password" with no indication of the site is exactly the
+        // kind of prompt a person should refuse to answer.
+        this.emit('authRequired', {
+          origin: (ev.authChallenge && ev.authChallenge.origin) || originOf(ev.request.url),
+          realm: (ev.authChallenge && ev.authChallenge.realm) || '',
+          scheme: (ev.authChallenge && ev.authChallenge.scheme) || 'basic',
+          proxy: !!proxy,
+          url: ev.request.url,
+          tabId: tab ? tab.id : this.activeId,
+        });
+      });
+
+      await cdp.send('Fetch.enable', {
+        handleAuthRequests: true,
+        patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }],
+      });
+
+      // A page that closes takes its CDP session with it; drop the reference so
+      // the map does not grow one dead session per tab for the life of the
+      // session.
+      page.once('close', () => {
+        this.authCdp.delete(page);
+        if (this.pendingAuth && this.pendingAuth.page === page) this.pendingAuth = null;
+      });
+    } catch (e) {
+      // Auth interception is an enhancement, not a precondition: a page that
+      // cannot get it still works for everything that is not a 401. Failing
+      // `attachPage` over this would break tab creation itself.
+      //
+      // But it must not fail INVISIBLY. MEASURED 2026-08-03: when this threw,
+      // the only symptom was that a 401 produced no prompt at all — the site
+      // was simply unreachable and nothing anywhere said why. Report it.
+      this.emit('error', {
+        message: 'auth_interception_unavailable',
+        detail: ((e as Error)?.message || String(e)).slice(0, 300),
+      });
+    }
+  }
+
+  /**
+   * Answer the credentials prompt.
+   *
+   * Cancel is `CancelAuth`, which is what makes Chrome show the server's own 401
+   * body instead of hanging — a user who does not have the password must still
+   * get a page, not a spinner.
+   */
+  async answerAuth(accept: boolean, username = '', password = ''): Promise<void> {
+    this.touch();
+    const pending = this.pendingAuth;
+    this.pendingAuth = null;
+    if (!pending) return;
+    try {
+      await pending.cdp.send('Fetch.continueWithAuth', {
+        requestId: pending.requestId,
+        authChallengeResponse: accept
+          ? { response: 'ProvideCredentials', username: String(username || ''), password: String(password || '') }
+          : { response: 'CancelAuth' },
+      });
+    } catch { /* the request was abandoned; nothing left to answer */ }
+    // Never echo the password back, not even a length.
+    this.emit('authDone', { accepted: !!accept });
+  }
+
+  /**
+   * Fail-safe: cancel any auth challenge still waiting.
+   *
+   * Same reasoning as `drainDialog`: a paused request holds its page, and a page
+   * that is held cannot be closed cleanly.
+   */
+  private async drainAuth(): Promise<void> {
+    const pending = this.pendingAuth;
+    this.pendingAuth = null;
+    if (!pending) return;
+    try {
+      await pending.cdp.send('Fetch.continueWithAuth', {
+        requestId: pending.requestId,
+        authChallengeResponse: { response: 'CancelAuth' },
+      });
+    } catch { /* already gone */ }
+  }
+
+  /**
+   * Fail-safe: answer anything still pending.
+   *
+   * Called before teardown and before a recovery. A dialog left unanswered
+   * blocks its page forever, and since a blocked page also cannot be closed
+   * cleanly, forgetting this would turn one unanswered prompt into a leaked
+   * Chrome tab that nothing can collect.
+   */
+  private async drainDialog(): Promise<void> {
+    const dialog = this.pendingDialog;
+    this.pendingDialog = null;
+    if (!dialog) return;
+    try { await dialog.dismiss(); } catch { /* already gone */ }
   }
 
   /** Dismiss the dialog. `setFiles([])` is what "Cancel" means to the page. */
@@ -1583,6 +2950,14 @@ export class LiveBrowserSession {
     this.closed = true;
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
     if (this.healthTimer) { clearInterval(this.healthTimer); this.healthTimer = null; }
+    if (this.audioTimer) { clearInterval(this.audioTimer); this.audioTimer = null; }
+    // MEASURED (tools/probe-cdp3.js): a page blocked on an unanswered dialog
+    // cannot even be closed — `page.title()` timed out and the close hung. So the
+    // dialog is answered FIRST, or this teardown leaks a Chrome tab that nothing
+    // will ever collect.
+    await this.drainDialog();
+    await this.drainAuth();
+    this.authCdp.clear();
     // Save the strip BEFORE anything is torn down. This is the whole point of
     // "show me my tabs when the browser comes up": the list has to be written on
     // the way out, including when the way out is an idle timeout rather than the
@@ -1663,5 +3038,34 @@ export class LiveBrowserManager {
     const all = Array.from(this.sessions.values());
     this.sessions.clear();
     await Promise.all(all.map((s) => s.close().catch(() => {})));
+  }
+
+  /**
+   * "We never lose a tab."
+   *
+   * Relaunching real Chrome destroys every page inside it, including the ones
+   * these sessions are streaming. Nothing about the WebSocket changes, so
+   * without this the user is left staring at a perfectly good last frame of a
+   * page whose browser no longer exists — connected, unbroken-looking, and
+   * completely dead. That is the single worst state in this whole system,
+   * because there is nothing on screen to tell them to do anything about it.
+   *
+   * So whoever relaunches Chrome calls this immediately afterwards, and every
+   * live session rebuilds itself onto the new browser with its tab list intact.
+   * `resync()` is the existing, tested path for exactly this: it finds the
+   * context dead, builds a fresh one, marks every tab `pending`, reloads the
+   * active one and re-arms the screencast — reporting `recovering` then
+   * `recovered` over each session's own socket, so each client narrates its own
+   * repair.
+   *
+   * Failures are swallowed PER SESSION on purpose: one user's page that refuses
+   * to come back must not stop everyone else's from being rebuilt.
+   */
+  async rebuildAll(): Promise<number> {
+    const all = Array.from(this.sessions.values());
+    const results = await Promise.all(
+      all.map((s) => s.resync().then(() => true).catch(() => false)),
+    );
+    return results.filter(Boolean).length;
   }
 }

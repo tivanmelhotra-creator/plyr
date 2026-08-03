@@ -405,6 +405,24 @@
           '<input class="field-input bvp-url" id="bvp-url" type="text" dir="ltr" ' +
             'placeholder="https://example.com" autocomplete="off" spellcheck="false">' +
           '<button class="btn btn-primary btn-sm" id="bvp-go">' + esc(t('bv.go')) + '</button>' +
+          // ── Zoom ────────────────────────────────────────────────────────
+          // Ctrl+ / Ctrl− / Ctrl+0 are wired on the stage as well, but the
+          // buttons have to exist: the keyboard versions only work while the
+          // canvas has focus, and someone who has just been reading a page at
+          // 50% has no reason to know that. The percentage is shown because a
+          // zoom you cannot read is a zoom you cannot undo — and because every
+          // click coordinate is divided by it, a wrong number here is a page
+          // where clicks land in the wrong place.
+          '<span class="bvp-zoomgrp">' +
+            '<button class="icon-btn bvp-zoomout" id="bvp-zoomout" type="button" ' +
+              'title="' + esc(t('bvp.zoomOut')) + '" aria-label="' + esc(t('bvp.zoomOut')) + '">' +
+              BIC('minus', 14) + '</button>' +
+            '<button class="bvp-zoomlvl" id="bvp-zoomlvl" type="button" ' +
+              'title="' + esc(t('bvp.zoomReset')) + '">100%</button>' +
+            '<button class="icon-btn bvp-zoomin" id="bvp-zoomin" type="button" ' +
+              'title="' + esc(t('bvp.zoomIn')) + '" aria-label="' + esc(t('bvp.zoomIn')) + '">' +
+              BIC('plus', 14) + '</button>' +
+          '</span>' +
           '<span class="badge bvp-status" id="bvp-status">—</span>' +
           // The session chip is the visible half of the persistent context. Once
           // cookies survive between opens, "is this browser signed in?" becomes a
@@ -438,6 +456,19 @@
           '<button class="icon-btn bvp-resync" id="bvp-resync" type="button" ' +
             'title="' + esc(t('bvp.reconnect')) + '" aria-label="' + esc(t('bvp.reconnect')) + '">' +
             BIC('plug', 15) + '</button>' +
+          // Restart the real Chrome. This is a DIFFERENT button from Reconnect
+          // and both have to exist, because they fix different things:
+          //   Reconnect  — the stream/page died, Chrome itself is fine (cheap,
+          //                keeps the tab list)
+          //   Restart    — Chrome must be relaunched, because it only reads
+          //                extensions at launch, so a newly installed extension
+          //                is invisible until it restarts
+          // Only Reconnect existed after the tab work landed, which left no way
+          // to load an extension you had just installed without hunting for the
+          // button inside the Real Chrome panel.
+          '<button class="icon-btn bvp-restart" id="bvp-restart" type="button" ' +
+            'title="' + esc(t('bvp.restartBrowser')) + '" aria-label="' + esc(t('bvp.restartBrowser')) + '">' +
+            BIC('power', 15) + '</button>' +
           // Real Chrome. The canvas below is a screencast of a PAGE, so it can
           // never show an extension popup, chrome://extensions or a native file
           // dialog — they are not drawn by the page. This button is the way out
@@ -470,6 +501,78 @@
         '<div class="bvp-stage" id="bvp-stage" tabindex="0">' +
           '<canvas class="bvp-canvas" id="bvp-canvas"></canvas>' +
           '<div class="bvp-empty" id="bvp-empty">' + esc(t('bvp.needUrl')) + '</div>' +
+          // ── The page's own dialogs, and the 401 ──────────────────────────
+          // These are drawn OVER the canvas, not beside it, because that is
+          // where Chrome puts them: they belong to the page you are looking at
+          // and they block it. Both are created empty and filled from the
+          // server's event — the text of an `alert()` and the origin behind a
+          // 401 are facts only the server has.
+          //
+          // They are rendered ALWAYS PRESENT and hidden with a class, never
+          // built on demand: a modal that is constructed at the moment the
+          // dialog arrives is a modal that can fail to appear, and a page
+          // dialog that fails to appear is a tab locked forever with no
+          // explanation — the exact bug being fixed.
+          '<div class="bvp-modal is-off" id="bvp-dialog" role="alertdialog" aria-modal="true">' +
+            '<div class="bvp-modal-card">' +
+              '<div class="bvp-modal-head">' +
+                '<span class="bvp-modal-icon" id="bvp-dlg-icon">' + BIC('message-square', 16) + '</span>' +
+                '<span class="bvp-modal-title" id="bvp-dlg-title"></span>' +
+              '</div>' +
+              '<p class="bvp-modal-from" id="bvp-dlg-from"></p>' +
+              // The page's text, in a <pre>-ish box. It is untrusted content, so
+              // it goes in via textContent and gets no HTML.
+              '<div class="bvp-modal-body" id="bvp-dlg-msg"></div>' +
+              // Only a prompt() shows this.
+              '<input class="field-input bvp-modal-input is-off" id="bvp-dlg-input" type="text" ' +
+                'autocomplete="off" spellcheck="false">' +
+              '<div class="bvp-modal-foot">' +
+                '<button class="btn btn-ghost btn-sm" id="bvp-dlg-no"></button>' +
+                '<button class="btn btn-primary btn-sm" id="bvp-dlg-yes"></button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="bvp-modal is-off" id="bvp-auth" role="dialog" aria-modal="true">' +
+            '<div class="bvp-modal-card">' +
+              '<div class="bvp-modal-head">' +
+                '<span class="bvp-modal-icon">' + BIC('lock', 16) + '</span>' +
+                '<span class="bvp-modal-title" id="bvp-auth-title"></span>' +
+              '</div>' +
+              // WHO is asking. A password prompt that does not name the site is
+              // a prompt a careful person should refuse, so the origin and the
+              // realm are not decoration.
+              '<p class="bvp-modal-from" id="bvp-auth-who"></p>' +
+              '<p class="bvp-modal-from" id="bvp-auth-realm"></p>' +
+              '<input class="field-input bvp-modal-input" id="bvp-auth-user" type="text" ' +
+                'autocomplete="off" spellcheck="false" placeholder="' + esc(t('bvp.authUser')) + '" ' +
+                'aria-label="' + esc(t('bvp.authUser')) + '">' +
+              '<input class="field-input bvp-modal-input" id="bvp-auth-pass" type="password" ' +
+                'autocomplete="off" placeholder="' + esc(t('bvp.authPass')) + '" ' +
+                'aria-label="' + esc(t('bvp.authPass')) + '">' +
+              '<p class="bvp-modal-note">' + esc(t('bvp.authNote')) + '</p>' +
+              '<div class="bvp-modal-foot">' +
+                '<button class="btn btn-ghost btn-sm" id="bvp-auth-no">' +
+                  esc(t('bvp.authCancel')) + '</button>' +
+                '<button class="btn btn-primary btn-sm" id="bvp-auth-yes">' +
+                  esc(t('bvp.authOk')) + '</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          // ── Self-healing progress ───────────────────────────────────────
+          // The answer to "which restart? I pressed it and nothing happened."
+          // The server now heals itself and reports every step; this panel is
+          // where those steps are read out, with a measured ETA per step, so
+          // the wait is never a blank screen.
+          '<div class="bvp-heal is-off" id="bvp-heal" role="status" aria-live="polite">' +
+            '<div class="bvp-heal-card">' +
+              '<div class="bvp-heal-head">' +
+                '<span class="bvp-heal-spin" id="bvp-heal-spin">' + BIC('loader', 16) + '</span>' +
+                '<span class="bvp-heal-title">' + esc(t('bvp.healTitle')) + '</span>' +
+              '</div>' +
+              '<ol class="bvp-heal-steps" id="bvp-heal-steps"></ol>' +
+              '<p class="bvp-heal-note">' + esc(t('bvp.healNote')) + '</p>' +
+            '</div>' +
+          '</div>' +
           '<div class="bvp-panel" id="bvp-panel">' +
             // An explicit grip. The whole head was already draggable, but nothing
             // SAID so — a `cursor: move` only appears once the pointer is already
@@ -550,6 +653,33 @@
             '<p class="bvp-kbd" id="bvp-kbd"></p>' +
           '</div>' +
         '</div>' +
+        // ── The download shelf ────────────────────────────────────────────
+        // Chrome's download bar: it appears at the BOTTOM of the window the
+        // moment a download starts and stays until dismissed. Ours has to
+        // exist at all, because the file lands on the SERVER's disk — without
+        // a shelf, a download in this browser is a file the user can never
+        // reach and never even learns about. Each row therefore ends in a
+        // real fetch link, not just a name.
+        '<div class="bvp-shelf is-off" id="bvp-shelf" role="region" ' +
+          'aria-label="' + esc(t('bvp.dlShelf')) + '">' +
+          '<span class="bvp-shelf-icon">' + BIC('download', 14) + '</span>' +
+          '<div class="bvp-shelf-items" id="bvp-shelf-items"></div>' +
+          '<button class="icon-btn bvp-shelf-clear" id="bvp-shelf-clear" type="button" ' +
+            'title="' + esc(t('bvp.dlClearAll')) + '" aria-label="' + esc(t('bvp.dlClearAll')) + '">' +
+            BIC('trash', 13) + '</button>' +
+          '<button class="icon-btn bvp-shelf-hide" id="bvp-shelf-hide" type="button" ' +
+            'title="' + esc(t('bvp.dlHide')) + '" aria-label="' + esc(t('bvp.dlHide')) + '">' +
+            BIC('x', 13) + '</button>' +
+        '</div>' +
+        // ── Context menus ─────────────────────────────────────────────────
+        // ONE host element, reused by both the page menu and the tab menu.
+        // Chrome's real context menu is drawn by the browser process and can
+        // never appear in a screencast of a page, so it has to be rebuilt in
+        // HTML here — and it must be a sibling of the shell rather than a child
+        // of the stage, so it can overhang the canvas edge instead of being
+        // clipped by it (a menu opened near the bottom right that gets cut in
+        // half is worse than no menu).
+        '<div class="bvp-ctx is-off" id="bvp-ctx" role="menu"></div>' +
         // The anonymity note is NOT optional polish. Our picker drives a
         // server-side browser with a fresh, signed-out context, so every
         // selector behind a login is unreachable — and the only symptom is a
@@ -621,7 +751,44 @@
       // the stall watchdog). 0 = no question outstanding.
       pingSentAt: 0,
       onKeyDoc: null,
-      onResize: null
+      onResize: null,
+      // ── Zoom ──────────────────────────────────────────────────────────
+      // The server zooms with Emulation.setDeviceMetricsOverride, which is
+      // REAL browser zoom: the viewport gets smaller in CSS pixels and the
+      // page reflows. The screencast frames stay the same pixel size, so a
+      // canvas coordinate is `cssPixel * zoom` and every click must be divided
+      // by this number on the way out. Measured in both directions: skip the
+      // division and at 150% every click lands a third of the way up and left
+      // of where the user aimed.
+      zoom: 1,
+      // ── Navigation ────────────────────────────────────────────────────
+      // Whether Back/Forward would DO anything, straight from the server's
+      // real Page.getNavigationHistory. Before this the arrows were always
+      // enabled, so Back on the first page of a tab looked like a broken
+      // button — which is exactly what was reported.
+      canBack: false,
+      canFwd: false,
+      navBusy: false,
+      // ── Drag, on the canvas ───────────────────────────────────────────
+      // A real mousedown→mousemove→mouseup, which is what text selection,
+      // sliders and drag & drop are all made of. `null` when the button is up.
+      dragFrom: null,
+      dragLast: null,
+      // ── Tab strip ─────────────────────────────────────────────────────
+      tabDragId: '',       // the tab currently being carried
+      tabDragOver: -1,     // the slot it would land in
+      // ── Page dialogs / auth ───────────────────────────────────────────
+      dialog: null,        // the dialog currently on screen
+      auth: null,          // the credentials request currently on screen
+      // ── Downloads ─────────────────────────────────────────────────────
+      // Keyed by id so a progress event updates the row that is already there
+      // instead of appending a second copy of the same file.
+      downloads: [],
+      shelfHidden: false,
+      // ── Self-healing ──────────────────────────────────────────────────
+      healSteps: [],
+      // ── Context menu ──────────────────────────────────────────────────
+      ctxOpen: false
     };
     modeSel.value = pickState.mode;
     // Seed the field with whatever the caller's input already held, so the
@@ -633,17 +800,95 @@
       statusB.className = 'badge bvp-status ' + (cls || '');
       statusB.textContent = label;
     }
+
+    /**
+     * Grey out an arrow that would do nothing, and show that a navigation is in
+     * flight. Both halves come from the server's real history, never guessed:
+     * the client cannot know whether a page pushed history entries of its own.
+     *
+     * Reload turns into a spinner-ish busy state while loading, because the
+     * complaint that "reload doesn't work" is usually a reload that DID work on
+     * a slow page with nothing on screen to prove it.
+     */
+    function applyNavState() {
+      var b = q('bvp-back');
+      var f = q('bvp-fwd');
+      var r = q('bvp-reload');
+      if (b) {
+        b.disabled = !pickState.canBack;
+        b.classList.toggle('is-dim', !pickState.canBack);
+      }
+      if (f) {
+        f.disabled = !pickState.canFwd;
+        f.classList.toggle('is-dim', !pickState.canFwd);
+      }
+      if (r) r.classList.toggle('is-busy', !!pickState.navBusy);
+    }
+
+    /** Show the zoom, and remember it: every click coordinate divides by it. */
+    function setZoomLabel(level) {
+      var z = Number(level) || 1;
+      pickState.zoom = z;
+      var el = q('bvp-zoomlvl');
+      if (el) {
+        el.textContent = Math.round(z * 100) + '%';
+        // Mark a non-default zoom. A page at 67% that looks merely "small" is a
+        // page the user will try to fix by resizing the window forever.
+        el.classList.toggle('is-off-default', Math.abs(z - 1) > 0.001);
+      }
+    }
+
     function send(obj) {
       var ps = pickState;
       if (ps && ps.ws && ps.ws.readyState === WebSocket.OPEN) {
         try { ps.ws.send(JSON.stringify(obj)); } catch (e) {}
       }
     }
+    /**
+     * A canvas event -> a coordinate the PAGE will agree with.
+     *
+     * Two corrections, and both are required:
+     *
+     *  1. CSS size -> frame size. The canvas is laid out to fit the stage but
+     *     its backing store is whatever size the screencast sends, so a click
+     *     at the visual centre is not at `frameWidth/2` unless we scale.
+     *
+     *  2. Frame size -> page CSS pixels, i.e. divide by zoom. The server zooms
+     *     with `Emulation.setDeviceMetricsOverride`, which shrinks the viewport
+     *     in CSS pixels while the frames keep their pixel size. Measured: at
+     *     150% zoom, without this division every click lands about a third of
+     *     the way up and to the left of the target. A browser where the pointer
+     *     lies is not a browser, so this is not an optimisation.
+     */
     function toPoint(ev) {
       var rect = canvas.getBoundingClientRect();
       var sx = canvas.width / rect.width || 1;
       var sy = canvas.height / rect.height || 1;
-      return { x: (ev.clientX - rect.left) * sx, y: (ev.clientY - rect.top) * sy };
+      var z = pickState.zoom || 1;
+      return {
+        x: (ev.clientX - rect.left) * sx / z,
+        y: (ev.clientY - rect.top) * sy / z
+      };
+    }
+
+    /**
+     * The four modifier flags, in the shape the server's `mods()` normaliser
+     * expects. Sent with EVERY mouse and key event rather than only when one is
+     * held, because a missing field and `false` have to mean the same thing on
+     * the wire — otherwise Ctrl+Click works and plain click silently inherits
+     * the last Ctrl state.
+     */
+    function modsOf(ev) {
+      return {
+        ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey,
+        alt: !!ev.altKey, meta: !!ev.metaKey
+      };
+    }
+
+    /** Which mouse button, in CDP's vocabulary. Middle-click matters: it is how
+     *  Chrome opens a link in a background tab and how it closes a tab. */
+    function buttonOf(ev) {
+      return ev.button === 1 ? 'middle' : (ev.button === 2 ? 'right' : 'left');
     }
     function selectorOf(data) {
       if (!data) return '';
@@ -890,21 +1135,69 @@
       pickState.tabs = Array.isArray(list) ? list : [];
       pickState.activeTab = String(activeId || '');
       host.innerHTML = '';
-      // One tab is not a tab bar, it is chrome taking space from the page. Hide
-      // the strip until there is a real choice to make — the + button lives in
-      // it, so it comes back the moment a second tab exists, and Ctrl+T style
-      // "new tab" is still reachable from the Real Chrome panel meanwhile.
-      var strip = q('bvp-tabstrip');
-      if (strip) strip.classList.toggle('is-solo', pickState.tabs.length < 2);
+      // The strip is ALWAYS visible, exactly like Chrome's. Hiding it while
+      // there was only one tab was a real dead end and not a space saving: the
+      // + button lives in the strip, so "hide until there are two tabs" left no
+      // way to ever CREATE the second tab. A browser you cannot open a tab in
+      // is not a browser.
 
-      pickState.tabs.forEach(function (tab) {
+      // Chrome-like widths, done with flex maths rather than a fixed size.
+      // Chrome stretches tabs to fill the strip while there are few, then
+      // shrinks them evenly once there are many, down to a floor where only the
+      // favicon and the X remain. Reproduced here by handing every item the same
+      // `flex: 1 1 0` and setting a max-width that falls as the count rises —
+      // so two tabs are wide and comfortable, ten are narrow but still all
+      // visible, and none of them ever scroll out of reach.
+      var n = pickState.tabs.length || 1;
+      var maxW = n <= 2 ? 240 : (n <= 4 ? 200 : (n <= 6 ? 168 : (n <= 9 ? 132 : 104)));
+      host.style.setProperty('--bvp-tabmax', maxW + 'px');
+
+      pickState.tabs.forEach(function (tab, slot) {
         var item = document.createElement('div');
         item.className = 'bvp-tabitem'
           + (tab.active ? ' is-on' : '')
           + (tab.pending ? ' is-pending' : '')
-          + (tab.dead ? ' is-dead' : '');
+          + (tab.dead ? ' is-dead' : '')
+          + (tab.loading ? ' is-loading' : '')
+          + (tab.pinned ? ' is-pinned' : '')
+          + (pickState.tabDragId === tab.id ? ' is-dragging' : '')
+          + (pickState.tabDragOver === slot ? ' is-dropslot' : '');
         item.setAttribute('role', 'tab');
         item.setAttribute('aria-selected', tab.active ? 'true' : 'false');
+        item.setAttribute('data-tabid', tab.id);
+        item.setAttribute('data-slot', String(slot));
+        // Drag to reorder. HTML5 drag-and-drop is deliberately NOT used: it
+        // needs a drag image and fires no event while the pointer is between
+        // slots, so the tab you are carrying disappears and nothing shows you
+        // where it will land. Pointer events give both.
+        item.draggable = false;
+
+        // ── The favicon slot, which doubles as the loading spinner ────────
+        // Chrome replaces the favicon with a spinning arc while the tab loads,
+        // and that swap is the whole point: one slot answers both "which site
+        // is this?" and "is it still working?". Two separate slots would make
+        // every tab wider for no gain.
+        var mark = document.createElement('span');
+        mark.className = 'bvp-tabmark';
+        if (tab.loading) {
+          mark.classList.add('is-spin');
+          mark.innerHTML = BIC('loader', 12);
+          mark.title = t('bvp.tabLoading');
+        } else if (tab.favicon) {
+          var fav = document.createElement('img');
+          fav.className = 'bvp-tabfav';
+          fav.alt = '';
+          fav.src = tab.favicon;
+          // A site whose favicon 404s must not leave a broken-image glyph in
+          // the strip; fall back to the generic globe, like Chrome does.
+          fav.addEventListener('error', function () {
+            mark.innerHTML = BIC('globe', 12);
+          });
+          mark.appendChild(fav);
+        } else {
+          mark.innerHTML = BIC('globe', 12);
+        }
+        item.appendChild(mark);
 
         var label = document.createElement('button');
         label.type = 'button';
@@ -919,22 +1212,295 @@
           if (tab.active) return;
           send({ t: 'tabSelect', id: tab.id });
         });
+        item.appendChild(label);
 
-        var kill = document.createElement('button');
-        kill.type = 'button';
-        kill.className = 'icon-btn bvp-tabkill';
-        kill.title = t('bvp.closeTab');
-        kill.setAttribute('aria-label', t('bvp.closeTab'));
-        kill.innerHTML = BIC('x', 11);
-        kill.addEventListener('click', function (ev) {
-          ev.stopPropagation();   // closing a tab must not also select it
-          send({ t: 'tabClose', id: tab.id });
+        // ── The audio indicator ──────────────────────────────────────────
+        // Chrome shows a speaker on any tab that is making noise, and clicking
+        // it mutes that tab. Both halves matter: the icon answers "which of my
+        // nine tabs is the advert in?", and it being a BUTTON means the answer
+        // is actionable without first switching to the tab — which is the only
+        // reason anyone looks for it.
+        if (tab.audible || tab.muted) {
+          var snd = document.createElement('button');
+          snd.type = 'button';
+          snd.className = 'icon-btn bvp-tabsound' + (tab.muted ? ' is-muted' : '');
+          snd.title = tab.muted ? t('bvp.tabMuted') : t('bvp.tabAudible');
+          snd.setAttribute('aria-label', snd.title);
+          snd.innerHTML = BIC(tab.muted ? 'volume-x' : 'volume', 11);
+          snd.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            send({ t: 'tabMute', id: tab.id, muted: !tab.muted });
+          });
+          item.appendChild(snd);
+        }
+
+        // A pinned tab keeps its pin visible and loses its X, exactly like
+        // Chrome: the point of pinning is that the tab is hard to close by
+        // accident. The close route still exists through the context menu.
+        if (tab.pinned) {
+          var pin = document.createElement('span');
+          pin.className = 'bvp-tabpin';
+          pin.title = t('bvp.tabPinned');
+          pin.innerHTML = BIC('pin', 11);
+          item.appendChild(pin);
+        } else {
+          var kill = document.createElement('button');
+          kill.type = 'button';
+          kill.className = 'icon-btn bvp-tabkill';
+          kill.title = t('bvp.closeTab');
+          kill.setAttribute('aria-label', t('bvp.closeTab'));
+          kill.innerHTML = BIC('x', 11);
+          kill.addEventListener('click', function (ev) {
+            ev.stopPropagation();   // closing a tab must not also select it
+            send({ t: 'tabClose', id: tab.id });
+          });
+          item.appendChild(kill);
+        }
+
+        // Middle-click closes, anywhere on the chip. This is muscle memory for
+        // anyone who uses tabs at all, and it is also the only comfortable way
+        // to close several tabs in a row: the X moves as the strip re-flows,
+        // the chip under the pointer does not.
+        item.addEventListener('mousedown', function (ev) {
+          if (ev.button === 1) {
+            ev.preventDefault();          // stop the browser's autoscroll cursor
+            send({ t: 'tabClose', id: tab.id });
+            return;
+          }
+          if (ev.button !== 0) return;
+          beginTabDrag(ev, tab.id, slot);
+        });
+        item.addEventListener('contextmenu', function (ev) {
+          ev.preventDefault();
+          openTabMenu(ev.clientX, ev.clientY, tab, slot);
         });
 
-        item.appendChild(label);
-        item.appendChild(kill);
         host.appendChild(item);
       });
+    }
+
+    // ── Dragging a tab to a new slot ──────────────────────────────────────
+    // Pointer-driven, and the drop target is computed from the MIDPOINT of each
+    // chip rather than from its edges. Using edges leaves a dead zone between
+    // every pair of tabs where the carried tab shows no destination at all,
+    // which reads as a broken drag; midpoints mean the pointer is always over
+    // exactly one answer.
+    function beginTabDrag(ev, id, slot) {
+      var startX = ev.clientX;
+      var moved = false;
+      var host = q('bvp-tablist');
+      if (!host) return;
+
+      function slotAt(clientX) {
+        var chips = host.querySelectorAll('.bvp-tabitem');
+        for (var i = 0; i < chips.length; i++) {
+          var r = chips[i].getBoundingClientRect();
+          if (clientX < r.left + r.width / 2) return i;
+        }
+        return chips.length - 1;
+      }
+      function onMove(m) {
+        // A 4px threshold, so an ordinary click to switch tabs is never
+        // mistaken for a one-pixel drag that reorders the strip.
+        if (!moved && Math.abs(m.clientX - startX) < 4) return;
+        if (!moved) { moved = true; pickState.tabDragId = id; }
+        pickState.tabDragOver = slotAt(m.clientX);
+        renderTabs(pickState.tabs, pickState.activeTab);
+      }
+      function onUp(u) {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        var target = moved ? slotAt(u.clientX) : -1;
+        pickState.tabDragId = '';
+        pickState.tabDragOver = -1;
+        if (moved && target >= 0 && target !== slot) {
+          send({ t: 'tabMove', id: id, index: target });
+        } else {
+          // Nothing moved: redraw to clear the drag styling. The server will
+          // not send a `tabs` event for a reorder that did not happen, so if we
+          // skipped this the strip would stay visually mid-drag forever.
+          renderTabs(pickState.tabs, pickState.activeTab);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Context menus
+    // ══════════════════════════════════════════════════════════════════════
+    // Chrome's context menu is drawn by the browser process, so it can never
+    // appear in a screencast of a page. It is rebuilt here in HTML and each
+    // entry sends a real command, so the menu is not a mock-up: "Reload" does
+    // the same reload the toolbar button does.
+    //
+    // Built from a plain array of `{ label, icon, run, off }` so the tab menu
+    // and the page menu share one renderer, one keyboard model and one
+    // dismissal rule. A second implementation would drift.
+
+    function closeCtx() {
+      var host = q('bvp-ctx');
+      if (!host) return;
+      host.classList.add('is-off');
+      host.innerHTML = '';
+      pickState.ctxOpen = false;
+    }
+
+    function openCtx(clientX, clientY, items) {
+      var host = q('bvp-ctx');
+      if (!host) return;
+      host.innerHTML = '';
+      var live = items.filter(function (it) { return it && !it.off; });
+      if (!live.length) return;
+
+      live.forEach(function (it) {
+        if (it.sep) {
+          var hr = document.createElement('div');
+          hr.className = 'bvp-ctx-sep';
+          host.appendChild(hr);
+          return;
+        }
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'bvp-ctx-item' + (it.disabled ? ' is-disabled' : '');
+        b.setAttribute('role', 'menuitem');
+        if (it.disabled) b.disabled = true;
+        var ic = document.createElement('span');
+        ic.className = 'bvp-ctx-icon';
+        ic.innerHTML = it.icon ? BIC(it.icon, 13) : '';
+        var tx = document.createElement('span');
+        tx.className = 'bvp-ctx-label';
+        tx.textContent = it.label;
+        b.appendChild(ic);
+        b.appendChild(tx);
+        b.addEventListener('click', function () {
+          closeCtx();
+          try { it.run(); } catch (e) {}
+        });
+        host.appendChild(b);
+      });
+
+      // Place it, then pull it back inside the window. A menu opened near the
+      // right or bottom edge that runs off-screen is a menu whose last two
+      // items cannot be clicked — and the interesting items are usually at the
+      // bottom, so this is not a cosmetic detail.
+      host.classList.remove('is-off');
+      host.style.left = '0px';
+      host.style.top = '0px';
+      var r = host.getBoundingClientRect();
+      var x = Math.min(clientX, window.innerWidth - r.width - 6);
+      var y = Math.min(clientY, window.innerHeight - r.height - 6);
+      host.style.left = Math.max(6, x) + 'px';
+      host.style.top = Math.max(6, y) + 'px';
+      pickState.ctxOpen = true;
+    }
+
+    /** The tab strip's right-click menu, with Chrome's exact set. */
+    function openTabMenu(clientX, clientY, tab, slot) {
+      var many = pickState.tabs.length > 1;
+      var rightOf = pickState.tabs.length - 1 > slot;
+      openCtx(clientX, clientY, [
+        { label: t('bvp.newTab'), icon: 'plus', run: function () { newTab(); } },
+        { label: t('bvp.tabDuplicate'), icon: 'copy',
+          run: function () { send({ t: 'tabDuplicate', id: tab.id }); } },
+        { label: tab.pinned ? t('bvp.tabUnpin') : t('bvp.tabPin'), icon: 'pin',
+          run: function () { send({ t: 'tabPin', id: tab.id, pinned: !tab.pinned }); } },
+        { label: tab.muted ? t('bvp.tabMuted') : t('bvp.tabAudible'),
+          icon: tab.muted ? 'volume-x' : 'volume',
+          // Only offered when there is sound to talk about; Chrome hides it too.
+          off: !(tab.audible || tab.muted),
+          run: function () { send({ t: 'tabMute', id: tab.id, muted: !tab.muted }); } },
+        { sep: true },
+        { label: t('bvp.closeTab'), icon: 'x',
+          run: function () { send({ t: 'tabClose', id: tab.id }); } },
+        { label: t('bvp.tabCloseOthers'), icon: 'square-x', disabled: !many,
+          run: function () { send({ t: 'tabCloseOthers', id: tab.id }); } },
+        { label: t('bvp.tabCloseRight'), icon: 'chevron-right', disabled: !rightOf,
+          run: function () { send({ t: 'tabCloseRight', id: tab.id }); } },
+        { sep: true },
+        { label: t('bvp.tabReopen'), icon: 'history',
+          run: function () { send({ t: 'tabReopen' }); } }
+      ]);
+    }
+
+    /**
+     * The PAGE's right-click menu, built from what the server found under the
+     * pointer. Chrome's menu changes with the target — a link offers "Open in
+     * new tab", an image offers "Copy image address", a text box offers Paste —
+     * and a fixed menu that offers all of them always would be a menu where
+     * most entries do nothing.
+     */
+    function openPageMenu(info) {
+      var rect = canvas.getBoundingClientRect();
+      var z = pickState.zoom || 1;
+      // The server echoed the coordinates back in CANVAS space, so they convert
+      // to screen space the same way a click converts the other direction.
+      var sx = rect.width / (canvas.width || 1);
+      var sy = rect.height / (canvas.height || 1);
+      var cx = rect.left + Number(info.x || 0) * sx;
+      var cy = rect.top + Number(info.y || 0) * sy;
+      var link = String(info.linkUrl || '');
+      var img = String(info.imageUrl || '');
+
+      openCtx(cx, cy, [
+        { label: t('bvp.cmBack'), icon: 'chevron-left', disabled: !pickState.canBack,
+          run: function () { send({ t: 'back' }); } },
+        { label: t('bvp.cmForward'), icon: 'chevron-right', disabled: !pickState.canFwd,
+          run: function () { send({ t: 'forward' }); } },
+        { label: t('bvp.cmReload'), icon: 'rotate-cw',
+          run: function () { send({ t: 'reload' }); } },
+        { sep: true },
+        { label: t('bvp.cmOpenNewTab'), icon: 'plus', off: !link,
+          // A NEW tab, not this one: that is what the entry says, and a menu
+          // item that navigates the current tab instead would lose the page the
+          // user was reading.
+          run: function () { send({ t: 'tabNew', url: link }); } },
+        { label: t('bvp.cmCopyLink'), icon: 'link', off: !link,
+          run: function () { copyText(link); } },
+        { label: t('bvp.cmOpenImage'), icon: 'image-frame', off: !img,
+          run: function () { send({ t: 'tabNew', url: img }); } },
+        { label: t('bvp.cmCopyImage'), icon: 'copy', off: !img,
+          run: function () { copyText(img); } },
+        { sep: true },
+        // Copy asks the SERVER for the selection, because the text is selected
+        // in the remote page and this machine's clipboard has never seen it.
+        { label: t('bvp.cmCopy'), icon: 'copy', disabled: !info.hasSelection,
+          run: function () {
+            if (pickState.rio) pickState.rio.pullClipboard();
+            else send({ t: 'copy' });
+          } },
+        { label: t('bvp.cmPaste'), icon: 'clipboard', off: !info.editable,
+          // Paste has to go the other way: read THIS machine's clipboard and
+          // type it into the remote page, since the server cannot read a
+          // clipboard it does not own.
+          run: function () { pasteIntoPage(); } },
+        { label: t('bvp.cmSelectAll'), icon: 'square-check',
+          run: function () { send({ t: 'selectAll' }); } },
+        { sep: true },
+        // "Inspect" in a picker window means the thing this window is for:
+        // arm element selection and lock the element that was right-clicked.
+        { label: t('bvp.cmInspect'), icon: 'target',
+          run: function () {
+            applySelectMode(true);
+            send({ t: 'click', x: Number(info.x || 0) / z, y: Number(info.y || 0) / z });
+          } }
+      ]);
+    }
+
+    /** Read the local clipboard and type it into the remote page. */
+    function pasteIntoPage() {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function (txt) {
+          if (txt) send({ t: 'paste', text: txt });
+        }).catch(function () { toast(t('bvp.cmPaste'), 'info'); });
+      }
+    }
+
+    /** A blank tab, exactly like Ctrl+T: the address bar takes it from here. */
+    function newTab(url) {
+      if (!pickState.ws || pickState.ws.readyState !== WebSocket.OPEN) { connect(); return; }
+      send({ t: 'tabNew', url: url || '' });
+      if (!url) { urlIn.value = ''; urlIn.focus(); }
     }
 
     // One paint routine for both channels; `locked` decides whether the
@@ -953,6 +1519,324 @@
       if (locked) renderCands(data.candidates);
       q('bvp-up').disabled = !data.hasParent;
       q('bvp-down').disabled = !data.hasChild;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // The page's own dialogs
+    // ══════════════════════════════════════════════════════════════════════
+    // `alert()`, `confirm()`, `prompt()` and `beforeunload` are drawn by CHROME,
+    // not by the page, so they are invisible in a screencast — and Playwright
+    // leaves an unhandled dialog blocking the page forever. That combination is
+    // what "the tab silently locks up" was: a modal the user could neither see
+    // nor answer. This is the answer path.
+    function showDialog(msg) {
+      pickState.dialog = msg;
+      var kind = String(msg.kind || 'alert');
+      var box = q('bvp-dialog');
+      var titleEl = q('bvp-dlg-title');
+      var fromEl = q('bvp-dlg-from');
+      var msgEl = q('bvp-dlg-msg');
+      var input = q('bvp-dlg-input');
+      var yes = q('bvp-dlg-yes');
+      var no = q('bvp-dlg-no');
+
+      titleEl.textContent =
+        kind === 'confirm' ? t('bvp.dlgConfirm')
+        : kind === 'prompt' ? t('bvp.dlgPrompt')
+        : kind === 'beforeunload' ? t('bvp.dlgLeave')
+        : t('bvp.dlgAlert');
+
+      // Name the site. A modal that says "This page says: your session expired,
+      // re-enter your password" without saying WHICH page is a phishing surface,
+      // not a convenience.
+      var origin = '';
+      try { origin = msg.url ? new URL(msg.url).origin : ''; } catch (e) { origin = String(msg.url || ''); }
+      fromEl.textContent = origin ? tf('bvp.dlgFrom', { origin: origin }) : '';
+      fromEl.style.display = origin ? '' : 'none';
+
+      // The page's own text, via textContent: it is untrusted and must never be
+      // parsed as HTML. `beforeunload` messages are ignored by real Chrome too
+      // (sites abused them), so we show Chrome's fixed wording instead.
+      msgEl.textContent = kind === 'beforeunload'
+        ? t('bvp.dlgLeaveBody')
+        : String(msg.message || '');
+
+      var isPrompt = kind === 'prompt';
+      input.classList.toggle('is-off', !isPrompt);
+      input.value = isPrompt ? String(msg.defaultValue || '') : '';
+
+      // An `alert()` has ONE button in Chrome, because there is nothing to
+      // decline — offering Cancel would imply the page might not be told.
+      var oneWay = kind === 'alert';
+      no.style.display = oneWay ? 'none' : '';
+      no.textContent = kind === 'beforeunload' ? t('bvp.dlgStay') : t('bvp.dlgCancel');
+      yes.textContent = kind === 'beforeunload' ? t('bvp.dlgLeaveOk') : t('bvp.dlgOk');
+
+      box.classList.remove('is-off');
+      // Focus what the user will act on. For a prompt that is the field; for
+      // everything else the confirming button, so Enter alone answers it.
+      setTimeout(function () { (isPrompt ? input : yes).focus(); }, 0);
+    }
+
+    function answerDialog(accept) {
+      if (!pickState.dialog) return;
+      var kind = String(pickState.dialog.kind || 'alert');
+      var input = q('bvp-dlg-input');
+      var payload = { t: 'dialogAnswer', accept: !!accept };
+      if (kind === 'prompt' && accept) payload.text = input.value || '';
+      send(payload);
+      hideDialog();
+      // Put the keyboard back on the page. Leaving focus on a button that has
+      // just vanished means the next keystroke goes nowhere, which looks like
+      // the page froze the instant the dialog closed.
+      stage.focus();
+    }
+
+    function hideDialog() {
+      pickState.dialog = null;
+      var box = q('bvp-dialog');
+      if (box) box.classList.add('is-off');
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HTTP basic auth (the 401)
+    // ══════════════════════════════════════════════════════════════════════
+    function showAuth(msg) {
+      pickState.auth = msg;
+      var box = q('bvp-auth');
+      q('bvp-auth-title').textContent = msg.proxy ? t('bvp.authProxy') : t('bvp.authTitle');
+      q('bvp-auth-who').textContent = tf('bvp.authWho', { origin: String(msg.origin || '') });
+      var realmEl = q('bvp-auth-realm');
+      realmEl.textContent = msg.realm ? tf('bvp.authRealm', { realm: String(msg.realm) }) : '';
+      realmEl.style.display = msg.realm ? '' : 'none';
+      q('bvp-auth-user').value = '';
+      q('bvp-auth-pass').value = '';
+      box.classList.remove('is-off');
+      setTimeout(function () { q('bvp-auth-user').focus(); }, 0);
+    }
+
+    function answerAuth(accept) {
+      if (!pickState.auth) return;
+      var u = q('bvp-auth-user').value || '';
+      var p = q('bvp-auth-pass').value || '';
+      send({ t: 'authAnswer', accept: !!accept, username: u, password: p });
+      // Clear the field immediately rather than on the next open. The password
+      // is in a DOM node in a long-lived overlay; there is no reason for it to
+      // outlive the request by even one frame.
+      q('bvp-auth-pass').value = '';
+      hideAuth();
+      stage.focus();
+    }
+
+    function hideAuth() {
+      pickState.auth = null;
+      var box = q('bvp-auth');
+      if (box) box.classList.add('is-off');
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // The download shelf
+    // ══════════════════════════════════════════════════════════════════════
+    function humanBytes(n) {
+      var b = Number(n || 0);
+      if (!b) return '';
+      if (b < 1024) return b + ' B';
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+      if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+      return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    }
+
+    /**
+     * One download, arriving or updating. Keyed by `id`, so the three events a
+     * single file produces (started, progress, completed) update ONE row instead
+     * of stacking three rows for the same download.
+     */
+    function upsertDownload(d) {
+      var found = false;
+      for (var i = 0; i < pickState.downloads.length; i++) {
+        if (pickState.downloads[i].id === d.id) { pickState.downloads[i] = d; found = true; break; }
+      }
+      if (!found) {
+        pickState.downloads.push(d);
+        // A new download un-hides the shelf. Chrome does the same, and for the
+        // same reason: the user dismissed the shelf for the PREVIOUS file, which
+        // says nothing about whether they want to be told about this one.
+        pickState.shelfHidden = false;
+      }
+      renderShelf();
+    }
+
+    function renderShelf() {
+      var shelf = q('bvp-shelf');
+      var host = q('bvp-shelf-items');
+      if (!shelf || !host) return;
+      var list = pickState.downloads;
+      shelf.classList.toggle('is-off', !list.length || pickState.shelfHidden);
+      host.innerHTML = '';
+
+      list.forEach(function (d) {
+        var row = document.createElement('div');
+        row.className = 'bvp-dl is-' + String(d.state || 'started');
+
+        var name = document.createElement('span');
+        name.className = 'bvp-dl-name';
+        name.textContent = String(d.name || '');
+        name.title = String(d.url || '');
+        row.appendChild(name);
+
+        var meta = document.createElement('span');
+        meta.className = 'bvp-dl-meta';
+        if (d.state === 'completed') {
+          meta.textContent = humanBytes(d.total || d.received) || t('bvp.dlUnknownSize');
+        } else if (d.state === 'failed') {
+          meta.textContent = d.error === 'download_too_large'
+            ? t('bvp.dlTooLarge') : (String(d.error || '') || t('bvp.dlFailed'));
+        } else if (d.total > 0) {
+          meta.textContent = tf('bvp.dlProgress', {
+            done: humanBytes(d.received), total: humanBytes(d.total)
+          });
+        } else {
+          // A server that sends no Content-Length gives us bytes with no total.
+          // Showing "0%" would be a lie; showing the byte count is the truth.
+          meta.textContent = humanBytes(d.received) || t('bvp.dlUnknownSize');
+        }
+        row.appendChild(meta);
+
+        // A real progress bar only when there is a real total. An indeterminate
+        // stripe is used otherwise, because a bar stuck at 0% reads as "broken"
+        // while a moving stripe reads as "working" — which is the truth.
+        if (d.state !== 'completed' && d.state !== 'failed') {
+          var bar = document.createElement('span');
+          bar.className = 'bvp-dl-bar' + (d.total > 0 ? '' : ' is-indet');
+          var fill = document.createElement('span');
+          fill.className = 'bvp-dl-fill';
+          if (d.total > 0) {
+            var pct = Math.max(2, Math.min(100, Math.round((d.received / d.total) * 100)));
+            fill.style.width = pct + '%';
+          }
+          bar.appendChild(fill);
+          row.appendChild(bar);
+        }
+
+        // The link that makes the whole feature real. The bytes are on the
+        // SERVER's disk, so without this the download is a file the user can
+        // see named and never open. It is a fetch (not an <a href>) because the
+        // route needs the `x-api-key` header, exactly like uploads.
+        if (d.state === 'completed' && d.token) {
+          var get = document.createElement('button');
+          get.type = 'button';
+          get.className = 'icon-btn bvp-dl-get';
+          get.title = t('bvp.dlSave');
+          get.setAttribute('aria-label', t('bvp.dlSave'));
+          get.innerHTML = BIC('download', 13);
+          get.addEventListener('click', function () { fetchDownload(d); });
+          row.appendChild(get);
+        }
+
+        var drop = document.createElement('button');
+        drop.type = 'button';
+        drop.className = 'icon-btn bvp-dl-drop';
+        drop.title = t('bvp.dlDrop');
+        drop.setAttribute('aria-label', t('bvp.dlDrop'));
+        drop.innerHTML = BIC('x', 12);
+        drop.addEventListener('click', function () {
+          if (d.token) send({ t: 'downloadClear', token: d.token });
+          // Drop it locally too. A failed download has no token, so waiting for
+          // the server's confirmation would leave a row that can never be
+          // dismissed.
+          pickState.downloads = pickState.downloads.filter(function (x) { return x.id !== d.id; });
+          renderShelf();
+        });
+        row.appendChild(drop);
+
+        host.appendChild(row);
+      });
+    }
+
+    /**
+     * Pull the file onto THIS machine. Same identity rule as an upload: the
+     * route is authorised by `x-api-key` plus the user id, so a plain link would
+     * be rejected — hence fetch + blob + a synthetic click.
+     */
+    function fetchDownload(d) {
+      var url = '/browser/downloads/' + encodeURIComponent(d.token)
+        + '?userId=' + encodeURIComponent(effectiveUserId());
+      fetch(url, { headers: { 'x-api-key': window.API.getKey() } })
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.blob();
+        })
+        .then(function (blob) {
+          var a = document.createElement('a');
+          var href = URL.createObjectURL(blob);
+          a.href = href;
+          a.download = String(d.name || 'download');
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          // Revoke on a timer, not immediately: some browsers have not started
+          // reading the blob by the time click() returns.
+          setTimeout(function () { URL.revokeObjectURL(href); }, 10000);
+        })
+        .catch(function (e) {
+          toast(tf('bvp.dlFailed', { name: String(d.name || '') })
+            + ' — ' + ((e && e.message) || ''), 'error');
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Self-healing progress
+    // ══════════════════════════════════════════════════════════════════════
+    // "It said I must restart, I pressed it, nothing happened, and I had no idea
+    // what was going on." The server now heals itself and reports every step it
+    // takes; this renders those steps as a live checklist with a measured ETA,
+    // so the wait always answers three questions: what is happening, whether it
+    // needs me, and how much longer.
+    function showHeal(steps) {
+      var box = q('bvp-heal');
+      var host = q('bvp-heal-steps');
+      if (!box || !host) return;
+      pickState.healSteps = steps || [];
+      host.innerHTML = '';
+      if (!pickState.healSteps.length) { box.classList.add('is-off'); return; }
+
+      pickState.healSteps.forEach(function (s) {
+        var li = document.createElement('li');
+        li.className = 'bvp-heal-step is-' + String(s.state || 'running');
+
+        var icon = document.createElement('span');
+        icon.className = 'bvp-heal-mark';
+        icon.innerHTML = s.state === 'done' ? BIC('check', 13)
+          : s.state === 'failed' ? BIC('alert-circle', 13)
+          : BIC('loader', 13);
+        if (s.state === 'running') icon.classList.add('is-spin');
+        li.appendChild(icon);
+
+        var label = document.createElement('span');
+        label.className = 'bvp-heal-label';
+        // The server sends a stable KEY, never a sentence, so this line can be
+        // Persian. An English string on the wire would have made the whole
+        // progress panel untranslatable.
+        label.textContent = t('bvp.heal.' + String(s.key || '')) || String(s.key || '');
+        li.appendChild(label);
+
+        var meta = document.createElement('span');
+        meta.className = 'bvp-heal-meta';
+        if (s.state === 'running' && s.etaMs > 0) {
+          meta.textContent = tf('bvp.healEta', { s: Math.ceil(s.etaMs / 1000) });
+        } else if (s.detail) {
+          meta.textContent = String(s.detail);
+        }
+        li.appendChild(meta);
+
+        host.appendChild(li);
+      });
+      box.classList.remove('is-off');
+    }
+
+    function hideHeal() {
+      var box = q('bvp-heal');
+      if (box) box.classList.add('is-off');
     }
 
     function drawFrame(b64) {
@@ -1020,6 +1904,18 @@
           // used to be `send({ t: 'picker', on: true })`, which is what made the
           // window un-browsable from its very first frame.
           applySelectMode(pickState.selectMode, true);
+          // A fresh socket knows nothing about history, zoom or the shelf, and
+          // all three are SERVER state that survived the reconnect. Ask, rather
+          // than assume: assuming zoom is 1 after resyncing into a page the user
+          // had zoomed to 150% would silently break every click coordinate.
+          if (typeof msg.zoom === 'number') setZoomLabel(msg.zoom);
+          if (Array.isArray(msg.downloads)) {
+            pickState.downloads = msg.downloads;
+            renderShelf();
+          }
+          applyNavState();
+          // Chrome is up and streaming, so any healing panel is finished.
+          hideHeal();
           break;
         case 'session':
           setSession(msg.signedIn);
@@ -1065,6 +1961,82 @@
           break;
         case 'tabCrashed':
           toast(t('bvp.tabCrashed'), 'warning');
+          break;
+        // ── Navigation: are the arrows even meaningful? ────────────────────
+        // The measured baseline never sent this, so both arrows were permanently
+        // enabled and Back on the first page of a tab did nothing at all — which
+        // is the "back/forward don't work correctly" report, exactly.
+        case 'navState':
+          pickState.canBack = !!msg.canGoBack;
+          pickState.canFwd = !!msg.canGoForward;
+          if (typeof msg.zoom === 'number') setZoomLabel(msg.zoom);
+          applyNavState();
+          if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
+          break;
+        case 'navStart':
+          pickState.navBusy = true;
+          setStatus(t('bvp.stLoading'), 'warn');
+          applyNavState();
+          break;
+        case 'navEnd':
+          pickState.navBusy = false;
+          setStatus(t('bvp.stLive'), 'ok');
+          applyNavState();
+          break;
+        // A refusal, not a fault: you pressed Back on the first page. Saying so
+        // is the difference between "this button is broken" and "there is
+        // nothing behind this page".
+        case 'navBlocked':
+          pickState.navBusy = false;
+          toast(msg.kind === 'forward'
+            ? t('bvp.navBlockedForward') : t('bvp.navBlockedBack'), 'info');
+          applyNavState();
+          break;
+        case 'zoom':
+          setZoomLabel(msg.level);
+          break;
+        // ── The page's own dialogs ────────────────────────────────────────
+        case 'dialog':
+          showDialog(msg);
+          break;
+        case 'dialogDone':
+          hideDialog();
+          break;
+        // The page said no to closing the tab (`beforeunload` declined). The tab
+        // is still there and still yours — say so, or the X looks broken.
+        case 'tabCloseCancelled':
+          toast(t('bvp.tabCloseCancelled'), 'info');
+          break;
+        case 'tabReopenEmpty':
+          toast(t('bvp.tabReopenEmpty'), 'info');
+          break;
+        // ── HTTP basic auth ──────────────────────────────────────────────
+        case 'authRequired':
+          showAuth(msg);
+          break;
+        case 'authDone':
+          hideAuth();
+          toast(msg.accepted ? t('bvp.authDone') : t('bvp.authCancelled'),
+            msg.accepted ? 'success' : 'info');
+          break;
+        // ── Downloads ────────────────────────────────────────────────────
+        case 'download':
+          upsertDownload(msg);
+          if (msg.state === 'completed') {
+            toast(tf('bvp.dlDone', { name: String(msg.name || '') }), 'success');
+          } else if (msg.state === 'failed') {
+            toast(tf('bvp.dlFailed', { name: String(msg.name || '') }), 'error');
+          }
+          break;
+        case 'downloadCleared':
+          pickState.downloads = pickState.downloads.filter(function (d) {
+            return d.token !== msg.token && d.id !== msg.id;
+          });
+          renderShelf();
+          break;
+        // ── The page context menu ────────────────────────────────────────
+        case 'contextMenu':
+          openPageMenu(msg);
           break;
         case 'hover':
           if (!pickState.locked) paint(msg, false);
@@ -1168,20 +2140,119 @@
     // ---- wiring ---------------------------------------------------------
     var lastMove = 0;
     canvas.addEventListener('mousemove', function (ev) {
+      // ── A real drag ─────────────────────────────────────────────────────
+      // While a button is down, every move is part of a gesture, not a hover.
+      // This is the ONE primitive that text selection, range sliders, drag &
+      // drop and canvas apps are all built from, and none of them can be done
+      // with clicks: a slider moved by clicking jumps, and a selection made by
+      // clicking is a caret. So drag moves are never throttled away and never
+      // reinterpreted as hovers.
+      if (pickState.dragFrom) {
+        var dp = toPoint(ev);
+        pickState.dragLast = dp;
+        var now2 = Date.now();
+        if (now2 - lastMove < 25) return;    // ~40/sec: smooth, not a flood
+        lastMove = now2;
+        send({
+          t: 'move', x: dp.x, y: dp.y,
+          buttons: pickState.dragFrom.button, mods: modsOf(ev)
+        });
+        return;
+      }
       var now = Date.now();
       if (now - lastMove < 70) return;   // ~14 moves/sec is plenty for a preview
       lastMove = now;
       var p = toPoint(ev);
-      send({ t: 'move', x: p.x, y: p.y });
+      send({ t: 'move', x: p.x, y: p.y, mods: modsOf(ev) });
     });
-    canvas.addEventListener('click', function (ev) {
+
+    // ── mousedown / mouseup, so a DRAG is possible at all ─────────────────
+    // The old code only listened for `click`, which the browser synthesises
+    // AFTER the button comes back up — so by the time we heard about it the
+    // gesture was over and there was no way to express "press here, move there,
+    // release". Selecting a paragraph, moving a slider and dropping a file all
+    // become impossible, and all three were reported missing.
+    canvas.addEventListener('mousedown', function (ev) {
+      stage.focus();
+      if (ev.button === 2) return;              // right button: contextmenu handles it
       var p = toPoint(ev);
-      send({ t: 'click', x: p.x, y: p.y });   // the page script converts it to a pick
+      pickState.dragFrom = { x: p.x, y: p.y, button: buttonOf(ev), at: Date.now() };
+      pickState.dragLast = { x: p.x, y: p.y };
     });
+
+    canvas.addEventListener('mouseup', function (ev) {
+      var from = pickState.dragFrom;
+      pickState.dragFrom = null;
+      if (!from) return;
+      var p = toPoint(ev);
+      var dx = Math.abs(p.x - from.x);
+      var dy = Math.abs(p.y - from.y);
+      // Under 4px is a click, not a drag — a hand shakes, and a click that
+      // selects three characters of text because the pointer moved two pixels
+      // is worse than no drag support at all. Above it, send the real gesture
+      // and let `click` below know it has already been handled.
+      if (dx < 4 && dy < 4) return;
+      pickState.dragDone = Date.now();
+      send({
+        t: 'drag',
+        from: { x: from.x, y: from.y },
+        to: { x: p.x, y: p.y },
+        button: from.button,
+        mods: modsOf(ev)
+      });
+    });
+
+    // If the button comes up outside the canvas the canvas never hears about it,
+    // and the session would be stuck believing a button is still held — every
+    // later hover becoming a phantom drag. Chrome ends the gesture at the window
+    // edge; so do we.
+    document.addEventListener('mouseup', function () {
+      if (pickState && pickState.dragFrom) pickState.dragFrom = null;
+    });
+
+    canvas.addEventListener('click', function (ev) {
+      // A drag already reported this gesture; a click on top of it would move
+      // the caret to the end of the text that was just selected.
+      if (pickState.dragDone && Date.now() - pickState.dragDone < 120) return;
+      var p = toPoint(ev);
+      // `detail` is the browser's own click counter: 1, then 2 for a
+      // double-click, then 3 for a triple. Passing it straight through is what
+      // makes double-click select a word and triple-click select a paragraph —
+      // measured against real Chromium, `clickCount: 2` is the whole mechanism,
+      // and no amount of two separate single clicks reproduces it.
+      send({
+        t: 'click', x: p.x, y: p.y,
+        button: buttonOf(ev),
+        clickCount: Math.min(3, Math.max(1, ev.detail || 1)),
+        mods: modsOf(ev)
+      });
+    });
+
+    // Right-click: ask the server what is under the pointer, then draw Chrome's
+    // menu over the canvas. `preventDefault` stops the HOST browser's own menu
+    // appearing on top of ours, which would offer "Save image as…" for a canvas.
+    canvas.addEventListener('contextmenu', function (ev) {
+      ev.preventDefault();
+      if (pickState.selectMode) return;      // in select mode the click picks
+      var p = toPoint(ev);
+      send({ t: 'contextMenu', x: p.x, y: p.y });
+    });
+
     canvas.addEventListener('wheel', function (ev) {
       ev.preventDefault();
       var p = toPoint(ev);
-      send({ t: 'scroll', x: p.x, y: p.y, dy: ev.deltaY });
+      // Ctrl+wheel is ZOOM in every browser, not scroll. Sending it as a scroll
+      // meant a user trying to zoom got a page that jumped around instead.
+      if (ev.ctrlKey || ev.metaKey) {
+        send({ t: 'zoom', dir: ev.deltaY < 0 ? 'in' : 'out' });
+        return;
+      }
+      // Horizontal wheel. Two sources, and both are real: a trackpad sends
+      // `deltaX` directly, while Shift+wheel is how a mouse with only a vertical
+      // wheel scrolls sideways. A page with a wide table is unusable without it.
+      var dx = ev.deltaX || (ev.shiftKey ? ev.deltaY : 0);
+      var dy = ev.shiftKey && !ev.deltaX ? 0 : ev.deltaY;
+      send({ t: 'scroll', x: p.x, y: p.y, dy: dy, dx: dx, mods: modsOf(ev) });
     }, { passive: false });
     // Keyboard on the focused stage. In SELECT mode the keys drive the picker:
     // Space locks the hovered element and ↑/↓ walk the DOM (they live here, not
@@ -1191,13 +2262,39 @@
     // In BROWSE mode the same keys have to mean what they mean in a browser —
     // Space scrolls, arrows scroll, and typing types — otherwise "it behaves like
     // a real browser" is false the moment you try to fill in a login form.
-    var NAMED_KEYS = {
-      Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
-      Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
-      ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Home: 'Home', End: 'End',
-      PageUp: 'PageUp', PageDown: 'PageDown', ' ': 'Space'
-    };
+    // ── Keys the HOST browser keeps for itself ────────────────────────────
+    // A short, honest list of the keystrokes the surrounding browser will not
+    // deliver to a web page whatever we do: Ctrl+N/T/W, Ctrl+Shift+N/T, F11,
+    // F12. They are NOT dropped — the ones that have a meaning here are handled
+    // LOCALLY instead (Ctrl+T opens a tab in OUR strip, Ctrl+W closes one),
+    // which is the only way they can work at all.
+    //
+    // Everything else — and it is everything: every letter, digit and function
+    // key, with any combination of Ctrl/Shift/Alt/Meta — goes to the page via
+    // `Input.dispatchKeyEvent`. The old code had a nine-item whitelist and,
+    // worse, `if (ev.ctrlKey || ev.metaKey || ev.altKey) return;`, which threw
+    // away EVERY modified keystroke: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+Z and
+    // Ctrl+F all silently did nothing inside the page.
+    function handledLocally(ev) {
+      var mod = ev.ctrlKey || ev.metaKey;
+      if (!mod) return '';
+      var k = String(ev.key || '').toLowerCase();
+      if (k === 't') return ev.shiftKey ? 'reopenTab' : 'newTab';
+      if (k === 'w') return 'closeTab';
+      // Ctrl+Tab cycles OUR tabs. Left to the host browser it would switch the
+      // user out of this window entirely.
+      if (ev.key === 'Tab') return ev.shiftKey ? 'prevTab' : 'nextTab';
+      if (k === '+' || k === '=' || ev.key === 'Add') return 'zoomIn';
+      if (k === '-' || k === '_' || ev.key === 'Subtract') return 'zoomOut';
+      if (k === '0') return 'zoomReset';
+      return '';
+    }
+
     stage.addEventListener('keydown', function (ev) {
+      // Select mode keeps its own keys: Space locks the hovered element and the
+      // arrows walk the DOM. They live here rather than only on the panel
+      // buttons because walking the DOM is done while looking at the page, and
+      // moving the pointer to a button is what loses your place.
       if (pickState.selectMode) {
         if (ev.key === ' ' || ev.code === 'Space') {
           ev.preventDefault(); send({ t: 'key', key: 'Space' });
@@ -1205,21 +2302,85 @@
           ev.preventDefault(); send({ t: 'pickStep', dir: 'up' });
         } else if (ev.key === 'ArrowDown') {
           ev.preventDefault(); send({ t: 'pickStep', dir: 'down' });
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault(); applySelectMode(false);
         }
         return;
       }
-      // Never swallow the browser's own shortcuts (copy/paste/devtools): those
-      // belong to the window the user is actually sitting in.
-      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-      if (NAMED_KEYS[ev.key]) {
+
+      // Escape closes whatever is open, innermost first — the order a person
+      // expects.
+      if (ev.key === 'Escape') {
+        if (pickState.ctxOpen) { ev.preventDefault(); closeCtx(); return; }
+        if (pickState.dialog) { ev.preventDefault(); answerDialog(false); return; }
+        if (pickState.auth) { ev.preventDefault(); answerAuth(false); return; }
+      }
+      // A page dialog is modal, exactly as in Chrome: the page underneath is
+      // blocked, so keystrokes must not leak through to it.
+      if (pickState.dialog || pickState.auth) return;
+
+      // Browser-level shortcuts we own.
+      var local = handledLocally(ev);
+      if (local) {
         ev.preventDefault();
-        send({ t: 'key', key: NAMED_KEYS[ev.key] });
-      } else if (ev.key && ev.key.length === 1) {
+        if (local === 'newTab') newTab();
+        else if (local === 'closeTab') send({ t: 'tabClose', id: pickState.activeTab });
+        else if (local === 'reopenTab') send({ t: 'tabReopen' });
+        else if (local === 'nextTab') send({ t: 'tabCycle', dir: 1 });
+        else if (local === 'prevTab') send({ t: 'tabCycle', dir: -1 });
+        else if (local === 'zoomIn') send({ t: 'zoom', dir: 'in' });
+        else if (local === 'zoomOut') send({ t: 'zoom', dir: 'out' });
+        else if (local === 'zoomReset') send({ t: 'zoom', level: 1 });
+        return;
+      }
+
+      // Reload, both spellings, because both are muscle memory. Ctrl+Shift+R
+      // and Ctrl+F5 are Chrome's CACHE-BYPASSING reload, which is a genuinely
+      // different action — the one you reach for when a page keeps serving a
+      // stale script.
+      var kl = String(ev.key).toLowerCase();
+      if (ev.key === 'F5' || ((ev.ctrlKey || ev.metaKey) && kl === 'r')) {
         ev.preventDefault();
+        send({ t: 'reload', hard: !!(ev.shiftKey || (ev.ctrlKey && ev.key === 'F5')) });
+        return;
+      }
+      // Alt+Left / Alt+Right: Chrome's keyboard Back and Forward.
+      if (ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+        ev.preventDefault();
+        send({ t: ev.key === 'ArrowLeft' ? 'back' : 'forward' });
+        return;
+      }
+      // Ctrl+V must be intercepted rather than forwarded: the page's clipboard
+      // belongs to the SERVER, which has never seen what the user copied on this
+      // machine. So read the local clipboard and type it in — the only way paste
+      // can cross the gap at all. (Ctrl+C goes the other way, and RemoteIO
+      // already owns that direction.)
+      if ((ev.ctrlKey || ev.metaKey) && kl === 'v' && !ev.shiftKey) {
+        ev.preventDefault();
+        pasteIntoPage();
+        return;
+      }
+
+      // ── Everything else reaches the page, verbatim ───────────────────────
+      // A printable character with no Ctrl/Meta/Alt is inserted as TEXT, which
+      // is what makes accented and non-Latin input work: `Input.insertText`
+      // handles a composed character that no keycode describes. Everything else,
+      // including every modified combination, is dispatched as a real key event
+      // so the page's own handlers see the modifiers they are testing for.
+      var printable = ev.key && ev.key.length === 1
+        && !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+      ev.preventDefault();
+      if (printable) {
         send({ t: 'type', text: ev.key });
+      } else {
+        send({
+          t: 'key',
+          key: ev.key === ' ' ? 'Space' : ev.key,
+          mods: modsOf(ev),
+          autoRepeat: !!ev.repeat
+        });
       }
     });
-    canvas.addEventListener('mousedown', function () { stage.focus(); });
 
     q('bvp-go').addEventListener('click', connect);
     urlIn.addEventListener('keydown', function (e) {
@@ -1237,13 +2398,128 @@
       setStatus(t('bvp.recovering'), 'warn');
       send({ t: 'resync' });
     });
-    q('bvp-tabadd').addEventListener('click', function () {
-      if (!pickState.ws || pickState.ws.readyState !== WebSocket.OPEN) { connect(); return; }
-      // No URL: a blank tab, exactly like Ctrl+T. The user then types into the
-      // address bar, which is the flow they already know.
-      send({ t: 'tabNew', url: '' });
-      urlIn.value = '';
-      urlIn.focus();
+    // Restart the real Chrome. Relaunching it kills every page in it, including
+    // the one we are streaming, so the resync afterwards is not optional — it is
+    // what stops the canvas being left on a frozen last frame of a page whose
+    // browser no longer exists (the exact symptom this whole fix is about).
+    q('bvp-restart').addEventListener('click', function () {
+      var b = q('bvp-restart');
+      if (b.disabled) return;                      // a relaunch takes seconds
+      b.disabled = true;
+      setStatus(t('bvp.restarting'), 'warn');
+      // Show the checklist BEFORE the request, not after it returns. The whole
+      // failure this replaces was a wait with nothing on screen: the user
+      // pressed a button, saw no change, and concluded it had not worked. An
+      // empty-but-visible panel already answers "yes, something is happening".
+      showHeal([{ key: 'startingChrome', state: 'running', index: 1, total: 3, etaMs: 6000 }]);
+      window.API.post('/browser/restart', {})
+        .then(function (r) {
+          if (!r || r.success === false) throw new Error((r && (r.error || r.message)) || 'restart failed');
+          // The route returns the REAL steps it took, each already finished.
+          // Rendering them is what turns "it says it worked" into "here is what
+          // it did" — and it is the same renderer the live progress uses, so the
+          // two can never disagree.
+          if (r.steps && r.steps.length) showHeal(r.steps);
+          setTimeout(hideHeal, 1800);
+          toast(t('bvp.restarted'), 'success');
+          // Chrome is new, so the old page handle is gone whatever it says.
+          if (pickState) {
+            if (pickState.ws && pickState.ws.readyState === WebSocket.OPEN) send({ t: 'resync' });
+            else connect();
+          }
+        })
+        .catch(function (e) {
+          // Name the reason. "Restart failed" with no cause is what sent the
+          // user round in circles when Real Chrome was simply switched off.
+          showHeal([{ key: 'startingChrome', state: 'failed', index: 1, total: 1,
+            detail: (e && e.message) || '' }]);
+          setTimeout(hideHeal, 6000);
+          setStatus(t('bv.error'), 'bad');
+          toast((e && e.message) || t('bvp.restartFailed'), 'error');
+        })
+        .then(function () { b.disabled = false; });
+    });
+    // The + button. It goes through `newTab()` so that it, Ctrl+T and the tab
+    // context menu are literally the same code path — three entry points that
+    // drift apart is how "the plus button doesn't work" happens.
+    q('bvp-tabadd').addEventListener('click', function () { newTab(); });
+    // Middle-clicking + reopens the last closed tab, which is Chrome's own
+    // shortcut for it and the only mouse-only route to Ctrl+Shift+T.
+    q('bvp-tabadd').addEventListener('mousedown', function (ev) {
+      if (ev.button === 1) { ev.preventDefault(); send({ t: 'tabReopen' }); }
+    });
+    // Right-clicking empty strip space also offers "reopen closed tab", exactly
+    // like Chrome — the one place a user looks for it without knowing the key.
+    q('bvp-tabstrip').addEventListener('contextmenu', function (ev) {
+      // Only the empty area: a chip has its own, richer menu.
+      if (ev.target.closest && ev.target.closest('.bvp-tabitem')) return;
+      ev.preventDefault();
+      openCtx(ev.clientX, ev.clientY, [
+        { label: t('bvp.newTab'), icon: 'plus', run: function () { newTab(); } },
+        { label: t('bvp.tabReopen'), icon: 'history',
+          run: function () { send({ t: 'tabReopen' }); } }
+      ]);
+    });
+
+    // ── Zoom ──────────────────────────────────────────────────────────────
+    // The server is the source of truth: it applies the step and echoes the
+    // level back in a `zoom` event, which is what updates the label and the
+    // divisor. Guessing locally would let the two drift, and a wrong divisor
+    // means every click lands somewhere the user did not aim.
+    q('bvp-zoomin').addEventListener('click', function () { send({ t: 'zoom', dir: 'in' }); });
+    q('bvp-zoomout').addEventListener('click', function () { send({ t: 'zoom', dir: 'out' }); });
+    q('bvp-zoomlvl').addEventListener('click', function () { send({ t: 'zoom', level: 1 }); });
+
+    // ── The page's dialogs ────────────────────────────────────────────────
+    q('bvp-dlg-yes').addEventListener('click', function () { answerDialog(true); });
+    q('bvp-dlg-no').addEventListener('click', function () { answerDialog(false); });
+    // Enter in a prompt() field submits it, because that is what Enter does in
+    // every dialog anyone has ever used.
+    q('bvp-dlg-input').addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); answerDialog(true); }
+      if (ev.key === 'Escape') { ev.preventDefault(); answerDialog(false); }
+    });
+    // Deliberately NO backdrop-click-to-dismiss on either modal. A page dialog
+    // is a question the page is BLOCKED on; dismissing it by clicking near it
+    // would answer on the user's behalf, and for `beforeunload` that answer
+    // could throw away their unsaved work.
+
+    // ── Credentials ───────────────────────────────────────────────────────
+    q('bvp-auth-yes').addEventListener('click', function () { answerAuth(true); });
+    q('bvp-auth-no').addEventListener('click', function () { answerAuth(false); });
+    ['bvp-auth-user', 'bvp-auth-pass'].forEach(function (id) {
+      q(id).addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); answerAuth(true); }
+        if (ev.key === 'Escape') { ev.preventDefault(); answerAuth(false); }
+      });
+    });
+
+    // ── The download shelf ────────────────────────────────────────────────
+    q('bvp-shelf-hide').addEventListener('click', function () {
+      // Hide, do not clear. Chrome's shelf close button leaves the files alone,
+      // and deleting the bytes because the user tidied the bar away would be a
+      // surprise with no undo.
+      pickState.shelfHidden = true;
+      renderShelf();
+    });
+    q('bvp-shelf-clear').addEventListener('click', function () {
+      // Clear DOES delete the bytes on the server — a cookie export is
+      // credentials, and leaving it on disk because the row was dismissed is
+      // the wrong default.
+      pickState.downloads.forEach(function (d) {
+        if (d.token) send({ t: 'downloadClear', token: d.token });
+      });
+      pickState.downloads = [];
+      renderShelf();
+    });
+
+    // A context menu closes on the next click anywhere, on scroll, and on a
+    // window resize — the three things that make its position meaningless.
+    document.addEventListener('mousedown', function (ev) {
+      if (!pickState || !pickState.ctxOpen) return;
+      var host = q('bvp-ctx');
+      if (host && host.contains(ev.target)) return;
+      closeCtx();
     });
     q('bvp-close').addEventListener('click', closePick);
     overlay.addEventListener('mousedown', function (e) {
@@ -1264,9 +2540,47 @@
     q('bvp-eye').addEventListener('click', function () {
       applySelectMode(!pickState.selectMode);
     });
-    q('bvp-back').addEventListener('click', function () { send({ t: 'back' }); });
-    q('bvp-fwd').addEventListener('click', function () { send({ t: 'forward' }); });
-    q('bvp-reload').addEventListener('click', function () { send({ t: 'reload' }); });
+    // ── History and reload ────────────────────────────────────────────────
+    // Each one refuses when there is no socket instead of sending into the void.
+    // That silent no-op is most of what "the back/forward/refresh buttons don't
+    // work" was: before a page is open there is nothing to go back FROM, but the
+    // button gave no sign of that, so it looked broken rather than inapplicable.
+    function navCmd(cmd, extra) {
+      if (!pickState.ws || pickState.ws.readyState !== WebSocket.OPEN) {
+        toast(t('rio.notConnected'), 'info');
+        return;
+      }
+      var m = { t: cmd };
+      if (extra) Object.keys(extra).forEach(function (k) { m[k] = extra[k]; });
+      // Optimistic busy state, so the press is acknowledged on the very next
+      // frame rather than whenever the server gets round to `navStart`.
+      pickState.navBusy = true;
+      applyNavState();
+      send(m);
+    }
+    q('bvp-back').addEventListener('click', function () { navCmd('back'); });
+    q('bvp-fwd').addEventListener('click', function () { navCmd('forward'); });
+    q('bvp-reload').addEventListener('click', function () { navCmd('reload'); });
+    // Shift+click / Ctrl+click on Reload is Chrome's cache-bypassing reload.
+    // It has to be on the same button, because that is where the user's hand
+    // already is when a page is serving them something stale.
+    q('bvp-reload').addEventListener('mousedown', function (ev) {
+      if (ev.shiftKey || ev.ctrlKey || ev.metaKey) {
+        ev.preventDefault();
+        navCmd('reload', { hard: true });
+      }
+    });
+    // Right-clicking Reload offers the hard reload as a named entry, because a
+    // modifier nobody told you about is not a feature.
+    q('bvp-reload').addEventListener('contextmenu', function (ev) {
+      ev.preventDefault();
+      openCtx(ev.clientX, ev.clientY, [
+        { label: t('bvp.cmReload'), icon: 'rotate-cw',
+          run: function () { navCmd('reload'); } },
+        { label: t('bvp.reloadHard'), icon: 'rotate-ccw',
+          run: function () { navCmd('reload', { hard: true }); } }
+      ]);
+    });
     q('bvp-tab-attrs').addEventListener('click', function () { setPane('attrs'); });
     q('bvp-tab-cands').addEventListener('click', function () { setPane('cands'); });
     // The persistent session must be resettable from the same window that created

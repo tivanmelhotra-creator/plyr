@@ -38,6 +38,7 @@ import { LiveServer, authorizeLive } from './core/LiveServer';
 import { buildStepWebhookPayload, buildShareToken, shouldDeliverStepEvent } from './core/StepReporter';
 import { LiveBrowserManager } from './core/LiveBrowser';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
+import { setLiveSessionRebuilder } from './Routes/browser.routes';
 
 // Routes
 import { createAllRoutes } from './Routes';
@@ -129,6 +130,16 @@ let liveServer: LiveServer | null = null;
 // Step 12: interactive Live Browser View (CDP screencast + input + element picker).
 const liveBrowserManager = new LiveBrowserManager(config.MAX_CONCURRENT > 0 ? Math.min(config.MAX_CONCURRENT, 8) : 8);
 let browserStreamServer: BrowserStreamServer | null = null;
+
+// GLOBAL MANDATE: no user action may ever require "restart the server".
+// SelfHeal stops and restarts real Chrome to load a newly installed extension.
+// In that window every live session's CDP context dies. rebuildAll() re-attaches
+// each session to the fresh browser and reloads its tabs, so an extension install
+// costs the user a progress panel — never a lost tab. index.ts owns the manager,
+// so it registers the rebuilder rather than browser.routes importing it (cycle).
+setLiveSessionRebuilder(async () => {
+  await liveBrowserManager.rebuildAll();
+});
 
 // ============================================
 // LUA SCRIPTS

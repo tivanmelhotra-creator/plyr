@@ -216,12 +216,22 @@ describe('picker panel: Automa parity', () => {
   it('the stage answers ArrowUp / ArrowDown / Space', () => {
     // lastIndexOf, not indexOf: render()'s own stage also binds keydown (to
     // onStageKey) and comes first in the file.
+    // The window is generous on purpose. Pinning it to 700 characters was
+    // pinning the LENGTH of the handler, so documenting the key model (which is
+    // the thing most likely to be misread later) broke a test about arrow keys.
+    // What matters is that all three live in the select-mode branch, ahead of
+    // the `return` that stops select mode from also typing into the page.
     const stageKeys = browserView.slice(
       browserView.lastIndexOf("stage.addEventListener('keydown'")
-    ).slice(0, 700);
-    expect(stageKeys).toContain("dir: 'up'");
-    expect(stageKeys).toContain("dir: 'down'");
-    expect(stageKeys).toContain("key: 'Space'");
+    );
+    const selectBranch = stageKeys.slice(0, stageKeys.indexOf('handledLocally(ev)'));
+    expect(selectBranch).toContain("dir: 'up'");
+    expect(selectBranch).toContain("dir: 'down'");
+    expect(selectBranch).toContain("key: 'Space'");
+    // And they must be INSIDE the select-mode guard: in browse mode the arrows
+    // scroll the page and Space is a page-down, which is what a browser does.
+    expect(selectBranch.indexOf('pickState.selectMode'))
+      .toBeLessThan(selectBranch.indexOf("dir: 'up'"));
     // …and the footer NAMES them, or they do not exist to the user.
     expect(browserView).toContain('bvp.kbdWalk');
     expect(browserView).toContain('<kbd>Space</kbd>');
@@ -352,24 +362,145 @@ describe('picker: browse mode vs element-selection mode', () => {
     expect(css).toMatch(/\.bvp-canvas\.is-picking\s*\{\s*cursor:\s*crosshair/);
   });
 
-  it('sends the keyboard to the page while browsing', () => {
+  it('sends EVERY key to the page while browsing, not a whitelist', () => {
     // Space/↑/↓ belong to the picker ONLY in select mode; in browse mode they
     // are how you scroll and how you fill in a login form.
     expect(browserView).toMatch(/if \(pickState\.selectMode\) \{/);
+    // A printable character is inserted as text, which is what makes accented
+    // and non-Latin input work at all.
     expect(browserView).toMatch(/send\(\{ t: 'type', text: ev\.key \}\)/);
-    expect(browserView).toMatch(/NAMED_KEYS\[ev\.key\]/);
-    // Never steal the real browser's own shortcuts.
-    expect(browserView).toMatch(/if \(ev\.ctrlKey \|\| ev\.metaKey \|\| ev\.altKey\) return;/);
+
+    // ── The whitelist is GONE, and must never come back ──────────────────
+    // Assertions about absence are made against COMMENT-STRIPPED code. The
+    // comments deliberately quote the defective lines so that nobody
+    // reintroduces them, and a test that cannot tell a warning from the thing it
+    // warns about would force those explanations to be deleted.
+    const code = browserView
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((l) => !/^\s*\/\//.test(l))
+      .join('\n');
+
+    // There used to be a nine-entry `NAMED_KEYS` map, so any key not on the list
+    // was silently discarded: F1..F12, Insert, the numpad, every dead key. A
+    // browser that drops keys it has not heard of is not a browser.
+    expect(code).not.toContain('NAMED_KEYS');
+
+    // And the far worse line: `if (ev.ctrlKey || ev.metaKey || ev.altKey)
+    // return;` threw away EVERY modified keystroke, which is why Ctrl+A, Ctrl+C,
+    // Ctrl+V, Ctrl+X, Ctrl+Z and Ctrl+F all did nothing inside the page.
+    expect(code).not.toMatch(/if \(ev\.ctrlKey \|\| ev\.metaKey \|\| ev\.altKey\) return;/);
+
+    // What replaced it: an unrecognised key is dispatched as a REAL key event
+    // carrying its modifiers, so the page's own handlers see what they test for.
+    expect(browserView).toMatch(/t: 'key',[\s\S]{0,120}mods: modsOf\(ev\)/);
+
+    // The four modifiers are always sent, never omitted when false: on the wire
+    // a missing field and `false` have to mean the same thing, or plain clicks
+    // inherit the last Ctrl state.
+    expect(browserView).toMatch(/ctrl: !!ev\.ctrlKey/);
+    expect(browserView).toMatch(/shift: !!ev\.shiftKey/);
+    expect(browserView).toMatch(/alt: !!ev\.altKey/);
+    expect(browserView).toMatch(/meta: !!ev\.metaKey/);
+  });
+
+  it('handles the shortcuts the host browser refuses to hand over', () => {
+    // Ctrl+T / Ctrl+W / Ctrl+Tab / Ctrl+Shift+T never reach a web page: the
+    // surrounding browser keeps them. So they cannot be forwarded — they have to
+    // be implemented HERE, against our own tab strip, or they simply do not
+    // exist. Each one maps to a command the server actually accepts.
+    const wants: Array<[string, string]> = [
+      ['newTab', 'tabNew'],
+      ['closeTab', 'tabClose'],
+      ['reopenTab', 'tabReopen'],
+      ['nextTab', 'tabCycle'],
+      ['prevTab', 'tabCycle'],
+    ];
+    for (const [local, cmd] of wants) {
+      expect(browserView, `client must recognise ${local}`).toContain(local);
+      expect(streamServer, `server must handle ${cmd}`).toContain(`case '${cmd}'`);
+    }
+    // newTab is reached through the shared helper, so the + button, Ctrl+T and
+    // the tab context menu are one code path rather than three that drift.
+    expect(browserView).toMatch(/function newTab\(url\)/);
+    expect(browserView).toContain("t: 'tabNew'");
+
+    // Zoom: Ctrl +/-/0, and Ctrl+wheel, all going to the same server command.
+    expect(browserView).toContain("t: 'zoom'");
+    expect(streamServer).toContain("case 'zoom'");
+    // F5 and Ctrl+Shift+R are DIFFERENT reloads; the hard one must be reachable.
+    expect(browserView).toContain("'F5'");
+    expect(browserView).toMatch(/hard: true/);
+  });
+
+  it('supports a real drag, a double-click and a horizontal wheel', () => {
+    // Only `click` was listened for before, which the browser synthesises AFTER
+    // the button is released — so there was no way to express "press here, move
+    // there, release". That makes text selection, sliders, drag & drop and
+    // file-drag upload impossible, and all four were reported missing.
+    expect(browserView).toMatch(/canvas\.addEventListener\('mousedown'/);
+    expect(browserView).toMatch(/canvas\.addEventListener\('mouseup'/);
+    expect(browserView).toContain("t: 'drag'");
+    expect(streamServer).toContain("case 'drag'");
+
+    // `detail` is the browser's own click counter, so double- and triple-click
+    // are forwarded as clickCount 2 and 3 — the actual mechanism behind "select
+    // a word" and "select a paragraph".
+    expect(browserView).toMatch(/clickCount: Math\.min\(3,/);
+
+    // Horizontal scrolling, from a trackpad's deltaX OR Shift+wheel.
+    expect(browserView).toMatch(/ev\.deltaX \|\| \(ev\.shiftKey \? ev\.deltaY : 0\)/);
+    expect(browserView).toMatch(/dx: dx/);
+
+    // A button released outside the canvas must still end the gesture, or every
+    // later hover becomes a phantom drag.
+    expect(browserView).toMatch(/document\.addEventListener\('mouseup'/);
+  });
+
+  it('divides canvas coordinates by the zoom level', () => {
+    // The server zooms with Emulation.setDeviceMetricsOverride, which shrinks
+    // the viewport in CSS pixels while the frames keep their pixel size.
+    // Measured in both directions: skip this division and at 150% zoom every
+    // click lands about a third of the way up and left of the target.
+    const toPoint = browserView.slice(
+      browserView.indexOf('function toPoint(ev)'),
+      browserView.indexOf('function modsOf(ev)')
+    );
+    expect(toPoint).toMatch(/pickState\.zoom \|\| 1/);
+    expect(toPoint).toMatch(/\/ z/);
+    // And the level comes from the SERVER's echo, never guessed locally: a
+    // client-side guess that drifts is a pointer that lies.
+    expect(browserView).toMatch(/case 'zoom':/);
+    expect(browserView).toMatch(/function setZoomLabel\(level\)/);
   });
 
   it('ships history controls, wired end to end', () => {
     for (const cmd of ['back', 'forward', 'reload']) {
-      expect(browserView, `client must send ${cmd}`).toContain("send({ t: '" + cmd + "' })");
+      expect(browserView, `client must send ${cmd}`).toContain("t: '" + cmd + "'");
       expect(streamServer, `server must handle ${cmd}`).toContain("case '" + cmd + "'");
-      expect(liveBrowser, `LiveBrowser must implement ${cmd}`).toContain('async ' + cmd + '()');
+      // `async reload()` became `async reload(opts: { hard?: boolean } = {})`
+      // because Ctrl+Shift+R is a different reload from Ctrl+R: a normal reload of
+      // a page whose stylesheet is cached shows you the same broken page again.
+      // So the assertion is "the method exists", not "it takes no arguments" —
+      // pinning the arity was pinning an accident.
+      expect(liveBrowser, `LiveBrowser must implement ${cmd}`)
+        .toMatch(new RegExp('async ' + cmd + '\\s*\\('));
     }
     expect(liveBrowser).toContain('goBack(');
     expect(liveBrowser).toContain('goForward(');
+  });
+
+  it('reports whether Back/Forward are even possible', () => {
+    // MEASURED (tools/probe-baseline.js): the server never sent canGoBack /
+    // canGoForward at all, so the client had to render both arrows as permanently
+    // enabled. Pressing Back on the first page of a session did nothing and
+    // looked broken. There is no CDP "canGoBack", so it is derived from
+    // Page.getNavigationHistory's currentIndex against its entries.
+    expect(liveBrowser).toContain('Page.getNavigationHistory');
+    expect(liveBrowser).toMatch(/canGoBack/);
+    expect(liveBrowser).toMatch(/canGoForward/);
+    // And pressing an impossible one must SAY so rather than no-op in silence.
+    expect(liveBrowser).toMatch(/navBlocked/);
   });
 
   it('names both modes in both languages', () => {
