@@ -234,13 +234,35 @@ describe('LiveBrowser survives a page that dies under it', () => {
     // first click after the tab died was swallowed and the window stayed broken.
     expect(liveBrowser).toMatch(/private async withPage\(/);
     expect(liveBrowser).toMatch(/private async withCdp\(/);
-    for (const m of ['navigate', 'back', 'forward', 'reload', 'key', 'selectAll']) {
+    // Navigation now goes through a QUEUE as well as `withPage`: two navigate
+    // commands close together used to make the second abort the first and report
+    // `net::ERR_ABORTED` (measured, tools/probe-nav.js) — a double-clicked Go
+    // button was enough. So navigate/back/forward/reload must reach the page via
+    // the nav machinery, and that machinery must itself be recovery-guarded.
+    for (const m of ['navigate', 'back', 'forward', 'reload']) {
+      const body = liveBrowser.slice(liveBrowser.indexOf(`async ${m}(`), liveBrowser.indexOf(`async ${m}(`) + 900);
+      expect(
+        /this\.withPage\(/.test(body) || /this\.(queueNav|runNav)\(/.test(body),
+        `${m} must route through withPage or the nav queue`,
+      ).toBe(true);
+    }
+    // The nav runner is where the recovery guard actually lives for those four.
+    const runNav = liveBrowser.slice(liveBrowser.indexOf('private async runNav('));
+    expect(runNav.slice(0, 1600), 'runNav must be recovery-guarded').toContain('this.withPage(');
+
+    for (const m of ['key', 'selectAll']) {
       const body = liveBrowser.slice(liveBrowser.indexOf(`async ${m}(`));
-      expect(body.slice(0, 500), `${m} must route through withPage`).toContain('this.withPage(');
+      // `selectAll` now routes through `key('a', {ctrl:true})`, so either the
+      // direct guard or the guarded primitive it delegates to is acceptable —
+      // what must never happen is an unguarded raw CDP call.
+      expect(
+        /this\.withCdp\(/.test(body.slice(0, 700)) || /this\.key\(/.test(body.slice(0, 700)),
+        `${m} must be recovery-guarded`,
+      ).toBe(true);
     }
     for (const m of ['click', 'scroll', 'type']) {
       const body = liveBrowser.slice(liveBrowser.indexOf(`async ${m}(`));
-      expect(body.slice(0, 500), `${m} must route through withCdp`).toContain('this.withCdp(');
+      expect(body.slice(0, 900), `${m} must route through withCdp`).toContain('this.withCdp(');
     }
   });
 
@@ -248,8 +270,48 @@ describe('LiveBrowser survives a page that dies under it', () => {
     // Retrying a 404 or an empty selector would rebuild a perfectly good browser
     // because a page happened to fail.
     expect(liveBrowser).toMatch(/function isDeadTargetError/);
-    const w = liveBrowser.slice(liveBrowser.indexOf('private async withPage('));
-    expect(w.slice(0, 700)).toContain('if (!isDeadTargetError(e)) return;');
+    const w = liveBrowser.slice(
+      liveBrowser.indexOf('private async withPage('),
+      liveBrowser.indexOf('private async withCdp('),
+    );
+    // The discrimination itself: an ordinary failure must NOT trigger recovery.
+    expect(w).toContain('if (!isDeadTargetError(e))');
+    expect(w).not.toMatch(/if \(!isDeadTargetError\(e\)\) return;\s*\/\/ a normal failure/);
+  });
+
+  it('an ordinary input failure is REPORTED, never silently swallowed', () => {
+    // MEASURED 2026-08-03: withPage/withCdp used to `return` on any non-dead-target
+    // error under a comment claiming "the caller logs it". No caller logged it.
+    // Every input command funnels through these two, so a command that failed for
+    // any ordinary reason failed in total silence — the user saw a click that did
+    // nothing, with no evidence it had even been attempted. That is precisely the
+    // invisible-state failure the mandate forbids.
+    for (const guard of ['private async withPage(', 'private async withCdp(']) {
+      const body = liveBrowser.slice(
+        liveBrowser.indexOf(guard),
+        liveBrowser.indexOf(guard) + 900,
+      );
+      expect(body, `${guard} must report an ordinary failure`)
+        .toContain('this.inputFailed(e)');
+      // The retry path must report too, not swallow with a bare catch.
+      expect(body, `${guard} must not swallow the retry`)
+        .not.toMatch(/catch \{ \/\* one retry is enough \*\/ \}/);
+    }
+    // And the reporter must actually emit something the client can render.
+    const reporter = liveBrowser.slice(liveBrowser.indexOf('private inputFailed('));
+    expect(reporter.slice(0, 400)).toContain("message: 'input_failed'");
+  });
+
+  it('auth interception that cannot be installed says so', () => {
+    // A 401 with no interception means the site is simply unreachable and the
+    // native credentials window can never be shown. It used to fail into an empty
+    // `catch {}`, so the only symptom was a page that would not load.
+    // Bounded by the NEXT declaration rather than a character count: a fixed
+    // window is exactly the kind of brittleness that makes better-commented code
+    // fail a test for no reason.
+    const start = liveBrowser.indexOf('private async installAuthHandler(');
+    const body = liveBrowser.slice(start, liveBrowser.indexOf('async answerAuth(', start));
+    expect(body).toContain("message: 'auth_interception_unavailable'");
   });
 
   it('does NOT recover on mouse-move (it fires ~14x/second)', () => {
@@ -403,14 +465,35 @@ describe('LiveBrowser multi-tab support', () => {
     expect(liveBrowser).toMatch(/private async adopt\(/);
   });
 
-  it('adopts ONLY pages opened by one of OUR tabs', () => {
-    // The real-Chrome context is SHARED between sessions. Adopting every new
-    // page in it would show one user another user's tabs — and is the likeliest
-    // explanation for the reported "extra tabs came up".
+  it('adopts pages our tabs opened, and extension pages, but not a stranger\'s', () => {
+    // The real-Chrome context is SHARED between sessions, so adopting every new
+    // page in it would show one user another user's tabs.
+    //
+    // BUT the original rule — "adopt only if the opener is one of our pages" —
+    // was too strict, and that strictness WAS the reported cookie-extension bug.
+    // MEASURED (tools/probe-cdp2.js): a page created by an extension via
+    // `chrome.tabs.create` has `opener() === null`, so every extension popup was
+    // silently dropped: the tab existed in Chrome, nothing streamed it, and the
+    // user saw nothing happen when they clicked their extension.
+    //
+    // So there are now three admissible claims, and this test pins all three
+    // rather than the one it used to.
     expect(liveBrowser).toMatch(/private owned = new Set<Page>/);
     const onPage = liveBrowser.slice(liveBrowser.indexOf("this.context.on('page'"));
-    expect(onPage.slice(0, 700)).toContain('p.opener()');
-    expect(onPage.slice(0, 700)).toContain('this.owned.has(opener)');
+    // Wide enough to span the explanation as well as the code: the reasoning for
+    // why an orphan is claimable is the part most likely to be deleted by someone
+    // "tidying up", and deleting it is how this bug comes back.
+    const head = onPage.slice(0, 2600);
+    // 1. still the primary rule: a page one of our own pages opened
+    expect(head).toContain('p.opener()');
+    expect(head).toContain('this.owned.has(opener)');
+    // 2. an extension page, which is the case that was broken
+    expect(head).toMatch(/chrome-extension/);
+    // 3. a page opened while WE asked for one (time-boxed, so it cannot be a
+    //    standing invitation to adopt anything at all)
+    expect(head).toContain('expectOrphanUntil');
+    // and the refusal must still exist for everything else
+    expect(head).toMatch(/if \(!claimable\) return;/);
   });
 
   it('caps the tab count (a redirect loop can call window.open in a loop)', () => {
@@ -423,8 +506,15 @@ describe('LiveBrowser multi-tab support', () => {
   it('closing the last tab leaves a blank one, never zero', () => {
     // Chrome closes the window at zero tabs; this window cannot, so a blank tab
     // is the honest equivalent. Zero tabs would mean a canvas with no source.
+    //
+    // The window widened from 1200 to 3000 chars because closeTab now ASKS the
+    // page's beforeunload handler first ("Leave site? Changes you made may not be
+    // saved") before reaching the reaping code. That prompt is a requirement, not
+    // padding — the old close threw the user's unsaved work away in silence.
     const close = liveBrowser.slice(liveBrowser.indexOf('async closeTab('));
-    expect(close.slice(0, 1200)).toContain("this.openTab('about:blank'");
+    expect(close.slice(0, 3000)).toContain("this.openTab('about:blank'");
+    // And the ask itself, since it is now on this path:
+    expect(close.slice(0, 3000)).toContain('runBeforeUnload: true');
   });
 
   it('switching tabs brings the page to the front (a hidden tab is throttled)', () => {
@@ -467,15 +557,60 @@ describe('tab session restore', () => {
     expect(liveBrowser).toMatch(/private async materialize\(tab: LiveTab\)/);
   });
 
-  it('a failed restore still yields a working browser', () => {
-    // The saved page may 404, time out, or have started requiring a login since.
-    // None of that may stop the window from opening.
+  it('a failed OR HUNG restore still yields a working browser', () => {
+    // The saved page may 404, time out, start requiring a login — or, measured
+    // live on 2026-08-03, open a prompt() that makes `goto` never resolve at all.
+    // That last one deadlocked start(), so `ready` never fired and the window was
+    // dead-but-connected on EVERY open, curable only by deleting the tab file by
+    // hand. None of it may stop the window from opening, so the restore is raced
+    // against a deadline rather than merely try/caught.
     const start = liveBrowser.slice(
       liveBrowser.indexOf('async start(): Promise<void>'),
-      liveBrowser.indexOf("private emit(type: string"),
+      liveBrowser.indexOf('private emit(type: string'),
     );
-    expect(start).toContain('restoreTarget.dead = true');
+    expect(start).toContain('Promise.race');
+    expect(start).toContain('RESTORE_BUDGET_MS');
+    // The tab is kept as `pending`, NOT marked dead: the user asked for that page
+    // and clicking it must retry. "We never lose a tab."
+    expect(start).toContain('restoreTarget.pending = true');
+    expect(start).not.toContain('restoreTarget.dead = true');
+    // And a blank tab is only opened when the slow restore left no live page,
+    // instead of unconditionally adding one on every slow open.
     expect(start).toContain("this.openTab('about:blank'");
+    expect(start).toMatch(/if \(!this\.page \|\| this\.page\.isClosed\(\)\)/);
+  });
+
+  it('a restore dialog cannot deadlock the open', () => {
+    // `page.goto` does not resolve while a modal dialog is open. A saved tab that
+    // alerts on load therefore held start() open forever. During restore only,
+    // dialogs are dismissed; the real handler takes over afterwards.
+    const mat = liveBrowser.slice(
+      liveBrowser.indexOf('private async materialize(tab: LiveTab)'),
+      liveBrowser.indexOf('private async persistTabs()'),
+    );
+    expect(mat).toContain("page.on('dialog', dismissDuringRestore)");
+    expect(mat).toContain('d.dismiss()');
+    // It must be removed again, or the user's own dialogs would be silently eaten.
+    expect(mat).toContain("page.off('dialog', dismissDuringRestore)");
+    expect(mat).toMatch(/finally\s*\{/);
+  });
+
+  it('a tab whose CDP target vanished never rejects out of the open', () => {
+    // MEASURED: an unguarded `await this.bindCdp(page)` here and in openTab()
+    // rejected with "no object with guid page@…", which reached index.ts as an
+    // unhandledRejection and took the WHOLE SERVER down — every user's session
+    // gone, cured only by the manual restart the mandate abolishes.
+    const mat = liveBrowser.slice(
+      liveBrowser.indexOf('private async materialize(tab: LiveTab)'),
+      liveBrowser.indexOf('private async persistTabs()'),
+    );
+    expect(mat).toMatch(/try\s*\{\s*await this\.bindCdp\(page\);\s*\}\s*catch/);
+    const open = liveBrowser.slice(
+      liveBrowser.indexOf('private async openTab('),
+      liveBrowser.indexOf('/** Persist the strip'),
+    );
+    expect(open).toContain('tab_stream_pending');
+    expect(open).toMatch(/try\s*\{\s*await this\.bindCdp\(page\);\s*\}\s*catch/);
   });
 
   it('writes the list on the way out, including on an idle timeout', () => {
@@ -534,8 +669,171 @@ describe('tab strip UI contract', () => {
     // the canvas the user is actually working in.
     const strip = styles.slice(styles.indexOf('.bvp-tabstrip {'));
     expect(strip.slice(0, 300)).toContain('flex: 0 0 auto');
-    // And a single tab is chrome with no purpose, so it hides itself.
-    expect(styles).toContain('.bvp-tabstrip.is-solo { display: none; }');
+  });
+
+  it('the strip is ALWAYS visible, because the + button lives in it', () => {
+    // It used to hide itself while there was a single tab. That hid the + button
+    // too, so there was no way to open the second tab that would have brought
+    // the strip back — a browser you cannot open a tab in.
+    expect(styles).not.toContain('.bvp-tabstrip.is-solo');
+    expect(browserView).not.toContain("'is-solo'");
+    expect(browserView).toContain('bvp-tabadd');
+  });
+
+  it('has a Restart button as well as Reconnect (they fix different things)', () => {
+    // Reconnect rebuilds a dead stream/page while Chrome keeps running; Restart
+    // relaunches Chrome, which is the ONLY way to load an extension that was
+    // installed after launch. Only Reconnect survived the tab work, which left
+    // no way to load a freshly installed extension from the browser window.
+    expect(browserView).toContain('bvp-restart');
+    expect(browserView).toContain("'/browser/restart'");
+    expect(browserView).toContain('bvp-resync');
+    // Relaunching kills the streamed page, so it must resync afterwards or the
+    // canvas is left on a frame of a browser that no longer exists.
+    // The window is bounded by the NEXT handler rather than by a character
+    // count. It was 1400 characters, which broke the moment the handler learned
+    // to render the server's healing steps — a test about resyncing failing
+    // because unrelated code was added above it is measuring the wrong thing.
+    const from = browserView.indexOf("q('bvp-restart').addEventListener");
+    expect(from).toBeGreaterThan(-1);
+    const h = browserView.slice(from, browserView.indexOf("q('bvp-tabadd')", from));
+    expect(h).toMatch(/t: 'resync'|connect\(\)/);
+    // A failure has to name its cause, or "Real Chrome is off" is a dead end.
+    expect(h).toContain('catch');
+    // And the WAIT has to be narrated. The user pressed a restart button, saw
+    // nothing change, and was left "گیج و منگ" — so the panel goes up before the
+    // request is sent, not after it returns.
+    expect(h).toContain('showHeal(');
+    expect(h.indexOf('showHeal(')).toBeLessThan(h.indexOf('/browser/restart'));
+  });
+
+  it('renders the tab strip like Chrome: favicon, spinner, audio, pin', () => {
+    // Every one of these is a fact the server now reports per tab, and a fact
+    // reported but not drawn is a fact the user does not have. The strip used to
+    // show a bare name, so "which tab is loading?" and "which tab is making that
+    // noise?" had no answer at all.
+    expect(browserView).toContain('bvp-tabmark');       // favicon / spinner slot
+    expect(browserView).toContain('bvp-tabfav');
+    expect(browserView).toContain("BIC('loader'");      // the loading spinner
+    expect(browserView).toContain('bvp-tabsound');      // the audio indicator
+    // Both forms, chosen by mute state. The two are DIFFERENT facts — "the
+    // advert is in this tab" and "I already silenced that one" — so a single
+    // icon for both would make the mute button look like it did nothing.
+    expect(browserView).toMatch(/'volume-x' : 'volume'/);
+    // …and every name used here must actually be REGISTERED, or the strip draws
+    // an empty box where the speaker should be. (icons.test.ts enforces this
+    // across all modules; restated here because these three names are the ones
+    // this change introduces.)
+    const icons = read('public/js/icons.js');
+    for (const name of ['loader', 'volume', 'volume-x', 'globe', 'pin']) {
+      expect(icons, `icons.js must define '${name}'`)
+        .toMatch(new RegExp(`(^|\\s)'?${name}'?:\\s*\\[`, 'm'));
+    }
+    expect(browserView).toContain('bvp-tabpin');
+
+    // A favicon that 404s must fall back, not leave a broken-image glyph.
+    expect(browserView).toMatch(/fav\.addEventListener\('error'/);
+
+    // Chrome-like widths: tabs stretch to fill the strip and shrink as the count
+    // rises, rather than scrolling out of reach.
+    expect(browserView).toMatch(/--bvp-tabmax/);
+
+    // Middle-click closes, anywhere on the chip — muscle memory, and the only
+    // comfortable way to close several in a row (the X moves as the strip
+    // reflows; the chip under the pointer does not).
+    expect(browserView).toMatch(/ev\.button === 1/);
+
+    // Drag to reorder, with a real destination command.
+    expect(browserView).toMatch(/function beginTabDrag/);
+    expect(browserView).toContain("t: 'tabMove'");
+    expect(streamServer).toContain("case 'tabMove'");
+  });
+
+  it('gives each tab Chrome\'s own right-click menu', () => {
+    // Close / Close others / Close to the right / Duplicate / Pin, each wired to
+    // a command the server really implements — a menu of labels that do nothing
+    // would be worse than no menu.
+    expect(browserView).toMatch(/function openTabMenu/);
+    for (const cmd of ['tabClose', 'tabCloseOthers', 'tabCloseRight', 'tabDuplicate', 'tabPin', 'tabReopen']) {
+      expect(browserView, `menu must send ${cmd}`).toContain(`t: '${cmd}'`);
+      expect(streamServer, `server must handle ${cmd}`).toContain(`case '${cmd}'`);
+    }
+    // "Close others" and "Close to the right" are DISABLED rather than hidden
+    // when they would do nothing: an entry that vanishes teaches the user that
+    // the menu is unpredictable, while a greyed one teaches them the rule.
+    expect(browserView).toMatch(/disabled: !many/);
+    expect(browserView).toMatch(/disabled: !rightOf/);
+  });
+
+  it('shows the page\'s own dialogs, and the 401, instead of locking the tab', () => {
+    // alert/confirm/prompt/beforeunload are drawn by CHROME, not the page, so
+    // they can never appear in a screencast — and an unanswered Playwright
+    // dialog blocks the page forever. That combination is what "the tab silently
+    // locks up" was.
+    expect(browserView).toContain('bvp-dialog');
+    expect(browserView).toMatch(/function showDialog/);
+    expect(browserView).toContain("t: 'dialogAnswer'");
+    expect(streamServer).toContain("case 'dialogAnswer'");
+    // A prompt needs a field; an alert must NOT offer Cancel, because there is
+    // nothing to decline.
+    expect(browserView).toContain('bvp-dlg-input');
+    expect(browserView).toMatch(/kind === 'alert'/);
+    // beforeunload must ASK — and its buttons must say what they do, not "OK".
+    expect(browserView).toContain('bvp.dlgLeaveOk');
+    expect(browserView).toContain('bvp.dlgStay');
+    // The page's text is untrusted: textContent, never innerHTML.
+    expect(browserView).toMatch(/msgEl\.textContent =/);
+
+    // The 401. It names WHO is asking, because a password prompt that does not
+    // is a phishing surface rather than a convenience.
+    expect(browserView).toContain('bvp-auth');
+    expect(browserView).toContain("t: 'authAnswer'");
+    expect(streamServer).toContain("case 'authAnswer'");
+    expect(browserView).toContain('bvp.authWho');
+    expect(browserView).toMatch(/type="password"/);
+  });
+
+  it('has a download shelf with a way to actually GET the file', () => {
+    // The bytes land on the SERVER's disk. Without a shelf a download here is a
+    // file the user never learns about and could never open, so the fetch link
+    // is the feature — a shelf that only names files would be decoration.
+    expect(browserView).toContain('bvp-shelf');
+    expect(browserView).toMatch(/function renderShelf/);
+    expect(browserView).toMatch(/\/browser\/downloads\//);
+    // Same identity rule as an upload: header auth, so a plain <a href> would be
+    // rejected — hence fetch + blob + a synthetic click.
+    expect(browserView).toMatch(/'x-api-key': window\.API\.getKey\(\)/);
+    expect(browserView).toMatch(/URL\.createObjectURL/);
+    // Name, size and progress, and an honest indeterminate bar when the server
+    // sent no Content-Length (a bar stuck at 0% reads as broken).
+    expect(browserView).toMatch(/function humanBytes/);
+    expect(browserView).toContain('bvp-dl-bar');
+    expect(browserView).toContain('is-indet');
+    // Three events for one file must update ONE row, not stack three.
+    expect(browserView).toMatch(/function upsertDownload/);
+    // Hide keeps the files; Clear deletes them. A cookie export is credentials,
+    // so "clear" really removing the bytes is the right default — and "hide"
+    // silently deleting them would be a surprise with no undo.
+    expect(browserView).toContain("t: 'downloadClear'");
+    expect(streamServer).toContain("case 'downloadClear'");
+    expect(browserView).toMatch(/shelfHidden = true/);
+  });
+
+  it('greys out an arrow that would do nothing', () => {
+    // There is no CDP "canGoBack", so the server derives it from the real
+    // history. Before this the arrows were always enabled and Back on the first
+    // page of a tab silently did nothing — which is the reported bug, exactly.
+    expect(browserView).toMatch(/case 'navState':/);
+    expect(browserView).toMatch(/function applyNavState/);
+    expect(browserView).toMatch(/b\.disabled = !pickState\.canBack/);
+    expect(browserView).toMatch(/f\.disabled = !pickState\.canFwd/);
+    // Pressing it anyway must EXPLAIN, not no-op: "there is nothing behind this
+    // page" is a different message from "this button is broken".
+    expect(browserView).toMatch(/case 'navBlocked':/);
+    expect(browserView).toContain('bvp.navBlockedBack');
+    expect(browserView).toContain('bvp.navBlockedForward');
+    // And with no socket the buttons say so rather than sending into the void.
+    expect(browserView).toMatch(/function navCmd/);
   });
 
   it('every new bvp.* key exists in BOTH dictionaries', () => {
@@ -575,8 +873,15 @@ describe('navigation target allowlist', () => {
     expect(liveBrowser).toMatch(/function normalizeTarget\(url: string\): string/);
     const nav = liveBrowser.slice(liveBrowser.indexOf('async navigate(url: string)'));
     expect(nav.slice(0, 400)).toContain('normalizeTarget(url)');
-    const open = liveBrowser.slice(liveBrowser.indexOf('private async openTab('));
-    expect(open.slice(0, 1600)).toContain('normalizeTarget(url)');
+    // Bounded by the NEXT declaration, not by a character count. A fixed 1600-char
+    // window used to live here and it broke the moment openTab() grew the guard
+    // that stops a lost CDP target killing the server — a test failing because
+    // the code got better is a test measuring the wrong thing.
+    const open = liveBrowser.slice(
+      liveBrowser.indexOf('private async openTab('),
+      liveBrowser.indexOf('/** Persist the strip'),
+    );
+    expect(open).toContain('normalizeTarget(url)');
   });
 
   it('refuses file:// and any other unknown scheme', () => {

@@ -442,9 +442,118 @@
       'bvp.tabRestored': '{n} تب از نشست قبلی برگشت.',
       // ── اتصال دوباره ──────────────────────────────────────────────────
       'bvp.reconnect': 'اتصال دوباره به مرورگر (بدون از دست دادن تب‌ها)',
+      'bvp.restartBrowser': 'راه‌اندازی دوباره کروم (برای بارگذاری افزونه‌های جدید)',
+      'bvp.restarting': 'در حال راه‌اندازی دوباره کروم…',
+      'bvp.restarted': 'کروم دوباره راه‌اندازی شد و افزونه‌ها بارگذاری شدند',
+      'bvp.restartFailed': 'راه‌اندازی دوباره کروم انجام نشد',
       'bvp.recovering': 'در حال وصل شدن دوباره…',
       'bvp.recovered': 'اتصال به مرورگر برگشت.',
       'bvp.tabCrashed': 'این تب از کار افتاد؛ داریم دوباره بالا می‌آوریمش.',
+
+      // ── نوار تب، مثل کروم ────────────────────────────────────────────
+      'bvp.tabLoading': 'در حال بارگذاری…',
+      'bvp.tabAudible': 'این تب صدا پخش می‌کند — برای بی‌صدا کردن کلیک کنید',
+      'bvp.tabMuted': 'این تب بی‌صدا است — برای برگرداندن صدا کلیک کنید',
+      'bvp.tabPinned': 'تب سنجاق‌شده',
+      'bvp.tabPin': 'سنجاق کردن تب',
+      'bvp.tabUnpin': 'برداشتن سنجاق',
+      'bvp.tabDuplicate': 'تکرار تب',
+      'bvp.tabCloseOthers': 'بستن بقیهٔ تب‌ها',
+      'bvp.tabCloseRight': 'بستن تب‌های سمت راست',
+      'bvp.tabReopen': 'باز کردن دوبارهٔ تب بسته‌شده',
+      'bvp.tabReopenEmpty': 'تب بسته‌شده‌ای برای برگرداندن وجود ندارد.',
+      'bvp.tabCloseCancelled': 'صفحه اجازهٔ بستن تب را نداد.',
+      'bvp.tabMoveHint': 'برای جابه‌جایی، تب را بکشید',
+
+      // ── دیالوگ‌های خود صفحه (alert / confirm / prompt / beforeunload) ──
+      // کروم این‌ها را خودش می‌کشد، نه صفحه؛ پس در استریم دیده نمی‌شوند و
+      // تا قبل از این تب را بی‌صدا قفل می‌کردند.
+      'bvp.dlgAlert': 'این صفحه می‌گوید',
+      'bvp.dlgConfirm': 'این صفحه می‌پرسد',
+      'bvp.dlgPrompt': 'این صفحه یک جواب می‌خواهد',
+      'bvp.dlgLeave': 'از این صفحه بیرون می‌روید؟',
+      'bvp.dlgLeaveBody': 'تغییرهای ذخیره‌نشده از دست می‌رود.',
+      'bvp.dlgOk': 'تأیید',
+      'bvp.dlgCancel': 'انصراف',
+      'bvp.dlgLeaveOk': 'بیرون برو',
+      'bvp.dlgStay': 'در همین صفحه بمان',
+      'bvp.dlgFrom': 'از طرف {origin}',
+
+      // ── ورود با رمز سرور (HTTP basic auth / ۴۰۱) ──────────────────────
+      'bvp.authTitle': 'این سایت نام کاربری و رمز می‌خواهد',
+      'bvp.authProxy': 'پروکسی نام کاربری و رمز می‌خواهد',
+      'bvp.authWho': '{origin} درخواست ورود کرده',
+      'bvp.authRealm': 'بخش: {realm}',
+      'bvp.authUser': 'نام کاربری',
+      'bvp.authPass': 'رمز',
+      'bvp.authOk': 'ورود',
+      'bvp.authCancel': 'انصراف',
+      'bvp.authNote': 'این رمز فقط به همین سایت روی مرورگر سرور فرستاده می‌شود و جایی ذخیره نمی‌شود.',
+      'bvp.authDone': 'رمز فرستاده شد.',
+      'bvp.authCancelled': 'ورود لغو شد؛ صفحه باز نمی‌شود.',
+
+      // ── قفسهٔ دانلود (مثل نوار دانلود کروم) ───────────────────────────
+      'bvp.dlShelf': 'دانلودها',
+      'bvp.dlStarted': 'دانلود شروع شد: {name}',
+      'bvp.dlDone': 'دانلود تمام شد: {name}',
+      'bvp.dlFailed': 'دانلود انجام نشد: {name}',
+      'bvp.dlSave': 'گرفتن فایل روی این دستگاه',
+      'bvp.dlDrop': 'حذف از قفسه (فایل روی سرور هم پاک می‌شود)',
+      'bvp.dlClearAll': 'پاک کردن همه',
+      'bvp.dlHide': 'بستن قفسه',
+      'bvp.dlProgress': '{done} از {total}',
+      'bvp.dlUnknownSize': 'حجم نامعلوم',
+      'bvp.dlTooLarge': 'فایل بزرگ‌تر از حد مجاز بود و ذخیره نشد.',
+      'bvp.dlEmpty': 'هنوز چیزی دانلود نشده.',
+
+      // ── منوی راست‌کلیک روی صفحه ───────────────────────────────────────
+      'bvp.cmBack': 'صفحهٔ قبل',
+      'bvp.cmForward': 'صفحهٔ بعد',
+      'bvp.cmReload': 'بارگذاری مجدد',
+      'bvp.reloadHard': 'بارگذاری مجدد و نادیده گرفتن کش',
+      'bvp.cmCopy': 'کپی',
+      'bvp.cmPaste': 'چسباندن',
+      'bvp.cmSelectAll': 'انتخاب همه',
+      'bvp.cmOpenNewTab': 'باز کردن لینک در تب جدید',
+      'bvp.cmCopyLink': 'کپی نشانی لینک',
+      'bvp.cmCopyImage': 'کپی نشانی تصویر',
+      'bvp.cmOpenImage': 'باز کردن تصویر در تب جدید',
+      'bvp.cmInspect': 'بررسی این المان',
+
+      // ── زوم ───────────────────────────────────────────────────────────
+      'bvp.zoomIn': 'بزرگ‌نمایی (Ctrl و +)',
+      'bvp.zoomOut': 'کوچک‌نمایی (Ctrl و −)',
+      'bvp.zoomReset': 'برگشت به ۱۰۰٪ (Ctrl و ۰)',
+      'bvp.zoomAt': 'بزرگ‌نمایی {pct}٪',
+
+      // ── خودترمیمی: کاربر باید بداند چه چیزی، چرا و تا کی ──────────────
+      // پیام «سرور را ری‌استارت کن» حذف شد. حالا سرور خودش کار را انجام
+      // می‌دهد و این رشته‌ها گام‌به‌گام همان کار را روایت می‌کنند.
+      'bvp.healTitle': 'داریم مرورگر را آماده می‌کنیم',
+      'bvp.healNote': 'خودش انجام می‌شود؛ کاری از شما لازم نیست.',
+      'bvp.healStep': 'گام {i} از {n}',
+      'bvp.healEta': 'حدود {s} ثانیه',
+      'bvp.healDone': 'مرورگر آماده است.',
+      'bvp.healFailed': 'آماده‌سازی مرورگر انجام نشد.',
+      'bvp.heal.checkingDisplay': 'بررسی نمایشگر مجازی',
+      'bvp.heal.startingDisplay': 'روشن کردن نمایشگر مجازی',
+      'bvp.heal.startingChrome': 'اجرای کروم',
+      'bvp.heal.stoppingChrome': 'بستن کروم قبلی',
+      'bvp.heal.loadingExtensions': 'بارگذاری افزونه‌ها',
+      'bvp.heal.verifying': 'بررسی نهایی',
+      'bvp.heal.restoringTabs': 'برگرداندن تب‌ها',
+
+      // ── وضعیت واقعی، همیشه پیدا ───────────────────────────────────────
+      'bvp.stLoading': 'در حال بارگذاری',
+      'bvp.stLive': 'زنده',
+      'bvp.stRecovering': 'در حال ترمیم خودکار',
+      'bvp.stDead': 'قطع — دارد خودش را درست می‌کند',
+      'bvp.navBlockedBack': 'صفحهٔ قبلی وجود ندارد؛ این اولین صفحهٔ این تب است.',
+      'bvp.navBlockedForward': 'صفحهٔ بعدی وجود ندارد.',
+
+      // ── کلیدها ────────────────────────────────────────────────────────
+      'bvp.kbdFull': 'همهٔ کلیدها به صفحه می‌رسند: Ctrl+A/C/V/X/Z/F، F5، Ctrl+T تب جدید، Ctrl+W بستن، Ctrl+Tab چرخش، Ctrl+Shift+T برگرداندن.',
+
       // ── کلیپ‌بورد و فایل از راه دور ──────────────────────────────────
       'rio.pull': 'گرفتن کلیپ‌بورد مرورگر راه دور (مثلاً بعد از دکمهٔ Export افزونه)',
       'rio.notConnected': 'اول به یک صفحه وصل شوید.',
@@ -1629,9 +1738,118 @@
       'bvp.tabRestored': 'Restored {n} tab(s) from your previous session.',
       // ── Reconnect ─────────────────────────────────────────────────────
       'bvp.reconnect': 'Reconnect to the browser (without losing your tabs)',
+      'bvp.restartBrowser': 'Restart Chrome (to load newly installed extensions)',
+      'bvp.restarting': 'Restarting Chrome…',
+      'bvp.restarted': 'Chrome restarted; extensions reloaded',
+      'bvp.restartFailed': 'Could not restart Chrome',
       'bvp.recovering': 'Reconnecting\\u2026',
       'bvp.recovered': 'Reconnected to the browser.',
       'bvp.tabCrashed': 'That tab died; bringing it back up.',
+
+      // ── The tab strip, Chrome's way ──────────────────────────────────
+      'bvp.tabLoading': 'Loading\u2026',
+      'bvp.tabAudible': 'This tab is playing sound \u2014 click to mute it',
+      'bvp.tabMuted': 'This tab is muted \u2014 click to unmute it',
+      'bvp.tabPinned': 'Pinned tab',
+      'bvp.tabPin': 'Pin tab',
+      'bvp.tabUnpin': 'Unpin tab',
+      'bvp.tabDuplicate': 'Duplicate tab',
+      'bvp.tabCloseOthers': 'Close other tabs',
+      'bvp.tabCloseRight': 'Close tabs to the right',
+      'bvp.tabReopen': 'Reopen closed tab',
+      'bvp.tabReopenEmpty': 'There is no closed tab to reopen.',
+      'bvp.tabCloseCancelled': 'The page refused to let that tab close.',
+      'bvp.tabMoveHint': 'Drag a tab to reorder it',
+
+      // ── The page's own dialogs (alert / confirm / prompt / beforeunload)
+      // Chrome draws these itself, not the page, so they can never appear in a
+      // screencast \u2014 which is why they used to lock the tab in silence.
+      'bvp.dlgAlert': 'This page says',
+      'bvp.dlgConfirm': 'This page asks',
+      'bvp.dlgPrompt': 'This page wants an answer',
+      'bvp.dlgLeave': 'Leave this page?',
+      'bvp.dlgLeaveBody': 'Unsaved changes will be lost.',
+      'bvp.dlgOk': 'OK',
+      'bvp.dlgCancel': 'Cancel',
+      'bvp.dlgLeaveOk': 'Leave',
+      'bvp.dlgStay': 'Stay on this page',
+      'bvp.dlgFrom': 'from {origin}',
+
+      // ── HTTP basic auth (the 401 nobody could answer) ─────────────────
+      'bvp.authTitle': 'This site is asking for a username and password',
+      'bvp.authProxy': 'The proxy is asking for a username and password',
+      'bvp.authWho': '{origin} is asking you to sign in',
+      'bvp.authRealm': 'Area: {realm}',
+      'bvp.authUser': 'Username',
+      'bvp.authPass': 'Password',
+      'bvp.authOk': 'Sign in',
+      'bvp.authCancel': 'Cancel',
+      'bvp.authNote': 'This password goes only to that site, from the server\\u2019s browser, and is never stored.',
+      'bvp.authDone': 'Credentials sent.',
+      'bvp.authCancelled': 'Sign-in cancelled \u2014 the page will not open.',
+
+      // ── The download shelf (Chrome's download bar) ────────────────────
+      'bvp.dlShelf': 'Downloads',
+      'bvp.dlStarted': 'Download started: {name}',
+      'bvp.dlDone': 'Download finished: {name}',
+      'bvp.dlFailed': 'Download failed: {name}',
+      'bvp.dlSave': 'Save the file to this machine',
+      'bvp.dlDrop': 'Remove from the shelf (also deletes it on the server)',
+      'bvp.dlClearAll': 'Clear all',
+      'bvp.dlHide': 'Hide the shelf',
+      'bvp.dlProgress': '{done} of {total}',
+      'bvp.dlUnknownSize': 'size unknown',
+      'bvp.dlTooLarge': 'That file was over the size limit and was not kept.',
+      'bvp.dlEmpty': 'Nothing downloaded yet.',
+
+      // ── The page context menu ────────────────────────────────────────
+      'bvp.cmBack': 'Back',
+      'bvp.cmForward': 'Forward',
+      'bvp.cmReload': 'Reload',
+      'bvp.reloadHard': 'Reload, ignoring the cache',
+      'bvp.cmCopy': 'Copy',
+      'bvp.cmPaste': 'Paste',
+      'bvp.cmSelectAll': 'Select all',
+      'bvp.cmOpenNewTab': 'Open link in new tab',
+      'bvp.cmCopyLink': 'Copy link address',
+      'bvp.cmCopyImage': 'Copy image address',
+      'bvp.cmOpenImage': 'Open image in new tab',
+      'bvp.cmInspect': 'Inspect this element',
+
+      // ── Zoom ─────────────────────────────────────────────────────────
+      'bvp.zoomIn': 'Zoom in (Ctrl and +)',
+      'bvp.zoomOut': 'Zoom out (Ctrl and \u2212)',
+      'bvp.zoomReset': 'Back to 100% (Ctrl and 0)',
+      'bvp.zoomAt': 'Zoom {pct}%',
+
+      // ── Self-healing: say what, why, and how long ─────────────────────
+      // The "restart the server" message is gone. The server now does the work
+      // itself, and these strings narrate it step by step.
+      'bvp.healTitle': 'Getting the browser ready',
+      'bvp.healNote': 'This happens by itself \u2014 nothing for you to do.',
+      'bvp.healStep': 'Step {i} of {n}',
+      'bvp.healEta': 'about {s} seconds',
+      'bvp.healDone': 'The browser is ready.',
+      'bvp.healFailed': 'Could not get the browser ready.',
+      'bvp.heal.checkingDisplay': 'Checking the virtual display',
+      'bvp.heal.startingDisplay': 'Starting the virtual display',
+      'bvp.heal.startingChrome': 'Starting Chrome',
+      'bvp.heal.stoppingChrome': 'Stopping the old Chrome',
+      'bvp.heal.loadingExtensions': 'Loading extensions',
+      'bvp.heal.verifying': 'Final check',
+      'bvp.heal.restoringTabs': 'Bringing your tabs back',
+
+      // ── The real state, always visible ────────────────────────────────
+      'bvp.stLoading': 'loading',
+      'bvp.stLive': 'live',
+      'bvp.stRecovering': 'self-healing',
+      'bvp.stDead': 'lost \u2014 fixing itself',
+      'bvp.navBlockedBack': 'There is no previous page \u2014 this is the first page in this tab.',
+      'bvp.navBlockedForward': 'There is no next page.',
+
+      // ── Keys ─────────────────────────────────────────────────────────
+      'bvp.kbdFull': 'Every key reaches the page: Ctrl+A/C/V/X/Z/F, F5, Ctrl+T new tab, Ctrl+W close, Ctrl+Tab cycle, Ctrl+Shift+T reopen.',
+
       // ── Remote clipboard & files ─────────────────────────────────────
       'rio.pull': 'Fetch the remote browser\u2019s clipboard (e.g. after an extension\u2019s Export)',
       'rio.notConnected': 'Connect to a page first.',

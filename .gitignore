@@ -46,3 +46,4 @@ dump.rdb
 # invisible: only brand-new modules vanished, and only from `git status`.
 /core
 /core.*
+downloads/

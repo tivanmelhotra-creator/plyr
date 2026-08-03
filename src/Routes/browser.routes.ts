@@ -27,7 +27,9 @@ import path from 'path';
 
 import { config } from '../config';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
-import { Desktop, DesktopError, displayGuidance } from '../core/Desktop';
+// `displayGuidance` is no longer imported here: the "there is no screen" message
+// belongs to SelfHeal now, because SelfHeal is what tries to make one first.
+import { Desktop, DesktopError } from '../core/Desktop';
 import {
   installExtensionArchive,
   installExtensionFromStore,
@@ -44,10 +46,48 @@ import {
 } from '../core/CookieImport';
 import { sessionStatePath, loadStorageState } from '../core/BrowserProfile';
 import { saveUpload, UploadError, MAX_UPLOAD_BYTES } from '../core/RemoteUploads';
+import { resolveDownload, DownloadError } from '../core/RemoteDownloads';
+import { SelfHeal, type HealStep } from '../core/SelfHeal';
 // The same gate /browser/ws uses. Uploads must be scoped to the identity the
 // socket runs as, so they must be authorized by the identical rule.
 import { authorizeLive } from '../core/LiveServer';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
+
+/**
+ * "We never lose a tab" — the other half of it.
+ *
+ * Relaunching Chrome kills every page inside it, including the ones live picker
+ * sessions are streaming. Nothing about their WebSockets changes, so the user is
+ * left looking at a perfectly good last frame of a page whose browser no longer
+ * exists: connected, unbroken-looking, and completely dead. There is nothing on
+ * screen to tell them to act, which is the worst state this system can reach.
+ *
+ * `SelfHeal.reloadExtensions(report, onSwap)` already has a slot for this — it
+ * calls `onSwap` in the window between stopping and starting Chrome. What was
+ * missing was anyone filling it: every route passed no `onSwap`, so the hook
+ * existed and did nothing.
+ *
+ * This router cannot import the manager (index.ts owns it, and importing it here
+ * would be a cycle), so index.ts REGISTERS the rebuild instead. It defaults to a
+ * no-op, which keeps the routes testable in isolation and keeps a mis-wired
+ * bootstrap from crashing an extension install.
+ */
+let rebuildLiveSessions: () => Promise<void> = async () => {};
+
+/** Called once at boot by index.ts, which owns the LiveBrowserManager. */
+export function setLiveSessionRebuilder(fn: () => Promise<void>): void {
+  rebuildLiveSessions = fn;
+}
+
+/**
+ * The `onSwap` every relaunch passes. Never throws: a session that cannot come
+ * back reports its own state over its own socket, and letting that failure
+ * escape here would turn "one tab did not recover" into "the extension install
+ * failed", which is a lie about a completely different thing.
+ */
+async function swapLiveSessions(): Promise<void> {
+  try { await rebuildLiveSessions(); } catch { /* each session reports itself */ }
+}
 
 /**
  * Which profile do we write to?
@@ -122,6 +162,30 @@ async function persistToProfile(userId: string, imported: CookieImportResult): P
   return merged.cookies.length;
 }
 
+/**
+ * Collect the heal steps so the RESPONSE can explain what happened.
+ *
+ * The mandate is that whenever the user waits, the UI says who did what and how
+ * long it took. These routes are request/response rather than streaming, so the
+ * steps are gathered and returned in one go: the client renders them as a
+ * finished checklist ("display started ✓, Chrome relaunched ✓, extensions
+ * loaded ✓") instead of the single opaque sentence it used to get.
+ *
+ * `key` is a stable identifier, never a sentence, because the UI must be able to
+ * render it in Persian as well as English.
+ */
+function healCollector(): { steps: HealStep[]; report: (s: HealStep) => void } {
+  const steps: HealStep[] = [];
+  return {
+    steps,
+    report: (s) => {
+      // Cap it: a pathological retry loop must not build an unbounded array on
+      // its way to a JSON response.
+      if (steps.length < 40) steps.push(s);
+    },
+  };
+}
+
 export const createBrowserRoutes = (): Router => {
   const router = Router();
 
@@ -150,44 +214,34 @@ export const createBrowserRoutes = (): Router => {
    */
   router.post('/browser/start', async (_req, res) => {
     if (!RealChrome.isEnabled()) {
+      // The one genuinely un-healable case: this is a deliberate configuration
+      // choice, and turning it on by ourselves would be overriding the operator
+      // rather than helping the user. Note it names the SETTING, and does not
+      // ask for a restart — the setting is read per call.
       return fail(
         res, 409,
         'Real Chrome is disabled.',
-        'Set REAL_CHROME_ENABLED=true in .env and restart the server.',
+        'Set REAL_CHROME_ENABLED=true in .env.',
       );
     }
     try {
-      if (!config.REAL_CHROME_HEADLESS) {
-        const desktop = await Desktop.status();
-        if (!desktop.running) {
-          // Try the full stack first (a display + a way to watch it), but never
-          // let a missing VIEWER stop the BROWSER: x11vnc/websockify are how a
-          // human looks at the screen, Xvfb *is* the screen. Falling back to the
-          // display alone is the difference between "extensions work, you just
-          // cannot watch them" and the dead end this used to be.
-          try {
-            await Desktop.start();
-          } catch {
-            try {
-              await Desktop.ensureDisplay();
-            } catch {
-              // No screen and no way to make one. Answer with the command to
-              // run rather than letting Chrome fail with "Missing X server",
-              // which names no package and no next step.
-              const st = await Desktop.status();
-              if (!st.displayRunning) {
-                return fail(
-                  res, 503,
-                  displayGuidance(st.missing, st.display),
-                  st.installHint,
-                );
-              }
-            }
-          }
-        }
+      // Everything the old body did by hand — bring up the display, fall back to
+      // Xvfb alone when the viewer packages are missing, then launch Chrome — now
+      // lives in SelfHeal, so /browser/start, an extension install and a live
+      // session all heal identically instead of each having its own partial
+      // version of the same recovery.
+      const { steps, report } = healCollector();
+      const healed = await SelfHeal.ensureBrowser(report);
+      if (!healed.ok) {
+        return res.status(503).json({
+          success: false,
+          error: healed.problem || 'The browser could not be started.',
+          ...(healed.hint ? { hint: healed.hint } : {}),
+          steps,
+          realChrome: healed.realChrome,
+        });
       }
-      await RealChrome.getContext();
-      res.json({ success: true, realChrome: await RealChrome.status() });
+      res.json({ success: true, realChrome: healed.realChrome, steps });
     } catch (e) { sendError(res, e); }
   });
 
@@ -198,10 +252,33 @@ export const createBrowserRoutes = (): Router => {
     } catch (e) { sendError(res, e); }
   });
 
-  /** The only way to load newly uploaded extensions: Chrome reads them at launch. */
+  /**
+   * Relaunch Chrome, reporting each step.
+   *
+   * Kept as a route because it is a legitimate thing to ASK for ("pick up the
+   * extension I just installed", "give me a clean browser") — but it is no longer
+   * something the user is TOLD to do. Installing an extension now performs this
+   * itself, and every message that used to end in "restart the browser" has been
+   * replaced by the server doing it.
+   *
+   * It goes through SelfHeal rather than `RealChrome.restart()` so a display that
+   * died with Chrome is brought back too, and so the response can explain what
+   * happened instead of returning a bare status object.
+   */
   router.post('/browser/restart', async (_req, res) => {
     try {
-      res.json({ success: true, realChrome: await RealChrome.restart() });
+      const { steps, report } = healCollector();
+      const healed = await SelfHeal.reloadExtensions(report, swapLiveSessions);
+      if (!healed.ok) {
+        return res.status(503).json({
+          success: false,
+          error: healed.problem || 'The browser could not be restarted.',
+          ...(healed.hint ? { hint: healed.hint } : {}),
+          steps,
+          realChrome: healed.realChrome,
+        });
+      }
+      res.json({ success: true, realChrome: healed.realChrome, steps });
     } catch (e) { sendError(res, e); }
   });
 
@@ -248,13 +325,32 @@ export const createBrowserRoutes = (): Router => {
         const ext = await installExtensionArchive(
           config.REAL_CHROME_EXTENSIONS_DIR, name, body,
         );
+        // ── THE REPORTED BUG, AND WHAT IT IS NOW ────────────────────────────
+        // This used to answer:
+        //   "Installed. Restart the browser to load it — Chrome only reads
+        //    extensions at launch."
+        // and set `restartRequired: true`. Both statements are true; the
+        // response was still a defect. It named no button, and the button the
+        // user did press appeared to do nothing, leaving them (their words)
+        // گیج و منگ. Chrome genuinely only reads extensions at launch — so the
+        // SERVER relaunches it, here, now, and reports every step it took.
+        const { steps, report } = healCollector();
+        const healed = await SelfHeal.reloadExtensions(report, swapLiveSessions);
         res.json({
           success: true,
           extension: ext,
-          restartRequired: RealChrome.isRunning(),
-          message: RealChrome.isRunning()
-            ? 'Installed. Restart the browser to load it — Chrome only reads extensions at launch.'
-            : 'Installed. It will load the next time the browser starts.',
+          // Kept for API compatibility, and now always false: there is nothing
+          // left for the caller to restart.
+          restartRequired: false,
+          loaded: !!healed.ok,
+          steps,
+          realChrome: healed.realChrome,
+          ...(healed.ok ? {} : {
+            // The extension IS installed even if the relaunch failed, so this is
+            // a warning about the load, not a failed install.
+            warning: healed.problem || 'Installed, but the browser could not be relaunched.',
+            ...(healed.hint ? { hint: healed.hint } : {}),
+          }),
         });
       } catch (e) { sendError(res, e); }
     },
@@ -281,13 +377,22 @@ export const createBrowserRoutes = (): Router => {
       }
 
       const ext = await installExtensionFromStore(config.REAL_CHROME_EXTENSIONS_DIR, input);
+      // Same as the archive route above: install, then LOAD it, then say what
+      // was done. This is the path the reported J2TEAM Cookies case takes.
+      const { steps, report } = healCollector();
+      const healed = await SelfHeal.reloadExtensions(report, swapLiveSessions);
       res.json({
         success: true,
         extension: ext,
-        restartRequired: RealChrome.isRunning(),
-        message: RealChrome.isRunning()
-          ? `Installed ${ext.name} v${ext.version}. Restart the browser to load it — Chrome only reads extensions at launch.`
-          : `Installed ${ext.name} v${ext.version}. It will load the next time the browser starts.`,
+        restartRequired: false,
+        loaded: !!healed.ok,
+        steps,
+        realChrome: healed.realChrome,
+        ...(healed.ok ? {} : {
+          warning: healed.problem
+            || `Installed ${ext.name} v${ext.version}, but the browser could not be relaunched.`,
+          ...(healed.hint ? { hint: healed.hint } : {}),
+        }),
       });
     } catch (e) { sendError(res, e); }
   });
@@ -296,7 +401,19 @@ export const createBrowserRoutes = (): Router => {
     try {
       const removed = await removeExtension(config.REAL_CHROME_EXTENSIONS_DIR, req.params.id);
       if (!removed) return fail(res, 404, 'No such extension.');
-      res.json({ success: true, restartRequired: RealChrome.isRunning() });
+      // Removing needs the same relaunch as installing: an extension whose files
+      // are gone is still loaded in the running Chrome, so leaving it there means
+      // the UI says "removed" while the extension keeps working — the same class
+      // of lie as "restart required", just in the other direction.
+      const { steps, report } = healCollector();
+      const healed = await SelfHeal.reloadExtensions(report, swapLiveSessions);
+      res.json({
+        success: true,
+        restartRequired: false,
+        unloaded: !!healed.ok,
+        steps,
+        realChrome: healed.realChrome,
+      });
     } catch (e) { sendError(res, e); }
   });
 
@@ -307,16 +424,32 @@ export const createBrowserRoutes = (): Router => {
    * UI, with full extension privileges — which is how you drive a cookie
    * extension without a remote desktop.
    */
-  router.get('/browser/extensions/:id/url', (req, res) => {
-    const url = RealChrome.extensionPageUrl(req.params.id);
+  router.get('/browser/extensions/:id/url', async (req, res) => {
+    let url = RealChrome.extensionPageUrl(req.params.id);
+    const steps: HealStep[] = [];
     if (!url) {
+      // It used to answer "Upload it, then POST /browser/restart" — an HTTP verb,
+      // to someone holding a mouse. If the extension is installed on disk but not
+      // loaded, the fix is a relaunch, and we can do that.
+      const collector = healCollector();
+      const installed = await listExtensions(config.REAL_CHROME_EXTENSIONS_DIR)
+        .catch(() => []);
+      if (installed.some((x) => x.id === req.params.id)) {
+        await SelfHeal.reloadExtensions(collector.report, swapLiveSessions);
+        steps.push(...collector.steps);
+        url = RealChrome.extensionPageUrl(req.params.id);
+      }
+    }
+    if (!url) {
+      // Genuinely not installed — nothing to load. Now the message is about the
+      // extension, not about a restart.
       return fail(
         res, 404,
-        'That extension is not loaded in the running browser.',
-        'Upload it, then POST /browser/restart.',
+        'That extension is not installed.',
+        'Install it from a Chrome Web Store link or upload its .crx/.zip.',
       );
     }
-    res.json({ success: true, url });
+    res.json({ success: true, url, ...(steps.length ? { steps } : {}) });
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -500,6 +633,56 @@ export const createBrowserRoutes = (): Router => {
       }
     },
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Download shelf — the other half of "the remote browser is not my computer"
+  //
+  // When a page in the live view downloads a file, the bytes land on the
+  // SERVER's disk. In real Chrome the shelf at the bottom of the window offers
+  // the file; here it has to offer a URL, or a download is a file the user can
+  // neither see nor reach. This is that URL.
+  //
+  // Same identity rule as /browser/uploads, and for the same reason: the shelf
+  // rows are produced by the WebSocket session, which runs as the `userId` in
+  // its own query string. Resolving the token under a different identity would
+  // look in a directory the file was never written to.
+  //
+  // The token is opaque and server-minted (see core/RemoteDownloads): the path
+  // is never exposed, the token pattern is checked, and containment is
+  // re-checked after resolution — two independent guards, because the cost of
+  // being wrong here is reading arbitrary files off the server.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  router.get('/browser/downloads/:token', async (req: AuthenticatedRequest, res) => {
+    try {
+      const asked = String(req.query.userId || '').trim();
+      let owner = resolveUserId(req);
+      if (asked && asked !== owner) {
+        const auth = await authorizeLive(apiKeyOf(req), asked);
+        if (!auth.ok) {
+          return fail(res, 403, 'This API key may not read downloads for that user.',
+            'Use the same userId the browser socket was opened with.');
+        }
+        owner = asked;
+      }
+      const file = await resolveDownload(owner, String(req.params.token || ''));
+      // `attachment` with the name the user actually saw on the shelf. Serving
+      // it inline would let a downloaded .html run in this origin, which is a
+      // stored-XSS hole with extra steps.
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Length', String(file.size));
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${file.name.replace(/["\\]/g, '_')}"; ` +
+        `filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      );
+      res.sendFile(file.path);
+    } catch (e) {
+      if (e instanceof DownloadError) return fail(res, 404, e.message);
+      sendError(res, e);
+    }
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // Remote desktop

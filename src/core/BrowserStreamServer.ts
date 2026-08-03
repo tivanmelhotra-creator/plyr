@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { URL } from 'url';
 
 import { LiveBrowserManager, LiveBrowserSession } from './LiveBrowser';
+import type { Mods } from './BrowserInput';
 import { authorizeLive } from './LiveServer';
 
 // ════════════════════════════════════════════════════════════════
@@ -143,7 +144,24 @@ export class BrowserStreamServer {
         if (pending.length < 50) pending.push(msg);
         return;
       }
-      void this.handleCommand(session, msg);
+      // MEASURED 2026-08-03: this was a bare `void`, with no catch. Every command
+      // the user sends arrives here, so ANY command that rejected became an
+      // unhandledRejection — and src/index.ts answers unhandledRejection with a
+      // graceful shutdown of the entire process. One tab that lost its CDP target
+      // therefore killed the server for everyone, and the only way back was the
+      // manual restart the GLOBAL MANDATE exists to abolish. The replay path
+      // below always had its `.catch`; the hot path did not, which is why this
+      // only ever bit real users and never the tests.
+      //
+      // A failed command is reported to the client that sent it and nothing else
+      // happens. The session stays up, and the UI shows a real state rather than
+      // going quiet.
+      void this.handleCommand(session, msg).catch((e: unknown) => {
+        const detail = (e as Error)?.message || String(e);
+        try {
+          this.send(ws, 'error', { message: 'command_failed', command: msg.t, detail });
+        } catch { /* the socket is gone; there is nobody left to tell */ }
+      });
     });
 
     // Start the browser session (creates context/page + screencast).
@@ -175,6 +193,18 @@ export class BrowserStreamServer {
       const n = Number(v);
       return Number.isFinite(n) ? n : d;
     };
+    /**
+     * Modifier keys, as the client reports them.
+     *
+     * Sent as four booleans rather than a bitmask because the client reads them
+     * straight off a DOM event (`ev.ctrlKey` &c.), and translating on the client
+     * would mean two places had to agree on the bit values. `modifierMask` in
+     * BrowserInput is the single place that knows Alt=1 Ctrl=2 Meta=4 Shift=8.
+     */
+    const mods = (v: unknown): Mods => {
+      const m = (v || {}) as Record<string, unknown>;
+      return { alt: !!m.alt, ctrl: !!m.ctrl, meta: !!m.meta, shift: !!m.shift };
+    };
     switch (msg.t) {
       case 'navigate':
         await session.navigate(String(msg.url || ''));
@@ -188,23 +218,108 @@ export class BrowserStreamServer {
       case 'forward':
         await session.forward();
         break;
+      // `hard` is Ctrl+Shift+R — a cache-bypassing reload. Chrome has both and
+      // the difference is the whole reason the second one exists: a normal reload
+      // of a page whose stylesheet is cached shows you the same broken page again.
       case 'reload':
-        await session.reload();
+        await session.reload({ hard: !!msg.hard });
         break;
+      // ── Mouse ─────────────────────────────────────────────────────────
+      // `button` (left/middle/right/back/forward), `clickCount` (2 = double,
+      // 3 = triple, which is how a paragraph gets selected) and modifiers all
+      // travel, because all of them change what the click MEANS: Ctrl+click is
+      // "open in a new tab", middle-click is "open in a background tab",
+      // Shift+click extends a selection. A click command that carried only x/y
+      // could express exactly one of the things a mouse does.
       case 'click':
-        await session.click(num(msg.x), num(msg.y));
+        await session.click(num(msg.x), num(msg.y), {
+          button: msg.button,
+          clickCount: msg.clickCount,
+          mods: mods(msg.mods),
+        });
         break;
       case 'move':
-        await session.move(num(msg.x), num(msg.y));
+        await session.move(num(msg.x), num(msg.y), {
+          mods: mods(msg.mods),
+          buttons: num(msg.buttons),
+        });
         break;
+      // Press, move, release — one command, because the three halves have to
+      // reach the same page in order. This is text selection, slider dragging,
+      // drag & drop and file-drag upload, none of which a click can express.
+      // MEASURED 2026-08-03 (tools/probe-live-parity.js): this only read flat
+      // `x,y,x2,y2`, but public/js/browser-view.js has always sent
+      // `from:{x,y}, to:{x,y}`. So every real drag arrived as 0,0 → 0,0 and did
+      // nothing at all: no drag-to-select text, no sliders, no drag & drop. It
+      // failed SILENTLY, which is why it survived — the command was accepted, a
+      // gesture was dispatched, and it just happened to be a zero-length one in
+      // the corner of the page. A protocol mismatch between the only client and
+      // the only server is invisible to any test that exercises one side alone;
+      // it took driving the real socket to see it.
+      //
+      // Both shapes are accepted now. The nested form is what the client sends
+      // and is preferred; the flat form stays supported so a probe or an older
+      // client is not broken by the fix.
+      case 'drag': {
+        const pt = (nested: unknown, fx: unknown, fy: unknown) => {
+          const o = nested as { x?: unknown; y?: unknown } | null | undefined;
+          return o && typeof o === 'object'
+            ? { x: num(o.x), y: num(o.y) }
+            : { x: num(fx), y: num(fy) };
+        };
+        await session.drag(
+          pt(msg.from, msg.x, msg.y),
+          pt(msg.to, msg.x2, msg.y2),
+          { button: msg.button, mods: mods(msg.mods), steps: num(msg.steps, 12) },
+        );
+        break;
+      }
+      // `dx` is Shift+Scroll / a trackpad's horizontal axis. Without it a wide
+      // table or a horizontal carousel simply could not be scrolled.
       case 'scroll':
-        await session.scroll(num(msg.x), num(msg.y), num(msg.dy));
+        await session.scroll(num(msg.x), num(msg.y), num(msg.dy), {
+          dx: num(msg.dx),
+          mods: mods(msg.mods),
+        });
+        break;
+      case 'pinch':
+        await session.pinch(num(msg.x), num(msg.y), num(msg.scale, 1));
+        break;
+      // Real browser zoom (Ctrl + / − / 0). MEASURED: this is
+      // Emulation.setDeviceMetricsOverride, not setPageScaleFactor — the latter
+      // cannot go below 100% and does not reflow the page.
+      case 'zoom':
+        await session.setZoom(
+          msg.level === undefined
+            ? (String(msg.dir || 'reset') as 'in' | 'out' | 'reset')
+            : num(msg.level, 1),
+        );
+        break;
+      // The right-click menu. The server fires a REAL right-click first (so the
+      // page's own contextmenu handler and its preventDefault are honoured) and
+      // then reports what is under the cursor, so the menu can offer
+      // "Open link in new tab" only when there is a link.
+      case 'contextMenu':
+        await session.contextMenuAt(num(msg.x), num(msg.y));
+        break;
+      // Double/triple click semantics, done through Selection.modify rather than
+      // by guessing at word boundaries client-side.
+      case 'expandSelection':
+        await session.expandSelection(msg.unit === 'paragraph' ? 'paragraph' : 'word');
         break;
       case 'type':
         await session.type(String(msg.text || ''));
         break;
+      // Every key, with every modifier — NOT a whitelist. The old client sent
+      // nine named keys and dropped anything with Ctrl/Alt/Meta held, which meant
+      // F5, Home, End, Ctrl+F, Ctrl+A and the whole function row did nothing.
+      // The client sends `autoRepeat` (the CDP field name); this used to read
+      // only `repeat`, so a held key never told Blink it was a repeat. Same class
+      // of silent client/server mismatch as `drag` above — accept both.
       case 'key':
-        await session.key(String(msg.key || ''));
+        await session.key(String(msg.key || ''), mods(msg.mods), {
+          autoRepeat: !!(msg.autoRepeat ?? msg.repeat),
+        });
         break;
       // ── Clipboard bridge ──────────────────────────────────────────────
       // The canvas is a picture of a browser on another machine, so Ctrl+C and
@@ -255,8 +370,69 @@ export class BrowserStreamServer {
       case 'tabSelect':
         await session.selectTab(String(msg.id || ''));
         break;
+      // No `force` from the client: a close request from the UI must always be
+      // allowed to raise the page's beforeunload prompt. Forcing is something
+      // only the server does, after the user has answered that prompt.
       case 'tabClose':
         await session.closeTab(String(msg.id || ''));
+        break;
+      // Drag-to-reorder.
+      case 'tabMove':
+        await session.moveTab(String(msg.id || ''), num(msg.index));
+        break;
+      case 'tabDuplicate':
+        await session.duplicateTab(String(msg.id || ''));
+        break;
+      case 'tabPin':
+        await session.pinTab(
+          String(msg.id || ''),
+          msg.pinned === undefined ? undefined : !!msg.pinned,
+        );
+        break;
+      case 'tabMute':
+        await session.muteTab(
+          String(msg.id || ''),
+          msg.muted === undefined ? undefined : !!msg.muted,
+        );
+        break;
+      case 'tabCloseOthers':
+        await session.closeOtherTabs(String(msg.id || ''));
+        break;
+      case 'tabCloseRight':
+        await session.closeTabsToRight(String(msg.id || ''));
+        break;
+      // Ctrl+Shift+T. "I closed the wrong tab" is one of the most common things
+      // anyone does in a browser, and without this the only recovery was
+      // remembering the URL — which is what the tab was remembering for them.
+      case 'tabReopen':
+        await session.reopenClosedTab();
+        break;
+      // Ctrl+Tab / Ctrl+Shift+Tab.
+      case 'tabCycle':
+        await session.cycleTab(num(msg.dir, 1) < 0 ? -1 : 1);
+        break;
+      // ── Page dialogs ──────────────────────────────────────────────────
+      // alert / confirm / prompt / beforeunload. Before this, a page that opened
+      // one locked its tab in silence: Playwright blocks waiting for an answer
+      // nobody could give, so the canvas froze with no error of any kind.
+      case 'dialogAnswer':
+        await session.answerDialog(!!msg.accept, String(msg.text || ''));
+        break;
+      // ── HTTP basic auth ───────────────────────────────────────────────
+      // The native credentials window can never appear in a screencast, so a 401
+      // site was simply unreachable.
+      case 'authAnswer':
+        await session.answerAuth(
+          !!msg.accept,
+          String(msg.username || ''),
+          String(msg.password || ''),
+        );
+        break;
+      // ── Downloads ─────────────────────────────────────────────────────
+      // Dismissing a shelf row also deletes the file: keeping bytes the user
+      // believes are gone is not something a browser should do.
+      case 'downloadClear':
+        session.clearDownload(String(msg.token || ''));
         break;
       // ── Reconnect ─────────────────────────────────────────────────────
       // Rebuilds the screencast (and the page behind it, if that is what died)

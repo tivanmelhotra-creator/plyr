@@ -101,6 +101,14 @@
     layout: ['<rect x="3" y="4" width="7" height="7" rx="1.5"/>', '<rect x="14" y="4" width="7" height="7" rx="1.5"/>', '<rect x="3" y="15" width="7" height="5" rx="1.5"/>', '<rect x="14" y="15" width="7" height="5" rx="1.5"/>'],
     link: ['<path d="M10.6 13.4a4 4 0 0 0 5.7 0l2.8-2.8a4 4 0 0 0-5.7-5.7L11.9 6.2"/>', '<path d="M13.4 10.6a4 4 0 0 0-5.7 0l-2.8 2.8a4 4 0 0 0 5.7 5.7l1.5-1.5"/>'],
     lock: ['<rect x="4" y="10" width="16" height="11" rx="2"/>', '<path d="M8 10V7a4 4 0 0 1 8 0v3"/>'],
+    // A busy ring for a LOADING tab. Chrome draws a spinning arc in place of the
+    // favicon while a tab is still fetching, and that arc is the only thing that
+    // tells you "the click DID land, the page is on its way" — without it a slow
+    // site is indistinguishable from a dead one, which is precisely the "did it
+    // even do anything?" confusion this whole rebuild is about.
+    // The gap in the ring is what makes the CSS rotation legible; a full circle
+    // would look static however fast it spins.
+    loader: ['<path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round"/>'],
     map: ['<path d="m3 6.6 6-2.6 6 2.6 6-2.6v13l-6 2.6-6-2.6-6 2.6z"/>', '<path d="M9 4v13"/>', '<path d="M15 6.6v13"/>'],
     maximize: ['<path d="M8 3H5a2 2 0 0 0-2 2v3"/>', '<path d="M16 3h3a2 2 0 0 1 2 2v3"/>', '<path d="M21 16v3a2 2 0 0 1-2 2h-3"/>', '<path d="M3 16v3a2 2 0 0 0 2 2h3"/>'],
     'message-square': ['<path d="M21 15.4a2 2 0 0 1-2 2H8.4L4 21.5V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>'],
@@ -156,6 +164,13 @@
     user: ['<circle cx="12" cy="8" r="3.8"/>', '<path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>'],
     users: ['<circle cx="9.5" cy="8" r="3.5"/>', '<path d="M3 20.5a6.5 6.5 0 0 1 13 0"/>', '<path d="M16.2 4.8a3.5 3.5 0 0 1 0 6.6"/>', '<path d="M18 14.6a6.5 6.5 0 0 1 3 5.9"/>'],
     variable: ['<path d="M8.2 3.2a13 13 0 0 0 0 17.6"/>', '<path d="M15.8 3.2a13 13 0 0 1 0 17.6"/>', '<path d="m9.6 9.6 4.8 4.8"/>', '<path d="m14.4 9.6-4.8 4.8"/>'],
+    // Chrome puts a speaker on any tab that is MAKING NOISE, and a crossed-out
+    // speaker on one you have muted. Both are needed and they are different
+    // facts: `volume` answers "which of my nine tabs is the advert playing in?",
+    // `volume-x` answers "I already silenced that one". Showing only the first
+    // would make the mute button look like it did nothing.
+    volume: ['<path d="M11 5.5 6.8 9H4a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h2.8L11 18.5z"/>', '<path d="M15.2 9.2a4 4 0 0 1 0 5.6"/>', '<path d="M17.8 6.6a7.6 7.6 0 0 1 0 10.8"/>'],
+    'volume-x': ['<path d="M11 5.5 6.8 9H4a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h2.8L11 18.5z"/>', '<path d="m15.5 10 4.5 4"/>', '<path d="m20 10-4.5 4"/>'],
     wand: ['<path d="M3.2 20.8 14 10"/>', '<path d="m12.2 8.2 3.6 3.6"/>', '<path d="M17.5 3v3"/>', '<path d="M21.5 8.5h-3"/>', '<path d="m21 4-2.1 2.1"/>'],
     webhook: ['<path d="M17.6 16.9h-5.7c-1 0-1.9.9-2.4 1.8a3.9 3.9 0 0 1-7.5-1.7c0-.7.2-1.4.6-2"/>', '<path d="m6.2 16.9 3-5.6c.5-.9.1-2.1-.5-3a3.9 3.9 0 1 1 6.7-3.9"/>', '<path d="m12 6.2 3 5.6c.5.9 1.7 1.2 2.8 1.2a3.9 3.9 0 0 1 0 7.8"/>'],
     x: ['<path d="m6 6 12 12"/>', '<path d="M18 6 6 18"/>'],
