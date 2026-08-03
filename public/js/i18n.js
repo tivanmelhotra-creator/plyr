@@ -429,6 +429,22 @@
       'bvp.sessionSaved': 'نشست ذخیره‌شده بازیابی شد',
       'bvp.sessionAnon': 'بدون ورود به حساب',
       'bvp.forget': 'پاک کردن نشست این مرورگر (کوکی‌ها و خروج از حساب)',
+      // ── تب‌ها ─────────────────────────────────────────────────────────
+      // مرورگر شبیه‌سازی‌شده تا امروز فقط یک صفحه داشت، پس هر «این را باز کن»
+      // یعنی «صفحهٔ فعلی را از بین ببر». باز کردن پنجرهٔ یک افزونه، همان
+      // صفحه‌ای را می‌بست که افزونه برای آن لازم بود.
+      'bvp.tabs': 'تب‌ها',
+      'bvp.newTab': 'تب جدید',
+      'bvp.closeTab': 'بستن این تب',
+      'bvp.blankTab': 'تب خالی',
+      'bvp.tabPending': 'از نشست قبلی؛ با کلیک باز می‌شود',
+      'bvp.tabsFull': 'بیشتر از این تب باز نمی‌شود. یکی را ببندید.',
+      'bvp.tabRestored': '{n} تب از نشست قبلی برگشت.',
+      // ── اتصال دوباره ──────────────────────────────────────────────────
+      'bvp.reconnect': 'اتصال دوباره به مرورگر (بدون از دست دادن تب‌ها)',
+      'bvp.recovering': 'در حال وصل شدن دوباره…',
+      'bvp.recovered': 'اتصال به مرورگر برگشت.',
+      'bvp.tabCrashed': 'این تب از کار افتاد؛ داریم دوباره بالا می‌آوریمش.',
       // ── کلیپ‌بورد و فایل از راه دور ──────────────────────────────────
       'rio.pull': 'گرفتن کلیپ‌بورد مرورگر راه دور (مثلاً بعد از دکمهٔ Export افزونه)',
       'rio.notConnected': 'اول به یک صفحه وصل شوید.',
@@ -1600,6 +1616,22 @@
       'bvp.sessionSaved': 'Saved session restored',
       'bvp.sessionAnon': 'Signed out',
       'bvp.forget': 'Forget this browser session (clear cookies and sign out)',
+      // ── Tabs ──────────────────────────────────────────────────────────
+      // The session used to own exactly ONE page, so every "open this" meant
+      // "destroy the current page". Opening an extension's popup closed the very
+      // page the extension was needed for.
+      'bvp.tabs': 'Tabs',
+      'bvp.newTab': 'New tab',
+      'bvp.closeTab': 'Close this tab',
+      'bvp.blankTab': 'Blank tab',
+      'bvp.tabPending': 'From a previous session; click to load',
+      'bvp.tabsFull': 'No more tabs can be opened. Close one first.',
+      'bvp.tabRestored': 'Restored {n} tab(s) from your previous session.',
+      // ── Reconnect ─────────────────────────────────────────────────────
+      'bvp.reconnect': 'Reconnect to the browser (without losing your tabs)',
+      'bvp.recovering': 'Reconnecting\\u2026',
+      'bvp.recovered': 'Reconnected to the browser.',
+      'bvp.tabCrashed': 'That tab died; bringing it back up.',
       // ── Remote clipboard & files ─────────────────────────────────────
       'rio.pull': 'Fetch the remote browser\u2019s clipboard (e.g. after an extension\u2019s Export)',
       'rio.notConnected': 'Connect to a page first.',

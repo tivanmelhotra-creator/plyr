@@ -118,6 +118,12 @@
     play: ['<path d="m7 4.2 12 7.8-12 7.8z"/>'],
     'play-circle': ['<circle cx="12" cy="12" r="9"/>', '<path d="m10 8.2 6 3.8-6 3.8z"/>'],
     plus: ['<path d="M12 5v14"/>', '<path d="M5 12h14"/>'],
+    // A plug going into a socket: the picker's "reconnect to the browser".
+    // Deliberately not `rotate-cw`, which the same toolbar already uses for
+    // Reload — two identical glyphs one button apart would read as a duplicate,
+    // and these two do very different things (one reloads the PAGE, the other
+    // rebuilds the connection to the browser holding it).
+    plug: ['<path d="M9 3v5"/>', '<path d="M15 3v5"/>', '<path d="M6.5 8h11v3a5.5 5.5 0 0 1-11 0z"/>', '<path d="M12 16.5V21"/>'],
     power: ['<path d="M12 3v9"/>', '<path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>'],
     repeat: ['<path d="m17 2 4 4-4 4"/>', '<path d="M3 11.5V10a4 4 0 0 1 4-4h14"/>', '<path d="m7 22-4-4 4-4"/>', '<path d="M21 12.5V14a4 4 0 0 1-4 4H3"/>'],
     rocket: ['<path d="M12 2.5s4.6 2.2 4.6 8.2c0 3-1.5 5.3-1.5 5.3H8.9s-1.5-2.3-1.5-5.3C7.4 4.7 12 2.5 12 2.5z"/>', '<path d="M9 16.5s-3 1.1-3 4.2h12c0-3.1-3-4.2-3-4.2"/>', '<circle cx="12" cy="9.4" r="1.7"/>'],
