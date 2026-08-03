@@ -376,6 +376,9 @@
     var ps = pickState;
     pickState = null;
     if (ps.stallTimer) { clearInterval(ps.stallTimer); ps.stallTimer = null; }
+    // The nav-busy lease outlives the modal otherwise, and would fire a toast
+    // about a window that is no longer on screen.
+    if (ps.navBusyTimer) { clearTimeout(ps.navBusyTimer); ps.navBusyTimer = 0; }
     if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
     if (ps.rio) { try { ps.rio.detach(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
@@ -769,6 +772,10 @@
       canBack: false,
       canFwd: false,
       navBusy: false,
+      // The lease that guarantees `navBusy` can never be permanent. 0 = no
+      // navigation outstanding. See setNavBusy for why an optimistic busy state
+      // MUST expire on its own.
+      navBusyTimer: 0,
       // ── Drag, on the canvas ───────────────────────────────────────────
       // A real mousedown→mousemove→mouseup, which is what text selection,
       // sliders and drag & drop are all made of. `null` when the button is up.
@@ -823,6 +830,54 @@
         f.classList.toggle('is-dim', !pickState.canFwd);
       }
       if (r) r.classList.toggle('is-busy', !!pickState.navBusy);
+    }
+
+    /**
+     * Mark a navigation as in flight — and guarantee the mark can come off again.
+     *
+     * `navBusy` is set OPTIMISTICALLY the moment a button is pressed, so the click
+     * is acknowledged on the next frame instead of whenever the server gets round
+     * to `navStart`. The cost of that is a state only the server can clear, and
+     * MEASURED 2026-08-03 (tools/probe-ui-controls.js) it really did stick: drop
+     * the nav command on the wire and none of `navStart`/`navEnd`/`navBlocked`
+     * ever arrives, so the spinner spun forever and the toolbar LOOKED hung while
+     * the session was perfectly alive. That is the same "dead but connected" lie
+     * the whole browser-parity effort exists to remove, and the project's
+     * no-restart mandate says the UI must correct itself rather than sit there.
+     *
+     * So the busy state is always a LEASE, never a promise: whatever happens on
+     * the wire, it expires. There are TWO different waits here and one timeout
+     * cannot serve both, which is why `phase` exists:
+     *
+     *   'press' — we have sent a command and not yet been acknowledged. The only
+     *             thing outstanding is a round trip on an open socket, so this is
+     *             SHORT (6s). Anything longer means the command was lost, and
+     *             making the user stare at a spinner for half a minute to learn
+     *             that is the bug, not the fix.
+     *   'server' — `navStart` arrived, so the server really is loading a page and
+     *             owns a 30s timeout of its own. The lease is longer than that
+     *             (35s) so a genuinely slow page keeps its spinner and only a
+     *             server that died mid-navigation trips it.
+     */
+    function setNavBusy(on, phase) {
+      pickState.navBusy = !!on;
+      if (pickState.navBusyTimer) {
+        clearTimeout(pickState.navBusyTimer);
+        pickState.navBusyTimer = 0;
+      }
+      if (on) {
+        pickState.navBusyTimer = setTimeout(function () {
+          if (!pickState) return;
+          pickState.navBusyTimer = 0;
+          pickState.navBusy = false;
+          applyNavState();
+          // Say something. A spinner that quietly gives up teaches the user that
+          // the button does nothing; naming it as a lost request tells them the
+          // truth and that pressing again is the right move.
+          toast(t('bvp.navLost'), 'warning');
+        }, phase === 'server' ? 35000 : 6000);
+      }
+      applyNavState();
     }
 
     /** Show the zoom, and remember it: every click coordinate divides by it. */
@@ -1315,12 +1370,25 @@
         pickState.tabDragOver = -1;
         if (moved && target >= 0 && target !== slot) {
           send({ t: 'tabMove', id: id, index: target });
-        } else {
-          // Nothing moved: redraw to clear the drag styling. The server will
-          // not send a `tabs` event for a reorder that did not happen, so if we
-          // skipped this the strip would stay visually mid-drag forever.
-          renderTabs(pickState.tabs, pickState.activeTab);
+          return;
         }
+        // Only redraw if a drag actually STARTED. Redrawing after an ordinary
+        // press was a real dead-button bug.
+        //
+        // MEASURED 2026-08-03 (tools/probe-ui-controls.js): pressing a tab's X
+        // sent no `tabClose` at all and the tab stayed open. The reason is that
+        // `mouseup` fires BEFORE `click`, and this branch used to redraw the
+        // whole strip unconditionally — so by the time the browser came to
+        // dispatch `click`, the X element that had been pressed was detached
+        // and replaced by a fresh copy that had never seen a mousedown. The
+        // click therefore had no target and the listener never ran. The X, the
+        // mute button and every other control inside a chip were all silently
+        // un-clickable, while the wiring looked perfect in the source and the
+        // protocol probe (which never clicks anything) stayed green.
+        //
+        // A press that never moved has nothing to clean up: `tabDragId` was
+        // never set, so there is no drag styling on screen to clear.
+        if (moved) renderTabs(pickState.tabs, pickState.activeTab);
       }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -1974,23 +2042,23 @@
           if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
           break;
         case 'navStart':
-          pickState.navBusy = true;
+          // Hand the lease over to the server phase: the command was received,
+          // so the short "was that even heard?" window is finished and the long
+          // "this page is loading" one starts, measured from now.
+          setNavBusy(true, 'server');
           setStatus(t('bvp.stLoading'), 'warn');
-          applyNavState();
           break;
         case 'navEnd':
-          pickState.navBusy = false;
+          setNavBusy(false);
           setStatus(t('bvp.stLive'), 'ok');
-          applyNavState();
           break;
         // A refusal, not a fault: you pressed Back on the first page. Saying so
         // is the difference between "this button is broken" and "there is
         // nothing behind this page".
         case 'navBlocked':
-          pickState.navBusy = false;
+          setNavBusy(false);
           toast(msg.kind === 'forward'
             ? t('bvp.navBlockedForward') : t('bvp.navBlockedBack'), 'info');
-          applyNavState();
           break;
         case 'zoom':
           setZoomLabel(msg.level);
@@ -2553,9 +2621,11 @@
       var m = { t: cmd };
       if (extra) Object.keys(extra).forEach(function (k) { m[k] = extra[k]; });
       // Optimistic busy state, so the press is acknowledged on the very next
-      // frame rather than whenever the server gets round to `navStart`.
-      pickState.navBusy = true;
-      applyNavState();
+      // frame rather than whenever the server gets round to `navStart`. It is a
+      // LEASE, not a promise — see setNavBusy: a command that never reaches the
+      // server must not be able to leave the spinner running forever. 'press' is
+      // the short phase; `navStart` upgrades it to the long one.
+      setNavBusy(true, 'press');
       send(m);
     }
     q('bvp-back').addEventListener('click', function () { navCmd('back'); });

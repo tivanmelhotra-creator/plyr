@@ -550,6 +550,7 @@
       'bvp.stDead': 'قطع — دارد خودش را درست می‌کند',
       'bvp.navBlockedBack': 'صفحهٔ قبلی وجود ندارد؛ این اولین صفحهٔ این تب است.',
       'bvp.navBlockedForward': 'صفحهٔ بعدی وجود ندارد.',
+      'bvp.navLost': 'پاسخی برای این جابه‌جایی نرسید؛ چرخش متوقف شد. دوباره بزنید.',
 
       // ── کلیدها ────────────────────────────────────────────────────────
       'bvp.kbdFull': 'همهٔ کلیدها به صفحه می‌رسند: Ctrl+A/C/V/X/Z/F، F5، Ctrl+T تب جدید، Ctrl+W بستن، Ctrl+Tab چرخش، Ctrl+Shift+T برگرداندن.',
@@ -1846,6 +1847,7 @@
       'bvp.stDead': 'lost \u2014 fixing itself',
       'bvp.navBlockedBack': 'There is no previous page \u2014 this is the first page in this tab.',
       'bvp.navBlockedForward': 'There is no next page.',
+      'bvp.navLost': 'No answer came back for that \u2014 the spinner was stopped. Press it again.',
 
       // ── Keys ─────────────────────────────────────────────────────────
       'bvp.kbdFull': 'Every key reaches the page: Ctrl+A/C/V/X/Z/F, F5, Ctrl+T new tab, Ctrl+W close, Ctrl+Tab cycle, Ctrl+Shift+T reopen.',
