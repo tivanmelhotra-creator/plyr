@@ -375,6 +375,7 @@
     if (!pickState) return;
     var ps = pickState;
     pickState = null;
+    if (ps.stallTimer) { clearInterval(ps.stallTimer); ps.stallTimer = null; }
     if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
     if (ps.rio) { try { ps.rio.detach(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
@@ -423,6 +424,20 @@
           '<button class="icon-btn bvp-clip" id="bvp-clip" type="button" ' +
             'title="' + esc(t('rio.pull')) + '" aria-label="' + esc(t('rio.pull')) + '">' +
             BIC('clipboard', 15) + '</button>' +
+          // Reconnect. NOT "close the window and reopen it", which is what the
+          // user was reduced to when a cookie extension refreshed the page — and
+          // that cost them the whole tab list every single time. This asks the
+          // server to rebuild the screencast (and the page under it, if that is
+          // what died) on the SAME socket, so the tabs and the picker state
+          // survive.
+          //
+          // It needs to be a button because the failure it fixes is invisible:
+          // the socket stays open, the status still says "connected", and the
+          // canvas keeps showing a perfectly good last frame of a page that is
+          // already gone.
+          '<button class="icon-btn bvp-resync" id="bvp-resync" type="button" ' +
+            'title="' + esc(t('bvp.reconnect')) + '" aria-label="' + esc(t('bvp.reconnect')) + '">' +
+            BIC('plug', 15) + '</button>' +
           // Real Chrome. The canvas below is a screencast of a PAGE, so it can
           // never show an extension popup, chrome://extensions or a native file
           // dialog — they are not drawn by the page. This button is the way out
@@ -434,6 +449,23 @@
           '<button class="icon-btn bvp-close" id="bvp-close" type="button" ' +
             'title="' + esc(t('bvp.cancel')) + '" aria-label="' + esc(t('bvp.cancel')) + '">' +
             BIC('x', 15) + '</button>' +
+        '</div>' +
+        // ── The tab strip ──────────────────────────────────────────────────
+        // Class names are `bvp-tabstrip` / `bvp-tabitem`, NOT `bvp-tabs` /
+        // `bvp-tab`: those two already belong to the Attributes|Candidates
+        // tablist inside the panel, and reusing them would style one widget with
+        // the other's rules.
+        //
+        // Rendered empty and filled from the server's `tabs` event, because the
+        // list is the SERVER's state — it includes tabs restored from previous
+        // sessions and tabs the page opened for itself, neither of which the
+        // client could know about.
+        '<div class="bvp-tabstrip" id="bvp-tabstrip" role="tablist" ' +
+          'aria-label="' + esc(t('bvp.tabs')) + '">' +
+          '<div class="bvp-tablist" id="bvp-tablist"></div>' +
+          '<button class="icon-btn bvp-tabadd" id="bvp-tabadd" type="button" ' +
+            'title="' + esc(t('bvp.newTab')) + '" aria-label="' + esc(t('bvp.newTab')) + '">' +
+            BIC('plus', 14) + '</button>' +
         '</div>' +
         '<div class="bvp-stage" id="bvp-stage" tabindex="0">' +
           '<canvas class="bvp-canvas" id="bvp-canvas"></canvas>' +
@@ -575,6 +607,19 @@
       signedIn: false, // set from the server's `ready` frame, never assumed
       pendingUrl: '',  // first URL to load, sent once the server says 'ready'
       rio: null,       // clipboard + file bridge, created with the socket
+      // The tab strip, mirrored from the server. The SERVER owns this list: it
+      // holds tabs restored from previous sessions and tabs the page opened for
+      // itself, neither of which the client could have known about.
+      tabs: [],
+      activeTab: '',
+      // Frame-stall detection, so a dead browser is noticed without the user
+      // having to guess that the still image in front of them is stale.
+      lastFrameAt: 0,
+      stallTimer: null,
+      recovering: false,
+      // When we last asked the server "are you actually alive?" (stage one of
+      // the stall watchdog). 0 = no question outstanding.
+      pingSentAt: 0,
       onKeyDoc: null,
       onResize: null
     };
@@ -826,6 +871,72 @@
       anonEl.textContent = signedIn ? t('bvp.savedNote') : t('bvp.anonNote');
       q('bvp-forget').disabled = !signedIn;
     }
+    // ── Tab strip ─────────────────────────────────────────────────────────
+    // Redrawn wholesale from the server's `tabs` event. Wholesale rather than
+    // diffed because the list is short (capped at 12) and the states that have
+    // to show — active, `pending` (restored from a previous session, not loaded
+    // yet), `dead` — change together far more often than individually.
+    function tabLabel(tab) {
+      var title = String(tab.title || '').trim();
+      var url = String(tab.url || '');
+      if (title && title !== url) return title;
+      if (!url || url === 'about:blank') return t('bvp.blankTab');
+      // No host is better than a 300-character URL in a 140px chip.
+      try { return new URL(url).hostname || url; } catch (e) { return url; }
+    }
+    function renderTabs(list, activeId) {
+      var host = q('bvp-tablist');
+      if (!host) return;
+      pickState.tabs = Array.isArray(list) ? list : [];
+      pickState.activeTab = String(activeId || '');
+      host.innerHTML = '';
+      // One tab is not a tab bar, it is chrome taking space from the page. Hide
+      // the strip until there is a real choice to make — the + button lives in
+      // it, so it comes back the moment a second tab exists, and Ctrl+T style
+      // "new tab" is still reachable from the Real Chrome panel meanwhile.
+      var strip = q('bvp-tabstrip');
+      if (strip) strip.classList.toggle('is-solo', pickState.tabs.length < 2);
+
+      pickState.tabs.forEach(function (tab) {
+        var item = document.createElement('div');
+        item.className = 'bvp-tabitem'
+          + (tab.active ? ' is-on' : '')
+          + (tab.pending ? ' is-pending' : '')
+          + (tab.dead ? ' is-dead' : '');
+        item.setAttribute('role', 'tab');
+        item.setAttribute('aria-selected', tab.active ? 'true' : 'false');
+
+        var label = document.createElement('button');
+        label.type = 'button';
+        label.className = 'bvp-tabname';
+        label.textContent = tabLabel(tab);
+        // The full URL belongs in the tooltip: it is the only place the user can
+        // tell two chips from the same host apart.
+        label.title = tab.pending
+          ? (String(tab.url || '') + ' — ' + t('bvp.tabPending'))
+          : String(tab.url || '');
+        label.addEventListener('click', function () {
+          if (tab.active) return;
+          send({ t: 'tabSelect', id: tab.id });
+        });
+
+        var kill = document.createElement('button');
+        kill.type = 'button';
+        kill.className = 'icon-btn bvp-tabkill';
+        kill.title = t('bvp.closeTab');
+        kill.setAttribute('aria-label', t('bvp.closeTab'));
+        kill.innerHTML = BIC('x', 11);
+        kill.addEventListener('click', function (ev) {
+          ev.stopPropagation();   // closing a tab must not also select it
+          send({ t: 'tabClose', id: tab.id });
+        });
+
+        item.appendChild(label);
+        item.appendChild(kill);
+        host.appendChild(item);
+      });
+    }
+
     // One paint routine for both channels; `locked` decides whether the
     // pointer is still allowed to move the answer.
     function paint(data, locked) {
@@ -864,10 +975,35 @@
       // refusal so those flows stay in one place instead of half here.
       if (pickState && pickState.rio && pickState.rio.onMessage(msg)) return;
       switch (msg.t) {
-        case 'frame': drawFrame(msg.data); break;
+        case 'frame':
+          // Every frame is proof of life. The stall watchdog reads this stamp,
+          // and a recovery that has produced pixels again is finished whatever
+          // else it says.
+          pickState.lastFrameAt = Date.now();
+          pickState.pingSentAt = 0;
+          if (pickState.recovering) {
+            pickState.recovering = false;
+            setStatus(t('bv.connected'), 'ok');
+          }
+          drawFrame(msg.data);
+          break;
+        // Answer to the watchdog's silent probe: the page is fine, it simply had
+        // nothing new to paint. Deliberately no status change and no toast —
+        // an idle page must not look like a fault to the user.
+        case 'alive':
+          pickState.pingSentAt = 0;
+          pickState.lastFrameAt = Date.now();
+          break;
         case 'ready':
           setStatus(t('bv.connected'), 'ok');
+          pickState.lastFrameAt = Date.now();
           setSession(msg.signedIn);             // cookies restored, or anonymous?
+          // Say so when tabs came back. A window that silently opens four tabs
+          // the user does not remember opening looks like a bug; naming it as a
+          // restore makes it the feature it is.
+          if (msg.restoredTabs > 0) {
+            toast(tf('bvp.tabRestored', { n: msg.restoredTabs }), 'info');
+          }
           // THE FIRST NAVIGATION HAPPENS HERE, not in `onopen`.
           // `session.start()` on the server boots a context + page + screencast
           // (~½ second). A command sent before that resolves used to be dropped
@@ -896,13 +1032,57 @@
           // overwrite what the user is currently typing into the field.
           if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
           break;
+        // ── Tabs ──────────────────────────────────────────────────────────
+        case 'tabs':
+          renderTabs(msg.tabs, msg.activeId);
+          break;
+        case 'tabOpened':
+          // A tab the PAGE opened (target=_blank, window.open, an OAuth popup).
+          // The old single-page session simply never looked at these, so a login
+          // the user had just started was invisible: the page existed, nothing
+          // was streaming it, and the canvas kept showing the tab they left.
+          if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
+          break;
+        // ── Recovery ──────────────────────────────────────────────────────
+        // These two are the visible half of issue 1. The old code had no way to
+        // say either of them, which is exactly why a refreshed tab looked like a
+        // crash with no explanation and no way out.
+        case 'recovering':
+          pickState.recovering = true;
+          pickState.pingSentAt = 0;
+          setStatus(t('bvp.recovering'), 'warn');
+          break;
+        case 'recovered':
+          pickState.recovering = false;
+          pickState.pingSentAt = 0;
+          pickState.lastFrameAt = Date.now();
+          setStatus(t('bv.connected'), 'ok');
+          if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
+          toast(t('bvp.recovered'), 'success');
+          // The picker script lives in the page, and the page is new. Re-arm the
+          // mode the user had, or select mode is silently off after a recovery.
+          applySelectMode(pickState.selectMode, true);
+          break;
+        case 'tabCrashed':
+          toast(t('bvp.tabCrashed'), 'warning');
+          break;
         case 'hover':
           if (!pickState.locked) paint(msg, false);
           break;
         case 'pick': paint(msg, true); break;
         case 'verified': renderCount(msg.count); break;
         case 'expired': setStatus(t('bv.expired'), 'warn'); break;
-        case 'error': setStatus(String(msg.message || 'error'), 'bad'); break;
+        case 'error':
+          // The tab cap is a refusal, not a fault: it happens when a page in a
+          // redirect loop calls window.open() faster than a human closes tabs.
+          // Showing it in the status badge as if the browser had broken would be
+          // the wrong story — say what to do instead.
+          if (String(msg.message || '') === 'too_many_tabs') {
+            toast(t('bvp.tabsFull'), 'warning');
+            break;
+          }
+          setStatus(String(msg.message || 'error'), 'bad');
+          break;
       }
     }
 
@@ -938,6 +1118,51 @@
       ws.onmessage = function (m) { onMessage(m.data); };
       ws.onerror = function () { setStatus(t('bv.error'), 'bad'); };
       ws.onclose = function () { if (pickState) setStatus(t('bv.disconnected'), ''); };
+
+      // ── Frame-stall watchdog ────────────────────────────────────────────
+      // The server has its own liveness poll, but the client needs one too,
+      // because the two notice different failures. The server can only tell that
+      // its page stopped answering; the client can tell that PIXELS stopped
+      // arriving, which also covers a screencast that was silently detached
+      // (a new renderer process does that) on a page that is otherwise fine.
+      // That was the whole shape of the reported bug: no error, no disconnect,
+      // just a still image and every click going nowhere.
+      //
+      // But a frame gap on its own does NOT mean anything is broken. The
+      // screencast is delta-based: it emits a frame when the compositor
+      // repaints, so a static page paints once on load and then sends nothing
+      // for as long as you leave it alone. Treating silence as a fault would put
+      // a "reconnecting" banner on every ordinary page on a 20-second timer.
+      //
+      // So this is a two-stage probe, and stage one is SILENT:
+      //   1. quiet for a while -> ask the server `ping`. It answers `alive` for a
+      //      page that is merely idle (and quietly re-arms the screencast), or
+      //      recovers for real if the page is gone. The user sees nothing.
+      //   2. `ping` itself goes unanswered -> now something really is wrong, so
+      //      say so and rebuild the stream.
+      if (pickState.stallTimer) clearInterval(pickState.stallTimer);
+      pickState.stallTimer = setInterval(function () {
+        var ps = pickState;
+        if (!ps || ps.recovering) return;
+        if (!ps.ws || ps.ws.readyState !== WebSocket.OPEN) return;
+        if (!ps.lastFrameAt) return;                 // nothing has ever arrived yet
+        var quiet = Date.now() - ps.lastFrameAt;
+        if (quiet < 20000) return;
+
+        if (ps.pingSentAt) {
+          // Stage 2: we already asked and got no answer at all.
+          if (Date.now() - ps.pingSentAt < 10000) return;   // still waiting
+          ps.pingSentAt = 0;
+          ps.lastFrameAt = Date.now();               // do not re-fire every tick
+          ps.recovering = true;
+          setStatus(t('bvp.recovering'), 'warn');
+          send({ t: 'resync' });
+          return;
+        }
+        // Stage 1: silent. No status change — an idle page is not an error.
+        ps.pingSentAt = Date.now();
+        send({ t: 'ping' });
+      }, 5000);
     }
 
     // ---- wiring ---------------------------------------------------------
@@ -1004,6 +1229,22 @@
       if (pickState && pickState.rio) pickState.rio.pullClipboard();
       else toast(t('rio.notConnected'), 'info');
     });
+    // Reconnect, and a NEW tab. Both send commands, so both are no-ops until
+    // there is a socket — `connect()` opens one on the URL that is in the bar,
+    // which is the same rule the Go button follows.
+    q('bvp-resync').addEventListener('click', function () {
+      if (!pickState.ws || pickState.ws.readyState !== WebSocket.OPEN) { connect(); return; }
+      setStatus(t('bvp.recovering'), 'warn');
+      send({ t: 'resync' });
+    });
+    q('bvp-tabadd').addEventListener('click', function () {
+      if (!pickState.ws || pickState.ws.readyState !== WebSocket.OPEN) { connect(); return; }
+      // No URL: a blank tab, exactly like Ctrl+T. The user then types into the
+      // address bar, which is the flow they already know.
+      send({ t: 'tabNew', url: '' });
+      urlIn.value = '';
+      urlIn.focus();
+    });
     q('bvp-close').addEventListener('click', closePick);
     overlay.addEventListener('mousedown', function (e) {
       if (e.target === overlay) closePick();      // click the backdrop = cancel
@@ -1046,13 +1287,26 @@
           anchor: chromeBtn,
           onNavigate: function (url) {
             urlIn.value = url;
-            // connect() — NOT send() — because the picker does not open a
-            // socket until there is somewhere to go. Opening the panel first
-            // and clicking "Open here" is a perfectly normal order of
-            // operations, and send() on a socket that was never created is a
-            // silent no-op that leaves the canvas blank and the status stuck on
-            // "Disconnected" (caught by tools/probe-real-chrome-ui.js).
-            // connect() already routes to navigate when the socket IS open.
+            // ── A NEW TAB, not this one ─────────────────────────────────────
+            // This is the exact line that made issue 2 destructive. "Open here"
+            // is almost always an extension popup (chrome-extension://…), and
+            // the extension is being opened FOR the page in the current tab — a
+            // cookie importer is imported into the site you are trying to reach.
+            // Navigating the active tab to the popup therefore threw away the
+            // very page the user wanted the cookies for, along with any state it
+            // held, and the only way back was retyping the URL by hand.
+            //
+            // Real Chrome opens an extension's page in a new tab. So do we now.
+            if (pickState.ws && pickState.ws.readyState === WebSocket.OPEN) {
+              send({ t: 'tabNew', url: url });
+              return;
+            }
+            // No socket yet: opening the panel before ever connecting is a
+            // perfectly normal order of operations, and send() on a socket that
+            // was never created is a silent no-op that leaves the canvas blank
+            // and the status stuck on "Disconnected" (caught by
+            // tools/probe-real-chrome-ui.js). connect() creates it, and the
+            // first tab IS a new tab.
             connect();
           },
         });
@@ -1123,6 +1377,7 @@
     setStatus(t('bv.disconnected'), '');
     renderAttrs(null);
     renderCands(null);
+    renderTabs([], '');  // empty strip until the server sends the real list
     setSession(false);   // pessimistic until the server's `ready` says otherwise
     if (urlIn.value) connect(); else urlIn.focus();
   }

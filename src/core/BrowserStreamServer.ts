@@ -241,6 +241,39 @@ export class BrowserStreamServer {
       case 'verify':
         await session.verifySelector(String(msg.selector || ''));
         break;
+      // ── Tabs ──────────────────────────────────────────────────────────
+      // The session owns a LIST of pages now, so "open this somewhere" no longer
+      // has to mean "over the top of whatever the user was doing". That was a
+      // real loss, not a nuisance: opening a cookie extension's popup used to
+      // navigate the active tab away from the page the cookies were FOR.
+      //
+      // An empty `url` is legal and means about:blank — the same thing Ctrl+T
+      // does in a real browser.
+      case 'tabNew':
+        await session.newTab(String(msg.url || ''));
+        break;
+      case 'tabSelect':
+        await session.selectTab(String(msg.id || ''));
+        break;
+      case 'tabClose':
+        await session.closeTab(String(msg.id || ''));
+        break;
+      // ── Reconnect ─────────────────────────────────────────────────────
+      // Rebuilds the screencast (and the page behind it, if that is what died)
+      // WITHOUT dropping the socket. The old "restart" reused the same dead page
+      // handle, which is why pressing it after an extension refreshed the tab
+      // changed nothing at all; and closing/reopening the window worked only by
+      // throwing away the tab list, which is what we are now keeping.
+      case 'resync':
+        await session.resync();
+        break;
+      // A silent liveness check, used by the client's stall watchdog before it
+      // shows the user anything. Answers `alive` for a page that is merely
+      // static (the common case — a screencast sends no frames when nothing
+      // repaints) and escalates to a real recovery only when the page is gone.
+      case 'ping':
+        await session.ping();
+        break;
       // "Forget this browser session": deletes the saved cookies so the next
       // open starts anonymous again.
       case 'forgetSession':

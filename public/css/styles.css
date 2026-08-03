@@ -5261,6 +5261,94 @@ body.route-fullbleed .fe-mm-restore {
 .bvp-forget:disabled { opacity: 0.35; cursor: not-allowed; }
 .bvp-close { margin-inline-start: 0.15rem; }
 
+/* ── The tab strip ────────────────────────────────────────────────────────
+ * Class names are deliberately `bvp-tabstrip` / `bvp-tabitem` and NOT
+ * `bvp-tabs` / `bvp-tab`: those already belong to the Attributes|Candidates
+ * tablist inside the picker panel (further down this file), and reusing them
+ * would style one widget with the other's rules.
+ *
+ * `flex: 0 0 auto` on the strip: it is chrome, and it must never take height
+ * from the page image. The image is what the user is working in, and the shell
+ * is a fixed-height flex column — anything that grows here shrinks the canvas. */
+.bvp-tabstrip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+/* One tab is not a tab bar, it is chrome eating the page. The + button lives in
+ * the strip, so the strip comes back the instant a second tab exists — and a
+ * new tab is still reachable meanwhile from the Real Chrome panel. */
+.bvp-tabstrip.is-solo { display: none; }
+/* Scrolls rather than wraps. Wrapping would move the page image down by a whole
+ * row the moment the seventh tab opened, i.e. the layout would jump while the
+ * user was mid-click. `scrollbar-width: thin` keeps the row 30px tall. */
+.bvp-tablist {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.bvp-tabitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 13rem;
+  padding-inline-start: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  font-size: 0.78rem;
+}
+.bvp-tabitem.is-on {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, var(--bg-elev));
+}
+/* A tab restored from a previous session that has not been loaded yet. It looks
+ * different on purpose: clicking it costs a page load, and a chip that claims to
+ * be a live page but takes two seconds to answer reads as a hang. */
+.bvp-tabitem.is-pending { border-style: dashed; opacity: 0.72; }
+.bvp-tabitem.is-dead { opacity: 0.45; text-decoration: line-through; }
+.bvp-tabname {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 11rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0.28rem 0.35rem;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+  /* URLs and hostnames are LTR even in the fa layout: an RTL hostname reads
+   * with its TLD on the wrong side, which is actively misleading. */
+  direction: ltr;
+  text-align: start;
+}
+.bvp-tabitem.is-on .bvp-tabname { color: var(--text); font-weight: 600; }
+.bvp-tabname:hover { color: var(--text); }
+/* The close affordance stays small and only colours on hover: it sits inside a
+ * click target whose main job is SELECTING the tab, and an equally loud X would
+ * make every tab switch a gamble. */
+.bvp-tabkill {
+  flex: 0 0 auto;
+  padding: 0.1rem;
+  opacity: 0.5;
+}
+.bvp-tabkill:hover { opacity: 1; color: var(--danger, #e5484d); }
+.bvp-tabadd { flex: 0 0 auto; }
+
 /* The page image. `cell` cursor = picker armed (same signal as the
    standalone Live Browser view). */
 /* `min-height: 0` is what lets the stage shrink inside the flex column; with a
