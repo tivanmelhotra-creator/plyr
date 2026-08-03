@@ -5479,6 +5479,50 @@ body.route-fullbleed .fe-mm-restore {
  * file chooser, and hands the chosen local file across the socket. It is
  * anchored to the bottom of the stage rather than centred so it never covers
  * the button the user just pressed. */
+/* The manual-copy fallback.
+ *
+ * Shown only when the browser refuses to let this page write the clipboard —
+ * which on a plain http:// origin is policy, not a bug we can fix. The text has
+ * already crossed from the remote machine, so refusing to show it would be
+ * throwing away data the user is holding. Fixed to the viewport rather than the
+ * stage because the picker may well be closed by the time this matters. */
+.rio-copy-fallback {
+  position: fixed;
+  z-index: 90;
+  inset-block-end: 1rem;
+  inset-inline-end: 1rem;
+  width: min(28rem, calc(100vw - 2rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev-2);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+}
+.rio-copy-fallback-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.rio-copy-fallback-head span { flex: 1 1 auto; min-width: 0; }
+.rio-copy-fallback-text {
+  width: 100%;
+  min-height: 5rem;
+  resize: vertical;
+  font-family: var(--mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) / 1.5);
+  padding: 0.45rem 0.5rem;
+}
+
 .rio-filebar {
   position: absolute;
   inset-inline: 12px;
@@ -6031,6 +6075,14 @@ body.route-fullbleed .fe-mm-restore {
   margin: 0;
   font-size: 0.72rem;
   color: var(--text-faint, #5E6876);
+}
+/* The way out of the heal panel. Pushed to the far end of the head row with an
+ * auto margin so it sits where a close control is looked for, and it is the only
+ * interactive thing in a panel that is otherwise `role="status"` — which is
+ * precisely the point: a status that blocks the canvas needs a control. */
+.bvp-heal-close {
+  margin-inline-start: auto;
+  flex: 0 0 auto;
 }
 .bvp-heal-spin { display: inline-flex; color: var(--primary); }
 .bvp-heal-spin svg { animation: bvp-spin 0.9s linear infinite; }

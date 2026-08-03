@@ -1,7 +1,37 @@
-# HANDOFF — six problems reported 2026-08-03 (investigated, NOT yet fixed)
+# HANDOFF — six problems reported 2026-08-03 (§2 §1 §4 FIXED · §3 §6 §5 open)
 
-**Status: investigation only. No product code was changed for these six items.**
-The user had very little credit left and asked explicitly:
+> ## ⚠️ THIS FILE HAS BEEN PARTLY SUPERSEDED — read the continuation brief first
+>
+> A later session implemented three of the six items. **Current status:**
+>
+> | Item | Status | Commit |
+> |---|---|---|
+> | **§1** stuck heal panel | ✅ **FIXED** — probe 25/25, 37 unit tests | `05f5ee7` |
+> | **§2** tabs lost on extension install | ✅ **FIXED** — probe 13/13, 19 unit tests | `7b53fc5` |
+> | **§3** remote upload + download | ⬜ **NOT STARTED** | — |
+> | **§4** remote clipboard | ✅ **FIXED** — 20/20 + 13/13, 28 unit tests | `00a0a80` |
+> | **§5** light remote-desktop mode | ⬜ **NOT STARTED** | — |
+> | **§6** picker minimize | ⬜ **NOT STARTED** | — |
+>
+> **→ `docs/HANDOFF-SESSION-CONTINUATION.md` is the authoritative record of where
+> the work stands, what was measured, and how to continue.** Where the two files
+> disagree, that one wins — it was written after measuring against a running server.
+>
+> **Two corrections to the text below, both established by live measurement:**
+>
+> 1. **§4b (the leading hypothesis for §4) is FALSE.** The clipboard permission
+>    grant does *not* get lost on recovery. Struck through in §4 below. Do not
+>    act on it.
+> 2. **§5 has no removed implementation to restore.** `git log -- src/core/Desktop.ts`
+>    has only 2 commits and `git log -S "light"` on it returns nothing, so §5's
+>    "search history first" step is closed and §5 is **new work**, not a restoration.
+>
+> Everything else below still stands, and §3 / §6 / §5 remain the specs to implement.
+
+---
+
+**Status when originally written: investigation only. No product code was changed
+for these six items.** The user had very little credit left and asked explicitly:
 
 > «البته به جای انجام برو بررسی کن و راه کار هاشو روی یک md ثبت کن تا جلسه بعدی
 > انجامش بدیم چون اعتبار کمی برای امشب مونده»
@@ -82,6 +112,17 @@ npx tsc --noEmit                                 # clean
 ---
 
 ## 1. The picker gets stuck on "Getting the browser ready / Starting Chrome"
+
+> ✅ **FIXED — commit `05f5ee7`.** All five fix-plan points landed (lease, honest
+> ETA, dismiss control, resume-on-reopen, icon audit), plus a sixth defect the
+> investigation missed: **`#bvp-restart` was left `disabled` forever**, because the
+> handler re-enabled it only in a trailing `.then()` that never runs for a promise
+> that never settles — so the bug removed the one control that could have recovered.
+> The `power` glyph complaint was real: `icons.js` aliases `close: 'power'`, so that
+> symbol already means "shut down" here; changed to `repeat`. Real restarts measured
+> at **462–1315 ms**, against an invented `etaMs: 6000`.
+> Proof: `tools/probe-heal-panel.js` **25/25** + `tests/unit/heal-panel-stuck.test.ts`
+> (37 tests). Details: continuation brief §5.2.
 
 ### What the user reported
 
@@ -184,6 +225,12 @@ than writing a new instrument.
 ---
 
 ## 2. Installing an extension loses ALL tabs — the most serious item
+
+> ✅ **FIXED — commit `7b53fc5`.** `SELF_CLOSE_GRACE_MS` + a `tabsFrozen` guard in
+> `src/core/LiveBrowser.ts` stop a teardown in progress from persisting an empty tab
+> list over the good one. A `bvp.tabsRestored` toast was added (fa + en).
+> Proof: `tools/probe-restart-tabs.js` **13/13** +
+> `tests/unit/restart-tab-loss.test.ts` (19 tests).
 
 ### What the user reported
 
@@ -297,6 +344,17 @@ regression fixture per §4.4 of the parity handoff.
 
 ## 3. Remote upload is broken (it used to work)
 
+> ⬜ **NOT STARTED — this is the next item to implement.** The spec below is intact
+> and its two failure modes are already curl-reproduced, so start from Step 0 of the
+> fix plan (read the *status code*: 401 = 3b, "not valid JSON" = 3a).
+>
+> **One correction:** the limits disagree **three** ways, not two — global
+> `express.json` `'20mb'` (`src/index.ts` 70 / `src/config.ts` 356), `/browser/uploads`
+> `MAX_UPLOAD_BYTES` = **32 MB** (`browser.routes.ts` 612 / `RemoteUploads.ts` 50),
+> and `/browser/extensions` a literal `'64mb'` (`browser.routes.ts` 322). Reconcile to
+> one source of truth and surface it in the error. Download shelf is at
+> `browser.routes.ts` ~662. See continuation brief §7.1 for the worked plan.
+
 ### What the user reported
 
 > «رفتم یه چیزی آپلود کنم، قبلاً درست کار می‌کرد ولی الان آپلود خراب شده. آپلود
@@ -406,6 +464,16 @@ is enough.
 
 ## 4. Remote copy / paste is broken (it used to work)
 
+> ✅ **FIXED — commit `00a0a80` — BUT THE ROOT CAUSE BELOW WAS WRONG.**
+> §4b was disproved live (**20/20**); see the struck-through block below for the
+> measurement. The actual defect was that a failure never named its cause and threw
+> away text that had already crossed the machine boundary. Fixed in
+> `public/js/remote-io.js` with `{ok, reason}`, a distinct message per reason
+> (`rio.copyInsecure` / `rio.copyDenied` / `rio.copyNoApi`) and a manual-copy
+> fallback box built with DOM calls (never `innerHTML` of remote text).
+> Proof: `tools/probe-clipboard.js` **20/20**, `tools/probe-clipboard-ui.js` **13/13**,
+> `tests/unit/clipboard-reasons.test.ts` (28 tests). Details: continuation brief §5.3.
+
 ### What the user reported
 
 > «قبلاً می‌تونستم ریموت کپی یا پیست کنم ولی اینم خراب شده»
@@ -432,13 +500,28 @@ The suspects for the reported breakage, in order:
   `navigator.clipboard.readText` is unavailable, so paste can only work via a real
   `paste` event. Check that the handler is bound to an element that can actually
   receive one, and that the canvas being focused does not swallow it.
-* **4b — permissions after a context rebuild.** `LiveBrowser.recover()` calls
+* ~~**4b — permissions after a context rebuild.** `LiveBrowser.recover()` calls
   `grantPermissions(['clipboard-read','clipboard-write'])` **only inside the
   `isContextDead` branch**. Any recovery that does *not* rebuild the context skips
   it. If a rebuild happened without that grant, remote clipboard reads fail — and
   this ties item 4 to items 1 and 2: *the extension install / restart is plausibly
   what broke it.* That would explain "it used to work" without any clipboard code
-  having changed.
+  having changed.~~
+  > **❌ DISPROVED BY LIVE MEASUREMENT — this does not happen.**
+  > `tools/probe-clipboard.js` tests both directions in three phases — fresh, after
+  > a `resync` (**the exact case predicted to fail**), and after a real
+  > `/browser/restart` — and returns **20/20**. Permissions survive every recovery
+  > path. The proposed one-line fix would have changed nothing while the real defect
+  > shipped untouched. `tests/unit/clipboard-reasons.test.ts` now pins this negative
+  > result, so a future regression in the grant would be caught by a test rather
+  > than by re-deriving this hypothesis.
+  >
+  > **The real defect was diagnostic, not functional:** `writeLocalClipboard`
+  > returned a bare `false` for three situations with three different remedies
+  > (insecure origin / user-denied / no clipboard API), so the UI could only say
+  > "Could not write to your clipboard" — **and it discarded text that had already
+  > crossed the machine boundary.** Fixed with an `{ok, reason}` result, a message
+  > per reason, and a manual-copy fallback box. See the continuation brief §5.3.
 * **4c — `document.execCommand` is deprecated** and removal is a live risk in new
   Chrome. Worth confirming which side is actually failing before assuming this.
 
@@ -451,10 +534,13 @@ The suspects for the reported breakage, in order:
    `false` (line 75) and `writeLocalClipboard` resolves `false` — a caller that
    ignores it produces exactly "it's broken" with no cause. Surface a real message,
    in both languages.
-3. **Move the permission grant out of the `isContextDead` branch** so every recovery
+3. ~~**Move the permission grant out of the `isContextDead` branch** so every recovery
    path re-grants it. It is idempotent and cheap; making it conditional is what lets
    a recovered session come back subtly less capable than it started. **This is my
-   leading hypothesis and it is the cheapest thing to verify.**
+   leading hypothesis and it is the cheapest thing to verify.**~~
+   **→ Verified and NOT the cause (20/20). Not changed.** Item 2 above turned out to
+   be the whole fix. Worth keeping as a lesson: the cheapest hypothesis to verify is
+   not the same thing as the likeliest, and it was right to verify before editing.
 4. **If the origin is not a secure context, say so once, clearly**, with the
    remedy (serve over https, or use the localhost exemption). Silent degradation on
    http:// will keep generating this same report forever.
@@ -462,6 +548,19 @@ The suspects for the reported breakage, in order:
 ---
 
 ## 5. Bring back the "light" remote-desktop mode (browser only, no Ubuntu desktop)
+
+> ⬜ **NOT STARTED — and step 1 of the fix plan is now closed.** The history search
+> has been done: `git log -- src/core/Desktop.ts` has **2 commits**, neither adds or
+> removes a light/auto mode, and `git log --all -S "light"` on that file returns
+> **nothing**. So there is nothing to restore — **§5 is new work.**
+>
+> The owner also clarified the target: the view must show **the actual
+> Playwright-driven Chromium that automation drives**, for **diagnosis** («ریموت
+> مستقیم به پلی رایت»). Mind the constraint that `RealChrome` owns **one shared
+> persistent context** — the light view must attach to that Chrome, never spawn a
+> rival. A far cheaper alternative that answers the same underlying question ("are my
+> tabs still alive?") is a server-side tab-count + URL readout — consider offering it
+> first. See continuation brief §7.3.
 
 ### What the user reported
 
@@ -520,6 +619,16 @@ redesign, and it will match what the user remembers.
 
 ## 6. Make the element picker minimizable
 
+> ⬜ **NOT STARTED.** Spec below is intact. Anchors verified for the minimap pattern
+> to copy: `public/js/flow-editor.js` header `.fe-mm-head` ~4198-4211, close button
+> `data-mm="close"` 4201, restore chip `'fe-mm-restore'` 4219, toggle
+> `setMinimapOpen()` ~4297, view-preference flag `minimapOpen` 149; contract tests in
+> `tests/unit/canvas-chrome.test.ts` item F ~161-232. Anchor text rendered at
+> `browser-view.js` **line 1205**. Icon: `chevron-down`/`chevron-up` are registered —
+> **do not use `x`/`close`, which alias to `power`** (see §1). Note `closePick()` now
+> also destroys the heal lease and `healEtaTimers`, so the minimize-vs-teardown
+> distinction matters more than when this was written. See continuation brief §7.2.
+
 ### What the user reported
 
 > «این pick elementor هم دست‌وپاگیره. می‌خوام مواقعی که نیاز نیست بشه مینی‌مایزش
@@ -559,6 +668,13 @@ So: a minimize control that collapses the picker panel to a chip **next to the
 ---
 
 ## 7. Suggested order for the next session
+
+> **Progress against this plan:** rows 1, 2 and 4 (**§2, §1, §4**) are **done**. The
+> remaining order is **§3 → §6 → §5**, exactly as the table below has it. Note that
+> row 4's premise ("plausibly caused by §2, so re-test after §2 lands — it may already
+> be fixed") was tested: §4 was **not** fixed by §2, and its documented cause was
+> false. Row 6's premise ("its diagnostic value drops once §2 is genuinely fixed")
+> now holds, which is why §5 stays last.
 
 Dependencies first, cheapest-and-highest-value first:
 
@@ -631,6 +747,9 @@ that file.** Now also recorded in the parity handoff's build-and-test section.
 
 ## 9. State of the tree as this file is written
 
+*(Historical — the state when this file was first written. For the current state see
+§10 below, and `docs/HANDOFF-SESSION-CONTINUATION.md` §9.)*
+
 * Branch `genspark_ai_developer`, one squashed commit `7befaf4` on top of
   `origin/main` (`0c17fe2`), pushed. **PR #26** —
   <https://github.com/jalil-ahmadi2/plyr/pull/26>
@@ -641,3 +760,26 @@ that file.** Now also recorded in the parity handoff's build-and-test section.
 * **No product code was changed for items 1-6.** The only change accompanying this
   document is the document itself.
 * Server was left running for the user's own review on port 3000.
+
+---
+
+## 10. State of the tree after the implementation session (2026-08-03, later)
+
+* Branch `genspark_ai_developer`. **§2, §1 and §4 implemented** — three commits
+  (`7b53fc5`, `05f5ee7`, `00a0a80`) squashed into one for the PR. The hashes are
+  recorded here and in the continuation brief because the squash destroys them, and
+  they are the only remaining map from a change to the reasoning behind it.
+* Measured at `00a0a80`: `tsc --noEmit` **clean**; `DISPLAY=:99 npx vitest run`
+  **54 files / 1269 tests, 0 failures**; live probes
+  `probe-live-parity` **69/69**, `probe-ui-controls` **30/30**,
+  `probe-restart-tabs` **13/13**, `probe-heal-panel` **25/25**,
+  `probe-clipboard` **20/20**, `probe-clipboard-ui` **13/13**.
+* The `picker-drive` flake documented in §8.4 **did not reproduce** in that full run.
+  Treat a lone `picker-drive` failure as suspected flake and re-run it alone — but
+  never use "it's flaky" to dismiss a reproducible failure.
+* **§3, §6 and §5 have no code and no probes yet.**
+* **→ Continue from `docs/HANDOFF-SESSION-CONTINUATION.md`**, which carries the
+  environment bring-up, the per-item worked plans with verified line anchors, and the
+  extra findings (non-existent `eval`/`insertText` WS commands, the fixture `R(k,v)`
+  beacon pattern, the positive-control lesson, the `close: 'power'` icon alias, and
+  the three self-inflicted bugs worth not repeating).

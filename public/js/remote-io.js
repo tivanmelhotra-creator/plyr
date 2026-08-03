@@ -43,26 +43,68 @@
   }
 
   /**
-   * Put text on the LOCAL clipboard.
+   * Is this origin allowed to use the async clipboard API at all?
    *
-   * navigator.clipboard is unavailable on plain http:// origins (a self-hosted
-   * server on a LAN is exactly that), so the execCommand path is not legacy
-   * cruft — it is the only path that works for a large share of this project's
-   * deployments.
+   * The browser's own rule, not a guess: `navigator.clipboard` is exposed only in
+   * a secure context, which means https:// or one of the localhost exemptions. A
+   * self-hosted server reached over a LAN (http://192.168.x.x) is NOT one, and
+   * that is the single most likely deployment of this project — so this is the
+   * expected state, not an edge case.
+   */
+  function clipboardBlockedByOrigin() {
+    return !window.isSecureContext && !(navigator.clipboard && navigator.clipboard.writeText);
+  }
+
+  /**
+   * Put text on the LOCAL clipboard, and say WHY when it cannot.
+   *
+   * Resolves `{ ok, reason }` rather than a bare boolean. The bare boolean is what
+   * this bug was made of: `legacyCopy` returned `false` for a missing API, a
+   * refused permission and a removed `execCommand` alike, so the UI could only
+   * ever say "could not write to your clipboard" — a sentence that tells the user
+   * nothing they can act on, and so gets reported as «خراب شده», broken. MEASURED:
+   * with the API removed and execCommand stubbed to false, the old code produced
+   * exactly that one message and no cause.
+   *
+   * `reason` is a stable KEY, never a sentence, so the message can be Persian.
    */
   function writeLocalClipboard(text) {
     var s = String(text == null ? '' : text);
-    if (!s) return Promise.resolve(false);
+    if (!s) return Promise.resolve({ ok: false, reason: 'empty' });
     if (navigator.clipboard && navigator.clipboard.writeText) {
       return navigator.clipboard.writeText(s)
-        .then(function () { return true; })
-        .catch(function () { return legacyCopy(s); });
+        .then(function () { return { ok: true, reason: '' }; })
+        .catch(function (e) {
+          // A refusal here is usually the permission, not the origin — fall back,
+          // but keep the distinction if the fallback also fails.
+          var r = legacyCopy(s);
+          if (r.ok) return r;
+          return {
+            ok: false,
+            reason: (e && e.name === 'NotAllowedError') ? 'denied' : r.reason,
+          };
+        });
     }
-    return Promise.resolve(legacyCopy(s));
+    // No async API at all. On a non-secure origin that IS the explanation, and it
+    // is the one the user can act on (serve over https, or use localhost).
+    var res = legacyCopy(s);
+    if (!res.ok && clipboardBlockedByOrigin()) {
+      return Promise.resolve({ ok: false, reason: 'insecure' });
+    }
+    return Promise.resolve(res);
   }
 
+  /**
+   * The execCommand path. NOT legacy cruft: on a plain http:// origin it is the
+   * only path that exists, which covers a large share of this project's
+   * deployments. It is, however, deprecated and being removed from Chrome, so a
+   * failure here is reported as its own reason rather than folded into "failed".
+   */
   function legacyCopy(s) {
     try {
+      if (typeof document.execCommand !== 'function') {
+        return { ok: false, reason: 'noApi' };
+      }
       var ta = document.createElement('textarea');
       ta.value = s;
       ta.setAttribute('readonly', '');
@@ -71,8 +113,58 @@
       ta.select();
       var ok = document.execCommand('copy');
       document.body.removeChild(ta);
-      return ok;
-    } catch (e) { return false; }
+      return ok ? { ok: true, reason: '' } : { ok: false, reason: 'noApi' };
+    } catch (e) { return { ok: false, reason: 'noApi' }; }
+  }
+
+  /**
+   * The text, in something the user can select — when nothing else is allowed.
+   *
+   * A clipboard the page may not write is a browser policy, not a bug we can fix,
+   * so the honest response is to degrade rather than fail: the text still made it
+   * across from the remote machine, and a selectable textarea plus Ctrl+C is a
+   * working path to it. Without this, a user on http:// is simply told "no" about
+   * data that is already in their hands.
+   *
+   * Built on demand and removed on dismiss: a permanently present panel would be
+   * clutter for the majority of deployments where the clipboard works.
+   */
+  function showCopyFallback(text) {
+    var prev = document.getElementById('rio-copy-fallback');
+    if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+
+    var box = document.createElement('div');
+    box.id = 'rio-copy-fallback';
+    box.className = 'rio-copy-fallback';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', t('rio.copyManualTitle', 'Copy this text by hand'));
+
+    var head = document.createElement('div');
+    head.className = 'rio-copy-fallback-head';
+    var title = document.createElement('span');
+    title.textContent = t('rio.copyManualTitle', 'Copy this text by hand');
+    head.appendChild(title);
+
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'icon-btn';
+    close.setAttribute('aria-label', t('rio.copyManualClose', 'Close'));
+    close.innerHTML = BIC('x', 14);
+    close.addEventListener('click', function () {
+      if (box.parentNode) box.parentNode.removeChild(box);
+    });
+    head.appendChild(close);
+    box.appendChild(head);
+
+    var ta = document.createElement('textarea');
+    ta.className = 'rio-copy-fallback-text';
+    ta.readOnly = true;
+    ta.value = String(text == null ? '' : text);
+    box.appendChild(ta);
+
+    document.body.appendChild(box);
+    // Pre-select it, so the only remaining step is the user's own Ctrl+C.
+    try { ta.focus(); ta.select(); } catch (e) {}
   }
 
   /**
@@ -324,11 +416,31 @@
             'info');
             return true;
           }
-          writeLocalClipboard(msg.text).then(function (ok) {
-            toast(ok
-              ? t('rio.copied', 'Copied from the remote browser.')
-              : t('rio.copyFailed', 'Could not write to your clipboard.'),
-            ok ? 'success' : 'error');
+          writeLocalClipboard(msg.text).then(function (r) {
+            if (r.ok) {
+              toast(t('rio.copied', 'Copied from the remote browser.'), 'success');
+              return;
+            }
+            // Name the cause. "Could not write to your clipboard" is true for
+            // three completely different situations with three different remedies,
+            // and a user who is not told which one they are in has no move except
+            // to press the button again. Each of these says what to DO.
+            var why = r.reason === 'insecure'
+              ? t('rio.copyInsecure',
+                'Your browser only allows clipboard access on a secure page. '
+                + 'Open this app over https:// (or via localhost) to copy from the remote browser.')
+              : r.reason === 'denied'
+                ? t('rio.copyDenied',
+                  'Your browser refused clipboard permission for this page. '
+                  + 'Allow clipboard access in the site settings, then try again.')
+                : t('rio.copyNoApi',
+                  'Your browser offers no way for this page to write the clipboard. '
+                  + 'The text is shown below so you can copy it by hand.');
+            toast(why, 'error');
+            // Last resort, and the reason this is not merely a nicer error: text
+            // the user can SELECT is still a way to get it across the machine
+            // boundary, so the feature degrades instead of disappearing.
+            showCopyFallback(msg.text);
           });
           return true;
         default:
