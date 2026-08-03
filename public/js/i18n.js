@@ -448,6 +448,9 @@
       'bvp.restartFailed': 'راه‌اندازی دوباره کروم انجام نشد',
       'bvp.recovering': 'در حال وصل شدن دوباره…',
       'bvp.recovered': 'اتصال به مرورگر برگشت.',
+      // بعد از نصب اکستنشن، کروم مجبور است دوباره اجرا شود. سکوت بعد از آن بود
+      // که باعث شد کاربر فکر کند تب‌هایش پاک شده‌اند؛ پس تعدادشان اعلام می‌شود.
+      'bvp.tabsRestored': '{n} تب برگشت.',
       'bvp.tabCrashed': 'این تب از کار افتاد؛ داریم دوباره بالا می‌آوریمش.',
 
       // ── نوار تب، مثل کروم ────────────────────────────────────────────
@@ -533,6 +536,13 @@
       'bvp.healNote': 'خودش انجام می‌شود؛ کاری از شما لازم نیست.',
       'bvp.healStep': 'گام {i} از {n}',
       'bvp.healEta': 'حدود {s} ثانیه',
+      // وقتی تخمین گذشت دیگر عددی گفته نمی‌شود: تخمینی که رد شده باشد دروغ است.
+      'bvp.healSlow': 'بیشتر از حد معمول طول کشید؛ همچنان در حال انجام است…',
+      // اجاره‌ی پنل تمام شد: پاسخی نرسید. باید بگوید قدم بعدی چیست.
+      'bvp.healLost': 'پاسخی برای راه‌اندازی دوباره نرسید. پنجره آزاد شد؛ با دکمه‌ی اتصال دوباره تلاش کنید.',
+      'bvp.healDismiss': 'بستن این پیام (کار در پس‌زمینه ادامه دارد)',
+      'bvp.healDismissed': 'پیام بسته شد؛ راه‌اندازی دوباره در پس‌زمینه ادامه دارد.',
+      'bvp.healResumed': 'یک راه‌اندازی دوباره از قبل در جریان است؛ وضعیتش نشان داده می‌شود.',
       'bvp.healDone': 'مرورگر آماده است.',
       'bvp.healFailed': 'آماده‌سازی مرورگر انجام نشد.',
       'bvp.heal.checkingDisplay': 'بررسی نمایشگر مجازی',
@@ -566,6 +576,12 @@
       'rio.wrongType': 'این صفحه فقط این نوع فایل را می‌پذیرد:',
       'rio.copied': 'از مرورگر راه دور کپی شد.',
       'rio.copyFailed': 'نوشتن در کلیپ‌بورد شما ممکن نشد.',
+      // سه دلیل جدا با سه راه‌حل جدا. «نشد» به تنهایی کاری از کاربر برنمی‌آورد.
+      'rio.copyInsecure': 'مرورگر شما دسترسی به کلیپ‌بورد را فقط در صفحهٔ امن می‌دهد. برای کپی از مرورگر راه دور، این برنامه را با https:// (یا از طریق localhost) باز کنید.',
+      'rio.copyDenied': 'مرورگر شما اجازهٔ کلیپ‌بورد را برای این صفحه رد کرد. در تنظیمات سایت اجازه بدهید و دوباره تلاش کنید.',
+      'rio.copyNoApi': 'مرورگر شما راهی برای نوشتن کلیپ‌بورد از این صفحه نمی‌دهد. متن پایین آمده تا دستی کپی کنید.',
+      'rio.copyManualTitle': 'این متن را دستی کپی کنید',
+      'rio.copyManualClose': 'بستن',
       'rio.nothingToCopy': 'در صفحهٔ راه دور چیزی انتخاب نشده و کلیپ‌بوردش خالی است.',
       // ── Real Chrome panel ────────────────────────────────────────────
       'rc.title': 'کروم واقعی (افزونه‌ها و کوکی‌ها)',
@@ -1745,6 +1761,9 @@
       'bvp.restartFailed': 'Could not restart Chrome',
       'bvp.recovering': 'Reconnecting\\u2026',
       'bvp.recovered': 'Reconnected to the browser.',
+      // An extension install has to relaunch Chrome. It was the SILENCE after
+      // that which made a reload feel like data loss, so say how many came back.
+      'bvp.tabsRestored': '{n} tabs restored.',
       'bvp.tabCrashed': 'That tab died; bringing it back up.',
 
       // ── The tab strip, Chrome's way ──────────────────────────────────
@@ -1830,6 +1849,14 @@
       'bvp.healNote': 'This happens by itself \u2014 nothing for you to do.',
       'bvp.healStep': 'Step {i} of {n}',
       'bvp.healEta': 'about {s} seconds',
+      // Once the estimate has elapsed the line stops quoting a number: an ETA
+      // that has been missed is not optimistic, it is false.
+      'bvp.healSlow': 'Taking longer than usual \u2014 still working\u2026',
+      // The panel's lease expired: no answer came. Must say what to do next.
+      'bvp.healLost': 'No answer came back for the restart. The window is yours again \u2014 press Reconnect to try once more.',
+      'bvp.healDismiss': 'Dismiss this (the work carries on in the background)',
+      'bvp.healDismissed': 'Dismissed \u2014 the restart carries on in the background.',
+      'bvp.healResumed': 'A restart was already running \u2014 showing its progress.',
       'bvp.healDone': 'The browser is ready.',
       'bvp.healFailed': 'Could not get the browser ready.',
       'bvp.heal.checkingDisplay': 'Checking the virtual display',
@@ -1863,6 +1890,13 @@
       'rio.wrongType': 'The page only accepts:',
       'rio.copied': 'Copied from the remote browser.',
       'rio.copyFailed': 'Could not write to your clipboard.',
+      // Three distinct causes with three distinct remedies. "Failed" on its own
+      // leaves the user with nothing to do but press the button again.
+      'rio.copyInsecure': 'Your browser only allows clipboard access on a secure page. Open this app over https:// (or via localhost) to copy from the remote browser.',
+      'rio.copyDenied': 'Your browser refused clipboard permission for this page. Allow clipboard access in the site settings, then try again.',
+      'rio.copyNoApi': 'Your browser offers no way for this page to write the clipboard. The text is shown below so you can copy it by hand.',
+      'rio.copyManualTitle': 'Copy this text by hand',
+      'rio.copyManualClose': 'Close',
       'rio.nothingToCopy': 'Nothing is selected in the remote page and its clipboard is empty.',
       // ── Real Chrome panel ────────────────────────────────────────────
       'rc.title': 'Real Chrome (extensions & cookies)',

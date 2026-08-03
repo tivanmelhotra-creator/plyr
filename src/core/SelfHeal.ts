@@ -119,12 +119,84 @@ export class SelfHeal {
    */
   private static chain: Promise<unknown> = Promise.resolve();
 
+  /**
+   * What is happening RIGHT NOW, so a client that arrives mid-heal can be told.
+   *
+   * THE BUG THIS EXISTS TO DELETE
+   * -----------------------------
+   * A heal was reported only to whoever started it, over the request that started
+   * it. So the user whose panel got stuck did the sensible thing — closed the
+   * window and opened it again — and the second window knew nothing: no progress,
+   * no error, just a dead-looking panel. Their conclusion ("it is stuck the same
+   * way") was the only one available to them, because the server was in fact
+   * still working and had no way to say so.
+   *
+   * Progress that only exists inside one request is progress that cannot survive
+   * the user reacting to it. This makes it a property of the server instead: the
+   * last step of the current or most recent heal, with when it started, which any
+   * later request can read.
+   */
+  private static current: { step: HealStep; startedAt: number } | null = null;
+
+  /** True while a heal is genuinely in flight. */
+  static isHealing(): boolean {
+    return this.depth > 0;
+  }
+
+  /**
+   * The live heal, for a client that has just (re)connected.
+   *
+   * Returns null when nothing is running — deliberately NOT the last finished
+   * step, because a client resuming into "loading extensions ✓" from a heal that
+   * ended ten minutes ago would be shown a panel about nothing.
+   */
+  static currentHeal(): { step: HealStep; startedAt: number; elapsedMs: number } | null {
+    if (!this.isHealing() || !this.current) return null;
+    return { ...this.current, elapsedMs: Date.now() - this.current.startedAt };
+  }
+
+  /** Nesting depth, not a boolean: `reloadExtensions` heals through other heals. */
+  private static depth = 0;
+
+  /**
+   * Wrap a reporter so that everything it publishes is also recorded centrally.
+   *
+   * Done by wrapping rather than by asking each step to remember itself: a step
+   * that has to opt in is a step that will be added later without opting in, and
+   * then the resume path silently has a hole in it.
+   */
+  private static track(report: HealReporter): HealReporter {
+    return (step) => {
+      this.current = { step, startedAt: this.current?.startedAt ?? Date.now() };
+      report(step);
+    };
+  }
+
   private static queue<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.chain.then(fn, fn);
     // Keep the chain alive after a rejection: one failed heal must not poison
     // every later attempt.
     this.chain = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * Mark a heal as in flight for as long as `fn` runs.
+   *
+   * The `finally` is the whole point: a heal that threw must not leave the server
+   * claiming forever that it is still healing, because every client that then
+   * connects would be shown a panel for work that is long dead — the same
+   * never-ending-progress bug, moved to the server.
+   */
+  private static async span<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.depth === 0) this.current = null;
+    this.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      this.depth -= 1;
+      if (this.depth === 0) this.current = null;
+    }
   }
 
   /**
@@ -135,7 +207,7 @@ export class SelfHeal {
    * every action that needs a browser rather than only on an explicit "start".
    */
   static ensureBrowser(report: HealReporter = () => {}): Promise<HealResult> {
-    return this.queue(() => this.doEnsureBrowser(report));
+    return this.queue(() => this.span(() => this.doEnsureBrowser(this.track(report))));
   }
 
   private static async doEnsureBrowser(report: HealReporter): Promise<HealResult> {
@@ -239,7 +311,8 @@ export class SelfHeal {
     report: HealReporter = () => {},
     onSwap: () => Promise<void> = async () => {},
   ): Promise<HealResult> {
-    return this.queue(() => this.doReloadExtensions(report, onSwap));
+    return this.queue(() =>
+      this.span(() => this.doReloadExtensions(this.track(report), onSwap)));
   }
 
   private static async doReloadExtensions(

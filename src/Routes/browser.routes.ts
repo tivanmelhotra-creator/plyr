@@ -199,7 +199,13 @@ export const createBrowserRoutes = (): Router => {
         RealChrome.status(),
         Desktop.status(),
       ]);
-      res.json({ success: true, realChrome, desktop });
+      // The live heal, if there is one. This is what lets a picker window that
+      // was closed and reopened mid-restart show real progress instead of looking
+      // dead — the reported "I reopened it and it was stuck the same way". `null`
+      // when nothing is running, so the client shows nothing rather than a panel
+      // about a heal that finished ten minutes ago.
+      const heal = SelfHeal.currentHeal();
+      res.json({ success: true, realChrome, desktop, heal });
     } catch (e) { sendError(res, e); }
   });
 

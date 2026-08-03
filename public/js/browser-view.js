@@ -379,6 +379,14 @@
     // The nav-busy lease outlives the modal otherwise, and would fire a toast
     // about a window that is no longer on screen.
     if (ps.navBusyTimer) { clearTimeout(ps.navBusyTimer); ps.navBusyTimer = 0; }
+    // Same rule for the heal lease and its per-step countdowns: both would
+    // otherwise outlive the modal and either toast about a window that is gone or
+    // rewrite a node that has been detached.
+    if (ps.healTimer) { clearTimeout(ps.healTimer); ps.healTimer = 0; }
+    if (ps.healEtaTimers) {
+      ps.healEtaTimers.forEach(function (id) { clearTimeout(id); });
+      ps.healEtaTimers = [];
+    }
     if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
     if (ps.rio) { try { ps.rio.detach(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
@@ -469,9 +477,19 @@
           // Only Reconnect existed after the tab work landed, which left no way
           // to load an extension you had just installed without hunting for the
           // button inside the Real Chrome panel.
+          // ── WHY NOT A POWER GLYPH ──────────────────────────────────────────
+          // This button was drawn with `power`, and the report that followed was
+          // "I pressed the OFF button and it got stuck starting Chrome" — the
+          // user was not confused, the icon was wrong. `icons.js` itself aliases
+          // both `close` and `close-browser` to `power`, so in this product that
+          // glyph already MEANS "shut it down"; using it for a relaunch made a
+          // restart look like an off switch, and then the checklist that appeared
+          // looked like a malfunction rather than the thing they had asked for.
+          // `repeat` is a loop — it says "again" — and it is deliberately not
+          // `rotate-cw`, which the Reload button two positions away already uses.
           '<button class="icon-btn bvp-restart" id="bvp-restart" type="button" ' +
             'title="' + esc(t('bvp.restartBrowser')) + '" aria-label="' + esc(t('bvp.restartBrowser')) + '">' +
-            BIC('power', 15) + '</button>' +
+            BIC('repeat', 15) + '</button>' +
           // Real Chrome. The canvas below is a screencast of a PAGE, so it can
           // never show an extension popup, chrome://extensions or a native file
           // dialog — they are not drawn by the page. This button is the way out
@@ -571,6 +589,16 @@
               '<div class="bvp-heal-head">' +
                 '<span class="bvp-heal-spin" id="bvp-heal-spin">' + BIC('loader', 16) + '</span>' +
                 '<span class="bvp-heal-title">' + esc(t('bvp.healTitle')) + '</span>' +
+                // A way out. This panel dims the canvas and reads as "blocked",
+                // so with no close control the design leaned entirely on the
+                // happy path: one request that never answered left the user
+                // under a permanent "about 6 seconds" with nothing to press.
+                // Dismissing does NOT cancel the restart — the server owns that
+                // and finishes regardless — it only hands the window back.
+                '<button class="icon-btn bvp-heal-close" id="bvp-heal-close" type="button" ' +
+                  'title="' + esc(t('bvp.healDismiss')) + '" ' +
+                  'aria-label="' + esc(t('bvp.healDismiss')) + '">' +
+                  BIC('x', 14) + '</button>' +
               '</div>' +
               '<ol class="bvp-heal-steps" id="bvp-heal-steps"></ol>' +
               '<p class="bvp-heal-note">' + esc(t('bvp.healNote')) + '</p>' +
@@ -776,6 +804,14 @@
       // navigation outstanding. See setNavBusy for why an optimistic busy state
       // MUST expire on its own.
       navBusyTimer: 0,
+      // ── The heal panel's leases ───────────────────────────────────────
+      // The same invariant as `navBusyTimer`, applied to the "getting the browser
+      // ready" panel: it is raised optimistically on a press, so it MUST be able
+      // to take itself down. `healTimer` bounds the whole panel; `healEtaTimers`
+      // hold the per-step "the estimate has elapsed, stop quoting a number"
+      // countdowns, which are a list because a heal reports several steps.
+      healTimer: 0,
+      healEtaTimers: [],
       // ── Drag, on the canvas ───────────────────────────────────────────
       // A real mousedown→mousemove→mouseup, which is what text selection,
       // sliders and drag & drop are all made of. `null` when the button is up.
@@ -1860,11 +1896,119 @@
     // takes; this renders those steps as a live checklist with a measured ETA,
     // so the wait always answers three questions: what is happening, whether it
     // needs me, and how much longer.
+    /**
+     * The heal panel's lease — the same invariant `setNavBusy` obeys.
+     *
+     * The standing rule in this file is that ANY state set optimistically on a
+     * user action must expire on its own. The heal panel broke it: it was raised
+     * before the request was sent (correctly — an empty-but-visible panel answers
+     * "yes, something is happening") but it could only ever be taken down by an
+     * explicit later event: the `.then`, the `.catch`, or a `ready` frame. A POST
+     * that never SETTLES runs none of those, and a promise that never settles is
+     * not exotic here: the socket can drop mid-flight, the tab can be suspended,
+     * and the server restarting Chrome can die while holding the request open.
+     *
+     * Measured, not assumed: a probe that holds the restart POST open forever
+     * left this panel up indefinitely, over a dimmed canvas, with `role="status"`
+     * claiming "about 6 seconds" — which is exactly how a working app teaches its
+     * user that it is broken.
+     *
+     * Two phases, because one number cannot serve both:
+     *   'press'  — waiting for the POST to be answered at all. 20s, and that
+     *              number is reconciled with the server rather than invented: the
+     *              honest worst case SelfHeal publishes for itself totals ~12.5s
+     *              (stop 2 + display 3 + start 6 + verify 1.5), so 20s cannot
+     *              cut off a restart that is merely slow, while still being
+     *              ~15x the 0.5-1.3s a restart actually takes here.
+     *   'server' — the server has told us a heal is genuinely in flight (the
+     *              resume path below). It owns the work and reports its own
+     *              progress, so this is only a backstop against that report
+     *              itself going silent.
+     */
+    /**
+     * Ask the server whether a heal is running, and if so adopt it.
+     *
+     * THE REPORTED BUG, EXACTLY
+     * -------------------------
+     * The user's panel got stuck, so they closed the window and opened it again —
+     * the correct instinct — and the new window "could not connect, apparently
+     * stuck the same way". It was not stuck: it simply had no idea. A heal used to
+     * be reported only down the request that started it, so a second window was
+     * structurally incapable of learning that Chrome was mid-relaunch, and showed
+     * a dead-looking window during the one interval when waiting was right.
+     *
+     * Now the server publishes the live heal on `/browser/status`, and a window
+     * adopts it on open. Note what this does NOT do: it never invents a panel. A
+     * `heal` of null means nothing is running, and then nothing is shown — a
+     * reopened window that puts up a spinner "just in case" is the same lie in a
+     * new place.
+     */
+    function resumeHeal() {
+      if (!window.API || !window.API.get) return;
+      var mine = pickState;                     // this window, not a later one
+      window.API.get('/browser/status')
+        .then(function (r) {
+          // Bail if the window was closed, or reopened, while this was in flight.
+          if (!pickState || pickState !== mine) return;
+          var h = r && r.heal;
+          if (!h || !h.step) return;            // nothing running: show nothing
+          showHeal([h.step]);
+          // 'server' phase: the server has SAID it is working, so the generous
+          // backstop applies rather than the short "was the press even heard?" one.
+          setHealLease('server');
+          setStatus(t('bvp.restarting'), 'warn');
+          toast(t('bvp.healResumed'), 'info');
+        })
+        .catch(function () { /* a status we cannot read is not worth a panel */ });
+    }
+
+    /** Drop every per-step "the estimate has elapsed" countdown. */
+    function clearHealEtaTimers() {
+      if (!pickState) return;
+      if (!pickState.healEtaTimers) { pickState.healEtaTimers = []; return; }
+      pickState.healEtaTimers.forEach(function (id) { clearTimeout(id); });
+      pickState.healEtaTimers = [];
+    }
+
+    function setHealLease(phase) {
+      if (!pickState) return;
+      if (pickState.healTimer) {
+        clearTimeout(pickState.healTimer);
+        pickState.healTimer = 0;
+      }
+      if (!phase) return;
+      pickState.healTimer = setTimeout(function () {
+        if (!pickState) return;
+        pickState.healTimer = 0;
+        hideHeal();
+        // ── GIVE THE BUTTON BACK ───────────────────────────────────────────
+        // This is the part the probe caught that the report only hinted at. The
+        // restart handler disables its own button and re-enables it in a trailing
+        // `.then`, so a POST that never settles leaves `#bvp-restart` disabled
+        // for the life of the window: the user was not merely looking at a stuck
+        // panel, they had lost the one control that could have fixed it. Telling
+        // them to "press it again" is only honest if pressing is possible.
+        var rb = q('bvp-restart');
+        if (rb) rb.disabled = false;
+        // Say what happened and what to do about it. A panel that silently
+        // vanishes is only marginally better than one that never leaves: the
+        // user still does not know whether the restart happened. Naming it as a
+        // lost answer, and pointing at Reconnect, is the same contract
+        // `bvp.navLost` already keeps for a lost navigation.
+        setStatus(t('bv.error'), 'bad');
+        toast(t('bvp.healLost'), 'warning');
+      }, phase === 'server' ? 45000 : 20000);
+    }
+
     function showHeal(steps) {
       var box = q('bvp-heal');
       var host = q('bvp-heal-steps');
       if (!box || !host) return;
       pickState.healSteps = steps || [];
+      // Every re-render throws away the previous lines, so the countdowns those
+      // lines owned have to go with them; otherwise a step that finished half a
+      // second ago can still rewrite a node from a later render.
+      clearHealEtaTimers();
       host.innerHTML = '';
       if (!pickState.healSteps.length) { box.classList.add('is-off'); return; }
 
@@ -1892,6 +2036,21 @@
         meta.className = 'bvp-heal-meta';
         if (s.state === 'running' && s.etaMs > 0) {
           meta.textContent = tf('bvp.healEta', { s: Math.ceil(s.etaMs / 1000) });
+          // ── RECONCILE THE ESTIMATE WITH REALITY ──────────────────────────
+          // An ETA is a promise, and this one used to be kept only by luck. Once
+          // the estimate has elapsed, a line still reading "about 6 seconds" is
+          // no longer optimistic, it is false — and a progress indicator caught
+          // lying once is not believed again. So the estimate is given a deadline
+          // of its own: when it passes, the line stops quoting a number and says
+          // the honest thing instead, which is that this is taking longer than
+          // expected and is still running.
+          (function (el, ms) {
+            pickState.healEtaTimers.push(setTimeout(function () {
+              // Only if this very line is still on screen and still running:
+              // a re-render replaces the node, and the new one carries its own.
+              if (el.isConnected) el.textContent = t('bvp.healSlow');
+            }, ms));
+          }(meta, s.etaMs));
         } else if (s.detail) {
           meta.textContent = String(s.detail);
         }
@@ -1903,6 +2062,13 @@
     }
 
     function hideHeal() {
+      // Drop the lease with the panel. Leaving it armed would fire a "no answer
+      // came back" toast about an operation that in fact succeeded.
+      if (pickState && pickState.healTimer) {
+        clearTimeout(pickState.healTimer);
+        pickState.healTimer = 0;
+      }
+      clearHealEtaTimers();
       var box = q('bvp-heal');
       if (box) box.classList.add('is-off');
     }
@@ -2026,6 +2192,15 @@
           // The picker script lives in the page, and the page is new. Re-arm the
           // mode the user had, or select mode is silently off after a recovery.
           applySelectMode(pickState.selectMode, true);
+          break;
+        // How much survived a relaunch. The user's report was not only that
+        // tabs were lost — it was that they could not tell WHAT had happened
+        // («نمیدونم ریستارت شد یا چی»). A count answers both halves: the
+        // browser restarted, and here is what came back.
+        case 'tabsRestored':
+          if (Number(msg.count) > 0) {
+            toast(tf('bvp.tabsRestored', { n: Number(msg.count) }), 'success');
+          }
           break;
         case 'tabCrashed':
           toast(t('bvp.tabCrashed'), 'warning');
@@ -2470,6 +2645,15 @@
     // the one we are streaming, so the resync afterwards is not optional — it is
     // what stops the canvas being left on a frozen last frame of a page whose
     // browser no longer exists (the exact symptom this whole fix is about).
+    // Dismiss the heal panel. This does NOT cancel anything: the restart runs on
+    // the server and finishes whether or not this panel is watching, which is
+    // exactly why dismissing is safe to offer. What it returns is the canvas —
+    // the difference between "the app is busy" and "the app is stuck" is whether
+    // the user has any move at all.
+    q('bvp-heal-close').addEventListener('click', function () {
+      hideHeal();
+      toast(t('bvp.healDismissed'), 'info');
+    });
     q('bvp-restart').addEventListener('click', function () {
       var b = q('bvp-restart');
       if (b.disabled) return;                      // a relaunch takes seconds
@@ -2479,7 +2663,18 @@
       // failure this replaces was a wait with nothing on screen: the user
       // pressed a button, saw no change, and concluded it had not worked. An
       // empty-but-visible panel already answers "yes, something is happening".
-      showHeal([{ key: 'startingChrome', state: 'running', index: 1, total: 3, etaMs: 6000 }]);
+      // NO ETA on this first line, deliberately. The 6000ms that used to be here
+      // was invented on the client, while the server publishes real measured
+      // budgets per step; the two disagreed, and the client's guess was the one
+      // on screen. A restart actually completes in ~0.5-1.3s here, so "about 6
+      // seconds" was wrong even when everything worked — and wrong for ever when
+      // it did not. An indeterminate spinner promises nothing and so cannot lie;
+      // the moment the server answers, `r.steps` replaces this with its own
+      // honest numbers.
+      showHeal([{ key: 'startingChrome', state: 'running', index: 1, total: 3 }]);
+      // The panel is now on a lease: if this POST never settles, the panel comes
+      // down by itself and says so, instead of stranding the user under it.
+      setHealLease('press');
       window.API.post('/browser/restart', {})
         .then(function (r) {
           if (!r || r.success === false) throw new Error((r && (r.error || r.message)) || 'restart failed');
@@ -2763,6 +2958,7 @@
     renderCands(null);
     renderTabs([], '');  // empty strip until the server sends the real list
     setSession(false);   // pessimistic until the server's `ready` says otherwise
+    resumeHeal();        // is a restart already running? then show THAT, not a guess
     if (urlIn.value) connect(); else urlIn.focus();
   }
 

@@ -118,6 +118,32 @@ const PAGES = {
     + '<script>var ta=document.getElementById("ta");ta.focus();'
     + 'ta.addEventListener("input",function(){R("paste",ta.value)});</script>',
 
+  // ── The clipboard page, for tools/probe-clipboard.js ─────────────────────
+  // Reports the OUTCOME of the page's own clipboard calls, not just the values.
+  // That distinction is the whole point: when remote copy/paste breaks, the
+  // question is whether the permission was granted, and the only witness to that
+  // is the promise the page got back. A probe that only compared text would see
+  // "empty" and be unable to say whether nothing was selected or the read was
+  // refused — which is exactly the ambiguity that made this bug hard to place.
+  '/clip': '<input id=f style="font-size:26px;width:80%"><br>'
+    + '<button id=b style="font-size:24px;margin-top:10px">copy</button>'
+    + '<button id=r style="font-size:24px;margin-top:10px">read</button>'
+    + '<pre id=log></pre>'
+    + '<script>var f=document.getElementById("f");f.focus();'
+    + 'f.addEventListener("input",function(){R("field",f.value)});'
+    // Write: reports `wrote` or the DOMException name, so a refused write is
+    // distinguishable from a successful one that copied an empty string.
+    + 'document.getElementById("b").addEventListener("click",function(){'
+    + 'navigator.clipboard.writeText(f.value).then(function(){'
+    + 'R("write","wrote");document.getElementById("log").textContent="wrote"},'
+    + 'function(e){R("write","ERR:"+e.name);'
+    + 'document.getElementById("log").textContent="ERR:"+e.name})});'
+    // Read: same treatment, so "the page cannot read its own clipboard" is a
+    // visible, named failure rather than an empty string.
+    + 'document.getElementById("r").addEventListener("click",function(){'
+    + 'navigator.clipboard.readText().then(function(v){R("read","ok:"+v)},'
+    + 'function(e){R("read","ERR:"+e.name)})});</script>',
+
   '/title-a': '<title>Tab A</title><h1>A</h1>',
   '/title-b': '<title>Tab B</title><h1>B</h1>',
 

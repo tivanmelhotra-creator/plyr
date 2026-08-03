@@ -215,6 +215,25 @@ const HEALTH_POLL_MS = 10_000;
 const AUDIO_POLL_MS = 3_000;
 
 /**
+ * How long to wait before believing that a background tab closed ITSELF.
+ *
+ * MEASURED 2026-08-03 (tools/probe-restart-tabs.js), and this is the constant
+ * behind the user's «مشکل بزرگیه»: relaunching Chrome for an extension install
+ * closes every page in it, one after another. A `close` handler that decides
+ * "the browser is still alive, so this tab is gone" is asking a question that
+ * cannot be answered yet — the sibling pages have not finished dying, so the
+ * context still reports itself healthy, and the tabs were deleted (and then
+ * PERSISTED) one by one until nothing was left.
+ *
+ * Waiting a moment makes the same question answerable, because by then the
+ * context either is or is not gone. 400ms is chosen to be longer than a
+ * multi-page teardown and far shorter than a human notices a chip lingering; and
+ * the cost of it being too short is only a tab kept as `pending`, never a tab
+ * lost, because the freeze means nothing has been written to disk either way.
+ */
+const SELF_CLOSE_GRACE_MS = 400;
+
+/**
  * Turn whatever the user typed into something `page.goto` accepts.
  *
  * The allowlist is exactly three schemes:
@@ -683,6 +702,27 @@ export class LiveBrowserSession {
   private healthTimer: NodeJS.Timeout | null = null;
   private audioTimer: NodeJS.Timeout | null = null;
   private recovering: Promise<boolean> | null = null;
+  /**
+   * "Do not write the tab list to disk right now."
+   *
+   * MEASURED 2026-08-03 (tools/probe-restart-tabs.js): a Chrome relaunch closes
+   * every page at once, and the old code let each of those closures shrink
+   * `this.tabs` and then persist the result — so the on-disk backup was
+   * destroyed by the exact failure it existed to survive, and three tabs came
+   * back as one `about:blank`.
+   *
+   * A recovery is precisely the window in which the in-memory list is least
+   * trustworthy: pages are dying, records are being re-marked `pending`, and
+   * nothing is settled until the rebuild finishes. So the saved list is FROZEN
+   * for the duration and unfrozen deliberately, once, by whoever finishes the
+   * recovery — never by a `finally`, because a `finally` would also unfreeze on
+   * the failure paths this is protecting against.
+   *
+   * A separate flag from `this.recovering` on purpose: that one is a promise
+   * used to serialise concurrent recoveries, and overloading it as a data guard
+   * would mean a caller awaiting it could clear the guard as a side effect.
+   */
+  private tabsFrozen = false;
   private closed = false;
   public readonly userId: string;
   private vp = { ...DEFAULT_VIEWPORT };
@@ -1111,16 +1151,74 @@ export class LiveBrowserSession {
       if (page === this.cdpPage) { this.cdp = null; this.cdpPage = null; }
       if (!tab) return;
       tab.page = null;
-      tab.dead = true;
       if (page === this.page) {
+        tab.dead = true;
         this.page = null;
         void this.recover('closed');
-      } else {
-        // A background tab that closed itself is just gone.
+        return;
+      }
+      // ── MEASURED 2026-08-03 (tools/probe-restart-tabs.js) ──────────────────
+      // THIS LINE WAS THE «مشکل بزرگیه»: installing an extension lost EVERY tab.
+      //
+      // Relaunching Chrome (which an extension install MUST do — Chrome only
+      // reads extensions at launch) closes every page inside it, so every tab
+      // fires `close` in the same tick. The old code treated each of those as
+      // "a background tab closed itself, it is just gone", deleted it from
+      // `this.tabs`, and then `persistTabs()` wrote the shrunken list STRAIGHT
+      // TO DISK — destroying the very backup that existed to survive this. By
+      // the time `recover()` ran there was nothing left to restore, which is why
+      // the measured result was a single `about:blank`, not even the one tab the
+      // handoff predicted.
+      //
+      // The distinction that was missing: a page closing because THE PAGE asked
+      // to (window.close(), a link with target=_blank that closes itself) is a
+      // real tab closure and the tab should go. A page closing because THE
+      // BROWSER UNDER IT went away is not a tab closure at all — the user's tab
+      // still exists, it has just lost its renderer, and the honest response is
+      // the one `materialize()` already implements: keep the record, mark it
+      // `pending`, and rebuild the page on demand.
+      //
+      // `isContextDead()` is how we tell those apart, and it is reliable here
+      // precisely because a relaunch takes the whole context with it.
+      if (this.closed) { tab.dead = true; return; }
+      // Provisionally: the tab STAYS, and only its page is forgotten. This is
+      // the safe order — a tab wrongly kept for 400ms is invisible, a tab
+      // wrongly deleted is the bug being fixed, and `persistTabs()` is not
+      // called here so nothing reaches disk on a guess.
+      tab.pending = true;
+      tab.dead = false;
+      this.emitTabs();
+      // ── Why a grace window and not an immediate `isContextDead()` ──────────
+      // MEASURED 2026-08-03 (tools/probe-restart-tabs.js): checking it inline
+      // was WRONG and still lost the tabs. `isContextDead()` reads
+      // `context.pages().length === 0`, but when Chrome is relaunched the pages
+      // close one at a time, so the first `close` handler still sees two live
+      // siblings and concludes the browser is fine. The verdict was being asked
+      // for at the one moment it cannot be known.
+      //
+      // So the question is deferred instead of guessed. After a short grace the
+      // answer is unambiguous: either the context has finished dying (a
+      // relaunch — keep every tab, they come back `pending`) or it is still
+      // serving pages (that one page really did call `window.close()` — reap the
+      // record, exactly as before).
+      //
+      // A recovery already in flight is the same answer arriving early.
+      setTimeout(() => {
+        if (this.closed) return;
+        if (!this.tabs.includes(tab)) return;         // already reaped elsewhere
+        const browserGone = !this.context || isContextDead(this.context);
+        if (browserGone || this.recovering || this.tabsFrozen) {
+          // The browser went, not the tab. «نهایتش باید یه رفرش می‌شد» — at
+          // worst a reload. The record is already `pending`; `recover()` puts
+          // the strip back and clicking a chip reloads that page.
+          return;
+        }
+        // A background tab that genuinely closed itself is gone.
+        tab.dead = true;
         this.tabs = this.tabs.filter((t) => t !== tab);
         this.emitTabs();
         void this.persistTabs();
-      }
+      }, SELF_CLOSE_GRACE_MS);
     });
   }
 
@@ -1466,9 +1564,18 @@ export class LiveBrowserSession {
     return tab;
   }
 
-  /** Persist the strip so the next open of this window is not a blank slate. */
+  /**
+   * Persist the strip so the next open of this window is not a blank slate.
+   *
+   * Refuses while the list is frozen (see `tabsFrozen`). That guard mirrors the
+   * existing `if (this.closed) return` on the same function and exists for the
+   * same class of reason: there are moments when the in-memory list is not the
+   * truth, and writing it then is worse than not writing at all — a saved list
+   * is only useful if it survives the failure it is meant to insure against.
+   */
   private async persistTabs(): Promise<void> {
     if (this.closed) return;
+    if (this.tabsFrozen) return;
     const list: SavedTab[] = this.tabs
       .filter((t) => !t.dead)
       .map((t) => ({
@@ -1731,6 +1838,8 @@ export class LiveBrowserSession {
     if (this.recovering) return this.recovering;
     this.recovering = (async () => {
       try {
+        // Freeze the saved list for the whole rebuild. See `tabsFrozen`.
+        this.tabsFrozen = true;
         this.emit('recovering', { reason });
         // A pending dialog belongs to a page we are about to replace, and an
         // unanswered one blocks that page against being closed at all. Clear it
@@ -1764,22 +1873,66 @@ export class LiveBrowserSession {
           return true;
         }
         this.activeId = target.id;
+        // The ACTIVE tab first, always: it is the one the user is looking at, so
+        // it is the one whose wait they actually feel.
         const ok = await this.materialize(target).catch(() => false);
         if (!ok) {
-          const dead = target;
-          this.tabs = this.tabs.filter((t) => t !== dead);
+          // The active tab could not come back. Keep it in the strip as
+          // `pending` rather than deleting it: the user asked for that page, and
+          // clicking the chip retries. Deleting it here is what turned "one page
+          // failed to reload" into "my tab is gone" — and, via persistTabs(),
+          // into permanent loss.
+          target.page = null;
+          target.pending = true;
+          target.dead = false;
           const fresh = await this.openTab('about:blank', { activate: true });
           this.emit('recovered', { reason, url: 'about:blank', tabId: fresh ? fresh.id : '' });
+          // Only NOW is the list trustworthy again, and it still has every tab.
+          this.tabsFrozen = false;
+          void this.persistTabs();
           return true;
         }
         await this.focus(target);
         this.emit('recovered', { reason, url: target.url, tabId: target.id });
+        // ── The other tabs ────────────────────────────────────────────────────
+        // `index.ts` promises "an extension install costs the user a progress
+        // panel — never a lost tab", and MEASURED 2026-08-03 it was restoring
+        // exactly one. The tab RECORDS survive a context swap (url + title are
+        // ours, not Chrome's); what they lose is their page. So re-announce the
+        // full strip and let each chip materialize on demand, which is the same
+        // lazy path a restored session already uses on startup.
+        //
+        // Lazily, and deliberately: eagerly reloading fifteen pages inside a
+        // browser that has only just come back is how a recovery turns into a
+        // second outage. What must be immediate is the LIST — losing a page is
+        // recoverable by clicking it, losing the list is not.
+        const restored = this.tabs.filter((t) => t !== target && !t.dead);
+        for (const t of restored) {
+          if (!t.page || t.page.isClosed()) { t.page = null; t.pending = true; }
+        }
+        this.emitTabs();
+        // The recovery is over, so the in-memory list is trustworthy again and
+        // may be written. Lifting the freeze here rather than in `finally` is
+        // what lets this write through the guard in persistTabs().
+        this.tabsFrozen = false;
+        void this.persistTabs();
+        // Tell the client how much survived, so an extension install reads as
+        // "3 tabs restored" instead of as silence after a scare.
+        this.emit('tabsRestored', { count: this.tabs.filter((t) => !t.dead).length });
         return true;
       } catch (e) {
         this.emit('error', { message: 'recover_failed: ' + (e as Error).message });
         return false;
       } finally {
         this.recovering = null;
+        // A freeze that outlives the recovery would silently stop this session
+        // ever saving its tabs again — the opposite failure, and just as quiet.
+        // So the freeze always lifts here, but NOTHING is written from this
+        // path: an aborted rebuild is exactly the state whose list must not be
+        // trusted. The next real tab action (a focus, an open, a close) writes a
+        // list that still contains every record, because nothing deletes them
+        // any more.
+        this.tabsFrozen = false;
       }
     })();
     return this.recovering;
@@ -3017,15 +3170,24 @@ export class LiveBrowserSession {
     //
     // `this.closed` is already true, so `persistTabs()` would refuse — the write
     // is done inline for that reason.
+    //
+    // But it honours the same freeze, and it has to: closing the window while a
+    // recovery is still in flight (which is precisely what a frightened user
+    // does when Chrome has just restarted under them) would otherwise write the
+    // half-rebuilt list over the good one, and the on-disk list is at that
+    // moment strictly better than anything in memory. Skipping the write keeps
+    // it — see `tabsFrozen`.
     try {
-      const list: SavedTab[] = this.tabs
-        .filter((t) => !t.dead)
-        .map((t) => ({
-          url: t.url,
-          title: t.title,
-          ...(t.id === this.activeId ? { active: true } : {}),
-        }));
-      await saveTabs(this.userId, list);
+      if (!this.tabsFrozen) {
+        const list: SavedTab[] = this.tabs
+          .filter((t) => !t.dead)
+          .map((t) => ({
+            url: t.url,
+            title: t.title,
+            ...(t.id === this.activeId ? { active: true } : {}),
+          }));
+        await saveTabs(this.userId, list);
+      }
     } catch { /* a lost tab list must never block the teardown below */ }
     // A file the user uploaded for one dialog must not outlive the window they
     // uploaded it in: cookie exports are credentials.
