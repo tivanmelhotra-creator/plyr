@@ -1125,31 +1125,69 @@ export class LiveBrowserSession {
   }
 
   /**
-   * Find the tab's favicon the way a browser does.
+   * Find the tab's favicon the way a browser does — and hand it over as BYTES.
    *
    * Order matters and mirrors the spec: an explicit `<link rel="icon">` wins
    * (a site that declares one means it), and only if there is none do we fall
    * back to the well-known `/favicon.ico`. The URL is resolved against the
-   * document so a relative href works, and the result is only accepted if it is
-   * http(s) — a `data:` or `chrome-extension:` icon would either bloat the tab
-   * payload or fail to load in the client's origin.
+   * document so a relative href works.
    *
-   * Best-effort throughout: a missing favicon is a cosmetic detail and must
-   * never be able to throw inside a navigation handler.
+   * WHY A `data:` URL AND NOT THE ICON'S OWN URL
+   * MEASURED 2026-08-03 (tools/probe-ui-controls.js): this used to send the
+   * remote http(s) URL, and the client's own Content-Security-Policy
+   * (`img-src 'self' data:`, src/index.ts) refused every single one of them:
+   *   Refused to load the image 'http://…/favicon.ico' because it violates the
+   *   following Content Security Policy directive: "img-src 'self' data:"
+   * So NO tab in the strip could ever show a real favicon — the strip silently
+   * fell back to the generic globe for every site, and the console filled with
+   * refusals on every navigation. Widening the CSP to allow arbitrary remote
+   * images would trade a cosmetic bug for a real XSS-exfiltration surface, and
+   * a server-side proxy endpoint would be an SSRF hole pointed at our own
+   * network. Reading the bytes INSIDE THE PAGE is neither: it is the page
+   * fetching its own icon, with its own cookies and its own origin, so
+   * authenticated and intranet favicons work too, and the result travels as a
+   * `data:` URL the CSP already permits.
+   *
+   * Best-effort throughout, and capped: a missing favicon is a cosmetic detail
+   * and must never be able to throw inside a navigation handler, nor put a
+   * megabyte of base64 into every `tabs` frame.
    */
   private async refreshFavicon(tab: LiveTab): Promise<void> {
     const page = tab.page;
     if (!page || page.isClosed()) return;
     try {
-      const icon = await page.evaluate(() => {
+      const icon = await page.evaluate(async () => {
         const links = Array.from(document.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"]'))
           .map((l) => (l as HTMLLinkElement).href)
           .filter(Boolean);
-        if (links.length) return links[0];
-        try { return new URL('/favicon.ico', location.origin).href; } catch { return ''; }
+        let href = links[0] || '';
+        if (!href) {
+          try { href = new URL('/favicon.ico', location.origin).href; } catch { return ''; }
+        }
+        // Already inline: hand it straight over, it is what we are producing.
+        if (/^data:image\//i.test(href)) return href.length <= 32768 ? href : '';
+        if (!/^https?:\/\//i.test(href)) return '';
+        try {
+          const res = await fetch(href, { credentials: 'include' });
+          if (!res.ok) return '';
+          const type = String(res.headers.get('content-type') || '').split(';')[0].trim();
+          // Only real image types. An HTML 404 page served with 200 is the
+          // commonest "favicon" on the web and must not become a broken glyph.
+          if (!/^image\//i.test(type)) return '';
+          const buf = await res.arrayBuffer();
+          if (!buf.byteLength || buf.byteLength > 24576) return '';
+          let bin = '';
+          const bytes = new Uint8Array(buf);
+          for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+          return 'data:' + type + ';base64,' + btoa(bin);
+        } catch { return ''; }
       });
       const url = String(icon || '');
-      if (!/^https?:\/\//i.test(url)) return;
+      // `data:` only. Anything else would be refused by the client's CSP, and
+      // sending something the client provably cannot render is worse than
+      // sending nothing: the strip would show a broken image instead of the
+      // globe fallback that is actually correct.
+      if (!/^data:image\//i.test(url)) return;
       if (tab.favicon === url) return;
       tab.favicon = url;
       this.emitTabs();
@@ -1286,6 +1324,15 @@ export class LiveBrowserSession {
     this.emit('navigated', { url: tab.url });
     this.emitTabs();
     void this.persistTabs();
+    // MEASURED 2026-08-03 (tools/probe-ui-controls.js): this was missing, and it
+    // is the "Back/Forward don't work" report in full. History is PER TAB, but
+    // the client only ever learns canGoBack/canGoForward from a `navState`
+    // frame — and switching tabs emitted `tabs` + `navigated` and nothing else.
+    // So the arrows kept showing the PREVIOUS tab's history: switch from a tab
+    // you had browsed into a fresh one and Back stayed lit, pressing it did
+    // nothing (correctly — there is no history), and the button looked broken.
+    // Every path that changes which tab is streamed must re-answer this.
+    await this.emitNavState();
   }
 
   /**
@@ -1411,6 +1458,11 @@ export class LiveBrowserSession {
     if (opts.activate !== false && this.pickerOn) await this.injectPicker().catch(() => {});
     this.emitTabs();
     void this.persistTabs();
+    // A newly activated tab has its OWN (empty) history. Without this the strip
+    // gained a tab while the toolbar still described the tab the user left — see
+    // the note in focus(). Only when we actually took over the stream: a
+    // background tab must not repaint the active tab's arrows.
+    if (opts.activate !== false) await this.emitNavState();
     return tab;
   }
 

@@ -48,8 +48,14 @@ Build and test:
 ```bash
 npx tsc --noEmit          # typecheck
 npx tsc                   # emit dist/ — the server runs dist/index.js, NOT src/
-npx vitest run            # expect 50 files / 1157 tests, all passing
+npx vitest run            # expect 51 files / 1185 tests, all passing
 ```
+
+> **`picker-drive.test.ts` and `probe-*` compete for the machine.** Running the full
+> suite while a probe or a second suite is live starved `picker-drive` (a real
+> Chromium suite) into three 30s timeouts — a resource failure that reads exactly
+> like a product bug. It passed 16/16 in isolation moments later. Run the suite on a
+> quiet box before believing a failure in that file.
 
 > **Trap that has already cost real time:** the server runs `dist/`. After editing
 > `src/` you must `npx tsc` **and** re-run `bash scripts/dev-server.sh`, or you are
@@ -516,51 +522,96 @@ New surfaces added since that list was written, which also need looking at:
   not as a crash, and must not shift the layout;
 * `auth_interception_unavailable` — needs a sentence a non-engineer can act on.
 
-### 4.3b The toolbar controls have NO end-to-end coverage — a real blind spot
+### 4.3b The toolbar controls — CLOSED 2026-08-03. The user was right.
 
 The user reported, in these words: *"به دکمه همه رفرش و جلو و عقب هم دقت کن ظاهرا
 درست کار نمیکیند / و دکمه پلاس اضافه کردن تب جدید"* — Back, Forward, Reload and the
 `+` button "apparently don't work properly".
 
-**Audited 2026-08-03. The wiring is correct.** Do not "fix" it blind:
+The instrument now exists: **`tools/probe-ui-controls.js`** — real Chromium, real
+clicks on `#bvp-back` / `#bvp-fwd` / `#bvp-reload` / `#bvp-tabadd`, opened through
+the genuine user path (editor → `click` node → NDV → crosshair). **30/30 green**,
+reproduced on three separate runs including one against a freshly built `dist/`.
 
-* `navCmd()` (browser-view.js ~2548) guards on the socket, sets an optimistic
-  `navBusy`, then sends. `bvp-back` / `bvp-fwd` / `bvp-reload` each call it
-  (~2561-2563). Shift/Ctrl+click and right-click both offer the hard reload.
-* The `+` button is `bvp-tabadd` (**not** `bvp-newtab` — grepping the wrong id will
-  make you think it is missing). It routes through `newTab()` on purpose, so the
-  button, Ctrl+T and the tab menu cannot drift apart (~2442-2445).
-* Server-side `back` / `forward` / `reload` / `navState` are probe-covered and
-  green (probe lines 103-157).
+> **The lesson, recorded because it will happen again: the audit below was
+> correct and the buttons were still broken.** The previous session wrote *"Audited
+> 2026-08-03. The wiring is correct. Do not fix it blind"* — and every word of that
+> was true. `navCmd()` really does guard the socket; `#bvp-tabadd` really does route
+> through `newTab()`. **Four real bugs were living behind that correct wiring**, and
+> the audit could not see any of them because reading source cannot find a listener
+> that is never reached. When the user contradicts a green score, the score is
+> measuring the wrong layer.
 
-**So why does the user see breakage? Because of what is NOT covered:**
+**The four bugs the instrument found on its first run (25/30 → 30/30):**
 
-> **No test anywhere clicks a single one of these buttons in a real browser.**
-> The probe drives the **WebSocket protocol**; the unit tests read **source text**.
-> `tools/picker-probe.js` and `tools/probe-picker-ui.js` look like they cover it but
-> the only match in them is `.bvp-backdrop` — the modal backdrop, not Back.
-> A correct server command plus one mis-wired listener, a CSS `pointer-events`,
-> an overlay stealing the click, or a `q()` returning null would all leave the
-> probe at a happy **69/69** while the button does nothing under the user's mouse.
-> **This is exactly the "prove it with a live test, not a grep" mandate pointed at
-> the one surface that never got one.**
+1. **Every control inside a tab chip was silently un-clickable** — the X, the mute
+   button, all of them. Not even in the original report, and the worst of the four.
+   `mouseup` fires **before** `click`, and the tab-drag handler redrew the whole
+   strip on mouseup, so the pressed element was detached and replaced before the
+   browser could dispatch its click. The click had no target and the listener never
+   ran. Fix: `if (moved) renderTabs(...)` — redraw only when a drag actually
+   started. Diagnosed by printing the sent-command list: `navigate,picker,tabNew`
+   with no `tabClose` anywhere.
+2. **`navState` was never re-emitted when the streamed tab changed** — *this is the
+   user's report, exactly.* History is **per tab**, but the client only ever learns
+   `canGoBack`/`canGoForward` from a `navState` frame, and switching tabs emitted
+   `tabs` + `navigated` and nothing else. So the arrows kept describing the tab the
+   user had **left**: Back stayed lit on a brand-new tab, and pressing it did
+   nothing — correctly, since there was no history. Fix: `await this.emitNavState()`
+   at the end of `focus()`, and in `openTab()` guarded by `activate !== false` so a
+   background tab cannot repaint the active tab's arrows.
+3. **The busy spinner could spin forever.** `navBusy` was set optimistically on
+   press and cleared only by `navStart`/`navEnd`/`navBlocked`; drop the command on
+   the wire and none of the three ever arrives. Proven by swallowing the command in
+   the probe's WebSocket tap and watching `is-busy` never clear — the "dead but
+   connected" lie this whole effort exists to remove. Fix: the busy state is now a
+   **lease, never a promise** — `setNavBusy(on, phase)` with two phases, because one
+   timeout cannot serve both: `press` = 6s (only a round trip on an open socket is
+   outstanding) and `server` = 35s (outlives the server's own 30s navigation
+   timeout, so a genuinely slow page keeps its spinner). On expiry it clears itself
+   and says so via `bvp.navLost` (fa + en), because a spinner that quietly gives up
+   teaches the user the button does nothing.
+4. **No tab could ever show a real favicon.** The strict CSP (`img-src 'self'
+   data:`) refused every remote icon URL, logging a refusal on every navigation.
+   Both "easy" fixes are worse than the bug — widening the CSP buys an exfiltration
+   surface, proxying arbitrary URLs buys an SSRF hole — so the **page** fetches the
+   bytes itself with its own cookies and returns a capped `data:` URL
+   (content-type must be `image/*`, ≤ 24576 bytes). The CSP stays strict.
 
-**Do this next (highest value remaining item, ahead of §4.4):** write
-`tools/probe-ui-controls.js` — Playwright, real page, real clicks:
+**Why this probe can be trusted (the design worth copying):** it never asserts that
+an element exists — only that the page changed, via three witnesses, none of which
+is "the client says so":
 
-1. Open the picker, `page.click('#bvp-back')` / `#bvp-fwd` / `#bvp-reload` /
-   `#bvp-tabadd` and assert the **observable outcome** (URL changed, tab count went
-   up), never that the element exists.
-2. Assert `disabled`/`is-dim` truthfully reflect `canGoBack`/`canGoForward` — a Back
-   button that is enabled on the first page is a lie, and one stuck disabled after
-   navigating is the reported symptom.
-3. **Check the spinner cannot spin forever.** `navBusy` is set optimistically on
-   press and only cleared by `navStart`/`navEnd`/`navBlocked`. If a navigation is
-   dropped and none of the three arrives, `is-busy` never clears and the toolbar
-   *looks* hung even though it is live. Either prove one of the three always
-   arrives, or give `navBusy` a timeout that resolves itself — per the global
-   mandate, the UI must correct itself rather than sit there lying.
-4. Take screenshots and **look at them** (§4.3).
+1. the fixture pages report their own identity over HTTP (`/p1`, `/p2`, and
+   `/nonce`, which announces a **new** value on every execution — Reload has no
+   other observable outcome, since the URL does not change);
+2. the server's own frames, tapped passively off the page's WebSocket (frames are
+   filtered out of the tap: ~50KB of base64 at ~15/sec would OOM it and prove
+   nothing);
+3. the toolbar's computed DOM state — `disabled`, `is-dim`, `is-busy`,
+   `pointer-events`, and `elementFromPoint` to catch a transparent overlay stealing
+   the click, which no other layer can see.
+
+It also verifies its **own** preconditions: the dropped-command check asserts that
+it really did swallow the command, because a test that silently fails to reproduce
+its precondition passes for the wrong reason.
+
+**One probe bug was found and honestly classified as such:** the "server confirms
+the Back landed" check failed intermittently, because the fixture beacon and the
+`navigated` frame travel different routes and either can land first. Fixed by
+polling instead of reading the tap once. A probe that cries wolf teaches the reader
+to distrust real failures too.
+
+**Regression cover:** `tests/unit/toolbar-controls.test.ts` (28 tests) pins the
+shape of all four fixes so they cannot be quietly undone between probe runs. Its
+header says out loud that it is the **secondary** guard and the probe is the
+primary one. Every assertion in it was **mutation-tested**: eight mutants — one per
+fix, plus the four tempting *wrong* fixes (widen the CSP, collapse the lease to a
+single timeout, drop the `data:` acceptance gate, emit `navState` unguarded) — and
+all eight were killed. Assertions that pass on broken code are worse than no
+assertions, so this is worth redoing if you extend that file.
+
+**Still open from the original item:** step 4, screenshots — see §4.3.
 
 ### 4.4 Smaller open items
 
@@ -576,10 +627,13 @@ The user reported, in these words: *"به دکمه همه رفرش و جلو و 
 * The probe leaves `downloads/` and `profiles/sessions/*.tabs.json` behind. A
   poisoned tabs file is now *survivable* rather than fatal — keep it that way; it
   is a good regression fixture.
-* Nothing is known-broken *at the protocol level*. Typecheck clean, full suite
-  green (50 files / 1157 tests), live probe 69/69. **But see §4.3b: the toolbar
-  buttons have no end-to-end coverage at all, so "nothing known-broken" is a
-  weaker statement than 69/69 makes it sound.** Do §4.3b first, then §4.2.
+* Nothing is known-broken at the protocol level **or at the click level**.
+  Typecheck clean, full suite green (51 files / 1185 tests), live parity probe
+  69/69, toolbar probe 30/30. §4.3b is now **closed** — the sentence that used to
+  live here ("the toolbar buttons have no end-to-end coverage at all") was the
+  warning that paid off: four real bugs were hiding behind it. The remaining
+  un-instrumented layer is **visual appearance** (§4.3), so "nothing known-broken"
+  is still a weaker claim than the scores suggest — just for a different reason.
 
 ### 4.4b The coverage shape — know what the green numbers do NOT mean
 
@@ -588,22 +642,30 @@ Worth internalising before trusting any score in this document:
 | Layer | Covered by | Status |
 |---|---|---|
 | WebSocket protocol / server commands | `probe-live-parity.js` | 69/69 green |
-| Server internals, string/shape contracts | vitest, 1157 tests | green |
-| **Real clicks on real DOM controls** | **nothing** | **gap — §4.3b** |
+| Server internals, string/shape contracts | vitest, 1185 tests | green |
+| Real clicks on real DOM controls | `probe-ui-controls.js` | 30/30 green — closed §4.3b |
 | **Visual appearance vs real Chrome** | **nothing** | **gap — §4.3** |
 
-The last two rows are precisely where the user keeps reporting problems. That is
-not a coincidence: a layer with no instrument is a layer where bugs survive. When
-the user says a button is broken and the probe says green, **believe the user and
-suspect the missing instrument**, not the report.
+The row that used to read *"Real clicks on real DOM controls — nothing — gap"* is
+now closed, and closing it **immediately produced four real bugs** in a tree that
+was 69/69 and 1157/1157 green (§4.3b). That is the whole thesis of this table, now
+with evidence: **a layer with no instrument is a layer where bugs survive.** The one
+remaining gap is the other row the user keeps reporting problems about, which is not
+a coincidence either.
+
+When the user says a button is broken and the probe says green, **believe the user
+and suspect the missing instrument**, not the report. Note that the previous session
+audited the wiring, found it correct, and wrote so in good faith — the bugs were
+still there. Do not let a careful source audit stand in for an instrument.
 
 ---
 
 ## 4.5 Where the last session stopped, exactly
 
-Everything below is committed and pushed to PR #24.
+Earlier work is in PR #24 / #25. The §4.3b work below is on
+`genspark_ai_developer`.
 
-**Finished and measured:**
+**Finished and measured in the previous session:**
 
 * `drag` (text selection **and** slider) — §4.1
 * HTTP basic auth, all four checks — §4.1b
@@ -611,21 +673,35 @@ Everything below is committed and pushed to PR #24.
 * the probe streams its results — §2.7
 * `fixture.close()` no longer hangs; auth uses a fresh origin per run
 * the probe no longer poisons its own next run
-* **live parity probe: 69 / 69**
+
+**Finished and measured in THIS session (§4.3b, now closed):**
+
+* `tools/probe-ui-controls.js` — the missing click-level instrument: **30/30**,
+  reproduced on three runs, the last against a freshly built `dist/`
+* **four real bugs found and fixed** — dead tab-chip controls, `navState` not
+  re-emitted on tab change (the user's actual report), a spinner that could spin
+  forever, and favicons the CSP refused. Full write-up in §4.3b.
+* `tests/unit/toolbar-controls.test.ts` — 28 tests pinning all four fixes,
+  **mutation-tested 8/8 mutants killed**
+* self-reporting fixture pages `/p1`, `/p2`, `/nonce`, kept deliberately separate
+  from `/one|/two|/three` so the two probes cannot poison each other
+
+**Current scores, all re-measured after the fixes:**
+
+* toolbar probe: **30 / 30**
+* live parity probe: **69 / 69** (no regression from the `navState`/favicon changes)
 * `npx tsc --noEmit`: clean
-* `npx vitest run`: **50 files / 1157 tests, all passing**
+* `npx vitest run`: **51 files / 1185 tests, all passing**
 
-**The single next action: §4.3b — `tools/probe-ui-controls.js`.**
+**The single next action: §4.2 — the J2TEAM extension install.**
 
-This was promoted above §4.2 after the user reported Back / Forward / Reload / `+`
-as not working and an audit found the wiring correct but **completely untested at
-the click level**. Until that instrument exists, every "green" claim in this
-document covers the protocol and not the surface the user actually touches. Build
-the instrument first; only then decide whether there is a bug.
+Start with the Web Store network check; if the store is unreachable go straight to
+the local stand-in extension, and do **not** spend the session retrying curl.
 
-After §4.3b: §4.2 (J2TEAM — start with the Web Store network check; if the store is
-unreachable go straight to the local stand-in extension, do not spend the session
-retrying curl), then §4.3 screenshots, then §4.4.
+After §4.2: **§4.3 (screenshots)**, which is now the only layer in the §4.4b table
+with no instrument at all — and the §4.3b result is the argument for doing it
+properly rather than eyeballing one PNG. Take the shots **and look at them**; a
+screenshot nobody opens is not coverage. Then §4.4.
 
 ---
 
@@ -756,3 +832,14 @@ git push -f origin genspark_ai_developer
 * `npx vitest run tests/unit/browser-tabs.test.ts` — 65 / 65
 * `DISPLAY=:99 node tools/probe-live-parity.js` — **69 / 69, 0 failed**
 * all 8 `tools/*.js` — `node --check` OK
+
+**Build state at the end of the §4.3b session (2026-08-03), all re-measured after
+the four fixes and against a freshly built `dist/`:**
+
+* `npx tsc --noEmit` — clean
+* `npx vitest run` — **51 files / 1185 tests, all passing** (22.6 s)
+* `npx vitest run tests/unit/toolbar-controls.test.ts` — 28 / 28, and
+  **8 / 8 mutants killed** when each fix was deliberately reverted
+* `DISPLAY=:99 node tools/probe-ui-controls.js` — **30 / 30, exit 0**
+* `DISPLAY=:99 node tools/probe-live-parity.js` — **69 / 69, 0 failed**
+* `node --check` on every touched client file — OK

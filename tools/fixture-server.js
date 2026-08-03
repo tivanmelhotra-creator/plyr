@@ -120,6 +120,27 @@ const PAGES = {
 
   '/title-a': '<title>Tab A</title><h1>A</h1>',
   '/title-b': '<title>Tab B</title><h1>B</h1>',
+
+  // ── Pages for tools/probe-ui-controls.js (real clicks on the toolbar) ─────
+  // Each one says WHICH page it is, every time it executes. That is the only
+  // honest witness that Back actually went back: the address bar is written by
+  // the client, so believing it would be believing the code under test. A page
+  // that announces itself is the server-side truth.
+  //
+  // They are separate from /one|/two|/three on purpose — those are read by
+  // probe-live-parity.js, and a probe that quietly changes another probe's
+  // fixture is how a green run stops meaning anything.
+  '/p1': '<title>P1</title><h1 id=p1>P1</h1><script>R("where","p1")</script>',
+  '/p2': '<title>P2</title><h1 id=p2>P2</h1><script>R("where","p2")</script>',
+
+  // Announces a NEW value on every execution. Reload has no other observable
+  // outcome: the URL does not change, so "did the button do anything?" can only
+  // be answered by the page telling us it ran again. `cache-control: no-store`
+  // (set on every fixture response) also keeps this page out of the
+  // back/forward cache, so a history navigation re-executes it rather than
+  // restoring a frozen copy that would never report.
+  '/nonce': '<title>N</title><h1 id=n>nonce</h1>'
+    + '<script>R("nonce",String(Math.random()).slice(2,10)+"-"+Date.now())</script>',
 };
 
 // 1x1 transparent PNG — a real image body, and a real favicon.
