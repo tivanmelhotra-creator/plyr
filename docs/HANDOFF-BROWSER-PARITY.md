@@ -516,6 +516,52 @@ New surfaces added since that list was written, which also need looking at:
   not as a crash, and must not shift the layout;
 * `auth_interception_unavailable` — needs a sentence a non-engineer can act on.
 
+### 4.3b The toolbar controls have NO end-to-end coverage — a real blind spot
+
+The user reported, in these words: *"به دکمه همه رفرش و جلو و عقب هم دقت کن ظاهرا
+درست کار نمیکیند / و دکمه پلاس اضافه کردن تب جدید"* — Back, Forward, Reload and the
+`+` button "apparently don't work properly".
+
+**Audited 2026-08-03. The wiring is correct.** Do not "fix" it blind:
+
+* `navCmd()` (browser-view.js ~2548) guards on the socket, sets an optimistic
+  `navBusy`, then sends. `bvp-back` / `bvp-fwd` / `bvp-reload` each call it
+  (~2561-2563). Shift/Ctrl+click and right-click both offer the hard reload.
+* The `+` button is `bvp-tabadd` (**not** `bvp-newtab` — grepping the wrong id will
+  make you think it is missing). It routes through `newTab()` on purpose, so the
+  button, Ctrl+T and the tab menu cannot drift apart (~2442-2445).
+* Server-side `back` / `forward` / `reload` / `navState` are probe-covered and
+  green (probe lines 103-157).
+
+**So why does the user see breakage? Because of what is NOT covered:**
+
+> **No test anywhere clicks a single one of these buttons in a real browser.**
+> The probe drives the **WebSocket protocol**; the unit tests read **source text**.
+> `tools/picker-probe.js` and `tools/probe-picker-ui.js` look like they cover it but
+> the only match in them is `.bvp-backdrop` — the modal backdrop, not Back.
+> A correct server command plus one mis-wired listener, a CSS `pointer-events`,
+> an overlay stealing the click, or a `q()` returning null would all leave the
+> probe at a happy **69/69** while the button does nothing under the user's mouse.
+> **This is exactly the "prove it with a live test, not a grep" mandate pointed at
+> the one surface that never got one.**
+
+**Do this next (highest value remaining item, ahead of §4.4):** write
+`tools/probe-ui-controls.js` — Playwright, real page, real clicks:
+
+1. Open the picker, `page.click('#bvp-back')` / `#bvp-fwd` / `#bvp-reload` /
+   `#bvp-tabadd` and assert the **observable outcome** (URL changed, tab count went
+   up), never that the element exists.
+2. Assert `disabled`/`is-dim` truthfully reflect `canGoBack`/`canGoForward` — a Back
+   button that is enabled on the first page is a lie, and one stuck disabled after
+   navigating is the reported symptom.
+3. **Check the spinner cannot spin forever.** `navBusy` is set optimistically on
+   press and only cleared by `navStart`/`navEnd`/`navBlocked`. If a navigation is
+   dropped and none of the three arrives, `is-busy` never clears and the toolbar
+   *looks* hung even though it is live. Either prove one of the three always
+   arrives, or give `navBusy` a timeout that resolves itself — per the global
+   mandate, the UI must correct itself rather than sit there lying.
+4. Take screenshots and **look at them** (§4.3).
+
 ### 4.4 Smaller open items
 
 * **Pinch-zoom** (`Input.synthesizePinchGesture`) is wired but has no live probe
@@ -530,8 +576,26 @@ New surfaces added since that list was written, which also need looking at:
 * The probe leaves `downloads/` and `profiles/sessions/*.tabs.json` behind. A
   poisoned tabs file is now *survivable* rather than fatal — keep it that way; it
   is a good regression fixture.
-* Nothing is known-broken. Typecheck clean, full suite green (50 files /
-  1157 tests), live probe 69/69. Start from §4.2.
+* Nothing is known-broken *at the protocol level*. Typecheck clean, full suite
+  green (50 files / 1157 tests), live probe 69/69. **But see §4.3b: the toolbar
+  buttons have no end-to-end coverage at all, so "nothing known-broken" is a
+  weaker statement than 69/69 makes it sound.** Do §4.3b first, then §4.2.
+
+### 4.4b The coverage shape — know what the green numbers do NOT mean
+
+Worth internalising before trusting any score in this document:
+
+| Layer | Covered by | Status |
+|---|---|---|
+| WebSocket protocol / server commands | `probe-live-parity.js` | 69/69 green |
+| Server internals, string/shape contracts | vitest, 1157 tests | green |
+| **Real clicks on real DOM controls** | **nothing** | **gap — §4.3b** |
+| **Visual appearance vs real Chrome** | **nothing** | **gap — §4.3** |
+
+The last two rows are precisely where the user keeps reporting problems. That is
+not a coincidence: a layer with no instrument is a layer where bugs survive. When
+the user says a button is broken and the probe says green, **believe the user and
+suspect the missing instrument**, not the report.
 
 ---
 
@@ -551,9 +615,17 @@ Everything below is committed and pushed to PR #24.
 * `npx tsc --noEmit`: clean
 * `npx vitest run`: **50 files / 1157 tests, all passing**
 
-**The single next action:** §4.2, starting with the Web Store network check above.
-If the store is unreachable, go straight to the local stand-in extension — do not
-spend the session retrying curl.
+**The single next action: §4.3b — `tools/probe-ui-controls.js`.**
+
+This was promoted above §4.2 after the user reported Back / Forward / Reload / `+`
+as not working and an audit found the wiring correct but **completely untested at
+the click level**. Until that instrument exists, every "green" claim in this
+document covers the protocol and not the surface the user actually touches. Build
+the instrument first; only then decide whether there is a bug.
+
+After §4.3b: §4.2 (J2TEAM — start with the Web Store network check; if the store is
+unreachable go straight to the local stand-in extension, do not spend the session
+retrying curl), then §4.3 screenshots, then §4.4.
 
 ---
 
