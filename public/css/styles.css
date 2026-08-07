@@ -5660,6 +5660,10 @@ body.route-fullbleed .fe-mm-restore {
   user-select: none;
 }
 .bvp-grip:hover { color: var(--text); border-color: var(--primary); }
+.bvp-panel.is-minimized > :not(.bvp-grip):not(.bvp-panel-head) { display: none !important; }
+.bvp-panel.is-minimized { padding-bottom: 0.5rem; min-height: 0; }
+.bvp-panel.is-minimized .bvp-min-btn svg { transform: rotate(180deg); }
+
 .bvp-panel-head {
   display: flex;
   align-items: center;

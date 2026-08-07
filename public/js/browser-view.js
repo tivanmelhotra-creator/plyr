@@ -615,16 +615,10 @@
               BIC('move', 13) + '</div>' +
             '<div class="bvp-panel-head">' +
               '<span class="bvp-panel-title">' + esc(t('bvp.title')) + '</span>' +
-              // THE EYE IS A MODE SWITCH, not a "hide the panel" button. It used
-              // to only fade the panel to 22% opacity, while the page-side picker
-              // stayed injected for the whole session — which is what made this
-              // window unable to browse: the injected `onClick` swallowed every
-              // real click and turned it into a pick, so links never opened and
-              // forms never submitted. The eye now toggles element-selection
-              // mode: OFF = a real browser (click, follow links, type, scroll),
-              // ON = hover outlines + click picks. See `applySelectMode()`.
               '<button class="icon-btn bvp-eye" id="bvp-eye" type="button" ' +
                 'aria-pressed="false" title="">' + BIC('eye', 14) + '</button>' +
+              '<button class="icon-btn bvp-min-btn" id="bvp-min-btn" type="button" ' +
+                'aria-expanded="true" title="' + esc(t('bvp.minimize', 'Minimize panel')) + '">' + BIC('chevron-down', 14) + '</button>' +
             '</div>' +
             // Which of the two modes you are in, spelled out. An icon-only
             // toggle that changes what every click does needs a label.
@@ -2803,6 +2797,16 @@
     q('bvp-eye').addEventListener('click', function () {
       applySelectMode(!pickState.selectMode);
     });
+    var minBtn = q('bvp-min-btn');
+    if (minBtn) {
+      minBtn.addEventListener('click', function () {
+        var panel = q('bvp-panel');
+        if (!panel) return;
+        var min = panel.classList.toggle('is-minimized');
+        minBtn.setAttribute('aria-expanded', min ? 'false' : 'true');
+        minBtn.setAttribute('title', min ? esc(t('bvp.restore', 'Restore panel')) : esc(t('bvp.minimize', 'Minimize panel')));
+      });
+    }
     // ── History and reload ────────────────────────────────────────────────
     // Each one refuses when there is no socket instead of sending into the void.
     // That silent no-op is most of what "the back/forward/refresh buttons don't
