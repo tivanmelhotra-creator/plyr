@@ -210,6 +210,38 @@ export const createBrowserRoutes = (): Router => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Tab inspection — §5 light remote mode.
+  //
+  // When the picker canvas wedges or lies, the operator wants to see whether
+  // the real Chrome still has the tabs they were working with, and they want a
+  // way to kill a hung tab without restarting the whole browser. These two
+  // routes are the read and the write of that diagnostic.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  router.get('/browser/tabs', async (_req, res) => {
+    try {
+      const tabs = await RealChrome.tabs();
+      res.json({ success: true, tabs });
+    } catch (e) { sendError(res, e); }
+  });
+
+  router.post('/browser/tabs/close', async (req: AuthenticatedRequest, res) => {
+    const prefix = String((req.body && (req.body as { url?: string }).url) || '').trim();
+    if (!prefix) {
+      return fail(res, 400, 'Missing "url" prefix.',
+        'POST { "url": "https://example.com/path" } — the matching tab is closed.');
+    }
+    try {
+      const closed = await RealChrome.closeTab(prefix);
+      if (!closed) {
+        return fail(res, 404, 'No tab matched that URL prefix.',
+          'GET /browser/tabs to see what is currently open.');
+      }
+      res.json({ success: true, closed: prefix });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Real Chrome lifecycle
   // ─────────────────────────────────────────────────────────────────────────
 

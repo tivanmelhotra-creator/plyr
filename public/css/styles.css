@@ -6412,6 +6412,45 @@ body.route-fullbleed .fe-mm-restore {
 .rc-input:disabled { opacity: 0.6; }
 .rc-input::placeholder { color: var(--text-dim); opacity: 0.7; }
 
+/* Live tabs (light remote mode) — the rows are stacked title + url + kill
+   button. Truncation is on, monospace on the URL so the prefix the user
+   sees in the kill confirmation matches what the API will match on. */
+.rc-tabs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.rc-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.rc-tab-row > div:first-child { flex: 0 1 auto; min-width: 0; flex-grow: 1; }
+.rc-tab-title {
+  font-weight: 500;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rc-tab-url {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  direction: ltr;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rc-tab-row .btn { flex: 0 0 auto; }
+
 .rc-toast {
   margin: 8px 12px 12px;
   padding: 7px 9px;

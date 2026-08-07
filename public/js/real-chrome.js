@@ -393,6 +393,62 @@
     upRow.appendChild(extFile);
     s3.appendChild(upRow);
 
+    // ── 3b. Live tabs (light remote mode) ──────────────────────────────────
+    // When the picker canvas wedges, the operator wants to see whether the real
+    // Chrome still has the pages they were working with, and to kill a hung tab
+    // without restarting the browser. This section reads /browser/tabs and lets
+    // each row POST /browser/tabs/close.
+    var sTabs = section(body, t('rc.tabs', 'Live tabs'));
+    note(sTabs, t('rc.tabsHint',
+      'Open tabs in the real Chrome. Refresh to see what is still alive; use ' +
+      'Kill to close a wedged tab without restarting the browser.'));
+    var tabsRow = el('div', 'rc-row');
+    var refreshTabsBtn = btn(t('rc.refreshTabs', 'Refresh'), 'btn btn-sm');
+    refreshTabsBtn.addEventListener('click', function () {
+      setBusy(refreshTabsBtn, true, t('rc.refreshing', 'refreshing…'));
+      refreshTabs(refreshTabsBtn);
+    });
+    tabsRow.appendChild(refreshTabsBtn);
+    sTabs.appendChild(tabsRow);
+    var tabsList = el('div', 'rc-tabs-list');
+    sTabs.appendChild(tabsList);
+
+    function renderTabs(tabs) {
+      tabsList.innerHTML = '';
+      if (!tabs || !tabs.length) {
+        note(tabsList, t('rc.tabsEmpty', 'No tabs open (or Chrome is not running).'));
+        return;
+      }
+      tabs.forEach(function (tab) {
+        var row = el('div', 'rc-tab-row');
+        var title = el('div', 'rc-tab-title', tab.title || tab.url || '(no title)');
+        var url = el('div', 'rc-tab-url', tab.url || '');
+        row.appendChild(title);
+        row.appendChild(url);
+        var kill = btn(t('rc.killTab', 'Kill'), 'btn btn-sm');
+        kill.title = t('rc.killTabHint', 'Close this tab in the real Chrome.');
+        kill.addEventListener('click', function () {
+          if (!confirm(t('rc.killConfirm', 'Close this tab?') + '\n' + (tab.url || ''))) return;
+          setBusy(kill, true, t('rc.killing', 'closing…'));
+          window.API.post('/browser/tabs/close', { url: tab.url })
+            .then(function () { toast(t('rc.killed', 'Tab closed.'), 'ok'); return refreshTabs(kill); })
+            .catch(function (e) { toast(e.message, 'error'); })
+            .then(function () { setBusy(kill, false); });
+        });
+        row.appendChild(kill);
+        tabsList.appendChild(row);
+      });
+    }
+
+    function refreshTabs(btn) {
+      return window.API.get('/browser/tabs')
+        .then(function (d) { renderTabs(d && d.tabs); })
+        .catch(function (e) { tabsList.innerHTML = ''; note(tabsList, e.message, 'error'); })
+        .then(function () { if (btn) setBusy(btn, false); });
+    }
+
+    refreshTabs();
+
     // ── 4. Remote desktop ───────────────────────────────────────────────────
     var s4 = section(body, t('rc.desktop', 'Remote desktop'));
     note(s4, t('rc.desktopHint',

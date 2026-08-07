@@ -57,6 +57,12 @@ import {
   type ImportedCookie,
 } from './CookieImport';
 
+export interface RealChromeTab {
+  url: string;
+  title: string;
+  active: boolean;
+}
+
 export interface RealChromeStatus {
   enabled: boolean;
   running: boolean;
@@ -340,6 +346,54 @@ export class RealChrome {
     );
     if (!found) return '';
     return found.popupUrl || found.optionsUrl || found.url;
+  }
+
+  /**
+   * List the open tabs in the shared Chrome.
+   *
+   * The point is diagnosis from the Live Browser View: when the picker canvas
+   * is wedged or showing a stale frame, the operator wants to see whether the
+   * real browser still has the pages they were working with. Page objects also
+   * expose close() — the route below mirrors that as POST /browser/tabs/close
+   * so a hung tab can be killed without restarting Chrome.
+   */
+  static async tabs(): Promise<RealChromeTab[]> {
+    const ctx = this.context;
+    if (!ctx) return [];
+    const pages = ctx.pages();
+    const out: RealChromeTab[] = [];
+    for (const p of pages) {
+      try {
+        out.push({
+          url: p.url(),
+          title: await p.title().catch(() => ''),
+          active: false,
+        });
+      } catch {
+        // A page that throws on url() has gone away mid-iteration. Skip it
+        // rather than failing the whole list — the diagnosis still helps.
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Close a tab by URL prefix. Returns true if a tab was closed.
+   *
+   * URL prefix (not full URL) because Playwright Page objects do not expose a
+   * stable id across calls — only the URL is reliable, and operators will
+   * naturally pick the unique tail of the URL they want gone.
+   */
+  static async closeTab(urlPrefix: string): Promise<boolean> {
+    const ctx = this.context;
+    if (!ctx) return false;
+    for (const p of ctx.pages()) {
+      if (p.url().startsWith(urlPrefix)) {
+        await p.close().catch(() => {});
+        return true;
+      }
+    }
+    return false;
   }
 
   static async status(): Promise<RealChromeStatus> {
