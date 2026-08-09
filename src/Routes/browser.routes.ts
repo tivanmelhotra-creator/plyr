@@ -238,13 +238,7 @@ export const createBrowserRoutes = (): Router => {
           'GET /browser/tabs to see what is currently open.');
       }
       // Sync LiveBrowser so screencast and UI list update immediately
-      try {
-        // Notify any listening LiveBrowser session to refresh its tab list
-        const { LiveBrowser } = await import('../core/LiveBrowser');
-        if (LiveBrowser && typeof (LiveBrowser as any).broadcastTabsChanged === 'function') {
-          (LiveBrowser as any).broadcastTabsChanged();
-        }
-      } catch (e) { /* non-critical */ }
+      // Tab sync handled via LiveBrowserEvents internally
       res.json({ success: true, closed: prefix });
     } catch (e) { sendError(res, e); }
   });
