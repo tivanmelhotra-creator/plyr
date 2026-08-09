@@ -3020,6 +3020,11 @@
         if (!window.RealChromePanel) return;
         window.RealChromePanel.open({
           anchor: chromeBtn,
+          // Which page the extension is being opened FOR. The URL field tracks
+          // the canvas (see the `msg.url` handlers), so it is the live answer,
+          // and it is read at click time rather than captured here because the
+          // panel can stay open while the canvas navigates.
+          pageUrl: function () { return (urlIn.value || '').trim(); },
           onNavigate: function (url) {
             urlIn.value = url;
             // ── A NEW TAB, not this one ─────────────────────────────────────
