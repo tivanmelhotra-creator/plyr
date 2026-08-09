@@ -1860,29 +1860,20 @@
      * be rejected — hence fetch + blob + a synthetic click.
      */
     function fetchDownload(d) {
+      // Pass token via URL query param too, so the server accepts the download
+      // even when this <a> click cannot carry headers. Direct download means
+      // the browser handles the save dialog natively instead of us juggling a
+      // blob — works in headless, in real Chrome, and in any pop-up blocker.
       var url = '/browser/downloads/' + encodeURIComponent(d.token)
-        + '?userId=' + encodeURIComponent(effectiveUserId());
-      fetch(url, { headers: { 'x-api-key': window.API.getKey() } })
-        .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.blob();
-        })
-        .then(function (blob) {
-          var a = document.createElement('a');
-          var href = URL.createObjectURL(blob);
-          a.href = href;
-          a.download = String(d.name || 'download');
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          // Revoke on a timer, not immediately: some browsers have not started
-          // reading the blob by the time click() returns.
-          setTimeout(function () { URL.revokeObjectURL(href); }, 10000);
-        })
-        .catch(function (e) {
-          toast(tf('bvp.dlFailed', { name: String(d.name || '') })
-            + ' — ' + ((e && e.message) || ''), 'error');
-        });
+        + '?userId=' + encodeURIComponent(effectiveUserId())
+        + '&token=' + encodeURIComponent(window.API.getKey() || '');
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = String(d.name || 'download');
+      a.target = '_self';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     }
 
     // ══════════════════════════════════════════════════════════════════════
