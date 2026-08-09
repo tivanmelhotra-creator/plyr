@@ -919,6 +919,28 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
     }
   });
 
+  // GET /workflows/:userId/:workflowId/export — دانلود JSON با Content-Disposition
+  // برای دانلود مستقیم فایل در مرورگر (سازگار با ریموت)
+  router.get('/workflows/:userId/:workflowId/export', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const workflowId = req.params.workflowId;
+      if (!isValidWorkflowId(workflowId)) {
+        return res.status(400).json({ success: false, error: 'Invalid workflow id' });
+      }
+      const wf = await workflowService.get(userId, workflowId);
+      if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+      
+      const filename = String(wf.name || workflowId).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(JSON.stringify(wf, null, 2));
+    } catch (e: unknown) {
+      const error = e as Error;
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // GET /workflows/:userId/:workflowId — fetch one saved workflow.
   router.get('/workflows/:userId/:workflowId', async (req: AuthenticatedRequest, res) => {
     try {

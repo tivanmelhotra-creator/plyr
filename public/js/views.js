@@ -1960,6 +1960,27 @@
 
   /** Download a workflow as JSON (row menu → Export). */
   function exportWorkflowJson(wf) {
+    // تشخیص حالت: ریموت (دانلود از سرور) یا لوکال (ساخت فایل در حافظه)
+    var isRemote = (typeof window !== 'undefined') &&
+                   window.location &&
+                   window.location.hostname !== 'localhost' &&
+                   window.location.hostname !== '127.0.0.1' &&
+                   window.location.protocol !== 'file:';
+
+    if (isRemote && wf && wf.id && wf.userId) {
+      // حالت ریموت: فایل رو از سرور با Content-Disposition بگیر
+      var url = '/workflows/' + encodeURIComponent(wf.userId) + '/' + encodeURIComponent(wf.id) + '/export';
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = String(wf.name || wf.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      U().toast(t('ws.exported'), 'success');
+      return;
+    }
+
+    // حالت لوکال: ساخت فایل در حافظه و دانلود مستقیم
     var payload = JSON.stringify({
       name: wf.name, description: wf.description || null, steps: wf.steps,
       headless: wf.headless, webhookUrl: wf.webhookUrl,
