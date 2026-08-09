@@ -660,6 +660,21 @@ export class LiveBrowserSession {
    */
   private pendingChooser: FileChooser | null = null;
   /**
+   * WHICH page opened `pendingChooser`.
+   *
+   * The claim "Chrome will not open a second dialog while the first is up" holds
+   * per PAGE, not per browser — and this session owns several. MEASURED
+   * (tools/probe-steal-tmp.js) with two tabs each opening a chooser and then one
+   * setFiles:
+   *     sequence      : pending <- A | pending <- B
+   *     A input files : 0
+   *     B input files : 1        ← tab A asked, tab B received the file
+   * So the single slot really could be hijacked. Recording the owner lets the
+   * listener keep the slot first-come and lets a cancel/answer verify it is
+   * talking to the page that actually asked.
+   */
+  private pendingChooserPage: Page | null = null;
+  /**
    * A page dialog waiting on the user.
    *
    * Exactly one, for the same reason as the file chooser: Chrome will not open
@@ -998,9 +1013,64 @@ export class LiveBrowserSession {
     // this listener makes Playwright intercept the dialog instead of opening
     // it, which turns "nothing happens when I click Import" into a question the
     // UI can ask: which of YOUR files?
+    //
+    // WHY THE OLD `page !== this.page` GUARD WAS THE "IMPORT GETS LOST" BUG
+    // --------------------------------------------------------------------
+    // The guard meant to skip a BACKGROUND tab's dialog, but `this.page` is only
+    // assigned at the END of an async activation (`adopt` → `focus`, which
+    // awaits attachPage, bringToFront, bindCdp and page.title()). A dialog
+    // opened by a page that is still mid-activation therefore sees a stale
+    // `this.page` and was dropped — and dropped in the worst possible way:
+    // `return` leaves the chooser unanswered and emits NOTHING, so the prompt
+    // never appears and the user's Import click produces pure silence. That is
+    // "ایمپورت گم میشه" — the import gets lost.
+    //
+    // MEASURED (tools/probe-import*-tmp.js, real Chromium):
+    //     chooser on the active page          -> prompt shown, file delivered
+    //     chooser during a late activation    -> DROPPED silently
+    //     after the drop: input.files.length  -> 0        (nothing arrived)
+    //                     page.title()        -> 5ms      (page NOT wedged)
+    //                     clicking again      -> captured (the retry works)
+    //
+    // The last two lines are what decide the fix. The page is not wedged, so we
+    // are free to answer late; and a chooser is per-page state, so the honest
+    // test is not "is this the active page RIGHT NOW" but "is this page one of
+    // OUR tabs". A tab we own is a tab the user can see and switch to, so its
+    // dialog is always ours to answer. A page we do not own (another session's,
+    // in the shared Real Chrome context) is still refused — but explicitly, with
+    // an empty selection, so the page is released instead of left hanging.
+    //
+    // AND THE HAZARD THE OLD GUARD WAS ALSO PROTECTING AGAINST — IT WAS REAL
+    // ---------------------------------------------------------------------
+    // `pendingChooser` holds exactly ONE dialog, so a second dialog used to be
+    // able to overwrite the first, and the file the user then picked went to the
+    // WRONG page. MEASURED (tools/probe-steal-tmp.js), two tabs each opening a
+    // chooser, then one setFiles:
+    //     sequence      : pending <- A | pending <- B
+    //     A input files : 0
+    //     B input files : 1        ← A asked, B received
+    // Widening the guard without addressing this would have traded a silent
+    // failure for a file going somewhere the user did not choose, which is worse.
+    //
+    // So the slot is FIRST-COME: whoever asked first keeps it until it is
+    // answered or cancelled. A later dialog is released immediately rather than
+    // being allowed to clobber the outstanding one. `pendingChooserPage` records
+    // the owner so acceptFiles can be sure it is answering the page that asked.
     page.on('filechooser', (chooser) => {
-      if (page !== this.page) return;   // a background tab's dialog is not ours to answer
+      if (!this.tabs.some((t) => t.page === page)) {
+        // Not one of our tabs. Do not leave the dialog pending: an unanswered
+        // chooser is an input the page thinks is still waiting.
+        void chooser.setFiles([]).catch(() => {});
+        return;
+      }
+      if (this.pendingChooser && this.pendingChooserPage !== page) {
+        // Someone else's prompt is already on screen. Release this one instead of
+        // stealing the answer meant for that page.
+        void chooser.setFiles([]).catch(() => {});
+        return;
+      }
       this.pendingChooser = chooser;
+      this.pendingChooserPage = page;
       void (async () => {
         // The accept filter belongs to the input, and repeating it in the UI is
         // what stops someone uploading a .png into a cookie importer.
@@ -1148,6 +1218,16 @@ export class LiveBrowserSession {
     page.on('close', () => {
       const tab = this.tabOfPage(page);
       this.owned.delete(page);
+      // If the page that owned the outstanding file dialog is gone, so is the
+      // dialog. Without this the slot would stay claimed by a dead page forever
+      // and every later Import — from any tab — would be refused as a hijack.
+      // The chooser itself needs no answering: there is no longer a page to
+      // answer to.
+      if (page === this.pendingChooserPage) {
+        this.pendingChooser = null;
+        this.pendingChooserPage = null;
+        this.emit('fileChooserDone', { ok: false, reason: 'cancelled' });
+      }
       if (page === this.cdpPage) { this.cdp = null; this.cdpPage = null; }
       if (!tab) return;
       tab.page = null;
@@ -2745,7 +2825,11 @@ export class LiveBrowserSession {
       this.emit('fileChooserDone', { ok: false, reason: 'no_pending_chooser' });
       return;
     }
+    // Release the slot AND its owner together: leaving a stale owner behind would
+    // make the next dialog from a different tab look like a hijack attempt and get
+    // refused, which is the original silent-import bug wearing a new hat.
     this.pendingChooser = null;
+    this.pendingChooserPage = null;
 
     const paths: string[] = [];
     for (const token of Array.isArray(tokens) ? tokens.slice(0, 10) : []) {
@@ -3087,6 +3171,7 @@ export class LiveBrowserSession {
     this.touch();
     const chooser = this.pendingChooser;
     this.pendingChooser = null;
+    this.pendingChooserPage = null;
     if (!chooser) return;
     await chooser.setFiles([]).catch(() => {});
     this.emit('fileChooserDone', { ok: false, reason: 'cancelled' });
@@ -3200,6 +3285,7 @@ export class LiveBrowserSession {
       await discardUploads(this.userId, tokens).catch(() => {});
     }
     this.pendingChooser = null;
+    this.pendingChooserPage = null;
     try { if (this.cdp) await this.cdp.send('Page.stopScreencast').catch(() => {}); } catch { /* ignore */ }
     try { if (this.cdp) await this.cdp.detach().catch(() => {}); } catch { /* ignore */ }
     // EVERY tab, not just the active one. The old code closed `this.page` only,

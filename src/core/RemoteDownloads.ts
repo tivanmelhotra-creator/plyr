@@ -191,3 +191,56 @@ export async function discardDownload(userId: string, token: string): Promise<vo
   }
   await fs.rm(dir, { recursive: true, force: true }).catch(() => { /* already gone */ });
 }
+
+/**
+ * Build a `Content-Disposition` value that Node will actually accept.
+ *
+ * WHY THIS EXISTS — MEASURED, and it is the whole of a reported bug.
+ * -----------------------------------------------------------------
+ * An HTTP header is a latin1 field. Node enforces that: `res.setHeader` THROWS
+ * `Invalid character in header content ["Content-Disposition"]` for any byte
+ * above 0xff. The download route used to interpolate the raw filename into the
+ * `filename="…"` parameter, so a file whose name is not ASCII made the whole
+ * response die — the throw happened before any bytes were sent, Express turned
+ * it into a 500, and the user (who had, entirely reasonably, downloaded a file
+ * with a Persian name) got a download that failed on every attempt.
+ *
+ * MEASURED against this server, same fixture, only the name changed:
+ *
+ *     GET /browser/downloads/dl_…  "report.pdf"                -> 200
+ *     GET /browser/downloads/dl_…  "seedream-5.0-pro_a_مهدی.png" -> 500
+ *       {"success":false,
+ *        "error":"Invalid character in header content [\"Content-Disposition\"]"}
+ *
+ * That 500 is the message the user reported verbatim. It was NOT a browser
+ * problem and not a CSP problem: the server refused to build the header.
+ *
+ * THE FIX, and why it keeps the real name
+ * ---------------------------------------
+ * RFC 6266 already answers this, and both halves matter:
+ *
+ *   filename="…"      MUST be ASCII. Non-representable characters are replaced
+ *                     with `_`. This is the fallback for ancient clients.
+ *   filename*=UTF-8'' MUST be percent-encoded ASCII, and carries the REAL name.
+ *
+ * Every browser in use today prefers `filename*`, so the user still receives
+ * `seedream-5.0-pro_a_مهدی.png` — the ASCII copy is never the name they see.
+ * Percent-encoding is what makes the second parameter safe: `encodeURIComponent`
+ * cannot emit a high byte, a quote, a CR or an LF, so it cannot throw here and
+ * cannot inject a header either.
+ *
+ * Control characters are stripped from the ASCII half for a second reason: a CR
+ * or LF in a header value is response splitting, and the name originates in a
+ * remote server's own `Content-Disposition` (see the module header above), i.e.
+ * it is hostile input.
+ */
+export function contentDispositionAttachment(filename: string): string {
+  const raw = String(filename == null ? '' : filename);
+  // Anything outside printable ASCII becomes `_`, then quotes/backslashes too,
+  // so the quoted-string cannot be terminated early.
+  // eslint-disable-next-line no-control-regex
+  const ascii = raw.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_').trim();
+  const fallback = ascii || 'download';
+  return `attachment; filename="${fallback}"; `
+    + `filename*=UTF-8''${encodeURIComponent(raw || fallback)}`;
+}

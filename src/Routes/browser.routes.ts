@@ -46,7 +46,11 @@ import {
 } from '../core/CookieImport';
 import { sessionStatePath, loadStorageState } from '../core/BrowserProfile';
 import { saveUpload, UploadError, MAX_UPLOAD_BYTES } from '../core/RemoteUploads';
-import { resolveDownload, DownloadError } from '../core/RemoteDownloads';
+import {
+  resolveDownload,
+  DownloadError,
+  contentDispositionAttachment,
+} from '../core/RemoteDownloads';
 import { SelfHeal, type HealStep } from '../core/SelfHeal';
 // The same gate /browser/ws uses. Uploads must be scoped to the identity the
 // socket runs as, so they must be authorized by the identical rule.
@@ -629,9 +633,13 @@ export const createBrowserRoutes = (): Router => {
       });
 
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      // `domainFilter` is a query parameter, so it can hold any character the
+      // user can type — and an internationalised domain made this throw exactly
+      // like the download route did. MEASURED: ?domain=مهدی.com -> 500,
+      // ?domain=x.com -> 200. Same helper, same reason.
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="cookies-${domainFilter || 'all'}.json"`,
+        contentDispositionAttachment(`cookies-${domainFilter || 'all'}.json`),
       );
       res.send(JSON.stringify(out, null, 2));
     } catch (e) { sendError(res, e); }
@@ -728,11 +736,11 @@ export const createBrowserRoutes = (): Router => {
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Length', String(file.size));
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${file.name.replace(/["\\]/g, '_')}"; ` +
-        `filename*=UTF-8''${encodeURIComponent(file.name)}`,
-      );
+      // Built by a helper because a raw non-ASCII name here THROWS inside
+      // res.setHeader and turns the download into a 500 — measured, and the
+      // reported "Invalid character in header content" in full. See
+      // contentDispositionAttachment in core/RemoteDownloads.
+      res.setHeader('Content-Disposition', contentDispositionAttachment(file.name));
       res.sendFile(file.path);
     } catch (e) {
       if (e instanceof DownloadError) return fail(res, 404, e.message);
