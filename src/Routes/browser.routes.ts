@@ -237,6 +237,11 @@ export const createBrowserRoutes = (): Router => {
         return fail(res, 404, 'No tab matched that URL prefix.',
           'GET /browser/tabs to see what is currently open.');
       }
+      // Sync LiveBrowser so screencast and UI list update immediately
+      try {
+        const { LiveBrowser } = await import('../core/LiveBrowser');
+        await LiveBrowser.removeTabByUrl(prefix);
+      } catch (e) { /* non-critical */ }
       res.json({ success: true, closed: prefix });
     } catch (e) { sendError(res, e); }
   });
@@ -285,8 +290,21 @@ export const createBrowserRoutes = (): Router => {
 
   router.post('/browser/stop', async (_req, res) => {
     try {
+      // Disable SelfHeal auto-restart on manual stop
+      const { SelfHeal } = await import('../core/SelfHeal');
+      SelfHeal.disableAutoHeal();
       await RealChrome.stop();
       res.json({ success: true, realChrome: await RealChrome.status() });
+    } catch (e) { sendError(res, e); }
+  });
+
+  router.post('/browser/start', async (_req, res) => {
+    try {
+      const { SelfHeal } = await import('../core/SelfHeal');
+      SelfHeal.enableAutoHeal();
+      const { steps, report } = healCollector();
+      const status = await SelfHeal.heal({ report });
+      res.json({ success: true, steps, realChrome: status.realChrome });
     } catch (e) { sendError(res, e); }
   });
 

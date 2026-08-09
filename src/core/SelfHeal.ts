@@ -112,6 +112,16 @@ const ETA = {
 } as const;
 
 export class SelfHeal {
+  private static autoHealDisabled = false;
+
+  public static disableAutoHeal(): void {
+    SelfHeal.autoHealDisabled = true;
+  }
+
+  public static enableAutoHeal(): void {
+    SelfHeal.autoHealDisabled = false;
+  }
+
   /**
    * Serialise every heal. Two concurrent heals would fight over one
    * user-data-dir, which Chrome resolves by refusing to start the second — a
