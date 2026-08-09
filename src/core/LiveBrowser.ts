@@ -1632,7 +1632,7 @@ export class LiveBrowserSession {
     if (idx === -1) return false;
     const t = this.tabs[idx];
     this.tabs.splice(idx, 1);
-    if (this.activeTab === t.id) this.activeTab = null;
+    if (this.activeId === t.id) this.activeId = "";
     return true;
   }
 

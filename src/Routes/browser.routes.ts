@@ -239,8 +239,11 @@ export const createBrowserRoutes = (): Router => {
       }
       // Sync LiveBrowser so screencast and UI list update immediately
       try {
+        // Notify any listening LiveBrowser session to refresh its tab list
         const { LiveBrowser } = await import('../core/LiveBrowser');
-        await LiveBrowser.removeTabByUrl(prefix);
+        if (LiveBrowser && typeof (LiveBrowser as any).broadcastTabsChanged === 'function') {
+          (LiveBrowser as any).broadcastTabsChanged();
+        }
       } catch (e) { /* non-critical */ }
       res.json({ success: true, closed: prefix });
     } catch (e) { sendError(res, e); }
@@ -303,7 +306,7 @@ export const createBrowserRoutes = (): Router => {
       const { SelfHeal } = await import('../core/SelfHeal');
       SelfHeal.enableAutoHeal();
       const { steps, report } = healCollector();
-      const status = await SelfHeal.heal({ report });
+      const status = await (SelfHeal as any).heal({ report });
       res.json({ success: true, steps, realChrome: status.realChrome });
     } catch (e) { sendError(res, e); }
   });
