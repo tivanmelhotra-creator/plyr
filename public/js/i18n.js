@@ -510,6 +510,12 @@
       'bvp.dlUnknownSize': 'حجم نامعلوم',
       'bvp.dlTooLarge': 'فایل بزرگ‌تر از حد مجاز بود و ذخیره نشد.',
       'bvp.dlEmpty': 'هنوز چیزی دانلود نشده.',
+      // ناکامی گرفتن فایل از سرور. اینها جای پیام کلیِ خود کروم
+      // («Failed - Unknown server error») را می‌گیرند که هیچ علتی نمی‌گوید.
+      'bvp.dlNoAuth': 'برای گرفتن فایل باید وارد شده باشید؛ کلید API پیدا نشد. یک بار از تنظیمات کلید را دوباره وارد کنید.',
+      'bvp.dlForbidden': 'این کلید API اجازهٔ گرفتن این فایل را ندارد. همان کاربری که مرورگر زنده با آن باز شده باید فایل را بگیرد.',
+      'bvp.dlGone': 'این فایل دیگر روی سرور نیست (پاک شده یا مهلتش تمام شده). دوباره از صفحه دانلود بگیرید.',
+      'bvp.dlServerError': 'سرور هنگام فرستادن فایل خطا داد (کد {status}).',
 
       // ── منوی راست‌کلیک روی صفحه ───────────────────────────────────────
       'bvp.cmBack': 'صفحهٔ قبل',
@@ -1837,6 +1843,12 @@
       'bvp.dlUnknownSize': 'size unknown',
       'bvp.dlTooLarge': 'That file was over the size limit and was not kept.',
       'bvp.dlEmpty': 'Nothing downloaded yet.',
+      // Fetch-to-this-machine failures. These replace Chrome's own generic
+      // "Failed - Unknown server error", which names no cause at all.
+      'bvp.dlNoAuth': 'Saving the file needs you signed in, and no API key was found. Re-enter your key in Settings and try again.',
+      'bvp.dlForbidden': 'This API key may not read that file. It has to be fetched by the same user the live browser was opened as.',
+      'bvp.dlGone': 'That file is no longer on the server (cleared, or past its expiry). Download it from the page again.',
+      'bvp.dlServerError': 'The server errored while sending the file (status {status}).',
 
       // ── The page context menu ────────────────────────────────────────
       'bvp.cmBack': 'Back',

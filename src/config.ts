@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import path from 'path';
 import os from 'os';
-import { randomBytes } from 'crypto';
 
 const cleanEnv = (val: string | undefined): string | undefined => {
   if (!val) return undefined;
@@ -85,16 +84,32 @@ const resolveDeploymentMode = (): 'single' | 'multi' => {
 };
 const DEPLOYMENT_MODE = resolveDeploymentMode();
 
-// In single mode we accept one shared token. If API_TOKEN is not set we
-// auto-generate a strong random one at boot (printed once to the logs).
+// In single mode we accept one shared token.
+//
+// DEFAULT: `admin123`, by explicit operator request — a token you can type from
+// memory on a box only you reach beats one you have to dig out of the logs after
+// every restart. It replaces a random `tok_…` that was regenerated on each boot
+// whenever .env was empty, which logged every existing panel out.
+//
+// THIS IS A WEAK, PUBLICLY-KNOWN DEFAULT. It is not a secret: it is in this
+// source file and in .env.example. Whoever holds it holds the whole instance —
+// this one token drives a real browser, reads and writes the download/upload
+// directories, and runs workflows. So `isDefaultApiToken` is exported and
+// warned about loudly at boot; anything reachable from the internet must set its
+// own API_TOKEN in .env.
+const DEFAULT_SINGLE_USER_API_TOKEN = 'admin123';
 const resolveApiToken = (): string => {
   const explicit = cleanEnv(process.env.API_TOKEN);
   if (explicit && explicit.length > 0) return explicit;
   if (DEPLOYMENT_MODE !== 'single') return '';
-  return `tok_${randomBytes(24).toString('hex')}`;
+  return DEFAULT_SINGLE_USER_API_TOKEN;
 };
 const API_TOKEN = resolveApiToken();
+// Kept for the boot message and for anything that wants to nag the operator.
+// Renamed in spirit, not in name: it is still "the operator did not choose this
+// token", it just no longer means "and it is therefore unguessable".
 const API_TOKEN_AUTO_GENERATED = DEPLOYMENT_MODE === 'single' && !cleanEnv(process.env.API_TOKEN);
+const API_TOKEN_IS_DEFAULT = API_TOKEN === DEFAULT_SINGLE_USER_API_TOKEN;
 
 // Full-access plan used for every request in single mode (quota 0 = unlimited).
 const FULL_ACCESS_PLAN: PlanConfig = {
@@ -138,6 +153,7 @@ export const config = {
   IS_SINGLE_USER: DEPLOYMENT_MODE === 'single',
   API_TOKEN,
   API_TOKEN_AUTO_GENERATED,
+  API_TOKEN_IS_DEFAULT,
   FULL_ACCESS_PLAN,
 
   // ============================================
@@ -182,10 +198,18 @@ export const config = {
   // with a genuine extension host.
   //
   // REAL_CHROME_ENABLED switches the interactive browser from a throwaway
-  // BrowserContext to a PERSISTENT Chrome profile with extensions loaded. It is
-  // opt-in because it costs a long-lived Chrome process and, on a headless box,
-  // an X server.
-  REAL_CHROME_ENABLED: cleanEnv(process.env.REAL_CHROME_ENABLED)?.toLowerCase() === 'true',
+  // BrowserContext to a PERSISTENT Chrome profile with extensions loaded.
+  //
+  // DEFAULT: ON (opt-OUT). It used to be opt-in, on the grounds that it costs a
+  // long-lived Chrome process and, on a headless box, an X server. In practice
+  // that default made the headline feature look broken: with it off, Chrome
+  // loads NO extensions at all, so the cookie extension above cannot be
+  // installed and the panel could only answer with a hint to edit .env and
+  // restart. Paying for a Chrome process is the lesser cost.
+  //
+  // Set REAL_CHROME_ENABLED=false to get the old throwaway-context behaviour
+  // (lighter, no X server needed, no extensions).
+  REAL_CHROME_ENABLED: (cleanEnv(process.env.REAL_CHROME_ENABLED)?.toLowerCase() ?? 'true') !== 'false',
 
   // The persistent profile directory. This is what makes cookies imported by an
   // extension survive a restart and be visible to automation runs.
@@ -422,9 +446,21 @@ if (config.DEPLOYMENT_MODE === 'multi' && config.ADMIN_SECRET === 'admin_secret_
 
 if (config.IS_SINGLE_USER) {
   console.log('[CONFIG] 🏠 DEPLOYMENT_MODE=single — full-access, single-user self-hosted.');
-  if (config.API_TOKEN_AUTO_GENERATED) {
+  if (config.API_TOKEN_IS_DEFAULT) {
+    // Loud, and it says what the risk actually is. The old message said "we
+    // generated a random one", which was reassuring; this default is the
+    // opposite of reassuring and the log must not pretend otherwise.
     console.warn(
-      '[CONFIG] 🔐 No API_TOKEN set — generated a random one for this run:\n' +
+      '[CONFIG] 🔓 API_TOKEN is the built-in default (API_TOKEN=admin123).\n' +
+      '        This token is PUBLIC — it is in .env.example and in the source.\n' +
+      '        It grants full control of this instance: it drives a real browser,\n' +
+      '        reads/writes the download and upload directories, and runs workflows.\n' +
+      '        Fine on a machine only you can reach. If this host is reachable from\n' +
+      '        the internet, set your own API_TOKEN in .env and restart.'
+    );
+  } else if (config.API_TOKEN_AUTO_GENERATED) {
+    console.warn(
+      '[CONFIG] 🔐 No API_TOKEN set — using a generated one for this run:\n' +
       `        API_TOKEN=${config.API_TOKEN}\n` +
       '        Set API_TOKEN in your .env to keep it stable across restarts.'
     );

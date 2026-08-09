@@ -1855,24 +1855,130 @@
     }
 
     /**
-     * Pull the file onto THIS machine. Same identity rule as an upload: the
-     * route is authorised by `x-api-key` plus the user id, so a plain link would
-     * be rejected — hence fetch + blob + a synthetic click.
+     * Pull the file onto THIS machine — the step that makes a remote download
+     * real, because the bytes land on the SERVER's disk, not the user's.
+     *
+     * WHY NOT A HIDDEN IFRAME (what this replaced)
+     * --------------------------------------------
+     * MEASURED (probe against this very server): appending a hidden
+     * `<iframe src=…>` produced ZERO downloads and exactly this console error:
+     *
+     *   Refused to frame 'http://…/browser/downloads/dl_…' because it violates
+     *   the following Content Security Policy directive: "frame-src 'none'"
+     *
+     * That CSP is OUR OWN (src/index.ts sets `frameSrc: ["'none'"]`), so the
+     * iframe could never have worked in ANY deployment — and it fails silently,
+     * which is why the button looked dead rather than broken. A plain anchor
+     * click, in the same probe, downloaded the file every time.
+     *
+     * WHY A PREFLIGHT
+     * ---------------
+     * A download URL that answers non-2xx does not surface the server's message.
+     * MEASURED: a 404 and a 401 on this route both reach Chrome as a failed
+     * download whose only explanation is Chrome's own generic text — the
+     * «Failed - Unknown server error» that was reported — while the response
+     * body actually said "That download is no longer available." So ask with
+     * `fetch` FIRST (it can read the body, and it can send the key as a HEADER)
+     * and only hand the transfer to the browser once it is known to answer 200.
+     *
+     * WHY THE BYTES COME BACK AS A BLOB
+     * ---------------------------------
+     * With `fetch` the API key travels in `x-api-key`, so it never lands in a
+     * URL — and therefore never in the browser's download history, the address
+     * bar, or a reverse proxy's access log. MEASURED: a blob-URL anchor click
+     * downloads fine under this CSP. Files too large to hold in memory keep the
+     * streaming path (a real navigation), the one case where a token in the
+     * query is worth it.
      */
-    function fetchDownload(d) {
-      // Use a hidden iframe to trigger the native browser download seamlessly
-      // without facing X-Frame / Navigation / CSP errors in remote setups.
+    var BLOB_LIMIT_BYTES = 64 * 1024 * 1024;
+
+    function downloadUrlFor(d, withToken) {
       var url = '/browser/downloads/' + encodeURIComponent(d.token)
-        + '?userId=' + encodeURIComponent(effectiveUserId())
-        + '&token=' + encodeURIComponent(window.API.getKey() || '');
-      
-      var iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      iframe.src = url;
-      document.body.appendChild(iframe);
-      setTimeout(function () {
-        try { document.body.removeChild(iframe); } catch (e) {}
-      }, 60000);
+        + '?userId=' + encodeURIComponent(effectiveUserId());
+      if (withToken) {
+        var k = (window.API && window.API.getKey) ? (window.API.getKey() || '') : '';
+        if (k) url += '&token=' + encodeURIComponent(k);
+      }
+      return url;
+    }
+
+    /** Save a blob (or a URL) under `name`, via the anchor click that works. */
+    function saveAs(href, name, revoke) {
+      var a = document.createElement('a');
+      a.href = href;
+      a.download = name || 'download';
+      a.rel = 'noopener';
+      // Must be IN the document: a detached anchor's click is ignored by Firefox.
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (revoke) {
+        // Revoking synchronously can cancel the transfer that just started, so
+        // the URL is released later — long after Chrome has taken the bytes.
+        setTimeout(function () { try { URL.revokeObjectURL(href); } catch (e) {} }, 60000);
+      }
+    }
+
+    /**
+     * Turn a failed download response into a sentence the user can act on.
+     * Anything less leaves them with Chrome's generic text, which names no cause
+     * and suggests no remedy.
+     */
+    function downloadFailureMessage(status, body) {
+      if (body && body.error) return String(body.error);
+      if (status === 401) return t('bvp.dlNoAuth');
+      if (status === 403) return t('bvp.dlForbidden');
+      if (status === 404) return t('bvp.dlGone');
+      return t('bvp.dlServerError').replace('{status}', String(status || '?'));
+    }
+
+    function fetchDownload(d) {
+      var key = (window.API && window.API.getKey) ? (window.API.getKey() || '') : '';
+      var headers = {};
+      if (key) headers['x-api-key'] = key;
+
+      /** Read a failed response's own words, then throw them. */
+      function explain(res) {
+        return res.text().then(function (txt) {
+          var body = null;
+          try { body = JSON.parse(txt); } catch (e) { /* not JSON */ }
+          throw new Error(downloadFailureMessage(res.status, body));
+        });
+      }
+
+      // HEAD, not GET: same auth, same token resolution, so it answers
+      // "will this work?" without moving the bytes twice.
+      fetch(downloadUrlFor(d, false), { method: 'HEAD', headers: headers })
+        .then(function (res) {
+          if (!res.ok) {
+            // HEAD carries no body, so re-ask with GET purely to quote the
+            // server's own explanation instead of inventing one.
+            return fetch(downloadUrlFor(d, false), { headers: headers }).then(explain);
+          }
+          var len = parseInt(res.headers.get('content-length') || '0', 10) || 0;
+          if (len > BLOB_LIMIT_BYTES) {
+            // Too big to hold in memory: let the browser stream it to disk. The
+            // only path that needs the key in the query, since a navigation
+            // cannot carry a header.
+            saveAs(downloadUrlFor(d, true), d.name, false);
+            return null;
+          }
+          return fetch(downloadUrlFor(d, false), { headers: headers })
+            .then(function (r) { return r.ok ? r.blob() : explain(r); })
+            .then(function (blob) {
+              if (!blob) return;
+              saveAs(URL.createObjectURL(blob), d.name, true);
+            });
+        })
+        .catch(function (e) {
+          // Never silent. A download the user asked for and did not get has to
+          // say why, or the only remaining move is to press the button again.
+          toast(
+            (e && e.message) ? e.message : t('bvp.dlServerError').replace('{status}', '?'),
+            'error'
+          );
+        });
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2758,25 +2864,63 @@
       // the wrong default.
       pickState.downloads.forEach(function (d) {
         if (d.token) send({ t: 'downloadClear', token: d.token });
-
-    // Open remote-upload page so user can pick a file from their own computer
-    var uploadBtn = q('bvp-shelf-upload');
-    if (uploadBtn && !uploadBtn._bound) {
-      uploadBtn._bound = true;
-      uploadBtn.addEventListener('click', function () {
-        var apiKey = '';
-        try { apiKey = window.API && window.API.getKey ? window.API.getKey() : ''; } catch (e) {}
-        var userId = '';
-        try { userId = window.API && window.API.getUserId ? window.API.getUserId() : ''; } catch (e) {}
-        var url = '/remote-upload.html?apiKey=' + encodeURIComponent(apiKey) +
-                  '&userId=' + encodeURIComponent(userId);
-        send({ t: 'newTab', url: url, active: true });
-      });
-    }
       });
       pickState.downloads = [];
       renderShelf();
     });
+
+    /**
+     * The shelf's "upload from your computer" button.
+     *
+     * TWO MEASURED BUGS FIXED HERE
+     * ----------------------------
+     * 1. WIRING. This whole block used to sit INSIDE the
+     *    `pickState.downloads.forEach(...)` callback above — the braces closed in
+     *    the wrong order, so the listener was only ever attached as a side
+     *    effect of pressing Clear, and only when the shelf was non-empty:
+     *
+     *        upload INSIDE forEach callback: true
+     *        downloads=0: upload listener attached 0 time(s) (after 1 Clear click)
+     *        downloads=1: upload listener attached 1 time(s) (after 1 Clear click)
+     *
+     *    In other words: on a fresh shelf the button was inert, and the only way
+     *    to arm it was to first delete the very downloads you had. It is now a
+     *    sibling of the other shelf bindings, so it is wired exactly once, when
+     *    the shelf is built.
+     *
+     * 2. WRONG BROWSER. It sent `t: 'newTab'` over the WebSocket, which is
+     *    doubly wrong:
+     *      • the server has no such case — it handles `tabNew` (measured:
+     *        `case 'newTab': false`, `case 'tabNew': true`), and an unknown `t`
+     *        is dropped in silence, so the click did nothing and said nothing;
+     *      • even had the name been right, a tab command opens the page in the
+     *        SERVER's Chrome, whose file dialog is drawn by the server's window
+     *        manager (never visible in the screencast) and browses the server's
+     *        disk (never where the user's file is). That is precisely the
+     *        failure RemoteIO exists to remove — see the header of
+     *        public/js/remote-io.js.
+     *
+     *    "Upload from your computer" must therefore open in the USER's browser:
+     *    a normal local tab.
+     *
+     * The key stays out of the URL: remote-upload.html already falls back to
+     * `localStorage.ab_api_key`, which this same origin holds, so passing it as
+     * a query parameter only copied a whole-instance credential into browser
+     * history and the address bar for no gain.
+     *
+     * `userId` IS passed, because it is not a secret and it must match the id
+     * this socket runs as — remote-upload.html would otherwise default to
+     * 'admin' and store the bytes in a directory the session never reads, which
+     * fails as a bare ENOENT (see uploadFile's comment in remote-io.js).
+     */
+    var uploadBtn = q('bvp-shelf-upload');
+    if (uploadBtn && !uploadBtn._bound) {
+      uploadBtn._bound = true;
+      uploadBtn.addEventListener('click', function () {
+        var url = '/remote-upload.html?userId=' + encodeURIComponent(effectiveUserId());
+        window.open(url, '_blank', 'noopener');
+      });
+    }
 
     // A context menu closes on the next click anywhere, on scroll, and on a
     // window resize — the three things that make its position meaningless.
