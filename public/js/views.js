@@ -1984,51 +1984,80 @@
     setTimeout(function () { input.click(); }, 0);
   }
 
-  /** Download a workflow as JSON (row menu → Export). */
+  /**
+   * Download a workflow as JSON (row menu → Export).
+   *
+   * WHY THERE IS NO LONGER A "REMOTE" BRANCH
+   * ----------------------------------------
+   * There used to be two paths: a Blob built in memory for localhost, and a
+   * `GET …/export?token=` navigation for everything else.
+   *
+   * HONEST CORRECTION, because an earlier version of this comment claimed the
+   * remote branch 404'd and that was WRONG. Measured in a real Chromium against
+   * this server over a real non-localhost hostname: the remote branch
+   * DOWNLOADED THE FILE SUCCESSFULLY.
+   *
+   *     variant=old  isRemote=true  wfUserId="0"
+   *                  url=/workflows/0/wf_…/export?token=…
+   *                  download fired: {"name":"Test_WF.json","failure":null}
+   *
+   * The id it used was NOT empty: the list response carries `userId` on every
+   * workflow (measured — the row objects have keys
+   * [active, createdAt, id, liveBrowser, name, steps, updatedAt, userId, version]),
+   * and `wf.userId` was consulted before `API.getUserId()`. So export was NOT
+   * the user's reported breakage; the download shelf was (see browser-view.js).
+   *
+   * The branch is still gone, for two reasons that ARE measured:
+   *
+   *   1. It put the API KEY in a query string — so a credential for the whole
+   *      instance landed in the browser's download history and in any reverse
+   *      proxy's access log, to fetch data the page was already holding.
+   *   2. It revoked the object URL with `setTimeout(…, 0)` on the local path,
+   *      which races the browser's own read of the blob.
+   *
+   * A file built in memory cannot 404, cannot 401 and needs no key, and a Blob
+   * download works under this app's `frame-src 'none'` CSP (measured). So: one
+   * path, no server round trip, no credential in a URL.
+   * `/workflows/:userId/:id/export` stays for API/CLI consumers, where a token
+   * in the query is the normal calling convention rather than a leak.
+   */
   function exportWorkflowJson(wf) {
-    // تشخیص حالت: ریموت (دانلود از سرور) یا لوکال (ساخت فایل در حافظه)
-    var isRemote = (typeof window !== 'undefined') &&
-                   window.location &&
-                   window.location.hostname !== 'localhost' &&
-                   window.location.hostname !== '127.0.0.1' &&
-                   window.location.protocol !== 'file:';
+    if (!wf) return;
 
-    var wfUserId = (wf && wf.userId);
-    try {
-      if (!wfUserId && typeof API !== 'undefined' && API.getUserId) {
-        wfUserId = API.getUserId();
-      }
-    } catch (e) { /* ignore */ }
-    if (isRemote && wf && wf.id && wfUserId) {
-      // حالت ریموت: لینک مستقیم دانلود (مرورگر خودش فایل رو ذخیره می‌کنه)
-      var token = '';
-      try { token = API.getKey() || ''; } catch (e) {}
-      var dlUrl = '/workflows/' + encodeURIComponent(wfUserId) + '/' + encodeURIComponent(wf.id) + '/export?token=' + encodeURIComponent(token);
+    function save(full) {
+      var payload = JSON.stringify({
+        name: full.name,
+        description: full.description || null,
+        steps: full.steps || [],
+        headless: full.headless,
+        webhookUrl: full.webhookUrl,
+        active: full.active !== false,
+        liveBrowser: full.liveBrowser === true,
+      }, null, 2);
+      var blob = new Blob([payload], { type: 'application/json' });
+      var href = URL.createObjectURL(blob);
       var a = document.createElement('a');
-      a.href = dlUrl;
-      a.download = String(wf.name || wf.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+      a.href = href;
+      a.download = String(full.name || full.id || 'workflow')
+        .replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+      // Must be in the document: a detached anchor's click is ignored by Firefox.
+      a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
       a.remove();
+      // Revoking in the same turn can cancel the download that just started.
+      setTimeout(function () { try { URL.revokeObjectURL(href); } catch (e) {} }, 60000);
       U().toast(t('ws.exported'), 'success');
-      return;
     }
 
-    // حالت لوکال: ساخت فایل در حافظه و دانلود مستقیم
-    var payload = JSON.stringify({
-      name: wf.name, description: wf.description || null, steps: wf.steps,
-      headless: wf.headless, webhookUrl: wf.webhookUrl,
-      active: wf.active !== false, liveBrowser: wf.liveBrowser === true,
-    }, null, 2);
-    var blob = new Blob([payload], { type: 'application/json' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = String(wf.name || 'workflow').replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
-    U().toast(t('ws.exported'), 'success');
+    // The list already carries `steps`, so this is the normal path.
+    if (Array.isArray(wf.steps)) { save(wf); return; }
+
+    // A workflow row without steps would export an empty file that imports as
+    // nothing, so fetch the real one rather than write a plausible-looking lie.
+    API.getWorkflow(effectiveUserId(), wf.id)
+      .then(function (res) { save((res && res.workflow) || wf); })
+      .catch(function (err) { U().toast(err.message, 'error'); });
   }
 
   function renderWorkspace(root) {

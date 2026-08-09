@@ -800,10 +800,21 @@ describe('tab strip UI contract', () => {
     expect(browserView).toContain('bvp-shelf');
     expect(browserView).toMatch(/function renderShelf/);
     expect(browserView).toMatch(/\/browser\/downloads\//);
-    // Same identity rule as an upload: header auth, so a plain <a href> would be
-    // rejected — hence fetch + blob + a synthetic click.
-    expect(browserView).toMatch(/'x-api-key': window\.API\.getKey\(\)/);
+    // Same identity rule as an upload: header auth, so the key travels in
+    // `x-api-key` and never in the URL — hence fetch + blob + a synthetic click.
+    //
+    // This used to pin the exact expression `'x-api-key': window.API.getKey()`,
+    // and that brittleness hid a real regression: a later commit replaced the
+    // whole transfer with a hidden iframe, which this file then reported as a
+    // string mismatch rather than as "downloads are broken". The iframe could
+    // never work — the app sets `frame-src 'none'` — and it failed silently.
+    // The transfer is now pinned BEHAVIOURALLY in
+    // tests/unit/remote-download-transfer.test.ts (measured against a real
+    // Chromium); what stays here is the shape that must not come back.
+    expect(browserView).toMatch(/headers\['x-api-key'\]/);
     expect(browserView).toMatch(/URL\.createObjectURL/);
+    // The regression itself: a frame can never carry this download.
+    expect(browserView).not.toMatch(/iframe\.src\s*=/);
     // Name, size and progress, and an honest indeterminate bar when the server
     // sent no Content-Length (a bar stuck at 0% reads as broken).
     expect(browserView).toMatch(/function humanBytes/);
