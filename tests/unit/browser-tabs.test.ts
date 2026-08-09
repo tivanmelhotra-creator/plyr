@@ -28,6 +28,9 @@ import { readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
+// Runs the REAL file-dialog guard out of LiveBrowser.ts against fake pages, so
+// the tab-ownership rules below are measured rather than pattern-matched.
+import { loadRealGuard, fakeSession, fakeChooser } from './helpers/filechooser-guard';
 
 const ROOT = join(__dirname, '..', '..');
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -525,11 +528,42 @@ describe('LiveBrowser multi-tab support', () => {
     expect(focus.slice(0, 900)).toContain('this.bindCdp(page)');
   });
 
-  it('a background tab\'s file dialog is not answered as if it were ours', () => {
+  it('a second tab\'s file dialog cannot take over the outstanding one', async () => {
     // Only one chooser can be outstanding, and answering the wrong page's dialog
-    // would hand a user's file to a tab they were not looking at.
-    const fc = liveBrowser.slice(liveBrowser.indexOf("page.on('filechooser'"));
-    expect(fc.slice(0, 300)).toContain('if (page !== this.page) return;');
+    // would hand a user's file to a tab they were not looking at. That hazard is
+    // real — MEASURED with two tabs each opening a dialog, then one setFiles:
+    //     sequence      : pending <- A | pending <- B
+    //     A input files : 0
+    //     B input files : 1        ← tab A asked, tab B received the file
+    //
+    // This test used to assert the source line `if (page !== this.page) return;`,
+    // which happened to prevent the theft but ALSO dropped legitimate dialogs
+    // from a tab that was still mid-activation, in total silence — the reported
+    // «ایمپورت گم میشه» (the import gets lost). See
+    // tests/unit/filechooser-not-lost.test.ts for that measurement.
+    //
+    // So the requirement is kept and the assertion is now behavioural: the slot
+    // is FIRST-COME. Whoever asked keeps it until answered or cancelled, and a
+    // later dialog from a different page is released rather than allowed to
+    // clobber it. Asserting the mechanism instead of one spelling of it means
+    // this test survives the fix but still fails if the theft comes back.
+    const guard = await loadRealGuard();
+    const a = { name: 'tab-a' };
+    const b = { name: 'tab-b' };
+    const { self, emitted } = fakeSession([a, b], a);
+
+    const first = fakeChooser('A-asked-first');
+    guard(self, a, first);
+    const second = fakeChooser('B-arrives-second');
+    guard(self, b, second);
+
+    // A's prompt still owns the slot, so the file the user picks goes to A.
+    expect(self.pendingChooser).toBe(first);
+    expect(self.pendingChooserPage).toBe(a);
+    // B is released rather than left hanging (an unanswered chooser is an input
+    // the page thinks is still waiting), and raises no second prompt.
+    expect(second.calls).toEqual(['setFiles([])']);
+    expect(emitted).toEqual(['filechooser']);
   });
 
   it('closes EVERY tab on teardown, not just the active one', () => {
