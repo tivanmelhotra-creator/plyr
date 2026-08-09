@@ -24,6 +24,15 @@ else
     npx playwright install-deps || true
 fi
 
+# ۰.۶. نصب Chromium اگه نبود (مشکلی که داشتی)
+if [ ! -d "$HOME/.cache/ms-playwright/chromium-1194" ]; then
+    echo "=== ۰.۶. نصب Chromium browser برای Playwright ==="
+    if [ ! -d "node_modules" ]; then
+        npm install
+    fi
+    npx playwright install chromium
+fi
+
 # ۱. dependencies
 echo "=== ۱. نصب dependencies ==="
 if [ ! -d "node_modules" ]; then
@@ -35,15 +44,14 @@ fi
 # ۲. env
 echo ""
 echo "=== ۲. تنظیم کامل .env ==="
-cp .env.example .env
-
-# تنظیم دقیق کلیدها و فعال‌سازی REAL_CHROME
-sed -i 's/^API_TOKEN=.*/API_TOKEN=admin123/' .env || echo "API_TOKEN=admin123" >> .env
-sed -i 's/^API_KEYS=.*/API_KEYS=admin123/' .env || echo "API_KEYS=admin123" >> .env
-sed -i 's/^REAL_CHROME_ENABLED=.*/REAL_CHROME_ENABLED=true/' .env || echo "REAL_CHROME_ENABLED=true" >> .env
-sed -i 's/^CORS_ALLOWED_ORIGINS=.*/CORS_ALLOWED_ORIGINS=*/' .env || echo "CORS_ALLOWED_ORIGINS=*" >> .env
-
-echo "✅ فایل .env با API_TOKEN=admin123 و REAL_CHROME_ENABLED=true آماده شد."
+if [ ! -f ".env" ]; then
+    cp .env.example .env
+    sed -i 's/^API_KEY=/API_KEY=admin123/' .env
+    echo "API_KEY=admin123" >> .env
+    echo "✅ .env ساخته شد"
+else
+    echo ".env موجود — رد میشم"
+fi
 
 # ۳. Redis
 echo ""
