@@ -236,7 +236,16 @@
     });
   }
 
+  function getRaw(path, opts) {
+    opts = opts || {};
+    var key = getKey();
+    var headers = Object.assign({}, opts.headers || {});
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+    return fetch(path, Object.assign({}, opts, { headers: headers, credentials: 'same-origin' }));
+  }
+
   window.API = {
+    getRaw: getRaw,
     getKey: getKey,
     setKey: setKey,
     clearKey: clearKey,

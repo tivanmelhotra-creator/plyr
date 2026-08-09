@@ -1968,15 +1968,23 @@
                    window.location.protocol !== 'file:';
 
     if (isRemote && wf && wf.id && wf.userId) {
-      // حالت ریموت: فایل رو از سرور با Content-Disposition بگیر
+      // حالت ریموت: استفاده از API client که هدر Authorization رو می‌فرسته
       var url = '/workflows/' + encodeURIComponent(wf.userId) + '/' + encodeURIComponent(wf.id) + '/export';
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = String(wf.name || wf.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      U().toast(t('ws.exported'), 'success');
+      API.getRaw(url)
+        .then(function (res) { return res.blob(); })
+        .then(function (blob) {
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = String(wf.name || wf.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
+          U().toast(t('ws.exported'), 'success');
+        })
+        .catch(function (err) {
+          U().toast(err.message || 'Export failed', 'error');
+        });
       return;
     }
 
