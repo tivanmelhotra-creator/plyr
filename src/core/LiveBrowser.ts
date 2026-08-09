@@ -2849,7 +2849,11 @@ export class LiveBrowserSession {
       // "in progress" forever is the kind of thing that makes a user wait for
       // something that is never going to happen.
       entry.state = 'failed';
-      entry.error = (e as Error).message || 'download_failed';
+      const err = (e as Error)?.message || 'download_failed';
+      // Surface a useful hint for the most common failure (permissions on the
+      // server's downloads directory) so the user can act on it.
+      entry.error = err + (String(err).includes('saveAs') ? ' (check disk space and folder permissions)' : '');
+      console.warn('[LiveBrowser] download failed:', err, 'url=', entry.url);
     }
     this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
   }

@@ -115,6 +115,9 @@ function apiKeyOf(req: AuthenticatedRequest): string | undefined {
   const header = req.headers['x-api-key'];
   if (typeof header === 'string' && header.length > 0) return header;
   if (req.query.api_key) return String(req.query.api_key);
+  // token query is used by download links sent from the shelf so a native
+  // <a> click (which cannot carry headers) still authenticates.
+  if (req.query.token) return String(req.query.token);
   const auth = req.headers.authorization;
   if (auth?.startsWith('Bearer ')) return auth.substring(7).trim();
   return undefined;
