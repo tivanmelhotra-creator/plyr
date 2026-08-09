@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Remote Upload — Browser View</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <style>
+    body { margin: 0; padding: 20px; font-family: system-ui, sans-serif; background: #0a0e14; color: #e8eef5; }
+    .ru-container { max-width: 500px; margin: 0 auto; }
+    .ru-card { background: #151c25; border: 1px solid #2a3340; border-radius: 8px; padding: 20px; }
+    .ru-card h1 { font-size: 18px; margin: 0 0 10px; }
+    .ru-card p { font-size: 13px; opacity: 0.8; margin: 5px 0; }
+    .ru-upload-btn {
+      display: block; width: 100%; padding: 14px;
+      background: #ff8a1f; color: #0a0e14;
+      border: 0; border-radius: 6px; font-size: 15px; font-weight: 700;
+      cursor: pointer; margin: 16px 0;
+    }
+    .ru-upload-btn:hover { background: #ffa550; }
+    .ru-upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ru-token {
+      background: #0a0e14; padding: 10px; border-radius: 4px;
+      font-family: monospace; font-size: 12px; word-break: break-all;
+      border: 1px solid #2a3340; margin: 10px 0;
+    }
+    .ru-status { padding: 10px; border-radius: 4px; margin: 10px 0; font-size: 13px; }
+    .ru-status.ok { background: #1a3a1a; border: 1px solid #2a5a2a; }
+    .ru-status.err { background: #3a1a1a; border: 1px solid #5a2a2a; }
+    input.ru-file { display: none; }
+    .ru-help { font-size: 12px; opacity: 0.6; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="ru-container">
+    <div class="ru-card">
+      <h1>📤 Remote File Upload</h1>
+      <p>Choose a file from your computer to upload it to the server, where the Browser View (and any running extensions) can access it.</p>
+
+      <input type="file" id="fileInput" class="ru-file">
+
+      <button class="ru-upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
+        Choose File & Upload
+      </button>
+
+      <div id="status"></div>
+
+      <div id="result" style="display:none">
+        <p style="margin-top:15px"><strong>Server Token:</strong></p>
+        <div class="ru-token" id="tokenDisplay"></div>
+        <p class="ru-help">The extension in the Browser View can use this token to read the file via the upload API.</p>
+      </div>
+
+      <p class="ru-help">
+        🔑 Using <strong>API key from localStorage</strong> (set by the app).<br>
+        👤 User: <strong id="userDisplay">unknown</strong>
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const tokenDisplay = document.getElementById('tokenDisplay');
+    const userDisplay = document.getElementById('userDisplay');
+
+    // Read API key + userId from URL query OR from opener (Browser View window)
+    function getApiKey() {
+      // First try query string (easy case when opened directly)
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('apiKey')) return params.get('apiKey');
+      // Then try localStorage (if same origin)
+      try {
+        return localStorage.getItem('ab_api_key') || '';
+      } catch (e) { return ''; }
+    }
+
+    function getUserId() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('userId') || localStorage.getItem('ab_user_id') || 'admin';
+    }
+
+    userDisplay.textContent = getUserId();
+
+    fileInput.addEventListener('change', async function () {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      await uploadFile(file);
+    });
+
+    async function uploadFile(file) {
+      const apiKey = getApiKey();
+      if (!apiKey) {
+        showStatus('No API key found. Please log in first or pass ?apiKey=YOUR_KEY in the URL.', 'err');
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = 'Uploading…';
+      showStatus('Reading file…', '');
+
+      try {
+        const buf = await file.arrayBuffer();
+        const userId = getUserId();
+        const url = '/browser/uploads?name=' + encodeURIComponent(file.name) + '&userId=' + encodeURIComponent(userId);
+
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'x-api-key': apiKey,
+            'Content-Type': file.type || 'application/octet-stream',
+          },
+          body: buf,
+        });
+
+        const text = await r.text();
+        if (!r.ok) {
+          showStatus('Upload failed: ' + text, 'err');
+          uploadBtn.disabled = false;
+          uploadBtn.textContent = 'Choose File & Upload';
+          return;
+        }
+
+        const data = JSON.parse(text);
+        if (data.success && data.token) {
+          showStatus('✅ Uploaded: ' + file.name + ' (' + data.size + ' bytes)', 'ok');
+          tokenDisplay.textContent = data.token;
+          resultEl.style.display = 'block';
+          // Also copy token to clipboard for convenience
+          try {
+            await navigator.clipboard.writeText(data.token);
+            showStatus('✅ Uploaded & token copied to clipboard!', 'ok');
+          } catch (e) {
+            // Clipboard may fail, ignore
+          }
+        } else {
+          showStatus('Upload succeeded but no token returned.', 'err');
+        }
+      } catch (e) {
+        showStatus('Error: ' + (e.message || e), 'err');
+      }
+
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = 'Choose File & Upload';
+      fileInput.value = '';
+    }
+
+    function showStatus(msg, type) {
+      statusEl.innerHTML = '';
+      if (!msg) return;
+      const div = document.createElement('div');
+      div.className = 'ru-status ' + (type || '');
+      div.textContent = msg;
+      statusEl.appendChild(div);
+    }
+  </script>
+</body>
+</html>

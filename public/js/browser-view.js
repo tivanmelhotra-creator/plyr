@@ -692,6 +692,9 @@
           '<button class="icon-btn bvp-shelf-clear" id="bvp-shelf-clear" type="button" ' +
             'title="' + esc(t('bvp.dlClearAll')) + '" aria-label="' + esc(t('bvp.dlClearAll')) + '">' +
             BIC('trash', 13) + '</button>' +
+          '<button class="icon-btn bvp-shelf-upload" id="bvp-shelf-upload" type="button" ' +
+            'title="Upload from your computer" aria-label="Upload from your computer">' +
+            BIC('upload', 13) + '</button>' +
           '<button class="icon-btn bvp-shelf-hide" id="bvp-shelf-hide" type="button" ' +
             'title="' + esc(t('bvp.dlHide')) + '" aria-label="' + esc(t('bvp.dlHide')) + '">' +
             BIC('x', 13) + '</button>' +
@@ -2765,6 +2768,21 @@
       // the wrong default.
       pickState.downloads.forEach(function (d) {
         if (d.token) send({ t: 'downloadClear', token: d.token });
+
+    // Open remote-upload page so user can pick a file from their own computer
+    var uploadBtn = q('bvp-shelf-upload');
+    if (uploadBtn && !uploadBtn._bound) {
+      uploadBtn._bound = true;
+      uploadBtn.addEventListener('click', function () {
+        var apiKey = '';
+        try { apiKey = window.API && window.API.getKey ? window.API.getKey() : ''; } catch (e) {}
+        var userId = '';
+        try { userId = window.API && window.API.getUserId ? window.API.getUserId() : ''; } catch (e) {}
+        var url = '/remote-upload.html?apiKey=' + encodeURIComponent(apiKey) +
+                  '&userId=' + encodeURIComponent(userId);
+        send({ t: 'newTab', url: url, active: true });
+      });
+    }
       });
       pickState.downloads = [];
       renderShelf();
