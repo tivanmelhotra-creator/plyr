@@ -16,6 +16,14 @@ if ! command -v redis-server &> /dev/null; then
     fi
 fi
 
+# ۰.۵. نصب کتابخانه‌های سیستمی مرورگر (Playwright dependencies)
+echo "=== ۰.۵. نصب وابسته های سیستم مرورگر ==="
+if command -v sudo &> /dev/null; then
+    sudo npx playwright install-deps || true
+else
+    npx playwright install-deps || true
+fi
+
 # ۱. dependencies
 echo "=== ۱. نصب dependencies ==="
 if [ ! -d "node_modules" ]; then
@@ -29,7 +37,7 @@ echo ""
 echo "=== ۲. تنظیم .env ==="
 if [ ! -f ".env" ]; then
     cp .env.example .env
-    sed -i "s/^API_KEY=/API_KEY=admin123/" .env
+    sed -i 's/^API_KEY=/API_KEY=admin123/' .env
     echo "API_KEY=admin123" >> .env
     echo "✅ .env ساخته شد"
 else
