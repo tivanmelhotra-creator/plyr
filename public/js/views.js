@@ -2000,23 +2000,17 @@
       }
     } catch (e) { /* ignore */ }
     if (isRemote && wf && wf.id && wfUserId) {
-      // حالت ریموت: استفاده از API client که هدر Authorization رو می‌فرسته
-      var url = '/workflows/' + encodeURIComponent(wfUserId) + '/' + encodeURIComponent(wf.id) + '/export';
-      API.getRaw(url)
-        .then(function (res) { return res.blob(); })
-        .then(function (blob) {
-          var a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = String(wf.name || wf.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
-          U().toast(t('ws.exported'), 'success');
-        })
-        .catch(function (err) {
-          U().toast(err.message || 'Export failed', 'error');
-        });
+      // حالت ریموت: لینک مستقیم دانلود (مرورگر خودش فایل رو ذخیره می‌کنه)
+      var token = '';
+      try { token = API.getKey() || ''; } catch (e) {}
+      var dlUrl = '/workflows/' + encodeURIComponent(wfUserId) + '/' + encodeURIComponent(wf.id) + '/export?token=' + encodeURIComponent(token);
+      var a = document.createElement('a');
+      a.href = dlUrl;
+      a.download = String(wf.name || wf.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      U().toast(t('ws.exported'), 'success');
       return;
     }
 

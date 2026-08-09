@@ -308,9 +308,12 @@ export const requireApiKey = async (
     apiKey = headerKey;
   }
 
-  // 2. Query: ?api_key=xxx
+  // 2. Query: ?api_key=xxx OR ?token=xxx (downloads/links)
   if (!apiKey && req.query.api_key) {
     apiKey = String(req.query.api_key);
+  }
+  if (!apiKey && req.query.token) {
+    apiKey = String(req.query.token);
   }
 
   // 3. Authorization: Bearer xxx
@@ -343,7 +346,8 @@ export const requireApiKey = async (
     }
     req.apiKey = apiKey;
     req.apiKeyPrefix = apiKey.substring(0, Math.min(15, apiKey.length));
-    req.apiKeyUserId = SINGLE_USER_ID;
+    // استفاده از user از config API_TOKEN_USER_ID یا SINGLE_USER_ID به عنوان پیش‌فرض
+    req.apiKeyUserId = (typeof process !== 'undefined' && process.env && process.env.API_TOKEN_USER_ID) || SINGLE_USER_ID;
     next();
     return;
   }
