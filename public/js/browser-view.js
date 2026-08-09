@@ -1860,20 +1860,19 @@
      * be rejected — hence fetch + blob + a synthetic click.
      */
     function fetchDownload(d) {
-      // Pass token via URL query param too, so the server accepts the download
-      // even when this <a> click cannot carry headers. Direct download means
-      // the browser handles the save dialog natively instead of us juggling a
-      // blob — works in headless, in real Chrome, and in any pop-up blocker.
+      // Use a hidden iframe to trigger the native browser download seamlessly
+      // without facing X-Frame / Navigation / CSP errors in remote setups.
       var url = '/browser/downloads/' + encodeURIComponent(d.token)
         + '?userId=' + encodeURIComponent(effectiveUserId())
         + '&token=' + encodeURIComponent(window.API.getKey() || '');
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = String(d.name || 'download');
-      a.target = '_self';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      
+      var iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = url;
+      document.body.appendChild(iframe);
+      setTimeout(function () {
+        try { document.body.removeChild(iframe); } catch (e) {}
+      }, 60000);
     }
 
     // ══════════════════════════════════════════════════════════════════════
