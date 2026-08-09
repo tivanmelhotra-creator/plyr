@@ -287,9 +287,9 @@ export const createBrowserRoutes = (): Router => {
 
   router.post('/browser/stop', async (_req, res) => {
     try {
-      // Disable SelfHeal auto-restart on manual stop
-      const { SelfHeal } = await import('../core/SelfHeal');
-      SelfHeal.disableAutoHeal();
+      // غیرفعال‌سازی سراسری SelfHeal تا کروم رو دوباره راه نیندازه
+      const { setSelfHealEnabled } = await import('../core/SelfHeal');
+      setSelfHealEnabled(false);
       await RealChrome.stop();
       res.json({ success: true, realChrome: await RealChrome.status() });
     } catch (e) { sendError(res, e); }
@@ -297,8 +297,8 @@ export const createBrowserRoutes = (): Router => {
 
   router.post('/browser/start', async (_req, res) => {
     try {
-      const { SelfHeal } = await import('../core/SelfHeal');
-      SelfHeal.enableAutoHeal();
+      const { SelfHeal, setSelfHealEnabled } = await import('../core/SelfHeal');
+      setSelfHealEnabled(true);
       const { steps, report } = healCollector();
       const status = await (SelfHeal as any).heal({ report });
       res.json({ success: true, steps, realChrome: status.realChrome });

@@ -392,3 +392,13 @@ export class SelfHeal {
     return { ok: !!status.running, realChrome: status };
   }
 }
+
+
+// ─── Manual disable / enable toggle for SelfHeal ─────────────────────
+let _selfHealDisabled = false;
+export function setSelfHealEnabled(enabled: boolean): void {
+  _selfHealDisabled = !enabled;
+}
+export function isSelfHealEnabled(): boolean {
+  return !_selfHealDisabled;
+}

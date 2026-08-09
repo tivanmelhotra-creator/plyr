@@ -1627,15 +1627,6 @@ export class LiveBrowserSession {
    * dialog that is never coming — hence the short grace period and then a plain
    * close.
    */
-  async removeTabByUrl(urlPrefix: string): Promise<boolean> {
-    const idx = this.tabs.findIndex(t => (t.url || '').startsWith(urlPrefix));
-    if (idx === -1) return false;
-    const t = this.tabs[idx];
-    this.tabs.splice(idx, 1);
-    if (this.activeId === t.id) this.activeId = "";
-    return true;
-  }
-
   async closeTab(id: string, opts: { force?: boolean } = {}): Promise<void> {
     this.touch();
     const tab = this.findTab(String(id || ''));

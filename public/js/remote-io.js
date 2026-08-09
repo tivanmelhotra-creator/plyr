@@ -46,15 +46,6 @@
    * Is this client running remotely relative to the server?
    * Default to true (remote mode) when unsure.
    */
-  window.isRemoteHost = function() {
-    return window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-  };
-  function isRemoteHost() { return window.isRemoteHost(); }
-    var h = (window.location && window.location.hostname) || '';
-    if (!h) return true;
-    if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return false;
-    return true;
-  }
 
   /**
    * Is this origin allowed to use the async clipboard API at all?
@@ -205,7 +196,7 @@
       body: file
     }).then(function (r) {
       return r.json().then(function (d) {
-        if (r.status === 401 || r.status === 403) {
+        if (r.status === 401) {
           throw new Error(t('rio.uploadAuthRequired', 'Authentication required for file upload (API key missing or invalid).'));
         }
         if (!r.ok || !d || !d.success) {
