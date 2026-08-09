@@ -29,6 +29,8 @@ echo ""
 echo "=== ۲. تنظیم .env ==="
 if [ ! -f ".env" ]; then
     cp .env.example .env
+    sed -i "s/^API_KEY=/API_KEY=admin123/" .env
+    echo "API_KEY=admin123" >> .env
     echo "✅ .env ساخته شد"
 else
     echo ".env موجود — رد میشم"
