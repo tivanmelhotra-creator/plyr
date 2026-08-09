@@ -1934,8 +1934,20 @@
     var input = document.createElement('input');
     input.type = 'file';
     input.accept = 'application/json,.json';
+    // input رو به DOM append کن تا garbage collect نشه و CSP بلاک نکنه
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    input.style.top = '0';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+
+    function cleanup() {
+      try { document.body.removeChild(input); } catch (e) { /* ignore */ }
+    }
+
     input.addEventListener('change', function () {
       var file = input.files && input.files[0];
+      cleanup();
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function () {
@@ -1950,12 +1962,26 @@
           headless: body.headless,
           webhookUrl: body.webhookUrl,
         })
-          .then(function () { U().toast(t('ws.imported'), 'success'); if (done) done(); })
-          .catch(function (err) { U().toast(err.message, 'error'); });
+          .then(function () {
+            U().toast(t('ws.imported'), 'success');
+            if (done) done();
+          })
+          .catch(function (err) {
+            U().toast(err.message, 'error');
+          });
+      };
+      reader.onerror = function () {
+        cleanup();
+        U().toast(t('ws.importInvalid'), 'error');
       };
       reader.readAsText(file);
     });
-    input.click();
+
+    // جلوگیری از ریلود/چشمک زدن صفحه
+    input.addEventListener('cancel', cleanup);
+
+    // input.click() با تأخیر کوتاه، بعد از اینکه به DOM متصل شد
+    setTimeout(function () { input.click(); }, 0);
   }
 
   /** Download a workflow as JSON (row menu → Export). */
