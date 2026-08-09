@@ -1967,9 +1967,15 @@
                    window.location.hostname !== '127.0.0.1' &&
                    window.location.protocol !== 'file:';
 
-    if (isRemote && wf && wf.id && wf.userId) {
+    var wfUserId = (wf && wf.userId);
+    try {
+      if (!wfUserId && typeof API !== 'undefined' && API.getUserId) {
+        wfUserId = API.getUserId();
+      }
+    } catch (e) { /* ignore */ }
+    if (isRemote && wf && wf.id && wfUserId) {
       // حالت ریموت: استفاده از API client که هدر Authorization رو می‌فرسته
-      var url = '/workflows/' + encodeURIComponent(wf.userId) + '/' + encodeURIComponent(wf.id) + '/export';
+      var url = '/workflows/' + encodeURIComponent(wfUserId) + '/' + encodeURIComponent(wf.id) + '/export';
       API.getRaw(url)
         .then(function (res) { return res.blob(); })
         .then(function (blob) {
