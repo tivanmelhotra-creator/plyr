@@ -1,6 +1,7 @@
 'use strict';
 
 import { promises as fsp } from 'fs';
+import path from 'path';
 import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
 import { GlobalBrowser } from './GlobalBrowser';
 import {
@@ -14,6 +15,8 @@ import {
   discardDownload,
   sweepDownloads,
   mintDownloadToken,
+  ensureUsableExtension,
+  filenameFromContentDisposition,
   MAX_DOWNLOAD_BYTES,
 } from './RemoteDownloads';
 import {
@@ -2912,10 +2915,21 @@ export class LiveBrowserSession {
     try {
       const target = await downloadPathFor(this.userId, entry.token, safe);
       await dl.saveAs(target);
-      entry.path = target;
+      // Chrome could not always name this file. A site that streams bytes with
+      // no filename and no Content-Disposition leaves `suggestedFilename()`
+      // with no extension at all (measured: "export", "download", a bare
+      // UUID), and a file with no suffix is one the user's OS refuses to open.
+      // The bytes are on disk now, so the format can be identified from them —
+      // something Chrome could not do when the download began.
+      const finalName = await ensureUsableExtension(target, entry.url);
+      const finalPath = path.join(path.dirname(target), finalName);
+      // The shelf row, Content-Disposition and the file on disk all take the
+      // SAME name: three names for one file is how a download gets lost.
+      entry.name = finalName;
+      entry.path = finalPath;
       entry.state = 'completed';
       try {
-        const st = await fsp.stat(target);
+        const st = await fsp.stat(finalPath);
         entry.received = st.size;
         entry.total = st.size;
       } catch { /* size is a nicety, not a requirement */ }
@@ -2938,6 +2952,108 @@ export class LiveBrowserSession {
       // server's downloads directory) so the user can act on it.
       entry.error = err + (String(err).includes('saveAs') ? ' (check disk space and folder permissions)' : '');
       console.warn('[LiveBrowser] download failed:', err, 'url=', entry.url);
+    }
+    this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+  }
+
+  /**
+   * "Save image as" / "Save link as" — put a URL's bytes on the download shelf.
+   *
+   * Chrome's context menu can save a target the page never downloaded, and
+   * without this the menu entry would be a no-op. It cannot be done the obvious
+   * way. MEASURED, against a cross-origin image with no CORS headers (i.e. most
+   * images on the web, which live on a CDN):
+   *
+   *   inject `<a download>` and click   ->  no download at all: Chrome treats
+   *                                         a cross-origin `download` attribute
+   *                                         as hostile and NAVIGATES instead,
+   *                                         losing the page the user was on
+   *   fetch() inside the page           ->  TypeError: Failed to fetch (CORS)
+   *   context.request.get(url)          ->  200, bytes, headers  ✓
+   *
+   * So the fetch happens on the SERVER, through the browser context's own
+   * request client. That matters for more than CORS: it shares the context's
+   * cookie jar, so an image behind a login still resolves — measured against a
+   * cookie-gated URL, which returned 403 without the jar and 200 with it.
+   *
+   * The result is pushed onto the same shelf as a real download, so there is
+   * one place files arrive, one progress UI, one fetch route, and one set of
+   * safety rules (size cap, sweeping, tokens instead of paths).
+   */
+  async saveUrl(rawUrl: string, suggestedName = ''): Promise<void> {
+    this.touch();
+    // Only http(s). A menu target can be a `blob:`, `data:` or `javascript:`
+    // URL, and handing any of those to a server-side fetch client is either
+    // meaningless (the blob lives in the renderer) or an SSRF primitive.
+    let url: URL;
+    try {
+      url = new URL(String(rawUrl || ''));
+    } catch {
+      this.emit('downloadError', { url: String(rawUrl || ''), error: 'bad_url' });
+      return;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      this.emit('downloadError', { url: url.href, error: 'unsupported_scheme' });
+      return;
+    }
+
+    this.downloadSeq += 1;
+    const entry: LiveDownload = {
+      id: `d${this.downloadSeq}`,
+      token: mintDownloadToken(),
+      // Chrome names this from the URL when the menu is used, and the server's
+      // own Content-Disposition can still improve on it below.
+      name: safeFileName(suggestedName || path.basename(url.pathname)) || 'download',
+      url: url.href,
+      tabId: this.activeId,
+      state: 'inProgress',
+      received: 0,
+      total: 0,
+      path: '',
+      error: '',
+    };
+    this.downloads.push(entry);
+    if (this.downloads.length > 40) this.downloads.splice(0, this.downloads.length - 40);
+    this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+
+    try {
+      const ctx = this.context;
+      if (!ctx) throw new Error('no browser context');
+      const res = await ctx.request.get(url.href, { timeout: 60_000 });
+      if (!res.ok()) throw new Error(`http_${res.status()}`);
+      const body = await res.body();
+      if (body.length > MAX_DOWNLOAD_BYTES) {
+        entry.state = 'failed';
+        entry.error = 'download_too_large';
+        this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+        return;
+      }
+      // The server's own filename beats a guess from the URL — it is the same
+      // header Chrome would have obeyed had the page downloaded this itself.
+      const fromHeader = filenameFromContentDisposition(
+        String(res.headers()['content-disposition'] || ''),
+      );
+      // Test `fromHeader`, NOT its sanitised form. `safeFileName('')` returns
+      // the placeholder `file`, which is truthy — so sanitising first would
+      // make a response with NO Content-Disposition (the common case) silently
+      // rename every download to `file`. Measured: `photo.png` arrived as
+      // `file.png` until this distinction was made.
+      const named = fromHeader ? (safeFileName(fromHeader) || entry.name) : entry.name;
+      const target = await downloadPathFor(this.userId, entry.token, named);
+      await fsp.writeFile(target, body);
+      // Same rescue as a real download: a CDN that serves an image from a
+      // path with no suffix must not leave the user a file they cannot open.
+      const finalName = await ensureUsableExtension(target, url.href);
+      entry.name = finalName;
+      entry.path = path.join(path.dirname(target), finalName);
+      entry.received = body.length;
+      entry.total = body.length;
+      entry.state = 'completed';
+      void sweepDownloads(this.userId).catch(() => { /* best-effort */ });
+    } catch (e) {
+      entry.state = 'failed';
+      entry.error = (e as Error)?.message || 'download_failed';
+      console.warn('[LiveBrowser] saveUrl failed:', entry.error, 'url=', entry.url);
     }
     this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
   }

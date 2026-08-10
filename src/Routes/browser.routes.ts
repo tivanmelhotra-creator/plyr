@@ -485,7 +485,12 @@ export const createBrowserRoutes = (): Router => {
    * extension without a remote desktop.
    */
   router.get('/browser/extensions/:id/url', async (req, res) => {
-    let url = RealChrome.extensionPageUrl(req.params.id);
+    // `for` is the page the extension is being opened FOR. Opening a popup as a
+    // tab makes the popup the active tab, so an extension that asks Chrome
+    // "which site am I on?" gets itself — which is why J2TEAM's Export silently
+    // did nothing. See RealChrome.extensionPageUrlFor for the measurements.
+    const forPage = typeof req.query.for === 'string' ? req.query.for : '';
+    let url = RealChrome.extensionPageUrl(req.params.id, forPage);
     const steps: HealStep[] = [];
     if (!url) {
       // It used to answer "Upload it, then POST /browser/restart" — an HTTP verb,
@@ -497,7 +502,7 @@ export const createBrowserRoutes = (): Router => {
       if (installed.some((x) => x.id === req.params.id)) {
         await SelfHeal.reloadExtensions(collector.report, swapLiveSessions);
         steps.push(...collector.steps);
-        url = RealChrome.extensionPageUrl(req.params.id);
+        url = RealChrome.extensionPageUrl(req.params.id, forPage);
       }
     }
     if (!url) {

@@ -17,6 +17,7 @@ import {
 import { isTriggerAction } from './core/TriggerEngine';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
+import { withUtf8Locale } from './core/BrowserProfile';
 import {
   emptyStream,
   normalizeToItems,
@@ -637,7 +638,11 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
         '--disable-dev-shm-usage'
-      ]
+      ],
+      // A UTF-8 locale, or a downloaded file whose name is not pure ASCII
+      // loses that name AND its extension to the literal string `download`.
+      // See withUtf8Locale in core/BrowserProfile for the measurement.
+      env: withUtf8Locale(process.env),
     });
 
     if (await context.isCancelled()) {

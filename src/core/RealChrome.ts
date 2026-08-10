@@ -44,7 +44,7 @@ import path from 'path';
 import http from 'http';
 
 import { config } from '../config';
-import { ANTI_AUTOMATION_ARGS, realisticUserAgent } from './BrowserProfile';
+import { ANTI_AUTOMATION_ARGS, realisticUserAgent, withUtf8Locale } from './BrowserProfile';
 import {
   listExtensions,
   extensionLaunchArgs,
@@ -105,6 +105,66 @@ export function unpackedExtensionId(absDir: string): string {
     id += String.fromCharCode('a'.charCodeAt(0) + parseInt(ch, 16));
   }
   return id;
+}
+
+/**
+ * Tell an extension page WHICH site it is being opened for.
+ *
+ * WHY THIS EXISTS — measured, not guessed (tools/probe-j2team-tmp.js).
+ *
+ * A toolbar popup normally runs next to an active tab, and the way an extension
+ * learns which site it should act on is `chrome.tabs.query({active: true})`. We
+ * open the popup AS A TAB (see extensionPageUrl), so that query returns the
+ * popup itself — a `chrome-extension://` page, which has no cookies and no
+ * site. The extension then has nothing to work with.
+ *
+ * What that looks like to a user is the bug that was reported: with J2TEAM
+ * Cookies, Import worked (it reads a file, so it needs no site) while Export did
+ * nothing at all — no error, button still enabled, because the handler simply
+ * `return`s when it cannot resolve a URL.
+ *
+ * Extensions that support being opened as a tab solve this with a query
+ * parameter, and J2TEAM's own "open in tab" helper builds exactly this:
+ *
+ *   popup.html?url=<base64 of the page URL>
+ *
+ * Measured with the real extension, cookie `sess=abc123` on a local site:
+ *
+ *   popup.html                → header "Cookies for this page", downloads: []
+ *   popup.html?url=<base64>   → header "Cookies for 127.0.0.1",
+ *                               downloads: ["127.0.0.1_09-08-2026.json"]
+ *
+ * TWO RULES, both measured (tools/probe-b64-tmp.js):
+ *
+ *  1. Encode `new URL(u).href`, never the raw string. The decoder on the other
+ *     side is the browser's `atob`, and its encoder `btoa` THROWS
+ *     InvalidCharacterError on any code unit > 0xff — so a Persian or IDN URL
+ *     like `https://مهدی.com/` would break the very feature it is meant to
+ *     enable. `href` normalises to pure ASCII (IDN → punycode, path →
+ *     percent-encoded) for every case tested, and the extension's own
+ *     `new URL(atob(x)).origin` still round-trips to the right origin.
+ *  2. Only http(s). `about:blank` and `chrome-extension://` normalise fine but
+ *     produce origin `null`, which is not a site any cookie belongs to; passing
+ *     one would replace a harmless "no site" with a confusing wrong answer.
+ *
+ * Returns '' when there is nothing useful to attach, so callers can treat this
+ * as "append if non-empty" and behaviour is unchanged for every other extension.
+ */
+export function extensionPageUrlFor(pageUrl: string, popupUrl: string): string {
+  if (!popupUrl) return '';
+  let href: string;
+  try {
+    const u = new URL(String(pageUrl || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return popupUrl;
+    href = u.href;
+  } catch {
+    return popupUrl; // not a URL at all (empty field, half-typed host)
+  }
+  // Never clobber a parameter the extension page already carries.
+  if (popupUrl.includes('?url=') || popupUrl.includes('&url=')) return popupUrl;
+  const b64 = Buffer.from(href, 'utf8').toString('base64');
+  const sep = popupUrl.includes('?') ? '&' : '?';
+  return `${popupUrl}${sep}url=${encodeURIComponent(b64)}`;
 }
 
 /** Ask a DevTools port who it is. Used purely to prove the port is live. */
@@ -220,7 +280,9 @@ export class RealChrome {
 
     // Xvfb display. An explicit DISPLAY in the environment wins, because the
     // operator who exported it knows better than a default.
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    // A UTF-8 locale, or a download named `صفحه.png` arrives called `download`
+    // with no extension at all — see withUtf8Locale for the measurement.
+    const env: NodeJS.ProcessEnv = withUtf8Locale(process.env);
     if (!headless && !env.DISPLAY && config.REAL_CHROME_DISPLAY) {
       env.DISPLAY = config.REAL_CHROME_DISPLAY;
     }
@@ -339,13 +401,19 @@ export class RealChrome {
    * Preference order is popup → options → root, because the popup is what the
    * toolbar button shows and therefore what the user recognises. Opening it as
    * a tab works: an extension page has the same privileges wherever it renders.
+   *
+   * `forPageUrl` is the page the extension is being opened FOR. Opening the
+   * popup as a tab makes the popup itself the active tab, so an extension that
+   * asks Chrome "which site am I on?" gets the wrong answer; passing the page
+   * URL along fixes that. See extensionPageUrlFor for the measurements.
    */
-  static extensionPageUrl(id: string): string {
+  static extensionPageUrl(id: string, forPageUrl = ''): string {
     const found = this.loadedExtensions().find(
       (e) => e.id === id || e.name === id || e.runtimeId === id || e.storeId === id,
     );
     if (!found) return '';
-    return found.popupUrl || found.optionsUrl || found.url;
+    const base = found.popupUrl || found.optionsUrl || found.url;
+    return forPageUrl ? extensionPageUrlFor(forPageUrl, base) : base;
   }
 
   /**

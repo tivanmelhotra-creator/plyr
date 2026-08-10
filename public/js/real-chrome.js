@@ -68,8 +68,56 @@
     return b;
   }
 
+  /**
+   * Tell the extension page WHICH site it is being opened for.
+   *
+   * MEASURED (tools/probe-j2team-tmp.js, real J2TEAM Cookies):
+   *
+   *   popup.html              → "Cookies for this page", no download at all
+   *   popup.html?url=<base64> → "Cookies for 127.0.0.1",
+   *                             downloads 127.0.0.1_09-08-2026.json
+   *
+   * The reason is that "Open here" opens the popup as a TAB, so the extension's
+   * own `chrome.tabs.query({active: true})` finds the popup instead of the site.
+   * Import still worked (a file needs no site) but Export silently did nothing —
+   * exactly the reported bug. `?url=` is the extension's own convention for the
+   * open-as-tab case; its own "open in tab" button builds the same link.
+   *
+   * Two rules, both measured (tools/probe-b64-tmp.js):
+   *   1. btoa() THROWS on any code unit > 0xff, so encode `new URL(u).href`,
+   *      which is always ASCII, not the raw text. Otherwise a Persian/IDN URL
+   *      such as https://مهدی.com/ would throw and break "Open here" entirely.
+   *   2. http(s) only — about:blank and chrome-extension:// give origin `null`,
+   *      which is no site at all.
+   *
+   * Returns the URL unchanged when there is nothing useful to add, so no other
+   * extension's behaviour changes.
+   */
+  function pageUrlParam(popupUrl, pageUrl) {
+    if (!popupUrl) return popupUrl;
+    if (popupUrl.indexOf('?url=') >= 0 || popupUrl.indexOf('&url=') >= 0) return popupUrl;
+    var href;
+    try {
+      var u = new URL(String(pageUrl || ''));
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return popupUrl;
+      href = u.href;
+    } catch (e) {
+      return popupUrl;
+    }
+    var b64;
+    try {
+      b64 = btoa(href);
+    } catch (e) {
+      return popupUrl; // never let encoding break opening the popup
+    }
+    return popupUrl + (popupUrl.indexOf('?') >= 0 ? '&' : '?')
+      + 'url=' + encodeURIComponent(b64);
+  }
+
   // ── state ─────────────────────────────────────────────────────────────────
-  var current = null; // { root, onNavigate, status }
+  // `pageUrl` is a getter for the URL the picker canvas is currently on: the
+  // extension is opened FOR that page, and some extensions must be told so.
+  var current = null; // { root, onNavigate, pageUrl, status }
 
   function close() {
     if (!current) return;
@@ -333,7 +381,14 @@
           var url = ext.popupUrl || ext.optionsUrl || ext.url;
           if (!url) return;
           if (current && typeof current.onNavigate === 'function') {
-            current.onNavigate(url);
+            // Pass the page we are opening the extension FOR. Without this an
+            // extension that reads the active tab sees the popup tab itself, and
+            // an action like "export this site's cookies" has no site to act on.
+            var forPage = '';
+            try {
+              forPage = current.pageUrl ? String(current.pageUrl() || '') : '';
+            } catch (e) { forPage = ''; }
+            current.onNavigate(pageUrlParam(url, forPage));
             close();
           }
         });
@@ -561,6 +616,10 @@
    * opts.anchor     element the panel is positioned under (the toolbar button)
    * opts.onNavigate fn(url) — used by "Open here" to point the picker canvas at
    *                 a chrome-extension:// page.
+   * opts.pageUrl    fn() → the URL the canvas is on right now. A getter, not a
+   *                 value, because the panel can sit open across navigations and
+   *                 the extension must be told about the page as it is AT CLICK
+   *                 TIME, not as it was when the panel opened.
    */
   function openPanel(opts) {
     opts = opts || {};
@@ -596,7 +655,12 @@
       }
     }
 
-    current = { root: root, anchor: opts.anchor || null, onNavigate: opts.onNavigate || null };
+    current = {
+      root: root,
+      anchor: opts.anchor || null,
+      onNavigate: opts.onNavigate || null,
+      pageUrl: typeof opts.pageUrl === 'function' ? opts.pageUrl : null,
+    };
 
     note(root, t('rc.loading', 'Loading…'));
     document.addEventListener('mousedown', onOutside, true);

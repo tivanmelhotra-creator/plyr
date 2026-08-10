@@ -1452,6 +1452,22 @@
       if (!host) return;
       host.innerHTML = '';
       var live = items.filter(function (it) { return it && !it.off; });
+      // Collapse separators. The page menu is built from many conditional
+      // sections (link, image, media, selection), so whenever a whole section
+      // is switched off its separator survives on its own — and two rules with
+      // nothing between them, or a rule at the very top or bottom, reads as a
+      // rendering bug. Chrome does exactly this collapsing too.
+      live = live.filter(function (it, i, arr) {
+        if (!it.sep) return true;
+        // Drop a leading separator, and any that follows another separator.
+        // Looking at the ORIGINAL array is correct: a separator only survives
+        // when the entry before it is a real item, so a run of separators
+        // keeps its first and drops the rest.
+        if (i === 0 || arr[i - 1].sep) return false;
+        // Drop a trailing separator: nothing but separators after this one.
+        for (var j = i + 1; j < arr.length; j++) if (!arr[j].sep) return true;
+        return false;
+      });
       if (!live.length) return;
 
       live.forEach(function (it) {
@@ -1542,6 +1558,15 @@
       var cy = rect.top + Number(info.y || 0) * sy;
       var link = String(info.linkUrl || '');
       var img = String(info.imageUrl || '');
+      var media = String(info.mediaUrl || '');
+      var sel = String(info.selection || '');
+      // The address bar is the client's only copy of "where this tab is", and
+      // the server rewrites it on every navigation, so it cannot go stale.
+      var pageUrl = (urlIn.value || '').trim();
+      // "Save as" can only work on something the SERVER can fetch over http(s).
+      // A `blob:` or `data:` target lives inside the renderer and would fail —
+      // showing an entry that cannot work is worse than not showing it.
+      var canSave = function (u) { return /^https?:\/\//i.test(u); };
 
       openCtx(cx, cy, [
         { label: t('bvp.cmBack'), icon: 'chevron-left', disabled: !pickState.canBack,
@@ -1551,18 +1576,37 @@
         { label: t('bvp.cmReload'), icon: 'rotate-cw',
           run: function () { send({ t: 'reload' }); } },
         { sep: true },
+        // ── Link ─────────────────────────────────────────────────────────
         { label: t('bvp.cmOpenNewTab'), icon: 'plus', off: !link,
           // A NEW tab, not this one: that is what the entry says, and a menu
           // item that navigates the current tab instead would lose the page the
           // user was reading.
           run: function () { send({ t: 'tabNew', url: link }); } },
+        { label: t('bvp.cmSaveLinkAs'), icon: 'download', off: !link || !canSave(link),
+          // Fetched by the SERVER, not by an injected anchor: measured, a
+          // cross-origin `<a download>` makes Chrome navigate instead of
+          // download. See LiveBrowser.saveUrl.
+          run: function () { saveUrlToShelf(link); } },
         { label: t('bvp.cmCopyLink'), icon: 'link', off: !link,
           run: function () { copyText(link); } },
+        { label: t('bvp.cmCopyLinkText'), icon: 'copy', off: !link || !info.linkText,
+          run: function () { copyText(String(info.linkText || '')); } },
+        { sep: true, off: !link },
+        // ── Image ────────────────────────────────────────────────────────
         { label: t('bvp.cmOpenImage'), icon: 'image-frame', off: !img,
           run: function () { send({ t: 'tabNew', url: img }); } },
+        { label: t('bvp.cmSaveImageAs'), icon: 'download', off: !img || !canSave(img),
+          run: function () { saveUrlToShelf(img); } },
         { label: t('bvp.cmCopyImage'), icon: 'copy', off: !img,
           run: function () { copyText(img); } },
-        { sep: true },
+        { sep: true, off: !img },
+        // ── Media (video / audio) ────────────────────────────────────────
+        { label: t('bvp.cmSaveMediaAs'), icon: 'download', off: !media || !canSave(media),
+          run: function () { saveUrlToShelf(media); } },
+        { label: t('bvp.cmCopyMedia'), icon: 'copy', off: !media,
+          run: function () { copyText(media); } },
+        { sep: true, off: !media },
+        // ── Editing ──────────────────────────────────────────────────────
         // Copy asks the SERVER for the selection, because the text is selected
         // in the remote page and this machine's clipboard has never seen it.
         { label: t('bvp.cmCopy'), icon: 'copy', disabled: !info.hasSelection,
@@ -1570,6 +1614,12 @@
             if (pickState.rio) pickState.rio.pullClipboard();
             else send({ t: 'copy' });
           } },
+        { label: t('bvp.cmCut'), icon: 'x', off: !info.editable,
+          disabled: !info.hasSelection,
+          // Cut is Copy + delete, and both halves must happen in the REMOTE
+          // page, so it goes through the key translator rather than being
+          // faked as two separate messages.
+          run: function () { send({ t: 'key', key: 'x', mods: { ctrl: true } }); } },
         { label: t('bvp.cmPaste'), icon: 'clipboard', off: !info.editable,
           // Paste has to go the other way: read THIS machine's clipboard and
           // type it into the remote page, since the server cannot read a
@@ -1577,6 +1627,30 @@
           run: function () { pasteIntoPage(); } },
         { label: t('bvp.cmSelectAll'), icon: 'square-check',
           run: function () { send({ t: 'selectAll' }); } },
+        { sep: true },
+        // ── Selection ────────────────────────────────────────────────────
+        { label: t('bvp.cmSearchSel'), icon: 'search', off: !info.hasSelection,
+          // A new tab, exactly like Chrome: searching in the current tab would
+          // throw away the page the selection came from.
+          run: function () {
+            send({ t: 'tabNew', url: 'https://www.google.com/search?q=' + encodeURIComponent(sel) });
+          } },
+        { sep: true, off: !info.hasSelection },
+        // ── Page ─────────────────────────────────────────────────────────
+        // The page's own URL comes from the address bar, which the server
+        // updates on every navigation — there is no separate copy to go stale.
+        { label: t('bvp.cmSavePageAs'), icon: 'download', off: !canSave(pageUrl),
+          run: function () { saveUrlToShelf(pageUrl); } },
+        { label: t('bvp.cmViewSource'), icon: 'file-text', off: !canSave(pageUrl),
+          // `view-source:` is a real Chrome scheme and the honest way to show
+          // this: it renders the source of the page as the server sent it.
+          run: function () { send({ t: 'tabNew', url: 'view-source:' + pageUrl }); } },
+        { label: t('bvp.cmCopyPageUrl'), icon: 'link', off: !pageUrl,
+          run: function () { copyText(pageUrl); } },
+        { label: t('bvp.cmPrint'), icon: 'file-text',
+          // Ctrl+P in the REMOTE browser. The remote Chrome owns the page, so
+          // printing this canvas would print a picture of a browser instead.
+          run: function () { send({ t: 'key', key: 'p', mods: { ctrl: true } }); } },
         { sep: true },
         // "Inspect" in a picker window means the thing this window is for:
         // arm element selection and lock the element that was right-clicked.
@@ -1586,6 +1660,21 @@
             send({ t: 'click', x: Number(info.x || 0) / z, y: Number(info.y || 0) / z });
           } }
       ]);
+    }
+
+    /**
+     * Ask the server to put a URL's bytes on the download shelf.
+     *
+     * The shelf is the one place downloads arrive, so "Save image as" lands
+     * next to a file the page downloaded itself, with the same progress row,
+     * the same size cap and the same fetch button. The toast exists because the
+     * bytes travel to the SERVER first: without it the menu item would look
+     * like it did nothing at all.
+     */
+    function saveUrlToShelf(url) {
+      if (!url) return;
+      send({ t: 'saveUrl', url: url });
+      toast(t('bvp.cmSaving'), 'info');
     }
 
     /** Read the local clipboard and type it into the remote page. */
@@ -1902,6 +1991,33 @@
       return url;
     }
 
+    /**
+     * The filename the SERVER decided on, read back out of its own header.
+     *
+     * The shelf row carries a name too, but it is a copy made when the download
+     * started, and the server may have improved it since (it renames a file
+     * that arrived with no extension once it can identify the bytes). The
+     * header is the authoritative answer, so a stale row cannot save the file
+     * under a name that no longer matches what is on disk.
+     *
+     * RFC 6266: `filename*=UTF-8''<percent-encoded>` is preferred over the
+     * ASCII `filename="…"`, because the ASCII copy is deliberately lossy — the
+     * server replaces every non-ASCII character in it with `_`, so trusting it
+     * would turn `صفحه.png` into `_____.png`.
+     */
+    function nameFromDisposition(cd) {
+      var s = String(cd || '');
+      var star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(s);
+      if (star) {
+        try {
+          var d = decodeURIComponent(star[1].trim());
+          if (d) return d;
+        } catch (e) { /* malformed encoding: fall through to the ASCII copy */ }
+      }
+      var plain = /filename\s*=\s*"([^"]*)"/i.exec(s) || /filename\s*=\s*([^;]+)/i.exec(s);
+      return plain ? plain[1].trim() : '';
+    }
+
     /** Save a blob (or a URL) under `name`, via the anchor click that works. */
     function saveAs(href, name, revoke) {
       var a = document.createElement('a');
@@ -1957,18 +2073,29 @@
             return fetch(downloadUrlFor(d, false), { headers: headers }).then(explain);
           }
           var len = parseInt(res.headers.get('content-length') || '0', 10) || 0;
+          // Prefer the server's own Content-Disposition over the shelf row: the
+          // row's name was captured when the download started, and the server
+          // renames a file that arrived without an extension once it can
+          // identify the bytes.
+          var served = nameFromDisposition(res.headers.get('content-disposition'));
+          var want = served || d.name;
           if (len > BLOB_LIMIT_BYTES) {
             // Too big to hold in memory: let the browser stream it to disk. The
             // only path that needs the key in the query, since a navigation
             // cannot carry a header.
-            saveAs(downloadUrlFor(d, true), d.name, false);
+            saveAs(downloadUrlFor(d, true), want, false);
             return null;
           }
           return fetch(downloadUrlFor(d, false), { headers: headers })
-            .then(function (r) { return r.ok ? r.blob() : explain(r); })
+            .then(function (r) {
+              if (!r.ok) return explain(r);
+              // The GET's own header beats the HEAD's if they ever differ.
+              want = nameFromDisposition(r.headers.get('content-disposition')) || want;
+              return r.blob();
+            })
             .then(function (blob) {
               if (!blob) return;
-              saveAs(URL.createObjectURL(blob), d.name, true);
+              saveAs(URL.createObjectURL(blob), want, true);
             });
         })
         .catch(function (e) {
@@ -3020,6 +3147,11 @@
         if (!window.RealChromePanel) return;
         window.RealChromePanel.open({
           anchor: chromeBtn,
+          // Which page the extension is being opened FOR. The URL field tracks
+          // the canvas (see the `msg.url` handlers), so it is the live answer,
+          // and it is read at click time rather than captured here because the
+          // panel can stay open while the canvas navigates.
+          pageUrl: function () { return (urlIn.value || '').trim(); },
           onNavigate: function (url) {
             urlIn.value = url;
             // ── A NEW TAB, not this one ─────────────────────────────────────

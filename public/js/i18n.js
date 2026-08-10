@@ -529,6 +529,19 @@
       'bvp.cmCopyLink': 'کپی نشانی لینک',
       'bvp.cmCopyImage': 'کپی نشانی تصویر',
       'bvp.cmOpenImage': 'باز کردن تصویر در تب جدید',
+      'bvp.cmCut': 'برش',
+      'bvp.cmSaveLinkAs': 'ذخیرهٔ لینک به‌عنوان…',
+      'bvp.cmCopyLinkText': 'کپی متن لینک',
+      'bvp.cmSaveImageAs': 'ذخیرهٔ تصویر به‌عنوان…',
+      'bvp.cmSaveMediaAs': 'ذخیرهٔ ویدیو/صدا به‌عنوان…',
+      'bvp.cmCopyMedia': 'کپی نشانی ویدیو/صدا',
+      'bvp.cmSearchSel': 'جست‌وجوی متن انتخاب‌شده',
+      'bvp.cmSavePageAs': 'ذخیرهٔ صفحه به‌عنوان…',
+      'bvp.cmViewSource': 'نمایش کد صفحه',
+      'bvp.cmCopyPageUrl': 'کپی نشانی صفحه',
+      'bvp.cmPrint': 'چاپ…',
+      // فایل روی سرور دانلود می‌شود، پس بدون این پیام دکمه بی‌اثر به‌نظر می‌رسد.
+      'bvp.cmSaving': 'در حال دریافت روی سرور… در نوار دانلود ظاهر می‌شود.',
       'bvp.cmInspect': 'بررسی این المان',
 
       // ── زوم ───────────────────────────────────────────────────────────
@@ -1862,6 +1875,19 @@
       'bvp.cmCopyLink': 'Copy link address',
       'bvp.cmCopyImage': 'Copy image address',
       'bvp.cmOpenImage': 'Open image in new tab',
+      'bvp.cmCut': 'Cut',
+      'bvp.cmSaveLinkAs': 'Save link as\u2026',
+      'bvp.cmCopyLinkText': 'Copy link text',
+      'bvp.cmSaveImageAs': 'Save image as\u2026',
+      'bvp.cmSaveMediaAs': 'Save video/audio as\u2026',
+      'bvp.cmCopyMedia': 'Copy video/audio address',
+      'bvp.cmSearchSel': 'Search for the selected text',
+      'bvp.cmSavePageAs': 'Save page as\u2026',
+      'bvp.cmViewSource': 'View page source',
+      'bvp.cmCopyPageUrl': 'Copy page address',
+      'bvp.cmPrint': 'Print\u2026',
+      // The bytes land on the SERVER, so without this the item looks inert.
+      'bvp.cmSaving': 'Fetching on the server\u2026 it will appear on the download shelf.',
       'bvp.cmInspect': 'Inspect this element',
 
       // ── Zoom ─────────────────────────────────────────────────────────

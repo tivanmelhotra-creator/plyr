@@ -122,6 +122,144 @@ export async function downloadPathFor(
   return path.join(dir, name);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rescuing a name the browser could not supply
+//
+// REPORTED, then MEASURED (2026-08-10): a user downloaded a PNG through the
+// live browser and received a file called `download` with no suffix at all.
+// The bytes were perfect — renaming it to `.png` by hand opened a valid image.
+//
+// The primary cause was the process locale, fixed at the launch sites (see
+// withUtf8Locale in core/BrowserProfile). But there is a SECOND, independent
+// way to end up with no extension, which no locale can fix: the site never
+// sent a name. Measured, WITH a correct UTF-8 locale:
+//
+//     GET /api/export     octet-stream  ->  suggestedFilename() === "export"
+//     GET /files/         octet-stream  ->  suggestedFilename() === "download"
+//     GET /f/9f2c4d18-…   octet-stream  ->  suggestedFilename() === "9f2c4d18-…"
+//
+// Each of those is a real file the user's OS then refuses to open, because on
+// Windows and macOS the suffix — not the content — chooses the application.
+//
+// We can do better than Chrome here, because by the time the file is named we
+// have something Chrome did not have at the moment the download began: THE
+// BYTES. Also measured — a Playwright Download exposes exactly `page, url,
+// suggestedFilename, path, saveAs, failure, createReadStream, cancel, delete`,
+// so the response's Content-Type is NOT reachable; the bytes are the only
+// remaining honest signal.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * File signatures, chosen for being unambiguous at a fixed offset.
+ *
+ * Deliberately a SHORT list. A wrong extension is worse than a missing one — a
+ * `.png` that is really something else is a lie the user's OS will act on — so
+ * only formats with a distinctive magic number appear here, and anything not
+ * recognised gets no extension at all.
+ */
+const MAGIC: ReadonlyArray<{ ext: string; at: number; bytes: number[] }> = [
+  { ext: '.png', at: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  { ext: '.jpg', at: 0, bytes: [0xff, 0xd8, 0xff] },
+  { ext: '.gif', at: 0, bytes: [0x47, 0x49, 0x46, 0x38] },           // GIF8
+  { ext: '.pdf', at: 0, bytes: [0x25, 0x50, 0x44, 0x46, 0x2d] },     // %PDF-
+  { ext: '.webp', at: 8, bytes: [0x57, 0x45, 0x42, 0x50] },          // ....WEBP
+  { ext: '.zip', at: 0, bytes: [0x50, 0x4b, 0x03, 0x04] },           // PK..
+  { ext: '.gz', at: 0, bytes: [0x1f, 0x8b] },
+  { ext: '.mp4', at: 4, bytes: [0x66, 0x74, 0x79, 0x70] },           // ....ftyp
+  { ext: '.ico', at: 0, bytes: [0x00, 0x00, 0x01, 0x00] },
+  { ext: '.bmp', at: 0, bytes: [0x42, 0x4d] },                       // BM
+];
+
+/**
+ * Name the format these bytes are in, or `''` when unsure.
+ *
+ * `''` on doubt is the whole contract: guessing would attach a suffix that
+ * tells the user's OS to open the file with the wrong application, which is a
+ * worse outcome than the missing suffix this sets out to fix.
+ */
+export function extensionFromBytes(head: Buffer): string {
+  for (const sig of MAGIC) {
+    if (head.length < sig.at + sig.bytes.length) continue;
+    let ok = true;
+    for (let i = 0; i < sig.bytes.length; i++) {
+      if (head[sig.at + i] !== sig.bytes[i]) { ok = false; break; }
+    }
+    if (ok) return sig.ext;
+  }
+  return '';
+}
+
+/**
+ * The extension implied by a download URL's own path, if it has one.
+ *
+ * Only the PATH is read. A query string sometimes carries a filename
+ * (`/dl?file=photo.png`) but far more often carries `?v=1.2` or `?sig=…`, and
+ * treating those as a suffix produces names like `download.2`.
+ */
+export function extensionFromUrl(url: string): string {
+  try {
+    return extensionOf(path.basename(new URL(String(url || '')).pathname));
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Give a saved download a usable name when the browser could not.
+ *
+ * Sources in order of trustworthiness, stopping at the first answer:
+ *   1. the name already HAS an extension     → keep it untouched
+ *   2. the URL path ends in one              → the site's own choice
+ *   3. the bytes identify the format         → the only truth left
+ *   4. nothing is certain                    → change nothing
+ *
+ * Step 4 is not a failure. A name with no suffix is inconvenient; a name with
+ * the WRONG suffix actively misleads, so silence beats a guess.
+ *
+ * Renames in place and returns the final basename, so the shelf row, the
+ * `Content-Disposition` header and the file on disk cannot drift apart — three
+ * names for one file is how a download becomes unreachable.
+ */
+export async function ensureUsableExtension(filePath: string, url: string): Promise<string> {
+  const current = path.basename(filePath);
+  if (extensionOf(current)) return current;
+
+  let ext = extensionFromUrl(url);
+  if (!ext) {
+    // Only the first bytes: enough for every signature above, and it must not
+    // read a 250MB file into memory to look at 12 of them.
+    let fh: Awaited<ReturnType<typeof fs.open>> | null = null;
+    try {
+      fh = await fs.open(filePath, 'r');
+      const head = Buffer.alloc(16);
+      const { bytesRead } = await fh.read(head, 0, 16, 0);
+      ext = extensionFromBytes(head.subarray(0, bytesRead));
+    } catch {
+      ext = '';                      // unreadable: keep the name we have
+    } finally {
+      if (fh) await fh.close().catch(() => { /* nothing better to do */ });
+    }
+  }
+  if (!ext) return current;
+
+  // Re-run the sanitiser: the suffix is new input joining a trusted name, and
+  // safeFileName is the single place that decides what a name may contain.
+  const renamed = safeFileName(current + ext);
+  if (!renamed || renamed === current) return current;
+  // MEASURED: safeFileName caps a name at 120 characters, and it cuts from the
+  // END — so a 118-character name gained `.pn` instead of `.png`. That is the
+  // one outcome this whole function exists to prevent: a suffix that is not the
+  // format, which sends the user's OS to the wrong application. A name too long
+  // to carry its own extension keeps the name and goes without.
+  if (!renamed.endsWith(ext)) return current;
+  try {
+    await fs.rename(filePath, path.join(path.dirname(filePath), renamed));
+  } catch {
+    return current;                  // rename failed: the bytes still matter more
+  }
+  return renamed;
+}
+
 /**
  * Resolve a token to the file the user asked to fetch.
  *
@@ -243,4 +381,37 @@ export function contentDispositionAttachment(filename: string): string {
   const fallback = ascii || 'download';
   return `attachment; filename="${fallback}"; `
     + `filename*=UTF-8''${encodeURIComponent(raw || fallback)}`;
+}
+
+/**
+ * Read a filename back OUT of a remote server's `Content-Disposition`.
+ *
+ * The inverse of the function above, and needed because "Save image as" fetches
+ * a URL server-side: the response's own header is the same one Chrome would
+ * have obeyed, so honouring it is what makes the saved name match what a real
+ * browser would have produced.
+ *
+ * `filename*` wins when both are present, exactly as RFC 6266 requires and as
+ * every current browser does — the ASCII `filename` is a deliberately lossy
+ * copy in which `صفحه.png` may appear as `_____.png`.
+ *
+ * The result is NOT trusted as a path: it is a remote server's string, so the
+ * caller passes it through `safeFileName` before it reaches a filesystem.
+ */
+export function filenameFromContentDisposition(header: string): string {
+  const s = String(header || '');
+  // RFC 5987 ext-value: charset'language'percent-encoded-value.
+  const star = /filename\*\s*=\s*([^;]+)/i.exec(s);
+  if (star) {
+    const v = star[1].trim();
+    const m = /^([\w-]*)'[^']*'(.*)$/.exec(v);
+    if (m) {
+      try {
+        const decoded = decodeURIComponent(m[2]);
+        if (decoded.trim()) return decoded.trim();
+      } catch { /* malformed percent-encoding: fall through to the ASCII copy */ }
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]*)"/i.exec(s) || /filename\s*=\s*([^;]+)/i.exec(s);
+  return plain ? plain[1].trim() : '';
 }
