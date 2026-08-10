@@ -235,11 +235,15 @@ function shelfHarness(opts: {
   const src = [
     grabFunction(browserView, 'downloadUrlFor'),
     grabFunction(browserView, 'saveAs'),
+    // `fetchDownload` reads the server's own Content-Disposition to decide the
+    // filename, so the parser has to come along or the download loses its name.
+    grabFunction(browserView, 'nameFromDisposition'),
     grabFunction(browserView, 'downloadFailureMessage'),
     grabFunction(browserView, 'fetchDownload'),
     'var BLOB_LIMIT_BYTES = 64 * 1024 * 1024;',
     'return { fetchDownload: fetchDownload, downloadUrlFor: downloadUrlFor,'
-      + ' saveAs: saveAs, downloadFailureMessage: downloadFailureMessage };',
+      + ' saveAs: saveAs, downloadFailureMessage: downloadFailureMessage,'
+      + ' nameFromDisposition: nameFromDisposition };',
   ].join('\n');
 
   const keys = Object.keys(sandbox);

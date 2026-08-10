@@ -44,7 +44,7 @@ import path from 'path';
 import http from 'http';
 
 import { config } from '../config';
-import { ANTI_AUTOMATION_ARGS, realisticUserAgent } from './BrowserProfile';
+import { ANTI_AUTOMATION_ARGS, realisticUserAgent, withUtf8Locale } from './BrowserProfile';
 import {
   listExtensions,
   extensionLaunchArgs,
@@ -280,7 +280,9 @@ export class RealChrome {
 
     // Xvfb display. An explicit DISPLAY in the environment wins, because the
     // operator who exported it knows better than a default.
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    // A UTF-8 locale, or a download named `صفحه.png` arrives called `download`
+    // with no extension at all — see withUtf8Locale for the measurement.
+    const env: NodeJS.ProcessEnv = withUtf8Locale(process.env);
     if (!headless && !env.DISPLAY && config.REAL_CHROME_DISPLAY) {
       env.DISPLAY = config.REAL_CHROME_DISPLAY;
     }

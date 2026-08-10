@@ -59,6 +59,52 @@ export const ANTI_AUTOMATION_ARGS: readonly string[] = [
   '--disable-features=IsolateOrigins,site-per-process',
 ];
 
+/**
+ * Give Chromium's process a UTF-8 locale, so a download keeps its own name.
+ *
+ * MEASURED (2026-08-10), and the cause of a reported bug: a user downloaded a
+ * PNG through the live browser and received a file called `download`, with no
+ * extension at all. The bytes were fine — only the name was destroyed.
+ *
+ * Chromium derives a download's filename with `base::FilePath`, which is a
+ * BYTE string on POSIX, and converts the server's UTF-16 name into it using
+ * the C library's locale encoding. When the process has no `LANG`/`LC_ALL`,
+ * glibc reports the "C" locale, i.e. ANSI_X3.4-1968 (plain ASCII). Every
+ * non-ASCII character then fails to convert, Chromium discards the whole name
+ * as unusable, and falls back to its hardcoded default — the literal string
+ * `download`, with no extension, because the extension went out with the name.
+ *
+ * The container this runs in ships exactly that: `locale -a` lists only
+ * `C`, `C.utf8` and `POSIX`, and nothing exports `LANG`.
+ *
+ *   no LANG          →  "download"     ← the bug, reproduced
+ *   LANG=C.UTF-8     →  "صفحه.png"     ← the name survives intact
+ *   LANG=en_US.UTF-8 →  "download"     ← still broken: not generated in this image
+ *
+ * That last line is why the value is `C.UTF-8` and not a friendlier-looking
+ * `en_US.UTF-8`. A locale that is not generated does not fall back to UTF-8;
+ * glibc silently drops to "C" and the bug comes straight back. `C.UTF-8` is
+ * built into glibc itself, so it is available everywhere without `locale-gen`.
+ *
+ * This is NOT the same setting as Playwright's `locale: 'en-US'` context
+ * option, which only drives `Accept-Language` and JS `Intl`. That option was
+ * already set while the bug was happening; it cannot reach the filesystem
+ * encoding, because that is decided by the OS process environment.
+ *
+ * An operator who has deliberately exported a UTF-8 locale keeps it: theirs may
+ * carry collation or currency rules that matter to them, and any UTF-8 locale
+ * already fixes the encoding. Only a missing or non-UTF-8 locale is replaced.
+ */
+export function withUtf8Locale(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  // LC_ALL outranks LANG, so if it is set and is not UTF-8 it would override
+  // whatever LANG we choose — it has to be judged, and fixed, on its own.
+  const isUtf8 = (v: string | undefined): boolean => /utf-?8/i.test(String(v || ''));
+  if (out.LC_ALL && !isUtf8(out.LC_ALL)) delete out.LC_ALL;
+  if (!isUtf8(out.LC_ALL) && !isUtf8(out.LANG)) out.LANG = 'C.UTF-8';
+  return out;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // 2. Fingerprint
 // ───────────────────────────────────────────────────────────────────────────

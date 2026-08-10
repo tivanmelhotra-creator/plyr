@@ -334,6 +334,15 @@ export class BrowserStreamServer {
       case 'selectAll':
         await session.selectAll();
         break;
+      // ── "Save image as" / "Save link as" ──────────────────────────────
+      // The context menu can save a target the page never downloaded. The
+      // fetch runs on the SERVER through the context's own request client:
+      // measured, an injected cross-origin `<a download>` makes Chrome
+      // NAVIGATE instead of downloading, and an in-page fetch() is refused by
+      // CORS. See LiveBrowser.saveUrl.
+      case 'saveUrl':
+        await session.saveUrl(String(msg.url || ''), String(msg.name || ''));
+        break;
       // ── Remote file upload ────────────────────────────────────────────
       // `tokens`, never paths — see RemoteUploads for why a path here would be
       // an arbitrary-file-read on the server.

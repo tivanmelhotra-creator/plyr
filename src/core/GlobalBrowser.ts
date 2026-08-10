@@ -6,6 +6,7 @@ import {
   ANTI_AUTOMATION_ARGS,
   interactiveContextOptions,
   saveStorageState,
+  withUtf8Locale,
 } from './BrowserProfile';
 import { RealChrome } from './RealChrome';
 
@@ -78,7 +79,11 @@ export class GlobalBrowser {
           // there is. The stealth plugin patches the JS getter afterwards;
           // the flag stops the signal being emitted at all (headers included).
           ...ANTI_AUTOMATION_ARGS,
-        ]
+        ],
+        // A UTF-8 locale, or Chromium cannot represent a non-ASCII download
+        // name in a POSIX path and replaces the whole thing — extension
+        // included — with the literal string `download`. See withUtf8Locale.
+        env: withUtf8Locale(process.env),
       });
 
       // Reset counters on successful launch
