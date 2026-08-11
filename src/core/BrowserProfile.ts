@@ -52,11 +52,40 @@ import { config } from '../config';
  */
 export const ANTI_AUTOMATION_ARGS: readonly string[] = [
   '--disable-blink-features=AutomationControlled',
-  // Chromium's own "you are being automated" infobar and the enable-automation
-  // switch it derives from.
-  '--exclude-switches=enable-automation',
   '--no-default-browser-check',
   '--disable-features=IsolateOrigins,site-per-process',
+];
+
+/**
+ * Default Playwright switches that must be REMOVED, not merely countered.
+ *
+ * MEASURED (2026-08-11), reading Chrome's own `/proc/<pid>/cmdline` rather than
+ * our source:
+ *
+ *   launched with args ['--exclude-switches=enable-automation']
+ *     → cmdline CONTAINS --enable-automation      (the flag survived)
+ *   launched with ignoreDefaultArgs ['--enable-automation']
+ *     → cmdline does NOT contain --enable-automation
+ *     → and --no-sandbox is still present, so nothing else was lost
+ *
+ * `--exclude-switches` is a ChromeDriver/webdriver *capability*, not a Chrome
+ * command-line switch. Passing it as an argument does nothing at all: Chrome
+ * does not recognise it, does not warn, and keeps --enable-automation. That is
+ * why the yellow "Chrome is being controlled by automated test software" bar
+ * kept appearing even though the code plainly intended to suppress it — the
+ * intent was there, the effect never was.
+ *
+ * The bar is not merely ugly. It is the loudest possible automation signal, it
+ * steals vertical space in the remote view, and --enable-automation also
+ * disables the password manager and some extension UI, which is exactly what a
+ * user reaching for the REAL Chrome wants working.
+ *
+ * `--disable-extensions` is removed for the opposite reason: Playwright adds it
+ * by default, and keeping it would make --load-extension a silent no-op.
+ */
+export const IGNORED_DEFAULT_ARGS: readonly string[] = [
+  '--disable-extensions',
+  '--enable-automation',
 ];
 
 /**

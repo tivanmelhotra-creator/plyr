@@ -74,7 +74,7 @@ cmd_install() {
   log "installing xvfb, x11vnc, novnc, websockify …"
   if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -qq
-    sudo apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify unzip
+    sudo apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify openbox unzip
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y xorg-x11-server-Xvfb x11vnc novnc python3-websockify unzip
   else

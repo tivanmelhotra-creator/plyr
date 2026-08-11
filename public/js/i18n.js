@@ -543,6 +543,13 @@
       // فایل روی سرور دانلود می‌شود، پس بدون این پیام دکمه بی‌اثر به‌نظر می‌رسد.
       'bvp.cmSaving': 'در حال دریافت روی سرور… در نوار دانلود ظاهر می‌شود.',
       'bvp.cmInspect': 'بررسی این المان',
+      // نشست به‌دلیل بی‌کاری بسته شده. کاربر باید بداند که خراب نشده و راه
+      // برگشت همان دکمهٔ اتصال دوباره است.
+      'bvp.expiredReconnect': 'نشست مرورگر به‌دلیل بی‌کاری بسته شد. برای ادامه، «اتصال دوباره» را بزنید.',
+      'bvp.openReal': 'باز کردن همین صفحه در کروم واقعی (با افزونه‌ها، نوار ابزار و تنظیمات کامل)',
+      'bvp.realShort': 'کروم واقعی',
+      'bvp.realOpening': 'در حال آماده‌سازی کروم واقعی…',
+      'bvp.realFailed': 'باز کردن کروم واقعی ممکن نشد',
 
       // ── زوم ───────────────────────────────────────────────────────────
       'bvp.zoomIn': 'بزرگ‌نمایی (Ctrl و +)',
@@ -1889,6 +1896,13 @@
       // The bytes land on the SERVER, so without this the item looks inert.
       'bvp.cmSaving': 'Fetching on the server\u2026 it will appear on the download shelf.',
       'bvp.cmInspect': 'Inspect this element',
+      // The session was reaped for being idle. Say that it is recoverable, and
+      // name the button that recovers it.
+      'bvp.expiredReconnect': 'Browser session closed after being idle. Press Reconnect to carry on.',
+      'bvp.openReal': 'Open this page in the real Chrome (extensions, toolbar and settings included)',
+      'bvp.realShort': 'Real Chrome',
+      'bvp.realOpening': 'Starting the real Chrome…',
+      'bvp.realFailed': 'Could not open the real Chrome',
 
       // ── Zoom ─────────────────────────────────────────────────────────
       'bvp.zoomIn': 'Zoom in (Ctrl and +)',

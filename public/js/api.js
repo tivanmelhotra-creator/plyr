@@ -35,6 +35,36 @@
    * Throws { status, message, body } on non-2xx.
    * opts: { method, body, auth (bool, default true), admin (bool) }
    */
+  /**
+   * Turn a non-JSON error body into ONE readable line.
+   *
+   * A failure between the browser and this app is answered by whatever sits in
+   * between, and that is usually an HTML page. MEASURED: when the sandbox host
+   * could not reach port 3000 the operator's toast became the entire
+   * "Closed Port Error" document — every CSS rule, a base64 logo and all —
+   * three times over, with the one useful sentence buried inside it.
+   *
+   * So HTML is never shown raw. The <title> is the page's own summary and is
+   * what a human would read; the status code says who is complaining.
+   */
+  function errorTextOf(data, status) {
+    if (typeof data !== 'string') return 'HTTP ' + status;
+    var text = data.trim();
+    if (!text) return 'HTTP ' + status;
+
+    var looksHtml = /^<(?:!doctype|html|head|body)\b/i.test(text) || /<html[\s>]/i.test(text);
+    if (looksHtml) {
+      var title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text);
+      var summary = title && title[1] ? title[1].replace(/\s+/g, ' ').trim() : '';
+      return summary
+        ? 'HTTP ' + status + ' — ' + summary
+        : 'HTTP ' + status + ' (the server returned a web page, not an answer)';
+    }
+    // Plain text: still cap it. A stack trace in a toast pushes everything else
+    // off the screen and cannot be scrolled.
+    return text.length > 300 ? text.slice(0, 300) + '…' : text;
+  }
+
   function request(path, opts) {
     opts = opts || {};
     var headers = { Accept: 'application/json' };
@@ -57,7 +87,7 @@
       var parse = ct.indexOf('application/json') !== -1 ? res.json() : res.text();
       return parse.then(function (data) {
         if (!res.ok) {
-          var msg = (data && data.error) || (typeof data === 'string' ? data : 'HTTP ' + res.status);
+          var msg = (data && data.error) || errorTextOf(data, res.status);
           var err = new Error(msg);
           err.status = res.status;
           err.body = data;

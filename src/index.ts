@@ -38,6 +38,8 @@ import { LiveServer, authorizeLive } from './core/LiveServer';
 import { buildStepWebhookPayload, buildShareToken, shouldDeliverStepEvent } from './core/StepReporter';
 import { LiveBrowserManager } from './core/LiveBrowser';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
+import { DesktopProxy } from './core/DesktopProxy';
+
 import { setLiveSessionRebuilder } from './Routes/browser.routes';
 
 // Routes
@@ -49,6 +51,20 @@ import { createAllRoutes } from './Routes';
 
 const app = express();
 app.set('trust proxy', 1);
+
+// The real-Chrome desktop (noVNC) is proxied BEFORE helmet and BEFORE
+// express.json on purpose:
+//   - helmet's CSP is written for OUR pages; noVNC ships its own script/style
+//     expectations and must be served with the headers websockify sent, not
+//     ours, or the client refuses to boot.
+//   - express.json would consume the request body of a request we are about to
+//     re-send upstream.
+// It authenticates itself (see DesktopProxy.desktopAuthOk), so sitting ahead of
+// the auth middleware does not open a hole.
+app.use((req, res, next) => {
+  if (desktopProxy && desktopProxy.handleRequest(req, res)) return;
+  next();
+});
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -130,6 +146,8 @@ let liveServer: LiveServer | null = null;
 // Step 12: interactive Live Browser View (CDP screencast + input + element picker).
 const liveBrowserManager = new LiveBrowserManager(config.MAX_CONCURRENT > 0 ? Math.min(config.MAX_CONCURRENT, 8) : 8);
 let browserStreamServer: BrowserStreamServer | null = null;
+// Serves the real Chrome's screen on this same port (see DesktopProxy).
+let desktopProxy: DesktopProxy | null = null;
 
 // GLOBAL MANDATE: no user action may ever require "restart the server".
 // SelfHeal stops and restarts real Chrome to load a newly installed extension.
@@ -819,6 +837,22 @@ const startServer = async () => {
   browserStreamServer = new BrowserStreamServer(liveBrowserManager);
   browserStreamServer.attach(server);
   console.log('[LIVE] Interactive Live Browser View ready at /browser/ws');
+
+  // The REAL Chrome desktop, served through THIS port.
+  //
+  // websockify listens on its own port (6080), which is unreachable whenever
+  // the app is published through a single port — a sandbox URL, a PaaS, a
+  // reverse proxy, or a one-port SSH tunnel. Mounting it at /desktop means the
+  // operator never needs a second hostname to see the real browser.
+  desktopProxy = new DesktopProxy();
+  server.on('upgrade', (req, socket, head) => {
+    let pathname = '';
+    try { pathname = new URL(req.url || '', 'http://localhost').pathname; }
+    catch { return; }
+    if (!desktopProxy || !desktopProxy.matches(pathname)) return; // not ours
+    desktopProxy.handleUpgrade(req, socket, head);
+  });
+  console.log('[LIVE] Real Chrome desktop proxied at /desktop/vnc.html');
 
   return server;
 };

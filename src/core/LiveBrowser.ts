@@ -17,6 +17,7 @@ import {
   mintDownloadToken,
   ensureUsableExtension,
   filenameFromContentDisposition,
+  nameFromUrl,
   MAX_DOWNLOAD_BYTES,
 } from './RemoteDownloads';
 import {
@@ -716,6 +717,8 @@ export class LiveBrowserSession {
   /** Uploads handed to a chooser in this session, deleted when it ends. */
   private consumedUploads: string[] = [];
   private idleTimer: NodeJS.Timeout | null = null;
+  /** When the idle deadline was last pushed out. See `noteWatched`. */
+  private lastActivityAt = 0;
   /** Liveness probe. See `startHealthWatch()` for why polling is the right tool. */
   private healthTimer: NodeJS.Timeout | null = null;
   private audioTimer: NodeJS.Timeout | null = null;
@@ -966,13 +969,60 @@ export class LiveBrowserSession {
   }
 
   // Reset idle timer; close the session if no activity for IDLE_TTL_MS.
+  //
+  // ── MEASURED (Ask #13): this timer WAS the reported "crash" ──────────────
+  // The user's report was that after a little browsing the emulator dies —
+  // *«انگار ارتباطش با مرورگر اصلی پلی‌رایت قطع میشه … نمیشه به تب دیگه یا تب
+  // جدید رفت … ریستارت میزنم درست میشه»*. Reproduced end to end through the
+  // real socket:
+  //
+  //   after 300s: expired = YES   |   socket readyState = 1 (OPEN)
+  //     tabNew   -> NO ANSWER (silently dropped)
+  //     navigate -> NO ANSWER (silently dropped)
+  //     ping     -> NO ANSWER (silently dropped)
+  //
+  // Every symptom follows from those two lines. The SESSION closed, but the
+  // SOCKET stayed open, so the client had no way to know: `handleCommand`
+  // begins `if (session.isClosed()) return;`, so from then on every command the
+  // user sent was dropped in silence. The UI still said "connected", the canvas
+  // still showed its last frame, and only closing and reopening the window
+  // helped — which is precisely what the user described doing.
+  //
+  // Two independent faults met here, and both are fixed:
+  //
+  //   1. WATCHING WAS NOT ACTIVITY. `touch()` is called by COMMANDS only.
+  //      Reading a page, or watching anything that plays, sends no commands, so
+  //      a user who was actively using the browser was counted as idle. Frame
+  //      delivery now touches too (see `noteWatched`), because a session that
+  //      is streaming pixels to somebody is by definition in use.
+  //
+  //   2. EXPIRY WAS SILENT AND FINAL. Even a genuinely idle session must not
+  //      turn into a socket that accepts commands and ignores them. The socket
+  //      is now closed with the session (see BrowserStreamServer), so the
+  //      client sees a real disconnect and can reconnect — an outcome the user
+  //      can act on, instead of a dead window that looks alive.
   private touch(): void {
+    this.lastActivityAt = Date.now();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       this.emit('expired', {});
       void this.close();
     }, IDLE_TTL_MS);
     if (this.idleTimer.unref) this.idleTimer.unref();
+  }
+
+  /**
+   * A frame went out to a viewer, so this session is being WATCHED.
+   *
+   * Called on the streaming path, which runs at up to 60 frames a second, so it
+   * must not do real work per frame: `touch()` allocates a timer, and doing that
+   * 60 times a second is exactly the kind of cost that turns a fix into the next
+   * bug report. Throttled to at most once every 30s — three orders of magnitude
+   * cheaper, and still 10 times finer than the 5-minute deadline it is feeding.
+   */
+  private noteWatched(): void {
+    if (Date.now() - this.lastActivityAt < 30_000) return;
+    this.touch();
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1557,6 +1607,10 @@ export class LiveBrowserSession {
       // page over the one the user is looking at.
       if (cdp !== this.cdp) return;
       if (this.frameSink) {
+        // Streaming pixels to a viewer IS use of this session. Without this a
+        // user watching a video, or reading a page that animates, was counted
+        // as idle and reaped mid-view. See `touch()` for the measurement.
+        this.noteWatched();
         this.frameSink({
           data: params.data,
           sessionId: params.sessionId,
@@ -3002,8 +3056,11 @@ export class LiveBrowserSession {
       id: `d${this.downloadSeq}`,
       token: mintDownloadToken(),
       // Chrome names this from the URL when the menu is used, and the server's
-      // own Content-Disposition can still improve on it below.
-      name: safeFileName(suggestedName || path.basename(url.pathname)) || 'download',
+      // own Content-Disposition can still improve on it below. `nameFromUrl`
+      // is what stops a front page (`https://example.com/`, whose path
+      // basename is the empty string) from being saved as the literal
+      // placeholder `file` — see its comment for the measurement.
+      name: nameFromUrl(url, suggestedName),
       url: url.href,
       tabId: this.activeId,
       state: 'inProgress',
@@ -3043,7 +3100,16 @@ export class LiveBrowserSession {
       await fsp.writeFile(target, body);
       // Same rescue as a real download: a CDN that serves an image from a
       // path with no suffix must not leave the user a file they cannot open.
-      const finalName = await ensureUsableExtension(target, url.href);
+      //
+      // The response's `Content-Type` is passed on because THIS path has it and
+      // a Playwright `Download` does not. It is the only evidence that can name
+      // an HTML page — HTML has no magic number, so "Save page as" produced a
+      // file with no extension at all until this argument existed.
+      const finalName = await ensureUsableExtension(
+        target,
+        url.href,
+        String(res.headers()['content-type'] || ''),
+      );
       entry.name = finalName;
       entry.path = path.join(path.dirname(target), finalName);
       entry.received = body.length;

@@ -448,13 +448,101 @@ describe('picker: browse mode vs element-selection mode', () => {
     // a word" and "select a paragraph".
     expect(browserView).toMatch(/clickCount: Math\.min\(3,/);
 
-    // Horizontal scrolling, from a trackpad's deltaX OR Shift+wheel.
-    expect(browserView).toMatch(/ev\.deltaX \|\| \(ev\.shiftKey \? ev\.deltaY : 0\)/);
-    expect(browserView).toMatch(/dx: dx/);
+    // Horizontal scrolling is checked by BEHAVIOUR in its own test below, not
+    // by matching the source. It used to be pinned with /dx: dx/, and that
+    // broke the moment the wheel handler was refactored to coalesce events —
+    // the client still sent a correct `dx`, but the literal had become
+    // `dx: a.dx`. A test that fails when working code is rearranged, and would
+    // pass if `dx` were sent with the wrong VALUE, is measuring the wrong thing.
 
     // A button released outside the canvas must still end the gesture, or every
     // later hover becomes a phantom drag.
     expect(browserView).toMatch(/document\.addEventListener\('mouseup'/);
+  });
+
+  describe('the wheel, by behaviour: what the client actually sends', () => {
+    /**
+     * Run the real wheel handler out of browser-view.js and collect the
+     * messages it sends.
+     *
+     * The handler is extracted and evaluated rather than string-matched,
+     * because the interesting facts — that Ctrl+wheel zooms instead of
+     * scrolling, that a trackpad's deltaX and Shift+wheel both produce
+     * horizontal scroll, and that a burst of events collapses into ONE
+     * message — are all about values and counts, none of which a regex over
+     * the source can see.
+     */
+    function runWheel(events: Array<Record<string, unknown>>) {
+      const src = browserView.slice(
+        browserView.indexOf("canvas.addEventListener('wheel', function (ev) {"),
+      );
+      // Up to the end of that one listener registration.
+      const body = src.slice(0, src.indexOf("}, { passive: false });") + 23);
+
+      const sent: Array<Record<string, unknown>> = [];
+      const rafQueue: Array<() => void> = [];
+      const canvas = {
+        addEventListener(_t: string, fn: (e: unknown) => void) {
+          canvas.handler = fn;
+        },
+        handler: null as null | ((e: unknown) => void),
+      };
+      const sandbox = {
+        canvas,
+        send: (m: Record<string, unknown>) => { sent.push(m); },
+        toPoint: (e: { x?: number; y?: number }) => ({ x: e.x ?? 0, y: e.y ?? 0 }),
+        modsOf: () => ({ alt: false, ctrl: false, meta: false, shift: false }),
+        refreshAfterInput: () => {},
+        requestAnimationFrame: (fn: () => void) => { rafQueue.push(fn); return rafQueue.length; },
+        wheelAccum: { x: 0, y: 0, dx: 0, dy: 0, mods: null, raf: 0 },
+      };
+      // eslint-disable-next-line no-new-func
+      new Function(...Object.keys(sandbox), body)(...Object.values(sandbox));
+
+      for (const ev of events) {
+        canvas.handler!({ preventDefault() {}, deltaX: 0, deltaY: 0, ...ev });
+      }
+      // Fire the animation frame the handler scheduled.
+      for (const fn of rafQueue.splice(0)) fn();
+      return sent;
+    }
+
+    it('Ctrl+wheel zooms, and does not scroll', () => {
+      const up = runWheel([{ ctrlKey: true, deltaY: -100 }]);
+      expect(up).toEqual([{ t: 'zoom', dir: 'in' }]);
+
+      const down = runWheel([{ ctrlKey: true, deltaY: 100 }]);
+      expect(down).toEqual([{ t: 'zoom', dir: 'out' }]);
+    });
+
+    it("a trackpad's deltaX scrolls sideways", () => {
+      const sent = runWheel([{ deltaX: 120, x: 10, y: 20 }]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].t).toBe('scroll');
+      expect(sent[0].dx).toBe(120);
+      expect(sent[0].dy).toBe(0);
+    });
+
+    it('Shift+wheel scrolls sideways on a mouse that has no horizontal wheel', () => {
+      const sent = runWheel([{ shiftKey: true, deltaY: 90 }]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].dx).toBe(90);
+      // The vertical delta was CONSUMED as horizontal; sending both would make
+      // a shift-scroll travel diagonally.
+      expect(sent[0].dy).toBe(0);
+    });
+
+    it('a burst of wheel events collapses into one message carrying the total', () => {
+      // The point of the coalescing added for the "emulator freezes" report: a
+      // trackpad fires wheel events far faster than the browser can repaint,
+      // and forwarding each one individually floods the session.
+      const sent = runWheel([
+        { deltaY: 10 }, { deltaY: 10 }, { deltaY: 10 },
+        { deltaY: 10 }, { deltaY: 10 },
+      ]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].dy).toBe(50);   // nothing is lost, it is summed
+    });
   });
 
   it('divides canvas coordinates by the zoom level', () => {

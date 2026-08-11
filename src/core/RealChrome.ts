@@ -44,13 +44,23 @@ import path from 'path';
 import http from 'http';
 
 import { config } from '../config';
-import { ANTI_AUTOMATION_ARGS, realisticUserAgent, withUtf8Locale } from './BrowserProfile';
+import {
+  ANTI_AUTOMATION_ARGS,
+  IGNORED_DEFAULT_ARGS,
+  realisticUserAgent,
+  withUtf8Locale,
+} from './BrowserProfile';
 import {
   listExtensions,
   extensionLaunchArgs,
   type InstalledExtension,
 } from './ChromeExtensions';
 import { Desktop, displayGuidance } from './Desktop';
+import {
+  RealChromeShelf,
+  REAL_CHROME_SHELF_USER,
+  type ShelfEntry,
+} from './RealChromeShelf';
 import {
   parseCookieFile,
   type CookieImportResult,
@@ -167,6 +177,37 @@ export function extensionPageUrlFor(pageUrl: string, popupUrl: string): string {
   return `${popupUrl}${sep}url=${encodeURIComponent(b64)}`;
 }
 
+/**
+ * The window geometry flags Chrome is launched with.
+ *
+ * FILL THE SCREEN. The operator reported:
+ *   «از ۱۰۰ در ۱۰۰ صفحه فقط شاید ۶۰ درصدش رو مرورگر گرفته بود بقیه جاها الکی
+ *    مشکی بودن باید مثل مرورگر واقعی کل صفحه رو بگیره»
+ *
+ * MEASURED cause -- the window was simply smaller than the screen:
+ *   BEFORE: screen 1600x900, window 1288x811+10+10  ->  COVERAGE 72.5%
+ *   AFTER : screen 1600x900, window 1599x899+0+0    ->  COVERAGE 99.8%
+ * The 27.5% difference is bare X root window, and the root window is black.
+ *
+ * The size came from REAL_CHROME_WINDOW_* (default 1280x800) while the screen
+ * only follows those settings when Desktop itself started Xvfb. Any externally
+ * started Xvfb -- which is the normal case -- leaves the two disagreeing.
+ *
+ * `screen` is whatever X actually reported, or null when there is nothing to
+ * ask (headless, or xdpyinfo missing), in which case the configured size is the
+ * only information available and is used as the fallback.
+ */
+export function windowArgs(screen: { width: number; height: number } | null): string[] {
+  const w = screen?.width || config.REAL_CHROME_WINDOW_WIDTH;
+  const h = screen?.height || config.REAL_CHROME_WINDOW_HEIGHT;
+  return [
+    `--window-size=${w},${h}`,
+    // Top-left, or a window sized to the whole screen still hangs off the
+    // bottom-right corner by however far it was offset (it was at +10+10).
+    '--window-position=0,0',
+  ];
+}
+
 /** Ask a DevTools port who it is. Used purely to prove the port is live. */
 function fetchDebugVersion(
   host: string,
@@ -199,9 +240,35 @@ export class RealChrome {
   private static loaded: InstalledExtension[] = [];
   private static lastError = '';
   private static debugInfo: { version: string; ws: string } = { version: '', ws: '' };
+  /**
+   * The download shelf for this browser.
+   *
+   * Not optional. Without a 'download' listener Playwright treats every
+   * download as temporary: MEASURED, a file served as `report.png` landed as a
+   * bare GUID with no extension and was DELETED when the context closed. See
+   * core/RealChromeShelf.
+   */
+  private static shelf: RealChromeShelf | null = null;
 
   static isEnabled(): boolean {
     return config.REAL_CHROME_ENABLED === true;
+  }
+
+  /**
+   * Files this browser has downloaded, newest first.
+   *
+   * Empty when the browser is not running: the shelf belongs to a live context,
+   * and reporting rows for a browser that no longer exists would offer links
+   * whose provenance we can no longer vouch for. The FILES stay fetchable by
+   * token either way, because saveAs already claimed them.
+   */
+  static downloads(): ShelfEntry[] {
+    return this.shelf ? this.shelf.list() : [];
+  }
+
+  /** The identity the shelf's files are stored under — the fetch route needs it. */
+  static downloadOwner(): string {
+    return REAL_CHROME_SHELF_USER;
   }
 
   static isRunning(): boolean {
@@ -252,10 +319,20 @@ export class RealChrome {
     const extensionsDir = config.REAL_CHROME_EXTENSIONS_DIR;
     await fs.mkdir(userDataDir, { recursive: true });
     await fs.mkdir(extensionsDir, { recursive: true });
+    await clearCrashedExitState(userDataDir);
 
     const extensions = await listExtensions(extensionsDir);
     const headless = config.REAL_CHROME_HEADLESS === true;
     const vp = this.viewport();
+
+    // FILL THE SCREEN. The operator saw the browser occupying part of the tab
+    // with the rest black. MEASURED: screen 1600x900 but window 1288x811+10+10,
+    // i.e. COVERAGE 72.5% -- the remaining 27.5% is bare X root window, and the
+    // root window is black. That happens whenever the display was not started
+    // by us (so it does not follow REAL_CHROME_WINDOW_*), which is the normal
+    // case. Ask X how big the screen really is and match it; fall back to the
+    // configured size when there is no display to ask (headless, no xdpyinfo).
+    const screen = headless ? null : await Desktop.screenSize();
 
     const args = [
       '--no-sandbox',
@@ -265,7 +342,7 @@ export class RealChrome {
       '--no-default-browser-check',
       '--disable-background-networking',
       '--disable-sync',
-      `--window-size=${config.REAL_CHROME_WINDOW_WIDTH},${config.REAL_CHROME_WINDOW_HEIGHT}`,
+      ...windowArgs(screen),
       ...ANTI_AUTOMATION_ARGS,
       ...extensionLaunchArgs(extensions),
     ];
@@ -294,13 +371,21 @@ export class RealChrome {
         headless,
         timeout: Math.max(config.BROWSER_LAUNCH_TIMEOUT_MS, 60_000),
         ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),
-        // Playwright's defaults contain --disable-extensions. Keeping it would
-        // make --load-extension a no-op with no error anywhere: the single most
-        // confusing failure mode in this whole feature.
-        ignoreDefaultArgs: ['--disable-extensions'],
+        // Playwright's defaults contain --disable-extensions (which would make
+        // --load-extension a silent no-op) and --enable-automation (which shows
+        // the yellow "controlled by automated test software" bar and disables
+        // the password manager). Both must be REMOVED here; countering them
+        // with extra args does not work. See IGNORED_DEFAULT_ARGS for the
+        // measurement.
+        ignoreDefaultArgs: [...IGNORED_DEFAULT_ARGS],
         args,
         env,
-        viewport: vp,
+        // null lets the PAGE follow the real window instead of being pinned to
+        // a fixed box inside it. With a fixed viewport, growing the window to
+        // the screen would leave the page rendering at the old size with dead
+        // space around it -- trading a black margin for a white one. The picker
+        // maps clicks through the page's own coordinate space, so it follows.
+        viewport: screen ? null : vp,
         ...(ua ? { userAgent: ua } : {}),
         locale: 'en-US',
         timezoneId: 'UTC',
@@ -311,10 +396,20 @@ export class RealChrome {
 
       this.loaded = extensions;
 
+      // Start watching for downloads BEFORE anyone can navigate. A download
+      // that fires before the listener is attached is one Playwright throws
+      // away when the context closes, which is the bug this fixes.
+      this.shelf = new RealChromeShelf(REAL_CHROME_SHELF_USER);
+      this.shelf.watch(context);
+
       context.on('close', () => {
         this.context = null;
         this.loaded = [];
         this.debugInfo = { version: '', ws: '' };
+        // The shelf ROWS are dropped with the browser, but the FILES are not:
+        // they were claimed with saveAs into the user's download directory and
+        // are fetched by token, so a link already handed out keeps working.
+        this.shelf = null;
       });
 
       if (config.REAL_CHROME_DEBUG_PORT > 0) {
@@ -524,6 +619,62 @@ export class RealChrome {
     await this.stop();
     await this.getContext();
     return this.status();
+  }
+}
+
+/**
+ * Tell the profile it exited cleanly, so Chrome does not open with the
+ * "Restore pages? Chromium didn't shut down correctly." bubble.
+ *
+ * MEASURED (2026-08-11) on this repo's own live profile, after the browser had
+ * been killed rather than closed:
+ *
+ *   profiles/chrome-profile/Default/Preferences
+ *     → profile.exit_type === "Crashed"
+ *
+ * and the next launch showed the restore bubble over the page.
+ *
+ * WHY THIS IS NOT COSMETIC, AND NOT A ONE-OFF
+ * -------------------------------------------
+ * Chrome writes exit_type="Crashed" whenever the process does not get to run
+ * its clean-shutdown path. On a server that is the NORMAL case, not the
+ * exceptional one: the container is stopped, the box runs out of memory and the
+ * OOM killer fires, the dev server is restarted, or systemd sends SIGKILL after
+ * its stop timeout. So the bubble would greet the user on a large share of
+ * ordinary restarts, through no fault of theirs.
+ *
+ * It matters because this browser is driven by automation. The bubble is a
+ * focused overlay: it eats clicks aimed at the page underneath, and if the user
+ * ever presses "Restore", Chrome reopens every tab from the previous session —
+ * silently changing the tab set that the automation and the tab list are
+ * working with. A stale confirmation prompt deciding what tabs exist is a
+ * correctness problem, not a decoration.
+ *
+ * We only ever rewrite the two exit-state keys, and only when the recorded
+ * state is not already clean. Everything else in Preferences — extension
+ * settings, site permissions, passwords — is left byte-for-byte alone, because
+ * this file is the user's profile and not ours to normalise. Failure is
+ * deliberately ignored: a missing or unparseable Preferences file means a fresh
+ * profile, which has no crash to clear, and must never block the launch.
+ */
+export async function clearCrashedExitState(userDataDir: string): Promise<void> {
+  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+  try {
+    const raw = await fs.readFile(prefsPath, 'utf8');
+    const prefs = JSON.parse(raw) as { profile?: Record<string, unknown> };
+    const profile = prefs.profile;
+    if (!profile) return;
+    if (profile.exit_type === 'Normal' && profile.exited_cleanly === true) return;
+
+    profile.exit_type = 'Normal';
+    profile.exited_cleanly = true;
+    // Same-directory temp + rename, so a crash midway through this write cannot
+    // leave a truncated Preferences behind — that would lose the real profile.
+    const tmp = `${prefsPath}.abtmp`;
+    await fs.writeFile(tmp, JSON.stringify(prefs), 'utf8');
+    await fs.rename(tmp, prefsPath);
+  } catch {
+    /* no profile yet, or unreadable — nothing to clear, never block the launch */
   }
 }
 

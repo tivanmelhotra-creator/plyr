@@ -80,6 +80,12 @@ export class GlobalBrowser {
           // the flag stops the signal being emitted at all (headers included).
           ...ANTI_AUTOMATION_ARGS,
         ],
+        // --enable-automation is one of Playwright's OWN defaults, so it can
+        // only be dropped here; passing a counter-argument does not remove it
+        // (measured — see IGNORED_DEFAULT_ARGS). Leaving it in would keep
+        // emitting the automation signal the args above exist to suppress.
+        // --disable-extensions stays: this headless pool wants no extensions.
+        ignoreDefaultArgs: ['--enable-automation'],
         // A UTF-8 locale, or Chromium cannot represent a non-ASCII download
         // name in a POSIX path and replaces the whole thing — extension
         // included — with the literal string `download`. See withUtf8Locale.

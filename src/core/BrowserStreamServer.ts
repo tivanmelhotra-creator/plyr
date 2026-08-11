@@ -103,7 +103,29 @@ export class BrowserStreamServer {
     // Wire session output to this socket.
     session.setSinks(
       (frame) => this.send(ws, 'frame', { ...frame }),
-      (type, data) => this.send(ws, type, data)
+      (type, data) => {
+        this.send(ws, type, data);
+        // ── A dead session must not leave a live-looking socket ────────────
+        // MEASURED (Ask #13): when the idle timer fired, the session closed but
+        // this socket stayed OPEN (readyState 1). `handleCommand` starts with
+        // `if (session.isClosed()) return;`, so from that moment every command
+        // the user sent — tabNew, navigate, even ping — was dropped in total
+        // silence while the UI still read "connected". That is the whole of the
+        // reported crash: a window that looks fine, answers nothing, and can
+        // only be fixed by closing and reopening it.
+        //
+        // `expired` is the session's own announcement that it has gone. Closing
+        // the socket on it converts an invisible death into an ordinary
+        // disconnect: the client's `onclose` runs, the status says so, and
+        // Reconnect builds a new session. A user who can see what happened has
+        // a way out; a user staring at a frozen canvas does not.
+        //
+        // 4000 is the first application-defined close code, and the reason is
+        // sent with it so the client can say something true rather than guess.
+        if (type === 'expired') {
+          try { ws.close(4000, 'session_expired'); } catch { /* already gone */ }
+        }
+      }
     );
 
     // Heartbeat.
