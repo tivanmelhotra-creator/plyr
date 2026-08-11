@@ -205,22 +205,162 @@ export function extensionFromUrl(url: string): string {
 }
 
 /**
+ * The extension a response's own `Content-Type` declares.
+ *
+ * MEASURED (Ask #13): "Save page as…" on `https://example.com/` produced a file
+ * literally called `file`, with no suffix at all. The chain was
+ * `path.basename('/') === ''` → `safeFileName('')` → the placeholder `file`,
+ * and then `ensureUsableExtension` could not rescue it: the URL path has no
+ * suffix, and HTML has no magic number so it is deliberately absent from
+ * `MAGIC`. The user's expectation is the reasonable one — *«چیزی که دانلود
+ * میشه با همون اسم و پسوند ریموتش دانلود شه»*.
+ *
+ * The header is the missing source. A server-side fetch HAS the response, so
+ * unlike a Playwright `Download` we can read what the site itself said the
+ * bytes are. This is the same evidence Chrome uses when a URL has no suffix.
+ *
+ * Kept to types whose mapping is UNAMBIGUOUS, for the same reason `MAGIC` is a
+ * short list: a wrong suffix sends the user's OS to the wrong application and
+ * is worse than no suffix. Parameters (`; charset=utf-8`) are stripped, and an
+ * unknown type yields `''` rather than a guess.
+ */
+const CONTENT_TYPE_EXT: Readonly<Record<string, string>> = {
+  // The one this bug is actually about: every ordinary web page.
+  'text/html': '.html',
+  'application/xhtml+xml': '.html',
+  'text/plain': '.txt',
+  'text/css': '.css',
+  'text/markdown': '.md',
+  'text/csv': '.csv',
+  'text/xml': '.xml',
+  'application/xml': '.xml',
+  'application/json': '.json',
+  'application/javascript': '.js',
+  'text/javascript': '.js',
+  'application/pdf': '.pdf',
+  'application/zip': '.zip',
+  'application/gzip': '.gz',
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+  'image/x-icon': '.ico',
+  'image/vnd.microsoft.icon': '.ico',
+  'image/bmp': '.bmp',
+  'audio/mpeg': '.mp3',
+  'audio/ogg': '.ogg',
+  'audio/wav': '.wav',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+};
+
+export function extensionFromContentType(contentType: string): string {
+  // `text/html; charset=utf-8` -> `text/html`. Measured against real servers:
+  // every page tested carried a charset parameter, so ignoring it is required
+  // rather than defensive.
+  const type = String(contentType || '').split(';')[0].trim().toLowerCase();
+  return CONTENT_TYPE_EXT[type] || '';
+}
+
+/**
+ * What to CALL a download, before a single byte has arrived.
+ *
+ * MEASURED (Ask #13). The old expression was
+ * `safeFileName(suggested || path.basename(url.pathname)) || 'download'`, and
+ * for any site's front page it produced the literal name `file`:
+ *
+ *   path.basename(new URL('https://example.com/').pathname) === ''
+ *   safeFileName('')                                        === 'file'
+ *
+ * `'file'` is TRUTHY, so the `|| 'download'` fallback never ran, and because
+ * `safeFileName` had already turned the empty string into a real-looking name
+ * there was nothing downstream that could tell a genuine name from a
+ * placeholder. The user saw a file called `file`, with no extension.
+ *
+ * So the last resort is the HOST, which is what the user actually recognises:
+ * `https://example.com/` saves as `example_com`, and `ensureUsableExtension`
+ * then adds `.html` from the response's own `Content-Type`. That is both halves
+ * of *«با همون اسم و پسوند ریموتش دانلود شه»*.
+ *
+ * Order, stopping at the first real answer:
+ *   1. an explicit suggestion (a menu target, or the page title for a page save)
+ *   2. the last path segment      — `/wiki/Web_browser` -> `Web_browser`
+ *   3. the hostname               — `https://example.com/` -> `example_com`
+ *   4. `download`                 — only when there is no URL at all
+ *
+ * Steps 2 and 3 are tried against the RAW value, never against the sanitised
+ * one, precisely because sanitising an empty string invents `file`.
+ */
+export function nameFromUrl(url: URL | string, suggested = ''): string {
+  let u: URL | null = null;
+  if (typeof url === 'string') {
+    try { u = new URL(url); } catch { u = null; }
+  } else {
+    u = url;
+  }
+
+  const candidates = [
+    String(suggested || ''),
+    // Not `path.basename`: for `/a/b/` that yields `b`, which is right, but the
+    // intent here is explicitly "the last NON-EMPTY segment", and saying so is
+    // what makes a trailing slash a non-event.
+    u ? (u.pathname.split('/').filter(Boolean).pop() || '') : '',
+    // The front page of a site. `www.` is dropped the way a browser's own
+    // "Save as" does: the user calls it `example.com`, not `www.example.com`.
+    //
+    // The dots become underscores, and that is NOT cosmetic. MEASURED: a
+    // hostname's TLD is indistinguishable from a file extension —
+    // `extensionOf('example.com')` returns `.com` — so a page saved as
+    // `example.com` looked to `ensureUsableExtension` like a file that already
+    // had its suffix, and `.html` was never added. The user would have got
+    // `example.com` with no format for the second time, by a different route.
+    // `example_com.html` is unambiguous, and it is what the file actually is.
+    u ? u.hostname.replace(/^www\./i, '').replace(/\./g, '_') : '',
+  ];
+
+  for (const raw of candidates) {
+    // A candidate is only usable if it survives sanitising AS ITSELF. An empty
+    // or all-punctuation candidate turns into the `file` placeholder, and
+    // accepting that is the bug this function exists to remove.
+    if (!raw.trim()) continue;
+    const safe = safeFileName(raw);
+    if (safe && safe !== 'file') return safe;
+    // `file` really was the name the site chose: honour it rather than skipping
+    // to the host, since it is a genuine answer and not a placeholder here.
+    if (safe === 'file' && raw.trim() === 'file') return safe;
+  }
+  return 'download';
+}
+
+/**
  * Give a saved download a usable name when the browser could not.
  *
  * Sources in order of trustworthiness, stopping at the first answer:
  *   1. the name already HAS an extension     → keep it untouched
  *   2. the URL path ends in one              → the site's own choice
  *   3. the bytes identify the format         → the only truth left
- *   4. nothing is certain                    → change nothing
+ *   4. the response's own `Content-Type`     → what the server said it sent
+ *   5. nothing is certain                    → change nothing
  *
- * Step 4 is not a failure. A name with no suffix is inconvenient; a name with
+ * Step 5 is not a failure. A name with no suffix is inconvenient; a name with
  * the WRONG suffix actively misleads, so silence beats a guess.
+ *
+ * `Content-Type` sits BELOW the bytes on purpose. A misconfigured server that
+ * serves a PNG as `text/html` is common, and in that case the magic number is
+ * the truth and the header is not. But it sits ABOVE giving up, because for
+ * HTML — which has no magic number and is what "Save page as" produces — the
+ * header is the only evidence that exists.
  *
  * Renames in place and returns the final basename, so the shelf row, the
  * `Content-Disposition` header and the file on disk cannot drift apart — three
  * names for one file is how a download becomes unreachable.
  */
-export async function ensureUsableExtension(filePath: string, url: string): Promise<string> {
+export async function ensureUsableExtension(
+  filePath: string,
+  url: string,
+  contentType = '',
+): Promise<string> {
   const current = path.basename(filePath);
   if (extensionOf(current)) return current;
 
@@ -240,6 +380,9 @@ export async function ensureUsableExtension(filePath: string, url: string): Prom
       if (fh) await fh.close().catch(() => { /* nothing better to do */ });
     }
   }
+  // Last resort before giving up: what the server SAID it was sending. For an
+  // HTML page this is the only source that can answer at all — see above.
+  if (!ext) ext = extensionFromContentType(contentType);
   if (!ext) return current;
 
   // Re-run the sanitiser: the suffix is new input joining a trusted name, and

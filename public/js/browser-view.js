@@ -348,17 +348,177 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  // openRealBrowser(url, target) — bring up the REAL Chromium in a new tab.
+  // ----------------------------------------------------------------------
+  // One call that starts the X display, starts (or reuses) the real Chrome on
+  // it, optionally sends it to `url`, and points a tab at the bare Chromium
+  // view. Both entry points below use it, so the two can never drift.
+  //
+  // POPUP BLOCKERS DECIDE THE SHAPE OF THIS FUNCTION.
+  // window.open() only survives when it is called SYNCHRONOUSLY inside the
+  // user's click gesture. The server call that tells us where to point the tab
+  // is asynchronous and takes seconds (it may be launching Chrome). So the tab
+  // is opened blank up front and navigated later — and callers that already
+  // opened one pass it in as `target`. Opening it inside the .then() instead is
+  // silently blocked, and the button appears to do nothing at all: the exact
+  // failure mode this whole change exists to end.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // The blank tab is unavoidable (see above), but it must never be a MYSTERY.
+  //
+  //   «اولش یک صفحه about:blank بالا میاد بعدش به ادرس مرورگر ریموت تغییر
+  //    میکنه ... بعض وقتا خیلی طول میکشه ... اصلا تغییر نمیکنه about:blank و
+  //    در واقع نمی تونم به مرورگر ریموت دسترسی پیدا کنم»
+  //
+  // An empty white tab tells the operator nothing: it looks identical whether
+  // Chrome is booting, the request is slow, or the whole thing failed in a tab
+  // that is not even in the foreground. So the tab gets written to immediately,
+  // and gets told what happened, including a link it can use itself if this
+  // page's own attempt to navigate it never lands.
+  function tabPlaceholder(tab, state, detail) {
+    if (!tab) return;
+    var doc;
+    try { doc = tab.document; } catch (e) { return; }   // already navigated away
+    if (!doc || !doc.open) return;
+
+    var titles = {
+      starting: 'Starting the remote browser…',
+      failed: 'The remote browser did not start',
+    };
+    var body = state === 'failed'
+      ? '<h1>The remote browser did not start</h1>'
+        + '<p class="e"></p>'
+        + '<p class="m">Nothing was left running. Close this tab and press the '
+        + 'crosshair again, or use Retry below.</p>'
+        + '<p><a id="again" href="">Retry</a></p>'
+      : '<h1>Starting the remote browser…</h1>'
+        + '<p class="m">Chromium and the virtual screen are being started. '
+        + 'The first launch is the slow one; this tab will move on by itself.</p>'
+        + '<p class="m">If it stays on this message, the link below opens the '
+        + 'view directly.</p>'
+        + '<p><a id="direct" href="">Open the remote browser view</a></p>';
+
+    try {
+      doc.open();
+      doc.write(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        + '<title>' + (titles[state] || 'Remote browser') + '</title><style>'
+        + 'body{margin:0;min-height:100vh;display:flex;align-items:center;'
+        + 'justify-content:center;background:#111;color:#eee;'
+        + 'font:15px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}'
+        + 'main{max-width:44rem;padding:2rem}'
+        + 'h1{font-size:1.15rem;font-weight:600;margin:0 0 .75rem}'
+        + '.m{color:#9aa0a6;margin:.5rem 0}'
+        + '.e{color:#f28b82;margin:.5rem 0;white-space:pre-wrap;'
+        + 'word-break:break-word}'
+        + 'a{color:#8ab4f8}'
+        + '.s{display:inline-block;width:14px;height:14px;margin-right:.5rem;'
+        + 'border:2px solid #555;border-top-color:#8ab4f8;border-radius:50%;'
+        + 'animation:r 1s linear infinite;vertical-align:-2px}'
+        + '@keyframes r{to{transform:rotate(360deg)}}'
+        + '</style></head><body><main>'
+        + (state === 'starting' ? '<span class="s"></span>' : '')
+        + body + '</main></body></html>',
+      );
+      doc.close();
+      // textContent, not markup: `detail` is a server/proxy message and may well
+      // BE an HTML document (that is exactly what the closed-port page was).
+      var errNode = doc.querySelector && doc.querySelector('.e');
+      if (errNode && detail) errNode.textContent = String(detail);
+      var direct = doc.getElementById && doc.getElementById('direct');
+      if (direct) direct.setAttribute('href', directViewHref());
+      var again = doc.getElementById && doc.getElementById('again');
+      if (again) again.setAttribute('href', directViewHref());
+    } catch (x) { /* a cross-origin tab: nothing we can do, and nothing broken */ }
+  }
+
+  /** The view URL, with the api_key a freshly opened tab cannot send as a header. */
+  function directViewHref() {
+    return '/desktop/chrome?api_key='
+      + encodeURIComponent(API.getKey ? (API.getKey() || '') : '');
+  }
+
+  function openRealBrowser(url, target) {
+    var tab = target || window.open('', '_blank');
+    // Write to it NOW, in the same gesture, so the operator is never looking at
+    // an unexplained about:blank while Chrome boots.
+    tabPlaceholder(tab, 'starting');
+    toast(t('bvp.realOpening'), 'info');
+    return API.post('/browser/real/open', { url: url || '' })
+      .then(function (r) {
+        if (!r || !r.success) throw new Error((r && r.error) || 'failed');
+        // The server returns a RELATIVE path so this works on localhost, behind
+        // a proxy and on a sandbox subdomain alike. The api_key rides on the
+        // URL because a tab opened by window.open() cannot send a header; the
+        // page then converts it into a session cookie so that everything it
+        // loads (rfb.js and its 41 modules, plus the WebSocket) authenticates
+        // without it — see DesktopSession.ts.
+        var sep = r.viewPath.indexOf('?') >= 0 ? '&' : '?';
+        var href = r.viewPath + sep + 'api_key=' +
+          encodeURIComponent(API.getKey ? API.getKey() : '');
+        if (tab) tab.location = href;
+        else window.open(href, '_blank', 'noopener');
+        return r;
+      })
+      .catch(function (e) {
+        // Do NOT close the tab. Closing it was meant to be tidy, but the tab is
+        // usually in the FOREGROUND while this page is not, so the operator sees
+        // a window vanish and never reads the toast that explained why. Telling
+        // them inside the tab they are actually looking at is the whole point.
+        tabPlaceholder(tab, 'failed', e && e.message ? e.message : 'unknown error');
+        toast(t('bvp.realFailed') + ': ' + (e && e.message ? e.message : ''), 'error');
+        throw e;
+      });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   // requestPick(onPicked, opts) — the crosshair button on any selector field.
   // ----------------------------------------------------------------------
-  // Opens a modal that streams the real page and floats a small picker panel
-  // over it (the shape Automa uses inside the target tab). Hovering previews,
-  // clicking locks, ↑/↓ walk the DOM, the double-check button counts matches,
-  // and "Use this selector" hands the string back to the caller's field.
+  // Sends the operator straight to the REAL Chromium in a new tab.
   //
-  // Deliberately a MODAL over our own app, not an injected panel: the page is
-  // rendered by the server browser onto a <canvas>, so there is no page DOM
-  // here to inject into — and our CSP (`script-src 'self'`) would forbid it.
+  // WHY THIS IS NOT THE CANVAS SIMULATOR ANY MORE
+  // ---------------------------------------------
+  // It used to open a modal that streamed the page onto a <canvas>. That view
+  // was a screencast of ONE PAGE, which is a hard ceiling: the extension
+  // toolbar, an extension popup, chrome://extensions, Chrome's own settings and
+  // the native file dialog are not drawn by the page compositor, so no
+  // resolution could ever show them. Weeks of bugs later the operator's verdict
+  // was unambiguous:
+  //
+  //   «کرومیوم ریموت متصل به پلی رایت رو اوکی کن به جای شبیه ساز مسخره که کلی
+  //    وقت صرف کردم واخرشم کلافم کرد»
+  //   «من گفتم کلا شبیه ساز رو حذف کن و به جاش وقتی روی ایکن هدف گیری ... کلیک
+  //    میشه باید به جای شبیه ساز یه تب جدید خود جوش باز بشه رو مرورگرم و
+  //    کرومیوم ریموت رو بالا بیاره»
+  //
+  // Nothing is lost by obeying that. When REAL_CHROME_ENABLED is on (the
+  // default) the picker was ALREADY driving the real Chrome —
+  // GlobalBrowser.getInteractiveContext() returns RealChrome's persistent
+  // context — so this changes only what the operator LOOKS AT: the whole Chrome
+  // window instead of one page's pixels. Same browser, same profile, same
+  // extensions, same tabs, and the tabs cannot get lost because they are real.
+  //
+  // `onPicked` is kept in the signature for call-site compatibility (every
+  // selector field passes one). It is not invoked: selecting an element by
+  // clicking our canvas is exactly the mechanism being retired, and calling it
+  // back with a fabricated selector would be worse than not calling it.
   // ══════════════════════════════════════════════════════════════════════
+
+  function requestPick(onPicked, opts) {
+    var o = opts || {};
+    // Called from the crosshair's click handler, so window.open() here is still
+    // inside the user gesture and survives the popup blocker.
+    //
+    // The trailing catch is not decoration. openRealBrowser() deliberately
+    // rethrows so that callers which await it can react, but this call site
+    // does not await. MEASURED in a real Chromium: the fire-and-forget shape
+    // raises window.onunhandledrejection ("RAISES_UNHANDLED=true") even though
+    // the failure toast has already been shown. The operator has been told what
+    // went wrong; letting the same rejection escape a second time only trips
+    // page-level error reporting. Swallow it HERE, not in openRealBrowser.
+    openRealBrowser(typeof o.url === 'string' ? o.url : '')
+      .catch(function () { /* already surfaced as a toast */ });
+  }
 
   var pickState = null;          // { ws, overlay, onPicked, ... }
   var URL_MEMO = 'abPickerUrl';  // last page a selector was picked from
@@ -416,6 +576,21 @@
           '<input class="field-input bvp-url" id="bvp-url" type="text" dir="ltr" ' +
             'placeholder="https://example.com" autocomplete="off" spellcheck="false">' +
           '<button class="btn btn-primary btn-sm" id="bvp-go">' + esc(t('bv.go')) + '</button>' +
+          // ── Hand off to the REAL Chrome window ──────────────────────────
+          // The canvas is a screencast of a PAGE, and that is a hard ceiling:
+          // the extension toolbar, an extension popup, chrome://extensions,
+          // Chrome's own settings and the native file dialog are not drawn by
+          // the page compositor, so no resolution can ever show them here.
+          //
+          // Nothing is "switched" by this button. When REAL_CHROME_ENABLED is
+          // on (the default) the picker is ALREADY driving the real Chrome —
+          // GlobalBrowser.getInteractiveContext() returns RealChrome's
+          // persistent context. Same browser, same profile, same extensions,
+          // same tabs. This only changes what the operator LOOKS AT: the whole
+          // Chrome window instead of one page's pixels.
+          '<button class="btn btn-sm" id="bvp-real" type="button" ' +
+            'title="' + esc(t('bvp.openReal')) + '">' +
+            BIC('globe', 14) + ' ' + esc(t('bvp.realShort')) + '</button>' +
           // ── Zoom ────────────────────────────────────────────────────────
           // Ctrl+ / Ctrl− / Ctrl+0 are wired on the stage as well, but the
           // buttons have to exist: the keyboard versions only work while the
@@ -724,7 +899,15 @@
       '</div>';
   }
 
-  function requestPick(onPicked, opts) {
+  // The old canvas picker modal.
+  //
+  // No longer reachable from the crosshair (see requestPick above, and the
+  // operator's «کلا شبیه ساز رو حذف کن»). Kept, and kept working, for one
+  // reason: it is ~2000 lines of DOM-walking, match-counting and selector
+  // generation, and deleting it in the same change that redirects the crosshair
+  // would mean two risky edits at once. The button inside it that opens the
+  // real browser still works, so nothing here is a dead end for the operator.
+  function requestPickCanvas(onPicked, opts) {
     if (typeof onPicked !== 'function') return;
     closePick();
     var o = opts || {};
@@ -1639,8 +1822,13 @@
         // ── Page ─────────────────────────────────────────────────────────
         // The page's own URL comes from the address bar, which the server
         // updates on every navigation — there is no separate copy to go stale.
+        // A PAGE save is named after the page, exactly as Chrome does it: the
+        // file lands as "Web browser - Wikipedia.html", not as the last path
+        // segment. Without the title the front page of a site had no name at
+        // all to offer (`https://example.com/` has an empty path), which is how
+        // it came out called `file`.
         { label: t('bvp.cmSavePageAs'), icon: 'download', off: !canSave(pageUrl),
-          run: function () { saveUrlToShelf(pageUrl); } },
+          run: function () { saveUrlToShelf(pageUrl, activeTabTitle()); } },
         { label: t('bvp.cmViewSource'), icon: 'file-text', off: !canSave(pageUrl),
           // `view-source:` is a real Chrome scheme and the honest way to show
           // this: it renders the source of the page as the server sent it.
@@ -1671,10 +1859,33 @@
      * bytes travel to the SERVER first: without it the menu item would look
      * like it did nothing at all.
      */
-    function saveUrlToShelf(url) {
+    function saveUrlToShelf(url, name) {
       if (!url) return;
-      send({ t: 'saveUrl', url: url });
+      // `name` is a SUGGESTION, never a decision: the server still prefers the
+      // response's own Content-Disposition, and still appends the extension the
+      // Content-Type implies. Sending '' is the same as not sending it.
+      send({ t: 'saveUrl', url: url, name: String(name || '') });
       toast(t('bvp.cmSaving'), 'info');
+    }
+
+    /**
+     * The title of the tab being streamed, or '' when there is nothing useful.
+     *
+     * The strip already carries every tab's title (the server refreshes it on
+     * every navigation), so this needs no extra round trip. A title equal to the
+     * URL is what the server stores when a page has no <title> of its own — that
+     * is not a name, so it is rejected here rather than saved as one.
+     */
+    function activeTabTitle() {
+      var list = (pickState && pickState.tabs) || [];
+      for (var i = 0; i < list.length; i++) {
+        if (String(list[i].id) !== String(pickState.activeTab)) continue;
+        var title = String(list[i].title || '').trim();
+        var url = String(list[i].url || '').trim();
+        if (!title || title === url || title === 'about:blank') return '';
+        return title;
+      }
+      return '';
     }
 
     /** Read the local clipboard and type it into the remote page. */
@@ -2552,7 +2763,29 @@
       ws.onopen = function () { setStatus(t('bv.connecting'), 'warn'); };
       ws.onmessage = function (m) { onMessage(m.data); };
       ws.onerror = function () { setStatus(t('bv.error'), 'bad'); };
-      ws.onclose = function () { if (pickState) setStatus(t('bv.disconnected'), ''); };
+      // A closed socket is the END of this session, so the watchdog that was
+      // polling it must stop with it. Left running it kept firing `ping` and
+      // `resync` into a socket nobody was listening on, once every five
+      // seconds, for as long as the window stayed open.
+      //
+      // 4000 is `session_expired` from the server (see BrowserStreamServer):
+      // the browser was reaped for being idle. Saying so, and saying it as a
+      // toast rather than only in a badge, is the difference between a user who
+      // knows to press Reconnect and a user who thinks the app has crashed —
+      // which is exactly what this whole fix is about.
+      ws.onclose = function (ev) {
+        if (!pickState) return;
+        if (pickState.stallTimer) { clearInterval(pickState.stallTimer); pickState.stallTimer = 0; }
+        pickState.recovering = false;
+        pickState.pingSentAt = 0;
+        pickState.lastFrameAt = 0;
+        if (ev && ev.code === 4000) {
+          setStatus(t('bv.expired'), 'warn');
+          toast(t('bvp.expiredReconnect'), 'warning');
+          return;
+        }
+        setStatus(t('bv.disconnected'), '');
+      };
 
       // ── Frame-stall watchdog ────────────────────────────────────────────
       // The server has its own liveness poll, but the client needs one too,
@@ -2600,8 +2833,51 @@
       }, 5000);
     }
 
+    /**
+     * Ask for ONE fresh frame shortly after the user stops interacting.
+     *
+     * ── MEASURED (Ask #13) ────────────────────────────────────────────────
+     * `Page.startScreencast` only emits when the compositor repaints. The
+     * moment scrolling stops the page is static, so Chromium sends nothing —
+     * measured through the real socket, frames per scroll burst fell to
+     * 3, 2, then 1, and the picture then sat unchanged for 2.3s+ while the
+     * session itself was perfectly healthy (tabNew still answered in ~300ms).
+     * The frame the user is left holding was captured MID-SCROLL, so the canvas
+     * shows a half-scrolled page that never settles: it looks frozen.
+     *
+     * The watchdog above cannot help — it waits 20 SECONDS of silence before it
+     * even asks. Nobody waits 20 seconds; they close the window, which is
+     * exactly the behaviour the user reported.
+     *
+     * `ping` is already the right request: the server answers it with a real
+     * `page.screenshot()`, measured at ~690ms and always CURRENT. So this asks
+     * for exactly one, 250ms after the last input — long enough that a
+     * continuing scroll keeps rescheduling it instead of flooding, short enough
+     * that the settled page appears immediately.
+     *
+     * Deliberately NOT a per-event send: that would put one screenshot on the
+     * wire per wheel notch. It is one request per PAUSE.
+     */
+    function refreshAfterInput() {
+      var ps = pickState;
+      if (!ps || !ps.ws || ps.ws.readyState !== WebSocket.OPEN) return;
+      if (ps.settleTimer) clearTimeout(ps.settleTimer);
+      ps.settleTimer = setTimeout(function () {
+        ps.settleTimer = 0;
+        if (!ps.ws || ps.ws.readyState !== WebSocket.OPEN) return;
+        if (ps.recovering) return;
+        // Nothing to fix if a frame arrived on its own in the meantime — an
+        // animated page keeps painting and needs no help.
+        if (ps.lastFrameAt && Date.now() - ps.lastFrameAt < 200) return;
+        send({ t: 'ping' });
+      }, 250);
+    }
+
     // ---- wiring ---------------------------------------------------------
     var lastMove = 0;
+    // One pending wheel gesture, flushed per animation frame. See the wheel
+    // handler below for the measurement that made this necessary.
+    var wheelAccum = { x: 0, y: 0, dx: 0, dy: 0, mods: null, raf: 0 };
     canvas.addEventListener('mousemove', function (ev) {
       // ── A real drag ─────────────────────────────────────────────────────
       // While a button is down, every move is part of a gesture, not a hover.
@@ -2715,7 +2991,33 @@
       // wheel scrolls sideways. A page with a wide table is unusable without it.
       var dx = ev.deltaX || (ev.shiftKey ? ev.deltaY : 0);
       var dy = ev.shiftKey && !ev.deltaX ? 0 : ev.deltaY;
-      send({ t: 'scroll', x: p.x, y: p.y, dy: dy, dx: dx, mods: modsOf(ev) });
+      // ── Coalesce, do not flood ──────────────────────────────────────────
+      // MEASURED (Ask #13): a trackpad emits wheel events far faster than the
+      // remote browser can consume them — 776 events in 4 seconds, with up to
+      // 270 CDP calls in flight at once, because every event became its own
+      // `Input.dispatchMouseEvent`. On a HEADED Chrome (which is what the live
+      // session runs) each of those costs ~80ms, so the queue outlived the
+      // gesture and the page kept scrolling after the user's fingers stopped.
+      //
+      // Wheel deltas ADD UP, so merging them loses nothing: three notches of
+      // 100 are one scroll of 300, and the page ends in the same place. They
+      // are flushed once per animation frame, which is also the fastest rate at
+      // which a new picture could possibly be shown.
+      wheelAccum.x = p.x; wheelAccum.y = p.y;
+      wheelAccum.dx += dx; wheelAccum.dy += dy;
+      wheelAccum.mods = modsOf(ev);
+      if (!wheelAccum.raf) {
+        wheelAccum.raf = requestAnimationFrame(function () {
+          wheelAccum.raf = 0;
+          var a = wheelAccum;
+          if (!a.dx && !a.dy) return;
+          send({ t: 'scroll', x: a.x, y: a.y, dy: a.dy, dx: a.dx, mods: a.mods });
+          a.dx = 0; a.dy = 0;
+          // The page is about to stop repainting. Ask for the settled picture,
+          // or the canvas keeps the mid-scroll frame — see refreshAfterInput.
+          refreshAfterInput();
+        });
+      }
     }, { passive: false });
     // Keyboard on the focused stage. In SELECT mode the keys drive the picker:
     // Space locks the hovered element and ↑/↓ walk the DOM (they live here, not
@@ -2848,6 +3150,13 @@
     q('bvp-go').addEventListener('click', connect);
     urlIn.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); connect(); }
+    });
+
+    // Show the real Chrome window, carrying the address bar's URL across.
+    q('bvp-real').addEventListener('click', function () {
+      // Fire-and-forget, so it must absorb the rethrow. See requestPick().
+      openRealBrowser((urlIn.value || '').trim())
+        .catch(function () { /* already surfaced as a toast */ });
     });
     q('bvp-clip').addEventListener('click', function () {
       if (pickState && pickState.rio) pickState.rio.pullClipboard();
@@ -3293,5 +3602,14 @@
     closePick();
   }
 
-  window.BrowserView = { render: render, stop: stop, requestPick: requestPick };
+  window.BrowserView = {
+    render: render,
+    stop: stop,
+    // The crosshair's entry point: opens the REAL Chromium in a new tab.
+    requestPick: requestPick,
+    // Explicit escape hatches, so neither the old canvas picker nor the
+    // real-browser call is reachable only through one button's click handler.
+    requestPickCanvas: requestPickCanvas,
+    openRealBrowser: openRealBrowser,
+  };
 })();

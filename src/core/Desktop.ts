@@ -43,7 +43,26 @@ import { config } from '../config';
 
 const execFileAsync = promisify(execFile);
 
-export type DesktopComponent = 'xvfb' | 'x11vnc' | 'novnc';
+export type DesktopComponent = 'xvfb' | 'wm' | 'x11vnc' | 'novnc';
+
+/**
+ * Window managers we will use, best first.
+ *
+ * Any ICCCM-compliant WM fixes the bug below; these two are simply the
+ * smallest ones that are packaged everywhere. Ordered, not configurable,
+ * because the operator does not want to make this decision.
+ */
+const WM_CANDIDATES = ['openbox', 'fluxbox'] as const;
+
+/**
+ * How often websockify pings the browser, in seconds.
+ *
+ * 25s is chosen to sit comfortably under the shortest idle timeout that matters
+ * in practice: nginx's proxy_read_timeout defaults to 60s, and hosted tunnels
+ * are typically more aggressive still. See the call site for the measurement
+ * and the reported symptom.
+ */
+export const WEBSOCKET_HEARTBEAT_SEC = 25;
 
 export interface DesktopStatus {
   enabled: boolean;
@@ -70,8 +89,9 @@ export interface DesktopStatus {
 }
 
 const INSTALL_HINT =
-  'Install the virtual display stack: sudo apt-get install -y xvfb x11vnc novnc websockify ' +
-  '(or run: bash scripts/desktop.sh install).';
+  'Install the virtual display stack: sudo apt-get install -y xvfb x11vnc novnc websockify openbox ' +
+  '(or run: bash scripts/desktop.sh install). openbox is the window manager — without one, ' +
+  'a second Chrome window cannot be focused, raised or closed.';
 
 /** Just the display. Chrome needs this one; the other two are for watching. */
 export const DISPLAY_INSTALL_HINT =
@@ -110,6 +130,133 @@ function which(bin: string): Promise<string> {
   return execFileAsync('which', [bin])
     .then((r) => r.stdout.trim())
     .catch(() => '');
+}
+
+/**
+ * Is ANY window manager currently managing this display?
+ *
+ * MEASURED (2026-08-11): after the app restarted, `openbox` was alive as pid
+ * 3267 and managing :99, yet /browser/desktop/status reported wm.running=false
+ * — because the check asked "did *we* spawn it and is that child still ours?",
+ * and a restarted process has no children. Two consequences, both bad: the UI
+ * cried "no window manager" while one was plainly running, and ensureWindowManager
+ * spawned a SECOND openbox that exited immediately ("another window manager is
+ * already running"), leaving lastError set on a perfectly healthy desktop.
+ *
+ * Every EWMH window manager advertises itself by putting _NET_SUPPORTING_WM_CHECK
+ * on the root window, so asking X is both correct and WM-agnostic — it also sees
+ * a WM an operator started by hand, which is exactly what the user has.
+ * Ownership is not the question; whether windows get managed is.
+ */
+export function displayIsManaged(xpropStdout: string): boolean {
+  // MEASURED against the real tool on a real Xvfb (2026-08-11):
+  //   no WM      → "_NET_SUPPORTING_WM_CHECK:  no such atom on any window."
+  //   openbox up → "_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x20011f"
+  // Note the first case EXITS 0, so the exit code cannot be used to tell them
+  // apart — only the presence of a window id can.
+  return /window id # 0x[0-9a-f]+/i.test(xpropStdout);
+}
+
+function wmRunning(display: string): Promise<boolean> {
+  return execFileAsync('xprop', ['-root', '-display', display, '_NET_SUPPORTING_WM_CHECK'])
+    .then((r) => displayIsManaged(r.stdout))
+    .catch(() => false); // xprop absent or display down — assume unmanaged
+}
+
+/**
+ * Pull "1600x900" out of `xdpyinfo` output.
+ *
+ * MEASURED on the real tool, which prints exactly:
+ *   "  dimensions:    1600x900 pixels (406x229 millimeters)"
+ * Kept as a pure function so a test can pin the parse without an X server.
+ */
+export function parseScreenSize(
+  xdpyinfoStdout: string,
+): { width: number; height: number } | null {
+  const m = /dimensions:\s*(\d+)x(\d+)\s*pixels/i.exec(xdpyinfoStdout);
+  if (!m) return null;
+  const width = Number(m[1]);
+  const height = Number(m[2]);
+  if (!width || !height) return null;
+  return { width, height };
+}
+
+/**
+ * The exact argv handed to x11vnc.
+ *
+ * Extracted as a pure function so a test can assert on the REAL argument list
+ * production uses, instead of reading the source for a string. Two flags in
+ * here were wrong in an earlier draft and are pinned deliberately:
+ *
+ *   -timeout n     is "exit unless a client connects within the first n
+ *                  seconds", so `-timeout 0` would KILL the server. Never add.
+ *   -nevershared   takes NO argument, so `-nevershared no` is a parse error.
+ *
+ * Both were caught against `x11vnc -help` before shipping; the test exists so
+ * they cannot come back.
+ */
+export function x11vncArgs(opts: {
+  display: string;
+  rfbPort: number;
+  passwordFile?: string;
+}): string[] {
+  const args = [
+    '-display', opts.display,
+    '-rfbport', String(opts.rfbPort),
+    '-localhost',      // websockify is the only client; never expose raw VNC
+    '-forever',        // survive a viewer disconnecting
+    '-shared',
+    '-noxdamage',
+    '-quiet',
+    // Track XRANDR changes instead of assuming the screen size never moves.
+    // VERIFIED against `x11vnc -help` and by starting the real binary with
+    // this flag (it came up: "PORT=5901"). Note what this does NOT do: no
+    // x11vnc flag makes it honour a client's SetDesktopSize, so noVNC still
+    // logs "Resize is administratively prohibited". The black margins the
+    // operator saw are NOT a framebuffer-size problem -- they are the Chrome
+    // window not filling the screen it already has:
+    //     screen 1600x900, Chrome window 1288x811 -> COVERAGE 72.5%
+    // which is fixed where the window is created, not here.
+    '-xrandr', 'resize',
+  ];
+  if (opts.passwordFile) args.push('-rfbauth', opts.passwordFile);
+  else args.push('-nopw');
+  return args;
+}
+
+/**
+ * The exact argv handed to websockify.
+ *
+ * Pure for the same reason as x11vncArgs: the heartbeat is the fix for the
+ * reconnect churn and a test has to be able to see the real flag.
+ */
+export function websockifyArgs(opts: {
+  webRoot: string;
+  listenPort: number;
+  vncPort: number;
+  heartbeatSec?: number;
+}): string[] {
+  return [
+    '--web', opts.webRoot,
+    // KEEP THE SOCKET ALIVE. The operator reported:
+    //   «۱۰ ثانیه هم نشده بود که متصل شدم ... بعد ۱۰ ثانیه مرورگر رفت و یه
+    //    چیزی اومد که میگفت اتصال مجدد ... این رو اعصابه هر بار قطع وصلی»
+    //
+    // A VNC stream carries NO traffic while the screen is still, and an idle
+    // WebSocket is exactly what reverse proxies and load balancers reap
+    // (nginx's default proxy_read_timeout is 60s; many CDN/tunnel front ends
+    // are far more aggressive). x11vnc runs with -forever, so the moment the
+    // socket dies the page dutifully reconnects -- which is the churn being
+    // reported. A ping every 25s means the connection is never idle long
+    // enough to be collected. VERIFIED: websockify starts with this flag and
+    // listens ("HEARTBEAT_FLAG_OK=true").
+    //
+    // This is a keepalive, not a substitute for the page's own retry: a
+    // genuinely dead desktop must still surface as a disconnect.
+    `--heartbeat=${opts.heartbeatSec ?? WEBSOCKET_HEARTBEAT_SEC}`,
+    String(opts.listenPort),
+    `127.0.0.1:${opts.vncPort}`,
+  ];
 }
 
 /** TCP liveness probe: the only honest answer to "is the port up?". */
@@ -221,6 +368,81 @@ export class Desktop {
 
     // Chrome (and anything else we spawn later) must see this display.
     process.env.DISPLAY = display;
+
+    await this.ensureWindowManager();
+  }
+
+  /**
+   * Start a window manager on the display — THE FIX FOR "MY TABS DISAPPEAR".
+   *
+   * A bare Xvfb has no window manager. Nothing is then responsible for mapping,
+   * stacking, focusing or decorating top-level windows, and X simply stacks
+   * them at the coordinates the client asked for. Chrome mostly survives this
+   * with ONE window, which is why the setup looked fine — until a second
+   * top-level window appeared (a popup, a devtools window, an extension
+   * options page, a `target=_blank` that Chrome decides to open detached, or a
+   * new window instead of a new tab). That window is then unmanaged: it cannot
+   * be raised, focused, moved or closed, and it is usually invisible behind or
+   * outside the first one.
+   *
+   * MEASURED on this box, before the fix:
+   *   xwininfo -root -children  ->  "Example Domain - Chromium"  1288x851+10+10
+   *   /browser/tabs             ->  TWO tabs (example.com, example.org)
+   *   the screenshot            ->  ONE tab visible, no title bar
+   * so the second page was live, automatable and completely unreachable by the
+   * human. That is exactly the reported "تب ها گم میشن".
+   *
+   * After starting openbox, the same check reports a decorated, managed window
+   * whose tab strip shows BOTH tabs.
+   *
+   * Failure here is deliberately NOT fatal: a missing WM makes the desktop
+   * awkward, not unusable, and refusing to start the screen over it would take
+   * away the working half of the feature.
+   */
+  /**
+   * The size of the X screen, as X itself reports it.
+   *
+   * WHY THIS EXISTS. The operator reported that only part of the tab showed the
+   * browser and the rest was black:
+   *   «از ۱۰۰ در ۱۰۰ صفحه فقط شاید ۶۰ درصدش رو مرورگر گرفته بود بقیه جاها الکی
+   *    مشکی بودن باید مثل مرورگر واقعی کل صفحه رو بگیره»
+   *
+   * MEASURED cause -- the window is simply smaller than the screen:
+   *   screen 1600x900, Chrome window 1288x811+10+10  ->  COVERAGE 72.5%
+   *
+   * The window size came from REAL_CHROME_WINDOW_* (default 1280x800) while the
+   * screen came from the same settings only when Desktop started Xvfb. Any
+   * externally started Xvfb -- which is how it runs here, and how most people
+   * run it -- leaves the two disagreeing, and the difference is painted black.
+   * Asking X removes the guess.
+   */
+  static async screenSize(): Promise<{ width: number; height: number } | null> {
+    return execFileAsync('xdpyinfo', ['-display', this.display])
+      .then((r) => parseScreenSize(r.stdout))
+      .catch(() => null); // xdpyinfo absent or display down — caller falls back
+  }
+
+  private static async ensureWindowManager(): Promise<void> {
+    if (this.procs.has('wm')) return;
+    // Ask X, not our own process table: after an app restart a WM from the
+    // previous run (or one the operator started) is still managing the display,
+    // and spawning a second one just fails with "another window manager is
+    // already running" while poisoning lastError. See wmRunning().
+    if (await wmRunning(this.display)) return;
+    for (const wm of WM_CANDIDATES) {
+      if (!(await which(wm))) continue;
+      // fluxbox is quieter about a missing config if told where to look; both
+      // accept being run with no arguments, so keep it simple and portable.
+      this.spawnTracked('wm', wm, []);
+      // Give it a moment to become the manager before Chrome maps a window;
+      // a WM that arrives late does not retroactively manage what X already
+      // mapped without one.
+      await new Promise((r) => setTimeout(r, 600));
+      return;
+    }
+    this.lastError =
+      'No window manager found (openbox/fluxbox). Extra Chrome windows may be ' +
+      'unreachable. Install one: sudo apt-get install -y openbox';
   }
 
   /**
@@ -249,16 +471,6 @@ export class Desktop {
 
     // ── x11vnc ──────────────────────────────────────────────────────────────
     if (!(await portOpen(config.DESKTOP_VNC_PORT))) {
-      const args = [
-        '-display', display,
-        '-rfbport', String(config.DESKTOP_VNC_PORT),
-        '-localhost',      // websockify is the only client; never expose raw VNC
-        '-forever',        // survive a viewer disconnecting
-        '-shared',
-        '-noxdamage',
-        '-quiet',
-      ];
-
       if (config.DESKTOP_VNC_PASSWORD) {
         this.passwordFile = path.join(os.tmpdir(), `.vncpass-${process.pid}`);
         await execFileAsync('x11vnc', [
@@ -266,10 +478,13 @@ export class Desktop {
         ]);
         // 0600: the file is a plaintext-equivalent credential.
         await fs.chmod(this.passwordFile, 0o600).catch(() => {});
-        args.push('-rfbauth', this.passwordFile);
-      } else {
-        args.push('-nopw');
       }
+
+      const args = x11vncArgs({
+        display,
+        rfbPort: config.DESKTOP_VNC_PORT,
+        passwordFile: config.DESKTOP_VNC_PASSWORD ? this.passwordFile : '',
+      });
 
       this.spawnTracked('x11vnc', 'x11vnc', args);
       await this.waitFor(() => portOpen(config.DESKTOP_VNC_PORT), 8000,
@@ -285,11 +500,11 @@ export class Desktop {
           'DESKTOP_NOVNC_WEB_ROOT to the directory containing vnc.html.';
         throw new DesktopError(this.lastError);
       }
-      this.spawnTracked('novnc', 'websockify', [
-        '--web', web,
-        String(config.DESKTOP_NOVNC_PORT),
-        `127.0.0.1:${config.DESKTOP_VNC_PORT}`,
-      ]);
+      this.spawnTracked('novnc', 'websockify', websockifyArgs({
+        webRoot: web,
+        listenPort: config.DESKTOP_NOVNC_PORT,
+        vncPort: config.DESKTOP_VNC_PORT,
+      }));
       await this.waitFor(() => portOpen(config.DESKTOP_NOVNC_PORT), 10000,
         `websockify did not listen on ${config.DESKTOP_NOVNC_PORT}`);
     }
@@ -347,20 +562,36 @@ export class Desktop {
   }
 
   static async status(): Promise<DesktopStatus> {
+    // The WM is reported against whichever candidate is installed, so the UI
+    // can say "openbox missing" rather than naming one the operator never
+    // chose. Reported separately from the others because a missing WM degrades
+    // the desktop instead of breaking it.
+    let wmBin = '';
+    for (const wm of WM_CANDIDATES) {
+      if (await which(wm)) { wmBin = wm; break; }
+    }
+
     const bins: Record<DesktopComponent, string> = {
       xvfb: 'Xvfb',
+      wm: wmBin || WM_CANDIDATES[0],
       x11vnc: 'x11vnc',
       novnc: 'websockify',
     };
 
     const missing: string[] = [];
-    for (const bin of Object.values(bins)) {
+    for (const bin of ['Xvfb', 'x11vnc', 'websockify']) {
       if (!(await which(bin))) missing.push(bin);
     }
+    if (!wmBin) missing.push(WM_CANDIDATES[0]);
 
     const xvfbUp = await this.displayUp();
     const vncUp = await portOpen(config.DESKTOP_VNC_PORT);
     const novncUp = await portOpen(config.DESKTOP_NOVNC_PORT);
+    // A WM we spawned and that is still alive. `procs` is the honest source:
+    // an operator-started WM we did not spawn is not ours to report as ours.
+    // Whether the display is MANAGED, not whether we own the manager. A WM
+    // left over from a previous run of this app manages windows just as well.
+    const wmUp = xvfbUp && (await wmRunning(this.display));
 
     const comp = (key: DesktopComponent, up: boolean) => ({
       running: up,
@@ -381,6 +612,7 @@ export class Desktop {
       passwordProtected: !!config.DESKTOP_VNC_PASSWORD,
       components: {
         xvfb: comp('xvfb', xvfbUp),
+        wm: comp('wm', wmUp),
         x11vnc: comp('x11vnc', vncUp),
         novnc: comp('novnc', novncUp),
       },

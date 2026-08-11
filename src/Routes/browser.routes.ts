@@ -763,6 +763,30 @@ export const createBrowserRoutes = (): Router => {
     } catch (e) { sendError(res, e); }
   });
 
+  /**
+   * Files the REAL Chromium has downloaded.
+   *
+   * The desktop shows the operator Chrome's own download shelf, but that shelf
+   * points at paths on the SERVER's disk — clicking it opens a file manager the
+   * operator cannot reach. This is the reachable half: each row carries the
+   * token that `/browser/downloads/:token` serves, so the file arrives on the
+   * operator's machine with the name it was given.
+   *
+   * `owner` is returned rather than assumed by the client. The real Chromium is
+   * single-tenant so it is a constant today, but a client that hardcoded it
+   * would silently fetch from the wrong directory the day that changes — the
+   * exact ENOENT hand-over failure already documented on /browser/uploads.
+   */
+  router.get('/browser/real/downloads', async (_req, res) => {
+    try {
+      res.json({
+        success: true,
+        owner: RealChrome.downloadOwner(),
+        downloads: RealChrome.downloads(),
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
   router.post('/browser/desktop/start', async (_req, res) => {
     try {
       res.json({ success: true, desktop: await Desktop.start() });
@@ -773,6 +797,61 @@ export const createBrowserRoutes = (): Router => {
     try {
       await Desktop.stop();
       res.json({ success: true, desktop: await Desktop.status() });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * ONE call that hands back a usable real browser.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * Everything needed to use the REAL Chrome already existed — Desktop.start(),
+   * RealChrome.getContext(), the noVNC client — but the operator had to know to
+   * do all three in the right order, and the crosshair button opened the
+   * SIMULATED canvas instead. The user's verdict on that simulation, after
+   * weeks of bugs in it: "به جای مرورگر شبیه سازی شده مرورگر واقعی … رو ریموت
+   * کن تا هر کاری نیاز بود اونجا همه چیز اماده هست" — extensions install
+   * normally, tabs are never lost, because it is just Chrome.
+   *
+   * So: start the screen, start Chrome on it, optionally open the URL the
+   * operator is working on, and return the single link that shows it. Anything
+   * already running is left alone (both calls are idempotent), which is what
+   * makes this safe to call from a button the user may double-click.
+   *
+   * The returned path is RELATIVE and goes through this app's own port — see
+   * DesktopProxy for why a :6080 URL is unusable behind a single published
+   * port.
+   */
+  router.post('/browser/real/open', async (req, res) => {
+    try {
+      const desktop = await Desktop.start();
+
+      // The screen must exist before Chrome starts: extensions only load in a
+      // HEADED browser, and a headed browser needs an X display.
+      const ctx = await RealChrome.getContext();
+
+      const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+      if (url) {
+        const page = await RealChrome.newPage();
+        // Do not await the load: a slow site must not stall the button, and
+        // the operator can watch it load on the desktop they are about to see.
+        void page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => { /* visible on screen */ });
+      }
+
+      res.json({
+        success: true,
+        desktop,
+        // The BARE Chromium view, not noVNC's own vnc.html. That file is the
+        // whole noVNC application (measured: 64 UI elements, a connect dialog,
+        // a control bar), so it handed the operator a VNC client to operate
+        // when all they asked for was the browser. See ChromeView.ts.
+        //
+        // Relative on purpose: the client prefixes its own origin, so this
+        // works on localhost, behind a proxy, and on a sandbox subdomain alike.
+        viewPath: '/desktop/chrome',
+        realChrome: await RealChrome.status(),
+        tabs: ctx ? await RealChrome.tabs() : [],
+      });
     } catch (e) { sendError(res, e); }
   });
 

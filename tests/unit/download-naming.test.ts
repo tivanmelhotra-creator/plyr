@@ -521,6 +521,10 @@ function buildMenu(
       rio: null,
       canBack: !!nav.canBack,
       canFwd: !!nav.canFwd,
+      // The tab strip as the client holds it. `activeTabTitle` reads this to
+      // find a human name for the page being saved.
+      activeTab: 't1',
+      tabs: [{ id: 't1', url: pageUrl, title: 'The Quarterly Report' }],
     },
     send: (m: Record<string, unknown>) => { sent.push(m); },
     copyText: (s: string) => { copied.push(String(s)); },
@@ -535,6 +539,12 @@ function buildMenu(
     grabFunction(browserView, 'closeCtx'),
     grabFunction(browserView, 'openCtx'),
     grabFunction(browserView, 'saveUrlToShelf'),
+    // "Save page as" names the file after the tab's title, so the real
+    // `activeTabTitle` has to come along. Left out, the menu entry threw a
+    // ReferenceError on click and did nothing — which is precisely the bug the
+    // whole feature exists to fix, so it must not be possible to pass this
+    // harness while it happens.
+    grabFunction(browserView, 'activeTabTitle'),
     grabFunction(browserView, 'openPageMenu'),
     'return { openPageMenu: openPageMenu };',
   ].join('\n');
@@ -692,7 +702,11 @@ describe('§5a — the two rules that keep the menu safe to extend', () => {
     expect(toasts).toEqual([]);
 
     saveUrlToShelf('https://cdn.test/a.png');
-    expect(sent).toEqual([{ t: 'saveUrl', url: 'https://cdn.test/a.png' }]);
+    // `name` rides along with every save: it carries the caller's suggestion
+    // (a page title, a link's text) so the server has something better than the
+    // URL path to name the file after. Empty here because this caller has no
+    // suggestion to offer — the server then falls back to the URL.
+    expect(sent).toEqual([{ t: 'saveUrl', url: 'https://cdn.test/a.png', name: '' }]);
     expect(toasts.length).toBe(1);
   });
 });
@@ -712,7 +726,7 @@ describe('§5 — the right-click menu offers what a real browser offers', () =>
     // Measured: an injected cross-origin `<a download>` NAVIGATES instead of
     // downloading, and an in-page fetch() is refused by CORS. Only a
     // server-side fetch works, so the click must leave the browser.
-    expect(m.sent).toContainEqual({ t: 'saveUrl', url: IMG });
+    expect(m.sent).toContainEqual({ t: 'saveUrl', url: IMG, name: '' });
     // …and say so, because the bytes travel to the server first and an item
     // that looks inert gets clicked again and again.
     expect(m.toasts.length).toBe(1);
@@ -721,15 +735,22 @@ describe('§5 — the right-click menu offers what a real browser offers', () =>
   it('offers to save a link target, a video/audio source and the page — «هر چیزی»', () => {
     const link = buildMenu({ x: 1, y: 1, linkUrl: LINK, linkText: 'The report' });
     link.click('bvp.cmSaveLinkAs');
-    expect(link.sent).toContainEqual({ t: 'saveUrl', url: LINK });
+    expect(link.sent).toContainEqual({ t: 'saveUrl', url: LINK, name: '' });
 
     const media = buildMenu({ x: 1, y: 1, mediaUrl: MEDIA });
     media.click('bvp.cmSaveMediaAs');
-    expect(media.sent).toContainEqual({ t: 'saveUrl', url: MEDIA });
+    expect(media.sent).toContainEqual({ t: 'saveUrl', url: MEDIA, name: '' });
 
     const page = buildMenu({ x: 1, y: 1 }, 'https://site.test/report');
     page.click('bvp.cmSavePageAs');
-    expect(page.sent).toContainEqual({ t: 'saveUrl', url: 'https://site.test/report' });
+    // A page save carries a `name`, unlike the others: a front page's URL ends
+    // in `/`, which gave the server nothing to name the file after and produced
+    // a file literally called `file` with no extension. See §6.
+    expect(page.sent).toContainEqual({
+      t: 'saveUrl',
+      url: 'https://site.test/report',
+      name: 'The Quarterly Report',
+    });
   });
 
   it('hides "save" for a target the server could never fetch', () => {
