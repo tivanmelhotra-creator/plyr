@@ -48,6 +48,7 @@ import {
 } from '../core/CookieImport';
 import { sessionStatePath, loadStorageState } from '../core/BrowserProfile';
 import { saveUpload, UploadError, MAX_UPLOAD_BYTES } from '../core/RemoteUploads';
+import { FileChooserError } from '../core/RemoteFileChooser';
 import {
   resolveDownload,
   DownloadError,
@@ -137,6 +138,12 @@ function fail(res: Response, status: number, error: string, hint = ''): void {
 function sendError(res: Response, e: unknown): void {
   if (e instanceof CookieImportError || e instanceof ExtensionError) {
     return fail(res, 400, e.message);
+  }
+  if (e instanceof UploadError || e instanceof FileChooserError) {
+    // 409, not 500: the request was well formed, the dialog it named has simply
+    // moved on. The view retries by re-reading the pending row, and a 500 would
+    // have it reporting a server fault for an ordinary race.
+    return fail(res, e instanceof FileChooserError ? 409 : 400, e.message);
   }
   if (e instanceof RealChromeError) {
     // 503: the request was fine, the browser is not available *yet*.
@@ -786,6 +793,78 @@ export const createBrowserRoutes = (): Router => {
         owner: RealChrome.downloadOwner(),
         downloads: RealChrome.downloads(),
       });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // The file dialog handshake — «Windows کاربر → Backend/Server → Website»
+  //
+  // The operator presses a website's own "Choose file" INSIDE the remote
+  // browser. Chromium hands that request to its automation client instead of
+  // opening a native dialog (MEASURED even for a real X11 click — see
+  // core/RemoteFileChooser), so the request waits on the server while the view
+  // asks the operator's OWN machine for a file. Three endpoints:
+  //
+  //   GET    …/chooser   is a page asking for a file right now?
+  //   POST   …/chooser   here are the uploads that answer it
+  //   DELETE …/chooser   the operator cancelled; release the page
+  //
+  // The upload itself still goes through POST /browser/uploads, so there is
+  // exactly ONE path that writes bytes onto this server and exactly one place
+  // where its size cap and identity rule live.
+  //
+  // IDENTITY. The tokens were written by /browser/uploads under the id that
+  // route resolved, and they are read here under RealChrome.downloadOwner().
+  // Those must be the same id or the hand-over is a bare ENOENT — the failure
+  // already documented on /browser/uploads as "Import still does nothing". The
+  // real Chromium is single-tenant (see REAL_CHROME_SHELF_USER), which is what
+  // makes them the same; the view is told the owner rather than assuming it, so
+  // it uploads to the right place.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  router.get('/browser/real/chooser', async (_req, res) => {
+    try {
+      res.json({
+        success: true,
+        owner: RealChrome.downloadOwner(),
+        // null, not an error, when nothing is pending: the view polls this, and
+        // "no dialog" is the ordinary answer, not a fault.
+        chooser: RealChrome.pendingChooser(),
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
+  router.post('/browser/real/chooser', async (req: AuthenticatedRequest, res) => {
+    try {
+      const body = (req.body ?? {}) as { id?: unknown; tokens?: unknown };
+      const id = String(body.id || '');
+      // Strings only, and the chooser re-validates every one of them against the
+      // token pattern before it resolves it. A path sent here resolves to
+      // nothing rather than to a file: that is the whole point of tokens (see
+      // core/RemoteUploads).
+      const tokens = Array.isArray(body.tokens)
+        ? body.tokens.filter((t): t is string => typeof t === 'string')
+        : [];
+      if (!id) {
+        return fail(res, 400, 'Which file request is this answering?',
+          'Send the id from GET /browser/real/chooser.');
+      }
+      if (!tokens.length) {
+        return fail(res, 400, 'No uploads were named.',
+          'Upload the file to POST /browser/uploads first, then send its token here.');
+      }
+      const done = await RealChrome.acceptChooserFiles(id, tokens);
+      res.json({ success: true, ...done });
+    } catch (e) { sendError(res, e); }
+  });
+
+  router.delete('/browser/real/chooser', async (req: AuthenticatedRequest, res) => {
+    try {
+      // An id is optional: cancelling "whatever is pending" is what the view
+      // needs when the operator closed their own picker without choosing, and a
+      // dialog left open blocks the page that opened it.
+      const cancelled = await RealChrome.cancelChooser(String(req.query.id || ''));
+      res.json({ success: true, cancelled });
     } catch (e) { sendError(res, e); }
   });
 
