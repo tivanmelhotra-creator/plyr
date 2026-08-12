@@ -6466,3 +6466,118 @@ body.route-fullbleed .fe-mm-restore {
 [dir="rtl"] .rc-ext-name,
 [dir="rtl"] .rc-ext-id,
 [dir="rtl"] .rc-ext-ver { direction: ltr; text-align: right; }
+
+/* ============================================
+   Launch options — presets, flag checkboxes, profile provenance
+   ============================================
+   The operator's complaint was that reaching a standard setup meant wrestling
+   dozens of environment variables and searching for Chrome switches one at a
+   time. The layout answers that in a fixed order: what the environment already
+   decided, then the presets (a beginner stops here), then the individual
+   switches, collapsed. */
+
+.rc-presets { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+
+.rc-preset {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+/* The chosen preset has to be obvious at a glance — a beginner who never
+   touches the checkboxes should still see which standard they are on. */
+.rc-preset.is-on { border-color: var(--primary); background: var(--primary-soft); }
+.rc-preset input { margin-top: 2px; flex: 0 0 auto; }
+.rc-preset-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rc-preset-name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.rc-preset-badge { font-size: 0.62rem; }
+.rc-preset-why { color: var(--text-dim); font-size: 0.74rem; line-height: 1.45; }
+
+.rc-flags { margin-top: 8px; }
+.rc-flags > summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+
+.rc-flag-group { margin-top: 8px; }
+.rc-flag-group-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.rc-flag-group-desc {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  opacity: 0.8;
+  line-height: 1.45;
+  margin-bottom: 4px;
+}
+
+.rc-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 0;
+  cursor: pointer;
+}
+/* A disabled checkbox is a required or computed flag: still SHOWN, because the
+   operator asked to see the whole list, but not offered as a choice. */
+.rc-flag input:disabled { cursor: not-allowed; }
+.rc-flag input:disabled ~ .rc-flag-text { opacity: 0.65; cursor: default; }
+.rc-flag input { margin-top: 3px; flex: 0 0 auto; }
+.rc-flag-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rc-flag-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rc-flag-why { color: var(--text-dim); font-size: 0.72rem; line-height: 1.45; }
+.rc-flag-risk { font-size: 0.6rem; }
+.rc-flag.risk-caution .rc-flag-risk { color: var(--warn); }
+.rc-flag.risk-dangerous .rc-flag-risk { color: var(--danger); }
+
+/* The raw switch is copy-paste material for a Dockerfile or a bug report. */
+.rc-flag-raw {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.66rem;
+  color: var(--text-dim);
+  opacity: 0.7;
+  user-select: all;
+  direction: ltr;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rc-profile { margin-bottom: 8px; }
+.rc-profile-src { color: var(--text-dim); font-size: 0.72rem; }
+.rc-profile-vals { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+
+.rc-profile-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+}
+/* An explicit value gets a visible edge: "you set this" and "the profile set
+   this for you" must never look alike. */
+.rc-profile-row.src-explicit { border-inline-start: 2px solid var(--primary); }
+.rc-profile-name {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.68rem;
+  direction: ltr;
+}
+.rc-profile-val { font-weight: 600; direction: ltr; }
+.rc-profile-src-tag { font-size: 0.6rem; }
+.rc-profile-why { color: var(--text-dim); flex: 1; min-width: 0; line-height: 1.4; }
+
+/* Variable names and Chrome switches stay latin even in an RTL UI. */
+[dir="rtl"] .rc-flag-raw,
+[dir="rtl"] .rc-profile-name,
+[dir="rtl"] .rc-profile-val { direction: ltr; text-align: right; }

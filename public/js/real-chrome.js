@@ -236,6 +236,304 @@
       }
     }
 
+    // ── 1b. Launch options ──────────────────────────────────────────────────
+    // THE OPERATOR'S COMPLAINT: «به جای اینکه من بخوام دونه دونه سرچ کنم تگ‌ها
+    // رو پیدا کنم … با فرم‌های چک‌باکس مشخص کنم … و باید در کنارش حواسمون به
+    // کاربران تازه‌کار هم باشه که در کنار چک‌باکس‌ها گزینه‌های استاندارد هم باشه»
+    //
+    // So: presets FIRST (a beginner never has to understand a single switch),
+    // the checkboxes second and collapsed (an expert loses nothing), and the
+    // environment profile shown alongside so nobody has to guess which of 77
+    // variables decided what.
+    //
+    // The catalogue is FETCHED, never hard-coded here. A copy in the front-end
+    // would drift from the flags Chrome actually gets, and a settings screen
+    // that lies about the running configuration is worse than none.
+    /**
+     * Draw the preset picker, the grouped checkboxes and the profile rows.
+     *
+     * Renders a placeholder immediately and fills it in when the catalogue
+     * arrives, so a slow request degrades to "loading" instead of a section that
+     * silently never appears.
+     */
+    function renderLaunchOptions(host) {
+      // Local, not shared: reopening the panel must not inherit half-finished
+      // edits from a previous session that were never saved.
+      var chosen = null;   // Set of flag ids that are ticked
+      var presetId = null;
+      var catalogue = null;
+
+      var loading = note(host, t('rc.loading', 'Loading…'));
+
+      window.API.get('/browser/real/flags')
+        .then(function (d) {
+          catalogue = d || {};
+          presetId = (d && d.selected && d.selected.presetId) || (d && d.defaultPreset) || 'standard';
+          chosen = idSet((d && d.selected && d.selected.ids) || []);
+          if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+          paint(host);
+        })
+        .catch(function (e) {
+          if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+          note(host, e.message, 'error');
+        });
+
+      function idSet(list) {
+        var s = {};
+        (list || []).forEach(function (id) { s[id] = true; });
+        return s;
+      }
+
+      function presetById(id) {
+        var list = (catalogue && catalogue.presets) || [];
+        for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+        return null;
+      }
+
+      /**
+       * Localised text off a catalogue entry: the API ships both languages.
+       *
+       * I18N exposes getLang(), NOT a `.lang` property — reading `.lang` yields
+       * undefined and would silently pin this whole form to English for a
+       * Persian-speaking operator, which is the one user this project has.
+       */
+      function isFa() {
+        return !!(window.I18N && typeof window.I18N.getLang === 'function'
+          && window.I18N.getLang() === 'fa');
+      }
+
+      function loc(obj, key) {
+        return (isFa() && obj[key + 'Fa']) ? obj[key + 'Fa'] : obj[key];
+      }
+
+      function isRequired(id) {
+        var req = (catalogue && catalogue.required) || [];
+        return req.indexOf(id) >= 0;
+      }
+
+      function paint(hostNode) {
+        hostNode.innerHTML = '';
+
+        // ── the profile, and who decided what ────────────────────────────────
+        renderProfile(hostNode);
+
+        // ── presets: the beginner's whole answer ─────────────────────────────
+        note(hostNode, t('rc.presetHint',
+          'Pick a standard option. Only open the switches below if you need something specific.'));
+
+        var presetWrap = el('div', 'rc-presets');
+        ((catalogue && catalogue.presets) || []).forEach(function (p) {
+          var row = el('label', 'rc-preset' + (p.id === presetId ? ' is-on' : ''));
+          var radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = 'rc-preset';
+          radio.value = p.id;
+          radio.checked = p.id === presetId;
+          radio.addEventListener('change', function () {
+            presetId = p.id;
+            // Switching to a named preset REPLACES the ticks. Switching to
+            // custom keeps them: that is the point of custom — start from a
+            // preset and adjust, as the operator asked.
+            if (p.id !== 'custom') chosen = idSet(p.flags);
+            paint(hostNode);
+          });
+          row.appendChild(radio);
+          var txt = el('span', 'rc-preset-text');
+          var name = el('span', 'rc-preset-name', loc(p, 'label'));
+          if (p.recommended) {
+            name.appendChild(el('span', 'badge ok rc-preset-badge',
+              t('rc.recommended', 'recommended')));
+          }
+          txt.appendChild(name);
+          txt.appendChild(el('span', 'rc-preset-why', loc(p, 'summary')));
+          row.appendChild(txt);
+          presetWrap.appendChild(row);
+        });
+        hostNode.appendChild(presetWrap);
+
+        // ── the switches, grouped and collapsed ──────────────────────────────
+        var det = document.createElement('details');
+        det.className = 'rc-flags';
+        // Open straight away in custom mode: the operator chose custom in order
+        // to see these, so making them click twice would be silly.
+        det.open = presetId === 'custom';
+        var sum = document.createElement('summary');
+        sum.textContent = t('rc.advancedFlags', 'Individual switches') +
+          ' (' + Object.keys(chosen).length + ')';
+        det.appendChild(sum);
+
+        ((catalogue && catalogue.groups) || []).forEach(function (g) {
+          var flags = ((catalogue && catalogue.flags) || []).filter(function (f) {
+            return f.group === g.id;
+          });
+          if (!flags.length) return;
+
+          var grp = el('div', 'rc-flag-group');
+          grp.appendChild(el('div', 'rc-flag-group-title', loc(g, 'label')));
+          grp.appendChild(el('div', 'rc-flag-group-desc', loc(g, 'description')));
+
+          flags.forEach(function (f) {
+            var row = el('label', 'rc-flag risk-' + f.risk);
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!chosen[f.id] || isRequired(f.id);
+
+            // A computed flag carries a value from configuration, and a required
+            // one cannot be turned off without breaking startup. Both are SHOWN
+            // (the operator asked to see the whole list) but not offered as
+            // choices: a checkbox that bricks the browser is a trap, not freedom.
+            var locked = isRequired(f.id) || f.computed;
+            cb.disabled = locked;
+            if (!locked) {
+              cb.addEventListener('change', function () {
+                if (cb.checked) chosen[f.id] = true; else delete chosen[f.id];
+                // Any hand edit means this is no longer a named preset. Saying so
+                // is honest; leaving "Standard" selected while the flags differ
+                // would be the settings screen lying again.
+                presetId = 'custom';
+                paint(hostNode);
+              });
+            }
+            row.appendChild(cb);
+
+            var txt = el('span', 'rc-flag-text');
+            var head = el('span', 'rc-flag-name', loc(f, 'label'));
+            if (f.risk !== 'safe') {
+              head.appendChild(el('span', 'badge rc-flag-risk',
+                f.risk === 'dangerous'
+                  ? t('rc.riskDangerous', 'risky')
+                  : t('rc.riskCaution', 'trade-off')));
+            }
+            if (isRequired(f.id)) {
+              head.appendChild(el('span', 'badge rc-flag-risk',
+                t('rc.flagRequired', 'always on')));
+            }
+            if (f.computed) {
+              head.appendChild(el('span', 'badge rc-flag-risk',
+                t('rc.flagComputed', 'from settings')));
+            }
+            txt.appendChild(head);
+            txt.appendChild(el('span', 'rc-flag-why', loc(f, 'why')));
+            txt.appendChild(el('code', 'rc-flag-raw', f.flag));
+            row.appendChild(txt);
+            grp.appendChild(row);
+          });
+
+          det.appendChild(grp);
+        });
+        hostNode.appendChild(det);
+
+        // ── apply ───────────────────────────────────────────────────────────
+        var acts = el('div', 'rc-row');
+        // "Apply", not "Save for next start": the server relaunches Chrome
+        // itself when the switches changed, so the button does what it says
+        // rather than leaving the operator a chore. The label must not promise
+        // less than the code delivers.
+        var save = btn(t('rc.applyFlags', 'Apply'), 'btn btn-sm');
+        save.addEventListener('click', function () {
+          setBusy(save, true, t('rc.applying', 'applying…'));
+          window.API.post('/browser/real/flags', {
+            preset: presetId,
+            flags: Object.keys(chosen),
+          })
+            .then(function (d) {
+              var sel = (d && d.selected) || {};
+              // An unknown or forced flag is REPORTED, never swallowed. A switch
+              // the operator believes they set and the browser never received is
+              // the exact class of bug that cost this project days.
+              if (sel.unknown && sel.unknown.length) {
+                toast(t('rc.flagsUnknown', 'Ignored unknown switches: ') +
+                  sel.unknown.join(', '), 'error');
+              } else if (sel.forced && sel.forced.length) {
+                toast(t('rc.flagsForced', 'These cannot be turned off: ') +
+                  sel.forced.join(', '), 'error');
+              } else if (d && d.problem) {
+                // Healing is not pretending: a relaunch that genuinely failed
+                // says so, and names the cause.
+                toast(String(d.problem) + (d.hint ? ' — ' + d.hint : ''), 'error');
+              } else if (d && d.applied) {
+                toast(t('rc.flagsApplied',
+                  'Applied. The browser was relaunched with these switches.'), 'ok');
+              } else {
+                toast(t('rc.flagsSaved', 'Saved. The next start will use these.'), 'ok');
+              }
+              // The running browser just changed underneath the rest of the
+              // panel (version, tabs, debug URL), so re-read it rather than
+              // leaving stale numbers on screen.
+              if (d && d.applied) refresh();
+            })
+            .catch(function (e) { toast(e.message, 'error'); })
+            .then(function () { setBusy(save, false); });
+        });
+        acts.appendChild(save);
+
+        // Reported as an observation, never as an instruction: the operator is
+        // not asked to restart anything. `inSync` can only be false transiently
+        // — for instance when an earlier relaunch failed.
+        if (catalogue && catalogue.inSync === false) {
+          note(hostNode, t('rc.flagsNotLive',
+            'The running browser is not using these switches yet. Apply to relaunch it.'), 'warn');
+        }
+        hostNode.appendChild(acts);
+      }
+
+      /**
+       * Which environment profile is active, and which values it chose.
+       *
+       * The complaint ends «کاربر گیج نمونه» — the user must not end up
+       * confused. A bare value would move the confusion rather than remove it:
+       * `headless: false` never says whether the operator chose it or the
+       * profile did. So every row is tagged with its provenance.
+       */
+      function renderProfile(hostNode) {
+        var box = el('div', 'rc-profile');
+        hostNode.appendChild(box);
+        window.API.get('/config/profile')
+          .then(function (d) {
+            if (!d || !d.meta) return;
+            var head = el('div', 'rc-row');
+            head.appendChild(el('span', 'badge ok', loc(d.meta, 'label')));
+            head.appendChild(el('span', 'rc-profile-src',
+              d.detectedFrom === 'default'
+                ? t('rc.profileDefault', 'no APP_ENV set — assuming development')
+                : t('rc.profileFrom', 'from ') + d.detectedFrom));
+            box.appendChild(head);
+            note(box, loc(d.meta, 'summary'));
+
+            var list = el('div', 'rc-profile-vals');
+            (d.values || []).forEach(function (v) {
+              var row = el('div', 'rc-profile-row src-' + v.source);
+              row.appendChild(el('code', 'rc-profile-name', v.name));
+              row.appendChild(el('span', 'rc-profile-val',
+                v.value === undefined ? '—' : String(v.value)));
+              // "You set this" and "development set this for you" must never
+              // look alike, so the source is always spelled out.
+              row.appendChild(el('span', 'badge rc-profile-src-tag',
+                v.source === 'explicit'
+                  ? t('rc.srcYou', 'you set it')
+                  : (v.source === 'profile'
+                    ? t('rc.srcProfile', 'profile chose it')
+                    : t('rc.srcDefault', 'built-in default'))));
+              if (v.overridden) {
+                row.appendChild(el('span', 'rc-profile-why',
+                  t('rc.overrides', 'overrides ') + String(v.profileValue)));
+              } else {
+                row.appendChild(el('span', 'rc-profile-why',
+                  (isFa() && v.whyFa) ? v.whyFa : v.why));
+              }
+              list.appendChild(row);
+            });
+            box.appendChild(list);
+          })
+          .catch(function () {
+            // A missing profile endpoint must not take the flag form down with
+            // it: the flags are the part the operator actually asked for.
+          });
+      }
+    }
+
+    if (rc.enabled) renderLaunchOptions(section(body, t('rc.launch', 'Launch options')));
+
     // ── 2. Cookies ──────────────────────────────────────────────────────────
     var s2 = section(body, t('rc.cookies', 'Cookies'));
     note(s2, t('rc.cookiesHint',

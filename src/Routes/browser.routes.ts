@@ -27,6 +27,8 @@ import path from 'path';
 
 import { config } from '../config';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
+import { flagCatalogue } from '../core/ChromeFlags';
+import { describeProfile, PROFILES } from '../core/EnvProfile';
 // `displayGuidance` is no longer imported here: the "there is no screen" message
 // belongs to SelfHeal now, because SelfHeal is what tries to make one first.
 import { Desktop, DesktopError } from '../core/Desktop';
@@ -908,6 +910,150 @@ export const createBrowserRoutes = (): Router => {
         recovery,
         running: RealChrome.isRunning(),
         tabs: await RealChrome.tabs(),
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * The launch-flag catalogue, and which flags are selected.
+   *
+   * WHY THIS IS A ROUTE. The operator's complaint: «به جای اینکه من بخوام دونه
+   * دونه سرچ کنم تگ‌ها رو پیدا کنم» — instead of searching for switches one by
+   * one, hand the UI the whole list with descriptions so it can render a form.
+   *
+   * The catalogue is served rather than duplicated in the front-end on purpose.
+   * A copy in `public/js` would drift from the flags Chrome is really given, and
+   * a settings screen that lies about the running configuration is worse than no
+   * settings screen at all.
+   */
+  router.get('/browser/real/flags', (_req, res) => {
+    try {
+      const active = RealChrome.activeFlags();
+      const selected = RealChrome.currentFlagChoice();
+      res.json({
+        success: true,
+        ...flagCatalogue(),
+        selected,
+        active,
+        // Whether the running browser is actually using the saved selection.
+        // Reported as an OBSERVATION, not as a chore for the operator: POSTing a
+        // selection applies it, so this can only be false transiently (for
+        // instance if a heal failed) and the UI shows it as a state, never as an
+        // instruction to go and restart something.
+        inSync: active === null || active.ids.join(',') === selected.ids.join(','),
+        // Kept for API compatibility, and always false: nothing is left for the
+        // caller to restart. See the guard in tests/unit/self-heal.test.ts.
+        restartRequired: false,
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Choose the launch flags — and APPLY them, here, now.
+   *
+   * Returns the RESOLVED selection, including `unknown` ids that matched nothing
+   * and `forced` ids that cannot be switched off. Both are reported instead of
+   * being quietly dropped: a flag the operator believes they set and the browser
+   * never received is the exact failure mode that cost this project days on the
+   * tab-restore hunt.
+   *
+   * ── WHY THIS RELAUNCHES INSTEAD OF SAYING "RESTART TO APPLY" ──────────────
+   *
+   * The first version of this route saved the choice and answered
+   * `restartRequired: true`. That was true and still a defect, and this codebase
+   * had already learnt the lesson once, for extensions: the rule recorded in
+   * SelfHeal.ts is «never ask the user to do something we could have done», and
+   * tests/unit/self-heal.test.ts fails the build if a route asks again. It
+   * caught me.
+   *
+   * Chrome reading its switches only at startup is a real constraint. The
+   * conclusion that the OPERATOR must therefore press a button was not: the
+   * server can relaunch, it knows exactly when the selection changed, and
+   * `swapLiveSessions` rebuilds the live tabs across the swap — so applying
+   * flags no longer costs the tabs, which is the same defect §3.2 was about.
+   *
+   * A browser that is not running is left alone: there is nothing to relaunch,
+   * and starting one the operator never asked for would be a surprise, not a
+   * courtesy.
+   */
+  router.post('/browser/real/flags', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        preset?: unknown;
+        flags?: unknown;
+        overrides?: unknown;
+      };
+      const flags = Array.isArray(body.flags)
+        ? body.flags.filter((f): f is string => typeof f === 'string')
+        : undefined;
+      const overrides: Record<string, boolean> = {};
+      if (body.overrides && typeof body.overrides === 'object') {
+        for (const [k, v] of Object.entries(body.overrides as Record<string, unknown>)) {
+          if (typeof v === 'boolean') overrides[k] = v;
+        }
+      }
+
+      const before = RealChrome.activeFlags();
+      const resolved = RealChrome.setFlagChoice({
+        preset: typeof body.preset === 'string' ? body.preset : undefined,
+        flags,
+        overrides,
+      });
+
+      // Only relaunch when the switches genuinely changed. Restarting a browser
+      // to apply an identical selection would throw away the operator's page for
+      // no reason at all.
+      const changed = before !== null && before.ids.join(',') !== resolved.ids.join(',');
+      const shouldApply = changed && RealChrome.isRunning();
+
+      if (!shouldApply) {
+        return res.json({
+          success: true,
+          selected: resolved,
+          applied: false,
+          // Nothing changed, or there is no browser to change: either way the
+          // next start uses this selection and nobody has to do anything.
+          reason: changed ? 'not running' : 'no change',
+          restartRequired: false,
+        });
+      }
+
+      const { steps, report } = healCollector();
+      const healed = await SelfHeal.reloadExtensions(report, swapLiveSessions);
+      res.json({
+        success: true,
+        selected: resolved,
+        applied: !!healed.ok,
+        steps,
+        realChrome: healed.realChrome,
+        restartRequired: false,
+        ...(healed.ok ? {} : {
+          // Self-healing is not the same as pretending: when the relaunch really
+          // failed, say so and name the cause.
+          problem: healed.problem,
+          ...(healed.hint ? { hint: healed.hint } : {}),
+        }),
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Which environment profile is active, and what it decided.
+   *
+   * WHY THIS IS A ROUTE. The complaint ends «کاربر گیج نمونه توی محیط توسعه» —
+   * the user must not end up confused. Showing a resolved value alone would move
+   * the confusion instead of removing it: `headless: false` does not say whether
+   * the operator chose it or a profile did. Every row therefore carries its
+   * provenance, and `overridden` marks the rows where an explicit value beat the
+   * profile — so "you set this" and "development set this for you" never look
+   * alike.
+   */
+  router.get('/config/profile', (_req, res) => {
+    try {
+      res.json({
+        success: true,
+        ...describeProfile(process.env),
+        profiles: PROFILES,
       });
     } catch (e) { sendError(res, e); }
   });
