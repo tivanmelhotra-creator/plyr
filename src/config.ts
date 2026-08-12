@@ -246,6 +246,20 @@ export const config = {
   REAL_CHROME_WINDOW_WIDTH: parseInt(cleanEnv(process.env.REAL_CHROME_WINDOW_WIDTH) || '1280', 10),
   REAL_CHROME_WINDOW_HEIGHT: parseInt(cleanEnv(process.env.REAL_CHROME_WINDOW_HEIGHT) || '800', 10),
 
+  // Reopen the tabs that were open when the browser last went away.
+  //
+  // The operator's report: «هنگ کرد و بعدش دیگه فریز شد منم بستم مجدد باز کنم
+  // ... همه تب ها گم شدن». MEASURED with tools/probe-realchrome-tab-loss.js:
+  // three tabs in, browser SIGKILLed, ZERO tabs back — and the same on a CLEAN
+  // close, so this was never a crash-only bug.
+  //
+  // On by default. Losing the tabs is the reported defect, and this browser is
+  // the operator's workspace: a half-finished login flow across three tabs is
+  // not something to discard because the container restarted. Set false to get
+  // a fresh window every time.
+  REAL_CHROME_RESTORE_TABS:
+    (cleanEnv(process.env.REAL_CHROME_RESTORE_TABS)?.toLowerCase() ?? 'true') !== 'false',
+
   // ============================================
   // Remote desktop (Xvfb + VNC + noVNC)
   // ============================================

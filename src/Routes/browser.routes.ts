@@ -826,6 +826,21 @@ export const createBrowserRoutes = (): Router => {
     try {
       const desktop = await Desktop.start();
 
+      // A WEDGED browser must not be handed back as if it were healthy.
+      //
+      //   «هنگ کرد و بعدش دیگه فریز شد منم بستم مجدد باز کنم کلا نرفت به اون
+      //    ادرس»
+      //
+      // getContext() returns the existing context whenever `this.context` is
+      // non-null, and a frozen Chromium does not close its context — so
+      // reopening the view used to return the same dead browser, and the button
+      // "went nowhere". Checking BEFORE reuse is what turns that dead end into a
+      // recovery. It costs one round trip on an already-running browser and
+      // nothing at all on a cold start.
+      const recovery = RealChrome.isRunning()
+        ? await RealChrome.recycleIfWedged()
+        : { action: 'not-running' as const, reason: 'cold start' };
+
       // The screen must exist before Chrome starts: extensions only load in a
       // HEADED browser, and a headed browser needs an X display.
       const ctx = await RealChrome.getContext();
@@ -851,6 +866,48 @@ export const createBrowserRoutes = (): Router => {
         viewPath: '/desktop/chrome',
         realChrome: await RealChrome.status(),
         tabs: ctx ? await RealChrome.tabs() : [],
+        // Say it out loud when a browser was recycled. The operator's tabs come
+        // back (REAL_CHROME_RESTORE_TABS), but a silent relaunch is how "all my
+        // tabs are gone" became a mystery in the first place.
+        recovered: recovery.action === 'recycled',
+        recovery,
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Is the real browser actually answering, and recycle it if not.
+   *
+   * WHY THIS IS A ROUTE. §3.2 of the handoff: the operator's Chromium froze,
+   * and the only recovery they had was to close it by hand — which is what lost
+   * the tabs. `GET` reports, `POST` acts, so a caller can look before it leaps.
+   *
+   * The recycle preserves the profile and, with REAL_CHROME_RESTORE_TABS on,
+   * reopens the same tabs (MEASURED 3 of 3 in
+   * tools/probe-realchrome-restore-live.js), which is the difference between
+   * recovery and the data loss that was reported.
+   */
+  router.get('/browser/real/health', async (_req, res) => {
+    try {
+      res.json({
+        success: true,
+        enabled: RealChrome.isEnabled(),
+        running: RealChrome.isRunning(),
+        // The two are NOT the same thing, and that gap IS the bug: a frozen
+        // Chromium keeps `running` true while answering nothing.
+        responsive: await RealChrome.isResponsive(),
+      });
+    } catch (e) { sendError(res, e); }
+  });
+
+  router.post('/browser/real/recover', async (_req, res) => {
+    try {
+      const recovery = await RealChrome.recycleIfWedged();
+      res.json({
+        success: true,
+        recovery,
+        running: RealChrome.isRunning(),
+        tabs: await RealChrome.tabs(),
       });
     } catch (e) { sendError(res, e); }
   });

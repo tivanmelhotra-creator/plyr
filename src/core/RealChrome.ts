@@ -208,6 +208,94 @@ export function windowArgs(screen: { width: number; height: number } | null): st
   ];
 }
 
+/**
+ * Make Chrome reopen the tabs it had when it last went away.
+ *
+ * THE REPORT (HANDOFF-REMOTE-BROWSER.md §3.2)
+ * -------------------------------------------
+ *   «مرورگر ریموت رو بالا اوردم ولی وقتی وبگردی میکردم هنگ کرد و بعدش دیگه فریز
+ *    شد منم بستم مجدد باز کنم کلا نرفت به اون ادرس … موقعی که مجدد میزنم یکی
+ *    جدید بالا میاره که همه تب ها گم شدن»
+ *
+ * WHAT WAS ACTUALLY MEASURED (tools/probe-realchrome-tab-loss.js, headed on
+ * Xvfb, three data: tabs titled ONE/TWO/THREE, one scenario per process):
+ *
+ *   scenario                                   tabs back
+ *   ─────────────────────────────────────────  ─────────
+ *   clean close, then reopen                     0 of 3
+ *   SIGKILL, exit-state wiped, then reopen       0 of 3
+ *   SIGKILL, exit-state KEPT, then reopen        0 of 3   ← control
+ *   SIGKILL + --restore-last-session             0 of 3
+ *   restore_on_startup=5 only, no flag           0 of 3   ← lever A alone
+ *   --restore-last-session only, no pref         0 of 3   ← lever B alone
+ *   BOTH the pref and the flag                   3 of 3   ← the fix
+ *
+ * THREE CONCLUSIONS, none of them the one the handoff expected:
+ *
+ *  1. `clearCrashedExitState()` is INNOCENT. It was the prime suspect — wiping
+ *     the crash flag is exactly what would discard the previous session — but
+ *     the control run that skips it loses the tabs just the same. Do not
+ *     "fix" it; it solves a real and separate problem (the restore bubble
+ *     eating clicks) and reverting it would bring that back.
+ *  2. The loss is NOT crash-specific. A clean close loses them too, so this was
+ *     never about crash handling: Chrome was simply never asked to restore
+ *     anything. That also means it reproduces on every ordinary restart, which
+ *     is why the operator hit it so easily.
+ *  3. NEITHER lever works alone, and that is the non-obvious part. The pref
+ *     tells Chrome what "startup" means; the flag tells it that this launch IS
+ *     a startup to restore rather than a fresh window. Ship both or ship
+ *     nothing — half of this fix measures identically to no fix at all.
+ *
+ * WHY WE WRITE A PREFERENCE FILE AT ALL
+ * -------------------------------------
+ * Because there is no command line for it. `restore_on_startup` lives only in
+ * the profile, and MEASURED on a fresh profile Chrome writes no Preferences file
+ * until it has run once — so seeding it before the first launch is the only way
+ * a first-run profile gets the setting. Verified in the probe: the key survived
+ * Chrome's own rewrite of that file during the session, and survived the crash.
+ *
+ * Like clearCrashedExitState, this touches ONLY its own key and leaves the rest
+ * of the user's profile byte for byte alone, writes via a same-directory temp +
+ * rename so an interrupted write cannot truncate the profile, and never blocks
+ * a launch on failure — a browser with the wrong startup mode is a great deal
+ * better than no browser.
+ *
+ * Returns a short description of what it did, for the log and for tests.
+ */
+export async function enableSessionRestore(userDataDir: string): Promise<string> {
+  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+  // 5 = "continue where you left off". 1 is the new-tab page and 4 is a fixed
+  // URL list; both would silently discard the session we are trying to keep.
+  const CONTINUE_WHERE_YOU_LEFT_OFF = 5;
+  try {
+    await fs.mkdir(path.dirname(prefsPath), { recursive: true });
+
+    let prefs: { session?: Record<string, unknown> } = {};
+    try {
+      prefs = JSON.parse(await fs.readFile(prefsPath, 'utf8'));
+    } catch {
+      // No Preferences yet. MEASURED: that is the state of a fresh profile, and
+      // seeding the file here is the only way the FIRST session gets restored.
+      prefs = {};
+    }
+
+    const session = (prefs.session || {}) as Record<string, unknown>;
+    if (session.restore_on_startup === CONTINUE_WHERE_YOU_LEFT_OFF) {
+      return 'already set';
+    }
+    const was = session.restore_on_startup;
+    session.restore_on_startup = CONTINUE_WHERE_YOU_LEFT_OFF;
+    prefs.session = session;
+
+    const tmp = `${prefsPath}.abtmp`;
+    await fs.writeFile(tmp, JSON.stringify(prefs), 'utf8');
+    await fs.rename(tmp, prefsPath);
+    return `restore_on_startup ${was === undefined ? 'unset' : String(was)} -> 5`;
+  } catch (e) {
+    return `could not set (${(e as Error).message})`;
+  }
+}
+
 /** Ask a DevTools port who it is. Used purely to prove the port is live. */
 function fetchDebugVersion(
   host: string,
@@ -275,6 +363,78 @@ export class RealChrome {
     return this.context !== null;
   }
 
+  /**
+   * Is the browser actually ANSWERING, not merely present?
+   *
+   * `isRunning()` reports on an object reference, and the operator's other §3.2
+   * symptom is precisely the case where that reference lies:
+   *
+   *   «وقتی وبگردی میکردم هنگ کرد و بعدش دیگه فریز شد … مجدد باز کنم کلا نرفت
+   *    به اون ادرس»
+   *
+   * A wedged renderer does not close the context, so `this.context` stays
+   * non-null and `isRunning()` keeps saying true while nothing responds. Every
+   * caller that reuses the context on that basis then hands the operator a view
+   * onto a corpse — the reported dead end.
+   *
+   * A trivial round trip is the only honest test: ask a page to evaluate 1+1
+   * (or, if there are no pages, ask the context for its pages, which still
+   * crosses the process boundary). `timeoutMs` is deliberately short: this runs
+   * on a user-facing path and a wedged browser will never answer, so waiting
+   * longer only makes the operator wait longer for the same verdict.
+   */
+  static async isResponsive(timeoutMs = 2000): Promise<boolean> {
+    const ctx = this.context;
+    if (!ctx) return false;
+
+    const probe = (async () => {
+      const pages = ctx.pages();
+      // A context with no pages is idle, not wedged; there is nothing to ask.
+      if (pages.length === 0) return true;
+      // The FIRST page that answers is enough — one hung tab does not make the
+      // browser unusable, and killing a whole Chrome over it would itself be
+      // the tab loss this change exists to prevent.
+      const answers = pages.map((p) => p.evaluate('1+1').then(() => true));
+      return Promise.any(answers).then(() => true).catch(() => false);
+    })();
+
+    return Promise.race([
+      probe.catch(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ]);
+  }
+
+  /**
+   * Recycle a wedged browser WITHOUT losing the operator's tabs.
+   *
+   * This is the recovery the operator did by hand and lost their work to. The
+   * profile is preserved (it is a directory on disk, not process state) and,
+   * with REAL_CHROME_RESTORE_TABS on, the relaunch reopens the same tabs —
+   * MEASURED 3 of 3 in tools/probe-realchrome-tab-loss.js.
+   *
+   * Returns what it decided, so the caller can tell the operator whether
+   * anything was actually wrong. Deliberately a no-op when the browser is
+   * healthy: recycling a working browser to "be safe" would throw away live
+   * pages for nothing.
+   */
+  static async recycleIfWedged(probeTimeoutMs = 2000): Promise<{
+    action: 'none' | 'not-running' | 'recycled';
+    reason: string;
+  }> {
+    if (!this.context) return { action: 'not-running', reason: 'no browser to check' };
+    if (await this.isResponsive(probeTimeoutMs)) {
+      return { action: 'none', reason: 'browser is responsive' };
+    }
+    // stop() tolerates a context whose close() hangs, and the profile — cookies,
+    // extension storage and the session file the restore reads — is on disk.
+    await this.stop();
+    await this.getContext();
+    return {
+      action: 'recycled',
+      reason: 'browser stopped answering; relaunched with the same profile',
+    };
+  }
+
   /** True when `ctx` is the shared persistent context, which must never be closed. */
   static isSharedContext(ctx: BrowserContext | null | undefined): boolean {
     return !!ctx && ctx === this.context;
@@ -320,6 +480,10 @@ export class RealChrome {
     await fs.mkdir(userDataDir, { recursive: true });
     await fs.mkdir(extensionsDir, { recursive: true });
     await clearCrashedExitState(userDataDir);
+    // Both of these, or neither: MEASURED, the pref alone and the flag alone
+    // each restore ZERO tabs. See enableSessionRestore for the table.
+    const restoreTabs = config.REAL_CHROME_RESTORE_TABS === true;
+    const restoreSaid = restoreTabs ? await enableSessionRestore(userDataDir) : 'disabled';
 
     const extensions = await listExtensions(extensionsDir);
     const headless = config.REAL_CHROME_HEADLESS === true;
@@ -342,6 +506,10 @@ export class RealChrome {
       '--no-default-browser-check',
       '--disable-background-networking',
       '--disable-sync',
+      // The second half of the tab-restore fix. Without it the pref set above
+      // does nothing at all: Chrome treats this launch as a fresh window rather
+      // than a startup that should reopen the previous session.
+      ...(restoreTabs ? ['--restore-last-session'] : []),
       ...windowArgs(screen),
       ...ANTI_AUTOMATION_ARGS,
       ...extensionLaunchArgs(extensions),
@@ -425,7 +593,7 @@ export class RealChrome {
 
       console.log(
         `[RealChrome] ✓ persistent Chrome up — ${extensions.length} extension(s), ` +
-        `profile=${userDataDir}` +
+        `profile=${userDataDir}, tab-restore=${restoreSaid}` +
         (config.REAL_CHROME_DEBUG_PORT > 0
           ? `, devtools=${config.REAL_CHROME_DEBUG_BIND}:${config.REAL_CHROME_DEBUG_PORT}`
           : ''),
@@ -603,15 +771,29 @@ export class RealChrome {
     return { ...(await applyCookies(ctx, result.cookies)), result };
   }
 
-  /** Stop Chrome. Cookies live in the profile directory, so nothing is lost. */
-  static async stop(): Promise<void> {
+  /**
+   * Stop Chrome. Cookies live in the profile directory, so nothing is lost.
+   *
+   * The close is time-bounded, and that bound is load-bearing rather than
+   * defensive: `context.close()` asks the browser to shut down cleanly, and a
+   * WEDGED browser is by definition one that does not answer such requests. The
+   * caller that needs stop() most is recycleIfWedged(), so an unbounded await
+   * here would hang the very recovery path that exists to escape the hang —
+   * the operator's dead end, reimplemented on the server.
+   *
+   * The internal state is cleared BEFORE the await either way, so a close that
+   * never returns cannot leave a dead context being handed to new callers.
+   */
+  static async stop(timeoutMs = 10_000): Promise<void> {
     const ctx = this.context;
     this.context = null;
     this.loaded = [];
     this.debugInfo = { version: '', ws: '' };
-    if (ctx) {
-      try { await ctx.close(); } catch { /* already gone */ }
-    }
+    if (!ctx) return;
+    await Promise.race([
+      ctx.close().catch(() => { /* already gone */ }),
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
   }
 
   /** Stop and start again — the only way to pick up newly installed extensions. */

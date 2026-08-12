@@ -77,13 +77,119 @@ function extractClickHandlerBody(src: string, id: string): string {
   throw new Error(`unbalanced braces in the ${id} click handler`);
 }
 
+/**
+ * The functions `openRealBrowser` depends on, in the order they must be defined.
+ *
+ * WHY THIS LIST EXISTS. The harness used to inject `openRealBrowser` alone, and
+ * when the blank-tab placeholder was added the sandbox started throwing
+ * `ReferenceError: tabPlaceholder is not defined` — eleven tests failing on a
+ * missing fake rather than on the behaviour they describe. A single list keeps
+ * the harness honest: add a dependency to the source and it is declared here,
+ * not discovered by a confusing failure.
+ */
+const OPEN_REAL_BROWSER_DEPS = ['tabPlaceholder', 'directViewHref'] as const;
+
+function openRealBrowserSource(): string {
+  return [
+    ...OPEN_REAL_BROWSER_DEPS.map((n) => extractFunction(SRC, n)),
+    extractFunction(SRC, 'openRealBrowser'),
+  ].join('\n');
+}
+
 type Recorder = {
   opened: Array<{ url: string; target: string }>;
   navigated: string[];
   closed: number;
   posted: Array<{ path: string; body: unknown }>;
   toasts: string[];
+  /** Every document.write() the placeholder performed into the new tab. */
+  wrote: string[];
+  /** What was put in the `.e` error slot, via textContent (never markup). */
+  errors: string[];
+  /** href set on the self-service links, keyed by element id. */
+  links: Record<string, string>;
+  /** Interleaved trace: 'write' / 'post' / 'navigate' / 'close'. */
+  order: string[];
 };
+
+/**
+ * A document just real enough for `tabPlaceholder`.
+ *
+ * It is not a DOM: it records the written markup and exposes only the two
+ * lookups the placeholder performs (`.e` for the error text, `#direct` /
+ * `#again` for the self-service links). Anything richer would be fidelity we do
+ * not need and cannot verify.
+ */
+function fakeTabDocument(rec: Recorder) {
+  const slots: Record<string, { setAttribute(n: string, v: string): void }> = {};
+  return {
+    open() { /* starts a new document */ },
+    write(html: string) {
+      rec.wrote.push(html);
+      rec.order.push('write');
+    },
+    close() { /* ends it */ },
+    querySelector(sel: string) {
+      if (sel !== '.e') return null;
+      // Only present on the failure page, which is the page that has an error.
+      if (!/class="e"/.test(rec.wrote[rec.wrote.length - 1] || '')) return null;
+      return { set textContent(v: string) { rec.errors.push(v); } };
+    },
+    getElementById(id: string) {
+      const last = rec.wrote[rec.wrote.length - 1] || '';
+      if (!new RegExp(`id="${id}"`).test(last)) return null;
+      if (!slots[id]) {
+        slots[id] = {
+          setAttribute(name: string, value: string) {
+            if (name === 'href') rec.links[id] = value;
+          },
+        };
+      }
+      return slots[id];
+    },
+  };
+}
+
+function newRecorder(): Recorder {
+  return {
+    opened: [], navigated: [], closed: 0, posted: [], toasts: [],
+    wrote: [], errors: [], links: {}, order: [],
+  };
+}
+
+/** The fakes `openRealBrowser` runs against, wired to one recorder. */
+function sandboxFor(
+  rec: Recorder,
+  postResult: { ok: true; viewPath: string } | { ok: false; error: string },
+) {
+  const fakeTab = {
+    document: fakeTabDocument(rec),
+    set location(href: string) { rec.navigated.push(href); rec.order.push('navigate'); },
+    close() { rec.closed++; rec.order.push('close'); },
+  };
+
+  return {
+    window: {
+      open(url: string, target: string) {
+        rec.opened.push({ url, target });
+        rec.order.push('open');
+        return fakeTab;
+      },
+    },
+    API: {
+      getKey: () => 'THE-KEY',
+      post: (path: string, body: unknown) => {
+        rec.posted.push({ path, body });
+        rec.order.push('post');
+        return postResult.ok
+          ? Promise.resolve({ success: true, viewPath: postResult.viewPath })
+          : Promise.resolve({ success: false, error: postResult.error });
+      },
+    },
+    t: (k: string) => k,
+    toast: (m: string) => { rec.toasts.push(m); },
+  };
+}
 
 /**
  * Run `requestPick` (and the `openRealBrowser` it delegates to) against fakes,
@@ -95,35 +201,11 @@ async function runRequestPick(
   opts: unknown,
   postResult: { ok: true; viewPath: string } | { ok: false; error: string },
 ): Promise<Recorder> {
-  const rec: Recorder = { opened: [], navigated: [], closed: 0, posted: [], toasts: [] };
-
-  const fakeTab = {
-    set location(href: string) { rec.navigated.push(href); },
-    close() { rec.closed++; },
-  };
-
-  const sandbox = {
-    window: {
-      open(url: string, target: string) {
-        rec.opened.push({ url, target });
-        return fakeTab;
-      },
-    },
-    API: {
-      getKey: () => 'THE-KEY',
-      post: (path: string, body: unknown) => {
-        rec.posted.push({ path, body });
-        return postResult.ok
-          ? Promise.resolve({ success: true, viewPath: postResult.viewPath })
-          : Promise.resolve({ success: false, error: postResult.error });
-      },
-    },
-    t: (k: string) => k,
-    toast: (m: string) => { rec.toasts.push(m); },
-  };
+  const rec = newRecorder();
+  const sandbox = sandboxFor(rec, postResult);
 
   const body = `
-    ${extractFunction(SRC, 'openRealBrowser')}
+    ${openRealBrowserSource()}
     ${extractFunction(SRC, 'requestPick')}
     return requestPick(function () {}, OPTS);
   `;
@@ -149,25 +231,27 @@ describe('clicking the crosshair', () => {
     // gesture; opening it after the await is silently blocked and the crosshair
     // appears to do nothing. Asserting the ORDER is what pins this — the tab
     // must already exist by the time the POST goes out.
-    const order: string[] = [];
-    const fakeTab = { set location(_h: string) {}, close() {} };
-    const body = `
-      ${extractFunction(SRC, 'openRealBrowser')}
-      ${extractFunction(SRC, 'requestPick')}
-      return requestPick(function () {}, {});
-    `;
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const fn = new Function('window', 'API', 't', 'toast', body);
-    await fn(
-      { open: () => { order.push('open'); return fakeTab; } },
-      {
-        getKey: () => 'K',
-        post: () => { order.push('post'); return Promise.resolve({ success: true, viewPath: '/desktop/chrome' }); },
-      },
-      (k: string) => k,
-      () => {},
-    );
-    expect(order).toEqual(['open', 'post']);
+    const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
+    expect(rec.order.filter((s) => s === 'open' || s === 'post')).toEqual(['open', 'post']);
+  });
+
+  it('writes the placeholder into that tab BEFORE the server is asked', async () => {
+    // §3.1 of the handoff. The blank tab is unavoidable (popup blockers), so the
+    // fix is that it is never a mystery: it must be written into inside the same
+    // gesture, not after the await, or the operator stares at about:blank while
+    // Chrome boots and cannot tell "slow" from "dead".
+    const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
+    expect(rec.order.slice(0, 3)).toEqual(['open', 'write', 'post']);
+    expect(rec.wrote[0]).toContain('Starting the remote browser');
+  });
+
+  it('gives the waiting tab a link it can use itself', async () => {
+    // «اصلا تغییر نمیکنه about:blank و در واقع نمی تونم به مرورگر ریموت دسترسی
+    //  پیدا کنم» — if this page's own attempt to navigate the tab never lands,
+    // the operator must still have a way in, with the api_key a freshly opened
+    // tab cannot send as a header.
+    const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
+    expect(rec.links.direct).toBe('/desktop/chrome?api_key=THE-KEY');
   });
 
   it('navigates that tab to the BARE Chromium view, with the api key', async () => {
@@ -209,12 +293,27 @@ describe('clicking the crosshair', () => {
     expect(rec.navigated).toEqual(['/desktop/chrome?x=1&api_key=THE-KEY']);
   });
 
-  it('closes the blank tab when the server call fails', async () => {
-    // Leaving an empty window behind after a failure is its own small betrayal,
-    // and it is indistinguishable from the hang this whole change was about.
+  it('KEEPS the tab on failure and explains itself inside it', async () => {
+    // This test used to assert the opposite (`closed === 1`). Closing the tab
+    // was meant to be tidy and measured badly: the new tab is in the FOREGROUND
+    // while the page that opened it is not, so the operator saw a window vanish
+    // and never read the toast that explained why — the failure was
+    // indistinguishable from the hang this whole change exists to end.
     const rec = await runRequestPick({}, { ok: false, error: 'desktop_not_running' });
-    expect(rec.closed).toBe(1);
+    expect(rec.closed).toBe(0);
     expect(rec.navigated).toEqual([]);
+    expect(rec.wrote[rec.wrote.length - 1]).toContain('did not start');
+    // The reason is put in via textContent, never markup: `detail` is a
+    // server/proxy message and may itself BE an HTML document (the closed-port
+    // error page is exactly that).
+    expect(rec.errors).toEqual(['desktop_not_running']);
+    // And a Retry the operator can press from the tab they are looking at.
+    expect(rec.links.again).toBe('/desktop/chrome?api_key=THE-KEY');
+  });
+
+  it('still tells the operator via a toast as well', async () => {
+    const rec = await runRequestPick({}, { ok: false, error: 'desktop_not_running' });
+    expect(rec.toasts.join(' ')).toContain('desktop_not_running');
   });
 });
 
@@ -289,17 +388,11 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
     process.removeAllListeners('unhandledRejection');
     process.on('unhandledRejection', onUnhandled);
     try {
+      const rec = newRecorder();
+      const sandbox = sandboxFor(rec, { ok: false, error: 'desktop_not_running' });
       // eslint-disable-next-line @typescript-eslint/no-implied-eval
       const fn = new Function('window', 'API', 't', 'toast', source);
-      fn(
-        { open: () => ({ set location(_h: string) { /* noop */ }, close() { /* noop */ } }) },
-        {
-          getKey: () => 'THE-KEY',
-          post: () => Promise.resolve({ success: false, error: 'desktop_not_running' }),
-        },
-        (k: string) => k,
-        () => { /* toast */ },
-      );
+      fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast);
       // Rejections are reported on a later turn; give the loop time to do it.
       await new Promise((r) => setTimeout(r, 50));
     } finally {
@@ -313,7 +406,7 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
 
   it('the crosshair swallows the rejection after the toast', async () => {
     const caught = await unhandledFrom(`
-      ${extractFunction(SRC, 'openRealBrowser')}
+      ${openRealBrowserSource()}
       ${extractFunction(SRC, 'requestPick')}
       requestPick(function () {}, {});
     `);
@@ -326,7 +419,7 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
   it('the in-panel button swallows it too', async () => {
     // Same shape as the bvp-real click handler: call, ignore the promise.
     const caught = await unhandledFrom(`
-      ${extractFunction(SRC, 'openRealBrowser')}
+      ${openRealBrowserSource()}
       var urlIn = { value: 'https://example.com' };
       ${extractClickHandlerBody(SRC, 'bvp-real')}
     `);
@@ -342,18 +435,12 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
     // launch as a success.
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const fn = new Function('window', 'API', 't', 'toast', `
-      ${extractFunction(SRC, 'openRealBrowser')}
+      ${openRealBrowserSource()}
       return openRealBrowser('');
     `);
-    const p = fn(
-      { open: () => ({ set location(_h: string) { /* noop */ }, close() { /* noop */ } }) },
-      {
-        getKey: () => 'THE-KEY',
-        post: () => Promise.resolve({ success: false, error: 'desktop_not_running' }),
-      },
-      (k: string) => k,
-      () => { /* toast */ },
-    );
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, { ok: false, error: 'desktop_not_running' });
+    const p = fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast);
     await expect(p).rejects.toThrow('desktop_not_running');
   });
 });
