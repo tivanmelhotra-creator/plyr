@@ -1862,16 +1862,116 @@
     return b || (dom && dom.inspector) || null;
   }
 
+  // ---- Element Inspector claim ---------------------------------------------
+  // An open NDV is the ONLY thing that makes a picked element deliverable: the
+  // server refuses a submission when no node is waiting, rather than guessing a
+  // destination. So opening a node claims it and closing one releases it, which
+  // keeps "where does my pick go?" answerable by looking at the screen.
+  //
+  // Both calls are wrapped and optional: inspector-client.js is a separate
+  // script, and a page that loaded without it must still open nodes normally.
+  function inspectorClient() {
+    return (window.InspectorClient && typeof window.InspectorClient.claim === 'function')
+      ? window.InspectorClient : null;
+  }
+
+  function claimForInspector(id) {
+    var ic = inspectorClient();
+    if (!ic || !state || !state.nodes[id]) return;
+    var node = state.nodes[id];
+    try {
+      ic.claim(id, {
+        action: node.action,
+        workflowId: (currentWorkflow && currentWorkflow.id) || '',
+        label: ndvTitle(node),
+      });
+    } catch (e) { /* a failed claim costs a refusal the user can retry, not the editor */ }
+  }
+
+  function releaseInspector() {
+    var ic = inspectorClient();
+    if (!ic || typeof ic.release !== 'function') return;
+    try { ic.release(); } catch (e) {}
+  }
+
   function closeNdv() {
     ndvOpen = null;
     var b = document.querySelector('.ndv-backdrop');
     if (b && b.parentNode) b.parentNode.removeChild(b);
+    // Nothing is waiting for an element any more. Leaving the claim behind is
+    // how a later pick lands in a node the user already closed.
+    releaseInspector();
   }
 
   function openNdv(id) {
     if (!state || !state.nodes[id] || state.nodes[id].action === '__start__') return;
     ndvOpen = id;
     renderInspector();
+    claimForInspector(id);
+  }
+
+  /**
+   * Write Inspector-picked values into a node's params. Returns true if applied.
+   *
+   * WHY THIS EXISTS RATHER THAN REUSING THE PICKER CALLBACK
+   * ------------------------------------------------------
+   * BrowserView.requestPick()'s `onPicked(sel)` takes a single selector STRING.
+   * The Inspector delivers a STRUCTURE (selector + selectorType + xpath + text +
+   * value + name + attribute), because the user ticked several attributes and
+   * expects all of them to arrive. Squeezing that through a string callback
+   * would throw away everything except the selector, which is the manual
+   * copy/paste this feature exists to remove.
+   *
+   * ONLY DECLARED FIELDS ARE WRITTEN
+   * --------------------------------
+   * GraphSerialize.coerceParams() copies only keys present in the action's
+   * `fields`. An undeclared param is dropped on save/run, so writing one would
+   * produce a node that looks configured in the editor and runs unconfigured --
+   * the single most confusing failure this could have. Unknown keys are skipped
+   * here instead, and the return value reports whether anything actually landed.
+   */
+  function applyInspectorFields(nodeId, fields) {
+    if (!state || !nodeId || !fields) return false;
+    var node = state.nodes[nodeId];
+    if (!node || node.action === '__start__') return false;
+
+    var act = actionById(node.action);
+    var declared = {};
+    if (act && act.fields) {
+      for (var i = 0; i < act.fields.length; i++) declared[act.fields[i].k] = true;
+    }
+
+    var changes = {};
+    var count = 0;
+    for (var k in fields) {
+      if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
+      if (!declared[k]) continue;
+      var v = fields[k];
+      if (v == null || v === '') continue;
+      changes[k] = String(v);
+      count++;
+    }
+    if (!count) return false;
+
+    // One undo point for the whole pick, not one per field: the user performed a
+    // single action ("confirm this element"), so a single Ctrl+Z must reverse it.
+    pushHistory();
+    node.params = node.params || {};
+    for (var key in changes) {
+      if (!Object.prototype.hasOwnProperty.call(changes, key)) continue;
+      node.params[key] = changes[key];
+      // A picked value is a literal, so leave expression mode for that field:
+      // keeping it on would render `#buy` as an expression and evaluate to junk.
+      if (node._expr) node._expr[key] = false;
+    }
+
+    renderNodes();
+    // The NDV shows stale inputs until it re-renders, and the whole point is
+    // that the user SEES the values arrive.
+    if (ndvOpen === nodeId) renderInspector();
+    emitChange();
+    saveLocal();
+    return true;
   }
 
   document.addEventListener('keydown', function (ev) {
@@ -4516,6 +4616,18 @@
     closeNdv: function () { closeNdv(); return ndvOpen == null; },
     /** Which node's NDV is open right now (null when none). */
     ndvOpenFor: function () { return ndvOpen; },
+
+    /**
+     * Element Inspector delivery point (public/js/inspector-client.js).
+     *
+     * `fields` is the hub's ready-to-apply map (selector, selectorType, xpath,
+     * text, value, name, attribute). Only keys the node's action DECLARES are
+     * written, because GraphSerialize.coerceParams() drops undeclared params on
+     * save -- writing one would give a node that looks configured and runs
+     * unconfigured. Returns true when at least one field landed, which is what
+     * lets the client tell the user "added" instead of guessing.
+     */
+    applyInspectorFields: applyInspectorFields,
     /** Select a node AND bring it into view — the outline is a navigator (§ 6). */
     revealNode: function (nodeId) {
       if (!state || !state.nodes[nodeId]) return false;

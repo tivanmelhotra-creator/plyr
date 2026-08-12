@@ -4,17 +4,18 @@
 > اگر تازه شروع کرده‌ای، فقط همین فایل را کامل بخوان؛ هر چیز دیگری که لازم شود
 > از داخل همین‌جا آدرس‌دهی شده است.
 >
-> آخرین به‌روزرسانی: **2026-08-12** · برنچ: **`genspark_ai_developer`** · PR: **#35**
+> آخرین به‌روزرسانی: **2026-08-12** · برنچ: **`genspark_ai_developer`** · PR: **#38**
 
 ---
 
 ## 0. سه خط خلاصه / TL;DR
 
-1. **Mission 5 بخش ۲** (value typeهای گروه‌بندی‌شده‌ی نود شرط) در این جلسه **تمام شد**؛
-   با آن، **هیچ ماموریت بازی باقی نمانده است**. سند کامل:
-   `docs/uiux/19-HANDOFF-condition-value-types.md`.
-2. کل تست‌ها سبز است: **72 فایل / 1700 تست**، `tsc --noEmit` تمیز،
-   `node tools/probe-condition-value-types.js` → **23/23، VERDICT=PASS**.
+1. **Dual Browser Mode + Element Inspector Extension** در این جلسه **تمام شد**
+   (طبق مشخصات ۲۰ بخشی فارسی). سند کامل:
+   `docs/uiux/20-HANDOFF-dual-browser-mode-inspector.md` ← **قبل از هر کاری روی
+   حالت مرورگر یا Inspector، این را کامل بخوان**.
+2. کل تست‌ها سبز است: **78 فایل / 1871 تست**، `tsc --noEmit` تمیز.
+   ۹۲ تست تازه در ۴ فایل برای این قابلیت.
 3. اگر ماموریت تازه‌ای می‌گیری، اول بخش ۱ (قواعد R1..R5) و بخش ۴ (تله‌های واقعی این
    سندباکس) را بخوان. جدول وضعیت ماموریت‌ها در `MISSIONS.md` بخش ۲ است.
 
@@ -43,19 +44,40 @@
 
 ```
 branch : genspark_ai_developer
-PR     : https://github.com/jalil-ahmadi2/plyr/pull/35
+PR     : https://github.com/jalil-ahmadi2/plyr/pull/38
 tsc    : ✅ clean
-vitest : ✅ 72 files / 1700 tests
-probe  : ✅ node tools/probe-condition-value-types.js → 23/23, VERDICT=PASS
+vitest : ✅ 78 files / 1871 tests
 build  : npm run build → ✅
-open missions : هیچ (Mission 5 بخش ۲ آخرینشان بود)
+open missions : هیچ (Dual Browser Mode + Inspector آخرینشان بود)
 ```
 
 ### چه چیزی در این جلسه شیپ شد
 
-**Mission 5 بخش ۲ — value typeهای گروه‌بندی‌شده‌ی نود شرط**
-سند: `docs/uiux/19-HANDOFF-condition-value-types.md` ← **کامل بخوان اگر روی نود شرط کار داری**
-جزئیات و دو تصمیمش در بخش ۳ همین فایل.
+**Dual Browser Mode + Element Inspector Extension**
+سند: `docs/uiux/20-HANDOFF-dual-browser-mode-inspector.md` ← **کامل بخوان**
+
+دو قابلیت که یک درز مشترک دارند:
+
+1. **حالت دوگانه‌ی مرورگر** — اتوماسیون یا روی مرورگر **سرور** اجرا می‌شود
+   (Remote، بدون هیچ تغییر) یا روی **کروم خود کاربر** (Local، جدید).
+   Remote حذف نشد و Local جایگزینش نیست — همان چیزی که مشخصات صریحاً خواسته بود.
+2. **Element Inspector** — یک **افزونه‌ی MV3 کروم** که المان را از صفحه‌ی واقعی
+   برمی‌دارد و داده‌اش را در نودی که کاربر باز کرده می‌نشاند. **یک** Inspector
+   برای هر دو حالت، نه دو تا.
+
+سه نکته‌ای که اگر ندانی وقت تلف می‌کنی:
+
+- **تونل معکوس است.** عامل (agent) از دستگاه کاربر به بیرون زنگ می‌زند
+  (WSS/443)؛ پورت CDP روی `127.0.0.1` می‌ماند و هیچ‌وقت expose نمی‌شود. دلیل:
+  CDP هیچ authentication ندارد، و NAT/CGNAT اتصال ورودی را برای بیشتر کاربران
+  غیرممکن می‌کند.
+- **موتور اتوماسیون دوم ساخته نشد.** Playwright سمت سرور می‌ماند و از داخل تونل
+  کار می‌کند، پس همه‌ی ~۴۰ اکشن نود در هر دو حالت بدون تغییر کار می‌کنند. تنها
+  جایی که از حالت‌ها خبر دارد `src/core/BrowserAdapter.ts` است.
+- **`browserShared` را دست نزن.** مسیرهای cleanup قبلاً `browserContext` را
+  بی‌قید و شرط می‌بستند؛ در حالت Local **آن مرورگر خود کاربر است**. سه گارد
+  روی سه نقطه‌ی close هست (`grep -c browserShared src/pipeline.ts` = 6). بدون
+  آن‌ها، پایان یک workflow کروم کاربر را با همه‌ی تب‌هایش می‌بست.
 
 ### شیپ‌شده‌های جلسات قبل (برای زمینه)
 

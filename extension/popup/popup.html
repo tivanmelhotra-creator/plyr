@@ -34,6 +34,34 @@
     </div>
   </section>
 
+  <!-- Element Inspector: what the extension is attached to, and where a pick
+       will land. Shown ABOVE the workflow list because a pick that cannot be
+       delivered is the first thing a user needs to know about. -->
+  <section class="card">
+    <h2>Element Inspector</h2>
+    <div class="insp">
+      <div class="inspline">
+        <span class="ilabel">Browser</span>
+        <span class="ivalue" id="inspMode">—</span>
+        <button class="btn ghost xs" id="modeSwitch" hidden>Switch</button>
+      </div>
+      <div class="inspline">
+        <span class="ilabel">Active node</span>
+        <span class="ivalue" id="inspNode">—</span>
+      </div>
+      <div class="inspline">
+        <span class="ilabel">Session</span>
+        <span class="ivalue mono" id="inspSession">—</span>
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="inspect">🔍 Inspect element</button>
+      <button class="btn ghost sm" id="inspRefresh">↻</button>
+    </div>
+    <div class="hintline">Or press <b>Ctrl + Shift + C</b> on the page. Hover, click, tick the attributes you want, then Confirm &amp; Add to Node.</div>
+    <div class="status" id="inspStatus"></div>
+  </section>
+
   <section class="card">
     <h2>Workflows <span class="count" id="wfCount">0</span></h2>
     <ul class="wflist" id="wflist">

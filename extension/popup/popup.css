@@ -132,3 +132,25 @@ body {
 .liverow.error .liveicon { color: var(--bad); }
 .liverow.error .livelabel { color: var(--bad); }
 .liverow.retry .liveicon { color: var(--warn); }
+
+/* ── Element Inspector ────────────────────────────────────────────────────
+   Three read-only lines answering the questions a user has BEFORE picking:
+   which browser am I attached to, which node is waiting, which session am I.
+   Guessing any of those is how a pick ends up somewhere unexpected. */
+.insp { margin-bottom: 8px; }
+.inspline {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 0; font-size: 11px;
+}
+.ilabel { flex: 0 0 78px; color: var(--muted); }
+.ivalue {
+  flex: 1; min-width: 0; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ivalue.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10px; color: var(--muted); }
+.ivalue.local { color: var(--ok); }
+.ivalue.remote { color: var(--accent); }
+.ivalue.none { color: var(--muted); font-style: italic; }
+.btn.xs { padding: 2px 6px; font-size: 10px; }
+.hintline { margin-top: 6px; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.hintline b { color: var(--text); font-weight: 600; }

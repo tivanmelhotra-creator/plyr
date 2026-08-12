@@ -6623,3 +6623,156 @@ body.route-fullbleed .fe-mm-restore {
 [dir="rtl"] .rc-flag-raw,
 [dir="rtl"] .rc-profile-name,
 [dir="rtl"] .rc-profile-val { direction: ltr; text-align: right; }
+
+/* ============================================
+   Dual Browser Mode switch (shell header)
+   ============================================
+   Remote / Local browser selector. Docked in the shell topbar next to the
+   language and theme buttons, because the mode applies to the whole product
+   (editor, jobs, live view) and not to any one screen.
+
+   Geometry follows `.launcher` deliberately: same 6px offset under the button,
+   same panel radius, border and shadow. Two header popovers that open the same
+   way are one learned behaviour; two that differ are two. */
+.bmode { position: relative; display: flex; align-items: center; }
+.bmode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.bmode-btn:hover { border-color: var(--border-strong); background: var(--bg-elev); }
+.bmode-btn[aria-expanded="true"] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+/* Latin mode names ("Remote Browser") must not be reordered inside an RTL
+   header, and the label is a proper noun either way. */
+.bmode-label { white-space: nowrap; }
+
+/* The dot answers "is this mode actually working?", which for Local means "is
+   an agent attached right now?" -- not merely "is the setting on". */
+.bmode-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-faint);
+}
+.bmode-dot.is-live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.bmode-dot.is-down { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+.bmode-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  inset-inline-end: 0;
+  z-index: 60;
+  width: 300px;
+  padding: 10px;
+  background: #111318;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+}
+.bmode-menu[hidden] { display: none; }
+.bmode-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 2px 4px 8px;
+}
+.bmode-opts { display: flex; flex-direction: column; gap: 4px; }
+
+/* Radio rows, matching the spec's "○ Remote Browser / ○ Local Browser". */
+.bmode-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.bmode-opt:hover:not(:disabled) { background: var(--bg-elev-2); }
+.bmode-opt.is-on { background: var(--primary-soft); border-color: var(--primary); }
+/* A mode that cannot be entered is dimmed but still READABLE: it is the option
+   the user most wants to understand, so hiding it would remove the explanation
+   along with the control. */
+.bmode-opt:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bmode-radio {
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  flex: 0 0 auto;
+  border: 2px solid var(--text-faint);
+  border-radius: 50%;
+  position: relative;
+}
+.bmode-opt.is-on .bmode-radio { border-color: var(--primary); }
+.bmode-opt.is-on .bmode-radio::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+.bmode-opttext { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.bmode-optname { font-size: 13px; font-weight: 600; }
+.bmode-opthint { font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
+
+.bmode-badge {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.bmode-badge.is-live { background: var(--success-soft); color: var(--success); }
+.bmode-badge.is-down { background: var(--danger-soft); color: var(--danger); }
+
+.bmode-note {
+  margin: 8px 4px 0;
+  padding: 7px 9px;
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.bmode-note[hidden], .bmode-agent[hidden] { display: none; }
+
+/* The agent command. Monospace and LTR even in RTL: it is a shell command, and
+   a bidi-reordered command line is a command that does not run. */
+.bmode-agent {
+  margin: 6px 4px 2px;
+  padding: 7px 9px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  word-break: break-all;
+}
+[dir="rtl"] .bmode-agent { direction: ltr; text-align: left; }

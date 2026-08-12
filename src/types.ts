@@ -118,6 +118,18 @@ export interface AutomationContext {
   headless: boolean;
   stepOutputs: StepOutput[];
   browserContext?: BrowserContext;
+  // Which browser this run is driving: the one on the server ('remote') or the
+  // user's own ('local'). Informational for the log and the UI — the nodes stay
+  // mode-agnostic because BrowserAdapter hands both back as a BrowserContext.
+  browserMode?: 'remote' | 'local';
+  // TRUE when browserContext belongs to the USER, not to us.
+  //
+  // This one flag guards against the most damaging regression this feature could
+  // introduce. Every cleanup path below closes browserContext when a run ends; in
+  // local mode that IS the user's own Chrome, with their tabs and their work open
+  // in it. A finished automation quietly closing someone's browser is not a bug
+  // they would forgive, so every close site checks this first.
+  browserShared?: boolean;
   page?: Page;
   data: Record<string, unknown>;
   userPlan: PlanConfig;

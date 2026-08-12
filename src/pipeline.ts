@@ -17,6 +17,11 @@ import {
 import { isTriggerAction } from './core/TriggerEngine';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
+// Dual browser mode. Only these two lines and ensureLocalContext below know
+// that local mode exists; every node action stays identical in both modes,
+// because both end up as an ordinary Playwright BrowserContext.
+import { browserModes } from './core/BrowserMode';
+import { acquireContext } from './core/BrowserAdapter';
 import { withUtf8Locale } from './core/BrowserProfile';
 import {
   emptyStream,
@@ -676,6 +681,45 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════════
+// LOCAL BROWSER SETUP (the user's own Chrome, through the tunnel)
+// ════════════════════════════════════════════════════════════════
+//
+// Note what this function does NOT do: it does not register the context with
+// profileManager, and it does not configure resource blocking or the popup
+// flattener. Those exist to manage contexts WE own and pay for. This context is
+// the user's own window — blocking its images or rewriting window.open would be
+// this server reaching into a browser it was only lent.
+//
+// It also marks the context shared, which is what stops every cleanup path in
+// this file from closing the user's browser when the run ends.
+async function ensureLocalContext(context: AutomationContext): Promise<void> {
+  const { userId, log } = context;
+
+  if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
+
+  log('[BROWSER] Attaching to your local browser...');
+
+  const acquired = await acquireContext(userId);
+
+  // acquireContext falls back to remote on failure, so a 'local' request can
+  // legitimately come back remote. Trust what it returns rather than what was
+  // asked for: the alternative is a run that logs 'local' while using the server.
+  context.browserContext = acquired.context;
+  context.browserMode = acquired.mode;
+  context.browserShared = acquired.shared;
+
+  if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
+
+  // Adopt a tab the user already has open rather than opening one. Someone
+  // watching their own browser should not see it sprout blank windows, and the
+  // page they left open is usually the one they want automated.
+  const pages = acquired.context.pages();
+  context.page = pages.length ? pages[0]! : await acquired.context.newPage();
+
+  log(`[BROWSER] Attached to ${acquired.detail}`);
+}
+
+// ════════════════════════════════════════════════════════════════
 // FREE BROWSER SETUP
 // ════════════════════════════════════════════════════════════════
 
@@ -858,7 +902,13 @@ export async function runPipeline(params: {
   const isVip = isVipUser(userPlan);
 
   try {
-    if (isVip) {
+    // Local mode is checked FIRST and independently of the plan: it is a choice
+    // about which machine renders, not a tier. A user's own browser costs this
+    // server nothing, so gating it behind VIP would be charging for the cheaper
+    // option.
+    if (browserModes.modeOf(userId) === 'local') {
+      await ensureLocalContext(context);
+    } else if (isVip) {
       await ensureVipBrowser(context);
     } else {
       await ensureFreeContext(context);
@@ -2378,7 +2428,9 @@ export async function runPipeline(params: {
 
           if (!context.browserContext || !isPageValid(context.page, context)) {
             log('[BROWSER] Launch requested — opening a fresh context');
-            if (isVip) {
+            if (browserModes.modeOf(userId) === 'local') {
+              await ensureLocalContext(context);
+            } else if (isVip) {
               await ensureVipBrowser(context);
             } else {
               await ensureFreeContext(context);
@@ -2458,7 +2510,14 @@ export async function runPipeline(params: {
         if (step.action === 'close-browser' || step.action === 'close_browser' || step.action === 'close') {
           log('[BROWSER] Manual close requested');
 
-          if (context.browserContext) {
+          // In LOCAL mode 'close' means DETACH; it does not close anything.
+          // The tabs in that window belong to the user — half of them are
+          // probably unrelated to this workflow. A node named 'Close Browser'
+          // wiping out someone's open work is the single worst thing this
+          // feature could do, so the shared case never touches the browser.
+          if (context.browserShared) {
+            log('[BROWSER] Close requested — detaching from your local browser (it stays open)');
+          } else if (context.browserContext) {
             try {
               const pages = context.browserContext.pages();
               for (const p of pages) {
@@ -2470,7 +2529,9 @@ export async function runPipeline(params: {
             }
           }
 
-          if (isVip) {
+          if (context.browserShared) {
+            // Nothing to un-register with a pool: the browser was never ours.
+          } else if (isVip) {
             profileManager.removeVipContext(userId);
           } else {
             profileManager.removeFreeContext(jobId);
@@ -3031,7 +3092,9 @@ export async function runPipeline(params: {
     }
 
     if (context.browserContext) {
-      if (!isVip) {
+      // 'browserShared' is local mode (the user's own browser) — never ours to
+      // close. A finished run must leave their tabs exactly as it found them.
+      if (!isVip && !context.browserShared) {
         try {
           await context.browserContext.close();
         } catch (err: any) {
@@ -3071,7 +3134,9 @@ export async function runPipeline(params: {
     await savePartialOutputs(userId, jobId, stepOutputs, log).catch(() => { });
 
     if (context.browserContext) {
-      if (!isVip) {
+      // Same rule on the failure path, and it matters MORE here: a run that
+      // errored must not also take the user's browser down with it.
+      if (!isVip && !context.browserShared) {
         try {
           await context.browserContext.close();
         } catch { }

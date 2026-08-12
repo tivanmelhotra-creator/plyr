@@ -525,10 +525,28 @@
   // selector field passes one). It is not invoked: selecting an element by
   // clicking our canvas is exactly the mechanism being retired, and calling it
   // back with a fabricated selector would be worse than not calling it.
+  //
+  // WHERE THE SELECTOR COMES FROM NOW: THE INSPECTOR EXTENSION
+  // ---------------------------------------------------------
+  // Retiring the canvas left this button opening a browser and then saying
+  // nothing, so a user could press the crosshair and have no idea what to do
+  // next. The replacement mechanism is the Element Inspector extension, which
+  // reads the REAL DOM in that window and posts the result back to the node this
+  // tab has claimed (public/js/inspector-client.js, extension/content/
+  // inspector.js). That is strictly better than the canvas ever was: real
+  // selectors off the real page instead of coordinates guessed from a video.
+  //
+  // So the crosshair still opens the browser, and now also TELLS the user what
+  // to do there. The hint is not decoration -- it is the only place the
+  // Ctrl+Shift+C affordance is discoverable from inside the editor. It is worded
+  // from LIVE state (is a node claimed? is the client loaded?) rather than
+  // hardcoded, because a hint that says "pick an element" when nothing is
+  // waiting for one would walk the user straight into a refusal.
   // ══════════════════════════════════════════════════════════════════════
 
   function requestPick(onPicked, opts) {
     var o = opts || {};
+    inspectorHint();
     // Called from the crosshair's click handler, so window.open() here is still
     // inside the user gesture and survives the popup blocker.
     //
@@ -541,6 +559,35 @@
     // page-level error reporting. Swallow it HERE, not in openRealBrowser.
     openRealBrowser(typeof o.url === 'string' ? o.url : '')
       .catch(function () { /* already surfaced as a toast */ });
+  }
+
+  /**
+   * Tell the user how to finish the pick they just started.
+   *
+   * Reads live Inspector state so the message is true at the moment it is shown:
+   *   - no client loaded -> name the extension, which is the mechanism
+   *   - no node claimed  -> say to open a node first, because the server refuses
+   *                         a submission with `no_active_node` and the pick would
+   *                         be lost
+   *   - node claimed     -> NAME it, so "did it go to the right node?" is
+   *                         answered before the user has to wonder
+   */
+  function inspectorHint() {
+    var ic = window.InspectorClient;
+    if (!ic || typeof ic.state !== 'function') {
+      toast(t('pick.needExtension'), 'info');
+      return;
+    }
+    var snap = {};
+    try { snap = ic.state() || {}; } catch (e) {}
+    var node = snap.activeNode;
+    if (!node || !node.nodeId) {
+      toast(t('pick.needNode'), 'info');
+      return;
+    }
+    // tf(), not concatenation: fa and en do not share word order here (see the
+    // note on tf() above), so the node name is substituted INTO the sentence.
+    toast(tf('pick.armed', { node: node.label || node.action || node.nodeId }), 'info');
   }
 
   var pickState = null;          // { ws, overlay, onPicked, ... }

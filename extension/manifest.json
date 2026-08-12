@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Automation Backend Helper",
   "version": "1.0.0",
-  "description": "Element Picker + action recorder for automation-backend. Pick selectors and record click/type/navigation, then send them as a Flow to your backend.",
+  "description": "Element Inspector + action recorder for automation-backend. Inspect any element (Ctrl+Shift+C), pick the attributes you want, and send them straight into the node you are editing — in both Remote and Local browser mode.",
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
@@ -15,11 +15,22 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["content/selector.js", "content/recorder.js"],
+      "js": [
+        "lib/ab-inspect.js",
+        "content/selector.js",
+        "content/inspector.js",
+        "content/recorder.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
+  "commands": {
+    "toggle-inspector": {
+      "suggested_key": { "default": "Ctrl+Shift+C", "mac": "Command+Shift+C" },
+      "description": "Inspect an element and send it to the active node"
+    }
+  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
