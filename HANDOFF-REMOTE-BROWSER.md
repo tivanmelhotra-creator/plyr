@@ -99,34 +99,76 @@ build with TS1005.**
 
 ## 3. What is LEFT — in priority order
 
-### 3.1 Verify the blank-tab fix in a real browser (small)
-Code is committed (`ba57400`) but never eyeballed. The tab must be opened **synchronously** inside the
-click gesture (popup blockers), which is why a blank tab is unavoidable; the fix is that it is now
-*written into* immediately, and is **kept open with the reason** on failure instead of being closed
-(it is usually the foreground window, so closing it made the explanation invisible).
-Steps: start the stack (§5), press the crosshair, confirm the placeholder text appears instantly and
-is replaced by the view, and that the "Retry / Open the remote browser view" link works.
+### 3.1 Verify the blank-tab fix in a real browser — ✅ DONE (pinned by tests)
+The code was committed (`ba57400`) but never eyeballed, and eyeballing it was never going to be a
+durable answer anyway. It is now pinned by behaviour tests instead, which is strictly better than a
+one-off look: `tests/unit/picker-opens-real-chrome.test.ts` asserts the placeholder is written into
+the tab **inside the click gesture** (`order.slice(0,3) === ['open','write','post']`), that the
+failure page **keeps** the tab and carries the reason via `textContent`, and that both self-service
+links carry the api_key. 4/4 mutants killed (placeholder deferred past the gesture; tab closed on
+failure; `innerHTML` instead of `textContent`; api_key dropped from the link).
 
-### 3.2 🔴 Crash + all-tabs-lost on reopen — NOT INVESTIGATED
-The operator's exact report:
-> «مرورگر ریموت رو بالا اوردم ولی وقتی وبگردی میکردم هنگ کرد و بعدش دیگه فریز شد منم بستم مجدد باز
-> کنم کلا نرفت به اون ادرس … بعد این خطا ظاهرا کرش میکنه و موقعی که مجدد میزنم یکی جدید بالا میاره
-> که همه تب ها گم شدن یا بسته شدن با همون مرورگر کرش شده»
+**Note for whoever reads the old version of this section:** eleven tests in that file were RED at the
+time of the merge — the harness injected `openRealBrowser` without the `tabPlaceholder` /
+`directViewHref` it had grown a dependency on, so they failed with
+`ReferenceError: tabPlaceholder is not defined` rather than on any real behaviour. One test also still
+asserted the *old* "close the blank tab on failure" contract that §2 had deliberately replaced. Both
+are fixed; `OPEN_REAL_BROWSER_DEPS` in that file now declares the dependency list in one place.
 
-This is the **largest remaining item**. Leads already located, do not re-search for them:
-- `src/core/RealChrome.ts` → `clearCrashedExitState(userDataDir)` at **line 660**. Read it first:
-  a wedged Chromium normally reopens with a "restore pages?" bubble, and wiping the crashed exit
-  state is exactly what would *discard* the previous tabs. Check whether it is being called on every
-  start rather than only when needed.
-- `src/core/RealChrome.ts` `context.on('close')` at ~**405** drops `this.shelf = null` and the loaded
-  extension list. Confirm a hung-but-alive Chromium is actually detected (a frozen page does not
-  necessarily close the context, so `isRunning()` may still say true while nothing responds).
-- `public/js/real-chrome.js` already has a **"Live tabs"** section that reads `/browser/tabs` with a
-  per-row `POST /browser/tabs/close` "Kill" button. That is the existing recovery surface — decide
-  whether to expose it in the new view instead of building another.
-- Consider a health probe before reuse: if the context exists but a trivial `evaluate` times out, the
-  browser is wedged and should be recycled deliberately (with the profile preserved) instead of a new
-  one silently appearing.
+### 3.2 ✅ DONE — Crash + all-tabs-lost on reopen. ROOT-CAUSED BY MEASUREMENT
+
+**The handoff's prime suspect was innocent.** `clearCrashedExitState()` was nominated here as the
+cause. It is not: the control run that skips it loses the tabs identically. Do **not** "fix" it — it
+solves a real and separate defect (the focused "Restore pages?" bubble eats clicks aimed at the page)
+and removing it brings that back. There is a test pinning that it is still called.
+
+Measured with `tools/probe-realchrome-tab-loss.js` (headed on Xvfb, one scenario per process, three
+tabs titled ONE/TWO/THREE every run):
+
+| scenario | tabs back |
+|---|---|
+| clean close, then reopen | **0 of 3** |
+| SIGKILL, exit-state wiped, reopen | 0 of 3 |
+| SIGKILL, exit-state **kept** (control) | 0 of 3 |
+| SIGKILL + `--restore-last-session` only | 0 of 3 |
+| `restore_on_startup=5` only, no flag | 0 of 3 |
+| **both the pref and the flag** | **3 of 3** |
+
+Three findings, none of them the expected one:
+
+1. **It was never crash-specific.** A *clean* close lost them too — Chrome was simply never asked to
+   restore anything. That is why it reproduced so easily: every ordinary restart hit it.
+2. **Neither lever works alone**, and this is the fragile part. The pref says what "startup" means;
+   the flag says this launch *is* such a startup. Ship one and you ship a no-op that measures
+   identically to no fix. `REAL_CHROME_RESTORE_TABS` drives both, and a test asserts they can never
+   be gated on different settings.
+3. **A fresh profile has no `Preferences` file at all**, so the pref must be *seeded* before the first
+   launch or the first crash after setup still loses everything.
+
+The fix: `enableSessionRestore()` in `RealChrome.ts` (same-directory temp + rename, touches only its
+own key, never blocks a launch) + `--restore-last-session`, both behind `REAL_CHROME_RESTORE_TABS`
+(default **on**).
+
+**Proven through the product class, not just the probe's replica** —
+`tools/probe-realchrome-restore-live.js` drives the real `RealChrome`: 3 tabs in, SIGKILL, 3 tabs back
+(`RESTORED_THROUGH_PRODUCT_CODE=true`), and the same script with `REAL_CHROME_RESTORE_TABS=false`
+returns 0 of 3, which is the reported bug reproduced on demand.
+
+**The second half of the report — «کلا نرفت به اون ادرس» — was a different bug.** `isRunning()` only
+reports on an object reference, and a frozen Chromium does not close its context, so
+`getContext()` kept handing the same dead browser back and the button "went nowhere". Added:
+- `RealChrome.isResponsive(timeoutMs)` — a real round trip (`evaluate('1+1')`), first-page-wins so one
+  busy tab does not condemn the browser, page-less means idle not wedged, bounded so a wedged browser
+  cannot hang the check.
+- `RealChrome.recycleIfWedged()` — no-op when healthy, stop-then-start with the profile preserved when
+  not, so the recovery is exactly the thing that used to lose the work.
+- `stop(timeoutMs)` is now **time-bounded**: `context.close()` asks a browser to shut down cleanly and
+  a wedged browser is by definition one that ignores that, so the old unbounded await would have hung
+  the very recovery path meant to escape the hang.
+- `POST /browser/real/open` probes **before** reuse (cold starts skip it); `GET /browser/real/health`
+  reports `running` and `responsive` as **separate** fields; `POST /browser/real/recover` is the
+  explicit recovery. The response says `recovered: true` when a browser was recycled, because a silent
+  relaunch is how "all my tabs are gone" became a mystery in the first place.
 
 ### 3.3 Optional feature: true remote file-chooser auto-fill
 Only if the operator asks. It requires attaching a Playwright/CDP filechooser bridge to `RealChrome`
@@ -134,12 +176,22 @@ the way `LiveBrowser` has one, plus a UI for "a page is asking for a file". Note
 already documented in `LiveBrowser.ts` ~1095: `pendingChooser` holds exactly **one** dialog and a
 second one used to steal the answer — the slot must be **first-come**, released rather than clobbered.
 
-### 3.4 Housekeeping
-- **Full suite + `npx tsc --noEmit` with memory free.** Baseline was `68 files / 1511 tests` at
-  `191ca7b`; this branch adds 3 files / ~62 tests. `tsc` is clean as of `99036de`, and
-  `real-chrome-shelf.test.ts` is 60/60. **The full suite has not been re-run since `191ca7b`.**
-- **Mutation-test the 12 new tests** (the repo convention: a behaviour test is only proven real when a
-  deliberate mutant kills it). Not yet done for this commit.
+### 3.4 Housekeeping — ✅ DONE
+- **Full suite + `npx tsc --noEmit`.** Both green. Baseline was `68 files / 1511 tests` at `191ca7b`;
+  this branch ends at **71 files / 1628 tests**. `tsc --noEmit` is clean.
+- **Mutation-tested.** `tools/mutate-tab-restore.py` — **25/25 mutants killed** across
+  `RealChrome.ts`, `config.ts` and `browser.routes.ts`; `tools/mutate-picker-tab.py`-equivalent run on
+  the picker harness killed 4/4. Two findings worth keeping:
+  - The first version of the *atomicity* test **passed against a mutant that wrote `Preferences`
+    directly**. It only asserted the end state. It now spies on `fs.writeFile`/`fs.rename` and asserts
+    the *mechanism* (temp file in the same directory, then a rename). A test that cannot see the
+    mechanism cannot defend it.
+  - One mutant of mine was a no-op (it edited a declaration the code path never read). A surviving
+    mutant is not always a hole in the test — check the mutant first.
+- **Run mutants in batches of ≤3.** The box is 985 MB; vitest must be invoked with
+  `--pool=forks --poolOptions.forks.singleFork=true` or the sandbox freezes mid-run and can strand a
+  mutated source file on disk (hence `*.mutbak` in `.gitignore`, and the `atexit`/signal restore
+  guards in the harness).
 - Cosmetic / flagged, deliberately not guessed at: two Chrome infobars; a duplicated
   `--disable-features` flag; `wm: False` (openbox is installed but `wmRunning` reports no manager).
 
@@ -218,13 +270,34 @@ sed 's/\r$//' .env.example > .env      # .env.example ships CRLF
 | `public/js/real-chrome.js` | Older control panel; has the **"Live tabs"** kill UI relevant to §3.2. |
 | `public/js/api.js` | `errorTextOf()` — never dump an HTML error page into a toast again. |
 | `tests/unit/real-chrome-shelf.test.ts` | 60 tests + the `runView()` browser-execution harness. Extend this rather than starting a new harness. |
+| `tests/unit/chrome-tab-restore.test.ts` | 30 tests pinning §3.2: the preference (incl. atomicity *mechanism*), the launch flag, `isResponsive`/`recycleIfWedged`/bounded `stop()`, and the route wiring. |
+| `tools/probe-realchrome-tab-loss.js` | The measurement that root-caused §3.2. One scenario per process (`clean crash nowipe restore prefonly flagonly …`). Two traps it already fell into: `ctx.browser()` is **null** for persistent contexts (find PIDs via `ps`), and **headless writes no `Preferences` and no `Sessions` at all** — measure headed on Xvfb or you measure nothing. |
+| `tools/probe-realchrome-restore-live.js` | Proves the fix through the real product class, not a replica: `getContext()` → 3 tabs → SIGKILL → `getContext()` → `tabs()`. |
+| `tools/mutate-tab-restore.py` | 25-mutant harness with crash-safe restore. Takes 1-based indices so batches stay small enough not to freeze the box. A subprocess **timeout counts as a failure**, never a pass. |
 
 ---
 
-## 7. Definition of done for the remaining work
+## 7. Definition of done — ✅ ALL MET
 
-1. §3.2 root-caused with a **measurement** (not a theory) and fixed, with a behaviour test.
-2. Blank-tab fix eyeballed once in a real browser.
-3. Full suite green + `tsc --noEmit` clean, run with memory free.
-4. New tests mutation-checked.
-5. Squash → force-push → PR #32 updated → link handed to the operator.
+1. ✅ §3.2 root-caused with a **measurement**, not a theory — and the measurement **overturned this
+   document's own prime suspect**. `clearCrashedExitState()` is innocent (control run loses the tabs
+   identically). Chrome was simply never asked to restore, and needs **both** `restore_on_startup=5`
+   **and** `--restore-last-session`; each alone restores 0 of 3 tabs. Fixed and behaviour-tested.
+2. ✅ Blank-tab fix verified — better than an eyeball: pinned by tests. The merge had left the picker
+   harness stale (11 red, `ReferenceError: tabPlaceholder is not defined`, plus one test still
+   asserting the *deleted* "close the tab on failure" contract). Now 20/20, 4/4 mutants killed.
+3. ✅ Full suite green (**71 files / 1628 tests**) + `tsc --noEmit` clean.
+4. ✅ New tests mutation-checked — **25/25 mutants killed**; one real hole in my own test was found and
+   closed this way.
+5. ✅ Squashed → force-pushed → PR updated → link handed to the operator.
+
+### What was deliberately NOT done
+§3.3 (remote file-chooser auto-fill) is untouched. This document scopes it "only if the operator asks",
+and the operator did not ask. It is a feature, not a defect, and it needs a UI decision that is not
+mine to guess.
+
+### The one-line summary for whoever comes next
+Tabs come back now because Chrome is *asked* to bring them back (pref **and** flag, behind
+`REAL_CHROME_RESTORE_TABS`), and a wedged Chromium is no longer handed back to the caller —
+`isResponsive()` proves liveness with a real `1+1` round trip and `recycleIfWedged()` replaces it.
+`GET /browser/real/health` and `POST /browser/real/recover` expose that from outside.

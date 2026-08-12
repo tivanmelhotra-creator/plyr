@@ -47,3 +47,10 @@ dump.rdb
 /core
 /core.*
 downloads/
+
+# Mutation-testing scratch files (tools/mutate-*.py). They are copies of tracked
+# SOURCE, restored in a finally/atexit — but a hard kill can strand one, and it
+# HAS: a frozen sandbox left src/core/RealChrome.ts.mutbak behind mid-run. Left
+# untracked and unignored, the next `git add -A` would commit a stale duplicate
+# of a source file, which is a confusing thing to find later.
+*.mutbak
