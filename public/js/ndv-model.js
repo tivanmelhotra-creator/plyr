@@ -59,18 +59,63 @@
   // already stored (never persisted, never serialised), so the params.groups
   // contract and every saved workflow stay byte-identical.
   var CONDITION_KINDS = [
-    { id: 'element', label: 'cbk.element', hint: 'cbk.elementHint' },
-    { id: 'content', label: 'cbk.content', hint: 'cbk.contentHint' },
-    { id: 'variable', label: 'cbk.variable', hint: 'cbk.variableHint' },
+    { id: 'element', label: 'cbk.element', hint: 'cbk.elementHint', group: 'element' },
+    { id: 'content', label: 'cbk.content', hint: 'cbk.contentHint', group: 'element' },
+    { id: 'variable', label: 'cbk.variable', hint: 'cbk.variableHint', group: 'value' },
+    // Automa's "Code" value type. The snippet lives in `value` — the same field
+    // the variable path uses — because both are "the left-hand value, not read
+    // from a selector", and the engine's readFromCode() reads exactly that.
+    { id: 'code', label: 'cbk.code', hint: 'cbk.codeHint', group: 'value' },
   ];
 
-  /** Which of the runtime's three paths this row will take. Pure derivation. */
+  // Automa's `conditionBuilder.valueTypes` renders its dropdown as two
+  // <optgroup>s — *value* and *element* — and rule R1 makes that the reference.
+  // With a fourth kind the flat list stopped being self-explanatory: `code` and
+  // `variable` share "I already have the value", while `element` and `content`
+  // share "go and read the page". The order IS the dropdown order, and
+  // 'element' must stay first because checkKindOf() falls back to it.
+  var CONDITION_KIND_GROUPS = [
+    { id: 'element', label: 'cvg.element' },
+    { id: 'value', label: 'cvg.value' },
+  ];
+
+  /**
+   * The same kinds bucketed for an <optgroup> dropdown, in
+   * CONDITION_KIND_GROUPS order with empty buckets dropped. Pure: no DOM, no
+   * i18n — the caller translates `group` and each `option.label`.
+   */
+  function groupedCheckKinds() {
+    var out = [];
+    CONDITION_KIND_GROUPS.forEach(function (g) {
+      var inGroup = CONDITION_KINDS.filter(function (k) {
+        return (k.group || 'element') === g.id;
+      });
+      if (inGroup.length) out.push({ group: g.label, options: inGroup });
+    });
+    // Same orphan safety net as groupedOperatorsForKind: a kind added without a
+    // known group must stay reachable rather than vanish from the dropdown.
+    var known = {};
+    out.forEach(function (b) { b.options.forEach(function (k) { known[k.id] = true; }); });
+    var orphans = CONDITION_KINDS.filter(function (k) { return !known[k.id]; });
+    if (orphans.length) out.push({ group: 'cvg.other', options: orphans });
+    return out;
+  }
+
+  /** Which of the runtime's four paths this row will take. Pure derivation. */
   function checkKindOf(row) {
     if (!row) return 'element';
     if (operatorMeta(row.operator).dom) return 'element';
     if (row.source === 'variable') return 'variable';
+    if (row.source === 'code') return 'code';
     return 'content';
   }
+
+  // What a fresh `code` row is seeded with. This is Automa's own editor seed,
+  // and it is not decoration: MEASURED (tools/probe-condition-value-types.js
+  // finding 1) page.evaluate('return true;') throws "Illegal return statement",
+  // so the engine wraps every snippet. Seeding the wrapped-statement form is
+  // how the user learns that `return` is allowed here.
+  var CONDITION_CODE_SEED = 'return true;';
 
   /**
    * Move a row to another kind, keeping every field that still has a meaning
@@ -89,13 +134,26 @@
       next.value = '';
     } else if (kind === 'variable') {
       if (operatorMeta(next.operator).dom) next.operator = 'equals';
+      // Coming FROM code, `value` holds a JS snippet — a nonsense variable
+      // name. Clearing it is the same honesty as clearing a stale selector.
+      if (next.source === 'code') next.value = '';
       next.source = 'variable';
       next.attribute = '';
       next.selector = '';         // never read on this path
+    } else if (kind === 'code') {
+      if (operatorMeta(next.operator).dom) next.operator = 'is_truthy';
+      // …and symmetrically: a variable NAME is not a snippet, so seed instead.
+      if (next.source !== 'code') next.value = CONDITION_CODE_SEED;
+      next.source = 'code';
+      next.attribute = '';
+      next.selector = '';         // the snippet is the left-hand value
     } else {
       if (operatorMeta(next.operator).dom) next.operator = 'equals';
-      if (next.source === 'variable') next.source = 'text';
-      next.value = '';            // only the variable path uses `value`
+      // 'text' is the engine default. Both non-DOM sources that live in `value`
+      // (variable, code) must fall back to it, or a content row would keep a
+      // source whose left-hand value never comes from the selector beside it.
+      if (next.source === 'variable' || next.source === 'code') next.source = 'text';
+      next.value = '';            // only the variable / code paths use `value`
     }
     return next;
   }
@@ -109,11 +167,24 @@
     { id: 'value', label: 'cbs.value', needsAttribute: false },
     { id: 'html', label: 'cbs.html', needsAttribute: false },
     { id: 'variable', label: 'cbs.variable', needsAttribute: false },
+    // Like `variable`, this is not a "part of the element" — it is its own KIND
+    // (CONDITION_KINDS 'code'). It lives in this registry only so that
+    // sourceMeta()/normalizeRow() recognise it instead of silently rewriting a
+    // saved code row back to 'text'.
+    { id: 'code', label: 'cbs.code', needsAttribute: false },
   ];
+
+  // The sources that are really a separate KIND rather than "which part of the
+  // matched element to read". Both take their left-hand value from `value` and
+  // never touch the row's selector, which is exactly why they must not appear
+  // in the content row's "Read" dropdown.
+  var NON_ELEMENT_SOURCES = ['variable', 'code'];
 
   /** The sources offered for the `content` kind (i.e. everything DOM-backed). */
   function contentSources() {
-    return CONDITION_SOURCES.filter(function (s) { return s.id !== 'variable'; });
+    return CONDITION_SOURCES.filter(function (s) {
+      return NON_ELEMENT_SOURCES.indexOf(s.id) < 0;
+    });
   }
 
   // Suggestions for the design's `Attribute name` chevron menu. NOT a closed
@@ -157,6 +228,15 @@
     { id: 'not_exists', label: 'op.not_exists', group: 'dom', dom: true, needsExpected: false },
     { id: 'visible', label: 'op.visible', group: 'dom', dom: true, needsExpected: false },
     { id: 'hidden', label: 'op.hidden', group: 'dom', dom: true, needsExpected: false },
+    // Automa's "Element visible in screen" / "hidden in screen" value types.
+    // NOT duplicates of visible/hidden, and that is MEASURED rather than
+    // assumed (tools/probe-condition-value-types.js finding 5): an element
+    // 4000px below the fold reports isVisible() === true, because Playwright's
+    // "visible" means "has a box and is not visibility:hidden" and says nothing
+    // about where the page is scrolled to. These two answer the different, and
+    // often more useful, question "can the user see it right now?".
+    { id: 'in_screen', label: 'op.in_screen', group: 'dom', dom: true, needsExpected: false },
+    { id: 'not_in_screen', label: 'op.not_in_screen', group: 'dom', dom: true, needsExpected: false },
     { id: 'equals', label: 'op.equals', group: 'basic', dom: false, needsExpected: true },
     // Automa `eqi` / `cni` / `nci`: case-INSENSITIVE twins. Not cosmetic — the
     // most common real comparison is against copy a site may render as
@@ -236,6 +316,16 @@
     row.value = raw.value != null ? String(raw.value) : '';
     row.expected = raw.expected != null ? String(raw.expected) : '';
     row.collapsed = raw.collapsed === true;
+    // `codeContext` is CONDITIONALLY carried, never defaulted. The engine
+    // accepts it only so an imported Automa workflow (which records Background /
+    // Active tab) round-trips instead of losing the field; this product has one
+    // context, so there is deliberately no control for it (rule R3 — a dropdown
+    // whose second entry behaves like the first is a lying control).
+    //
+    // It must NOT join blankRow(): adding a key there would put it on EVERY
+    // serialised row and change params.groups for every already-saved workflow,
+    // which is exactly the byte-identity this model protects.
+    if (raw.codeContext === 'page') row.codeContext = 'page';
     return row;
   }
 
@@ -315,7 +405,13 @@
     var op = operatorMeta(row.operator);
     var chips = [];
     if (row.selector) chips.push({ kind: 'selector', text: row.selector });
-    else if (row.value) chips.push({ kind: 'value', text: row.value });
+    else if (row.source === 'code' && row.value) {
+      // A snippet is multi-line and arbitrarily long, so it cannot be a chip the
+      // way a selector or a variable name can. Collapse it to its first line and
+      // elide the rest: the summary's job is to identify the row at a glance,
+      // and a wall of pasted JavaScript in a one-line header does the opposite.
+      chips.push({ kind: 'code', text: codeChipText(row.value) });
+    } else if (row.value) chips.push({ kind: 'value', text: row.value });
     if (row.source === 'attribute' && row.attribute) {
       chips.push({ kind: 'attribute', text: row.attribute });
     } else if (row.source !== 'text') {
@@ -477,10 +573,14 @@
    * The operators offered for a given check kind.
    *
    * This is what makes the row honest: the `element` kind can ONLY be given the
-   * four operators the engine's DOM branch understands, and the other two kinds
-   * can only be given comparison operators — previously all 19 were listed for
-   * every row, so picking `visible` while "Left source: Element attribute" was
-   * set produced a row whose own controls contradicted each other.
+   * operators the engine's DOM branch understands, and the other three kinds
+   * can only be given comparison operators — previously every operator was
+   * listed for every row, so picking `visible` while "Left source: Element
+   * attribute" was set produced a row whose own controls contradicted each
+   * other.
+   *
+   * Note this is deliberately keyed on `dom`, not on a hard-coded kind list, so
+   * adding a value type (as `code` was) needs no change here.
    */
   function operatorsForKind(kind) {
     var wantDom = kind === 'element';
@@ -509,6 +609,27 @@
     var orphans = ops.filter(function (o) { return !known[o.id]; });
     if (orphans.length) out.push({ group: 'opg.other', options: orphans });
     return out;
+  }
+
+  // How much of a snippet a collapsed row's summary chip shows. Long enough to
+  // tell two conditions apart, short enough that the header stays one line.
+  var CODE_CHIP_MAX = 32;
+
+  /**
+   * One-line, length-capped preview of a code snippet for a summary chip.
+   * Pure string work: no DOM, no escaping (the renderer already escapes text
+   * chips, which is why this must NOT pre-escape or the user would see &lt;).
+   */
+  function codeChipText(raw) {
+    var s = String(raw == null ? '' : raw).trim();
+    var nl = s.search(/[\r\n]/);
+    var firstLine = nl >= 0 ? s.slice(0, nl).trim() : s;
+    var clipped = firstLine.length > CODE_CHIP_MAX
+      ? firstLine.slice(0, CODE_CHIP_MAX).trim() + '…'
+      : firstLine;
+    // A trailing ellipsis for the dropped LINES too, so a 10-line snippet whose
+    // first line is short is not mistaken for the whole condition.
+    return (nl >= 0 && clipped.slice(-1) !== '…') ? clipped + ' …' : clipped;
   }
 
   /**
@@ -685,12 +806,16 @@
     CONDITION_MAX_PATHS_V1: CONDITION_MAX_PATHS_V1,
     CONDITION_MAX_PATHS: CONDITION_MAX_PATHS,
     CONDITION_KINDS: CONDITION_KINDS,
+    CONDITION_KIND_GROUPS: CONDITION_KIND_GROUPS,
+    CONDITION_CODE_SEED: CONDITION_CODE_SEED,
     checkKindOf: checkKindOf,
     applyCheckKind: applyCheckKind,
+    groupedCheckKinds: groupedCheckKinds,
     operatorsForKind: operatorsForKind,
     groupedOperatorsForKind: groupedOperatorsForKind,
     contentSources: contentSources,
     parseListValue: parseListValue,
+    codeChipText: codeChipText,
     operatorMeta: operatorMeta,
     sourceMeta: sourceMeta,
     blankRow: blankRow,

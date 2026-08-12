@@ -4,17 +4,19 @@
 > اگر تازه شروع کرده‌ای، فقط همین فایل را کامل بخوان؛ هر چیز دیگری که لازم شود
 > از داخل همین‌جا آدرس‌دهی شده است.
 >
-> آخرین به‌روزرسانی: **2026-08-02** · برنچ: **`genspark_ai_developer`** · PR: **#20**
+> آخرین به‌روزرسانی: **2026-08-12** · برنچ: **`genspark_ai_developer`** · PR: **#35**
 
 ---
 
 ## 0. سه خط خلاصه / TL;DR
 
-1. دو ماموریت در جلسه‌ی قبل **تمام شد**: «مسیرهای چندگانه‌ی نود شرط» (Mission 7) و
-   «نصب اکستنشن کروم فقط با پیست‌کردن لینک وب‌استور» (Mission 9).
-2. کل تست‌ها سبز است: **44 فایل / 977 تست**، `tsc --noEmit` تمیز.
-3. تنها ماموریت باز، **Mission 5 بخش ۲** است (value typeهای گروه‌بندی‌شده‌ی نود شرط).
-   نقشه‌ی کامل و گام‌به‌گامش در `MISSIONS.md` بخش «۳. Open missions» آمده.
+1. **Mission 5 بخش ۲** (value typeهای گروه‌بندی‌شده‌ی نود شرط) در این جلسه **تمام شد**؛
+   با آن، **هیچ ماموریت بازی باقی نمانده است**. سند کامل:
+   `docs/uiux/19-HANDOFF-condition-value-types.md`.
+2. کل تست‌ها سبز است: **72 فایل / 1700 تست**، `tsc --noEmit` تمیز،
+   `node tools/probe-condition-value-types.js` → **23/23، VERDICT=PASS**.
+3. اگر ماموریت تازه‌ای می‌گیری، اول بخش ۱ (قواعد R1..R5) و بخش ۴ (تله‌های واقعی این
+   سندباکس) را بخوان. جدول وضعیت ماموریت‌ها در `MISSIONS.md` بخش ۲ است.
 
 ---
 
@@ -41,13 +43,21 @@
 
 ```
 branch : genspark_ai_developer
-PR     : https://github.com/jalil-ahmadi2/plyr/pull/20
+PR     : https://github.com/jalil-ahmadi2/plyr/pull/35
 tsc    : ✅ clean
-vitest : ✅ 44 files / 977 tests
+vitest : ✅ 72 files / 1700 tests
+probe  : ✅ node tools/probe-condition-value-types.js → 23/23, VERDICT=PASS
 build  : npm run build → ✅
+open missions : هیچ (Mission 5 بخش ۲ آخرینشان بود)
 ```
 
 ### چه چیزی در این جلسه شیپ شد
+
+**Mission 5 بخش ۲ — value typeهای گروه‌بندی‌شده‌ی نود شرط**
+سند: `docs/uiux/19-HANDOFF-condition-value-types.md` ← **کامل بخوان اگر روی نود شرط کار داری**
+جزئیات و دو تصمیمش در بخش ۳ همین فایل.
+
+### شیپ‌شده‌های جلسات قبل (برای زمینه)
 
 **Mission 7 — نود شرط با چند مسیر اولویت‌دار**
 سند: `docs/uiux/17-HANDOFF-condition-paths.md`
@@ -79,31 +89,58 @@ build  : npm run build → ✅
 
 ---
 
-## 3. تنها ماموریت باز: Mission 5 — بخش ۲
+## 3. ✅ Mission 5 بخش ۲ — انجام شد (هیچ ماموریت بازی نمانده)
 
 **عنوان:** نود شرط باید value typeهای گروه‌بندی‌شده‌ی Automa را داشته باشد.
 
-بخش ۱ (اپراتورهای گروه‌بندی‌شده، هر ۱۶ تای Automa) **انجام شده**.
-بخش ۲ باز است. نقشه‌ی دقیق با شماره‌ی فایل و ترتیب اجرا در
-**`MISSIONS.md` → «## 3. Open missions» → «⬜ Part 2»** آمده. خلاصه‌اش:
+بخش ۱ (اپراتورهای گروه‌بندی‌شده، هر ۱۶ تای Automa) قبلاً انجام شده بود.
+بخش ۲ در این جلسه بسته شد. **سند کامل و مرجع:
+`docs/uiux/19-HANDOFF-condition-value-types.md`** — اگر روی نود شرط کار داری،
+کاملش را بخوان.
 
-| Automa value type | امروز در Aria | کار لازم |
-|---|---|---|
-| Value | `content` kind | ✅ پوشش داده شده |
-| Element text / attribute | `source: 'text'` / `'attribute'` | قابلیت هست، باید به‌عنوان گزینه‌ی درجه‌یک در یک دراپ‌داون گروه‌بندی‌شده دیده شود |
-| Element exists / visible / … | باکت `dom` اپراتورها | تصمیم بگیر که مثل Automa به دراپ‌داون value type منتقل شوند یا نه |
-| **Code** | ✗ | اجرای یک عبارت JS در صفحه + دراپ‌داون Background/Active tab، با seed `return true;` |
-| **Data exists** | نسبی (`is_empty`/`not_empty`) | یک value type صریح روی متغیر/expression |
-| **Element visible/hidden in screen** | ✗ | چک in-viewport (`boundingBox()` ∩ viewport یا `IntersectionObserver`) — با `visible`/`hidden` فرق دارد |
+| Automa value type | نتیجه در Aria |
+|---|---|
+| Value | از قبل پوشش داشت — kind `content` |
+| Element text / attribute | از قبل پوشش داشت — `source: 'text'` / `'attribute'` |
+| Element exists / visible / hidden | در همان باکت **اپراتور** `dom` ماند (تصمیم ۱ پایین) |
+| **Code** | ✅ جدید — `source: 'code'`؛ اسنیپت JS در صفحه اجرا می‌شود و **مقدار برگشتی‌اش** سمت چپ مقایسه است |
+| **Data exists** | ✅ پوشش داده شد، **عمداً بدون کنترل جدید** (تصمیم ۲ پایین) |
+| **Element visible / hidden in screen** | ✅ اپراتورهای جدید `in_screen` / `not_in_screen` با `IntersectionObserver` |
 
-**ترتیب اجرا (بک‌اند را رد نکن — قاعده‌ی R3):**
+**دو تصمیمی که این ماموریت باید می‌گرفت:**
 
-1. `public/js/ndv-model.js` — رجیستری گروه‌بندی‌شده‌ی `CONDITION_VALUE_TYPES`
-2. `src/core/ConditionEngine.ts` — ورودی‌های جدید `ConditionSource` + `SOURCES` + `readFromElement`
-3. `public/js/graph-serialize.js` — round-trip در `buildCondition` / `conditionToGroups` / `CONDITION_ONLY_PARAMS`
-4. `public/js/actions.js` — هر پارامتر جدید را declare کن، وگرنه هنگام save دور ریخته می‌شود
-5. `public/js/i18n.js` — کلیدهای fa + en (برابری‌شان تست دارد)
-6. تست‌ها: model، engine و round-trip
+1. **آیا اپراتورهای `dom` مثل Automa به دراپ‌داون value type منتقل شوند؟ نه.**
+   تفکیک ما این است: `checkKindOf` مسیر اجرا را انتخاب می‌کند و اپراتور نحوه‌ی
+   مقایسه را. انتقالشان یعنی یک انتخاب در دو دراپ‌داون تکرار شود — همان کنترل
+   تکراری که قاعده‌ی R3 برای جلوگیری از آن وجود دارد.
+2. **آیا «Data exists» value type مستقل لازم دارد؟ نه، دو بار موجود است.**
+   `is_truthy`/`is_falsy` و `is_empty`/`not_empty` هر دو همین را جواب می‌دهند و با
+   همه‌ی kindها ترکیب می‌شوند: **`code` → `is_truthy` خودِ «Data exists» است.**
+
+**هرچه ساخته شد، اول اندازه‌گیری شد** — `tools/probe-condition-value-types.js`
+با ۲۳ چک روی کرومیوم واقعی. **۴ تا از ۷ یافته‌اش بی‌صدا شکست می‌خورند** (شاخه‌ی
+اشتباه، نه خطا)، پس پروب کامیت شده و دور ریخته نشده. مهم‌ترین‌ها:
+
+* `page.evaluate('return true;')` **خطا می‌دهد** (*Illegal return statement*) و
+  `return true;` دقیقاً seed خودِ Automa است → `looksLikeStatement()`.
+* `locator.evaluate('<function source>')` رشته را **expression** حساب می‌کند و
+  `undefined` می‌دهد → آبزرور باید **تابع واقعی** پاس داده شود.
+* `in_screen` مترادف `visible` **نیست**: عنصری ۴۰۰۰px پایین‌تر از تای صفحه
+  `isVisible() === true` می‌دهد.
+* اسنیپت بی‌پایان (`while (true) {}`) صفحه را **برای همیشه** قفل می‌کند →
+  race با تایم‌اوت، و تایم‌اوت باید «شرط برقرار نیست» بدهد نه retry.
+* یافته‌ی ۵ **نقشه‌ی خودِ `MISSIONS.md` را باطل کرد**: تست
+  `boundingBox()` ∩ viewport برای عنصری که داخل کانتینر `overflow:hidden` از
+  دید خارج شده، IN-VIEW گزارش می‌کند؛ یک مستطیل نمی‌تواند کلیپ‌شدن توسط
+  اجداد را حساب کند. `IntersectionObserver` درست جواب می‌دهد.
+
+سه تیونبل در `src/config.ts` (+ `.env.example`): `CONDITION_IN_SCREEN_TIMEOUT_MS`،
+`CONDITION_CODE_MAX_LENGTH`، `CONDITION_CODE_TIMEOUT_MS`.
+
+**نکته‌ی مهم برای جلسه‌ی بعد:** «check kind» هرگز **ذخیره نمی‌شود** — از خودِ
+فیلدهای row استنتاج می‌شود (`checkKindOf` / `applyCheckKind`). به همین دلیل
+`params.groups` ورک‌فلوهای ذخیره‌شده **بایت‌به‌بایت** دست‌نخورده ماند. `codeContext`
+هم به همین خاطر عمداً در `blankRow()` نیست.
 
 ---
 

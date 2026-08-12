@@ -278,12 +278,18 @@
         // `groups` it is an internal blob — never a raw text input — and it MUST
         // be declared here or coerceParams() would drop it silently on save.
         { k: 'paths', label: 'cb.paths', type: 'string', internal: true },
-        { k: 'source', label: 'cb.readWhat', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable'] },
+        { k: 'source', label: 'cb.readWhat', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable', 'code'] },
         { k: 'attribute', label: 'cb.attributeName', type: 'string', ph: 'textContent' },
         { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
-        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'equals_i', 'not_equals', 'greater_than', 'greater_equal', 'less_than', 'less_equal', 'contains', 'contains_i', 'not_contains', 'not_contains_i', 'starts_with', 'ends_with', 'matches_regex', 'is_empty', 'not_empty', 'is_true', 'is_false', 'is_truthy', 'is_falsy', 'in_list', 'not_in_list'] },
+        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'in_screen', 'not_in_screen', 'equals', 'equals_i', 'not_equals', 'greater_than', 'greater_equal', 'less_than', 'less_equal', 'contains', 'contains_i', 'not_contains', 'not_contains_i', 'starts_with', 'ends_with', 'matches_regex', 'is_empty', 'not_empty', 'is_true', 'is_false', 'is_truthy', 'is_falsy', 'in_list', 'not_in_list'] },
         { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
         { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
+        // Imported-Automa passthrough only: Automa records Background / Active
+        // tab for a code condition; this product has ONE execution context, so
+        // there is no control for it (rule R3). Declared anyway because
+        // coerceParams() copies only declared keys — without this line an
+        // imported workflow would lose the field the moment it was saved.
+        { k: 'codeContext', label: 'cb.codeContext', type: 'string', internal: true },
       ] },
     { id: 'switch', icon: 'shuffle', cat: 'flow',
       branches: [{ id: 'default', label: 'port.default' }],
@@ -310,12 +316,18 @@
       branches: [{ id: 'body', label: 'port.body' }, { id: 'done', label: 'port.done' }],
       fields: [
         { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
-        { k: 'source', label: 'cb.readWhat', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable'] },
+        { k: 'source', label: 'cb.readWhat', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable', 'code'] },
         { k: 'attribute', label: 'cb.attributeName', type: 'string', ph: 'textContent' },
         { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
-        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'equals', 'equals_i', 'not_equals', 'greater_than', 'greater_equal', 'less_than', 'less_equal', 'contains', 'contains_i', 'not_contains', 'not_contains_i', 'starts_with', 'ends_with', 'matches_regex', 'is_empty', 'not_empty', 'is_true', 'is_false', 'is_truthy', 'is_falsy', 'in_list', 'not_in_list'] },
+        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'in_screen', 'not_in_screen', 'equals', 'equals_i', 'not_equals', 'greater_than', 'greater_equal', 'less_than', 'less_equal', 'contains', 'contains_i', 'not_contains', 'not_contains_i', 'starts_with', 'ends_with', 'matches_regex', 'is_empty', 'not_empty', 'is_true', 'is_false', 'is_truthy', 'is_falsy', 'in_list', 'not_in_list'] },
         { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
         { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
+        // Imported-Automa passthrough only: Automa records Background / Active
+        // tab for a code condition; this product has ONE execution context, so
+        // there is no control for it (rule R3). Declared anyway because
+        // coerceParams() copies only declared keys — without this line an
+        // imported workflow would lose the field the moment it was saved.
+        { k: 'codeContext', label: 'cb.codeContext', type: 'string', internal: true },
         { k: 'maxIterations', label: 'p.maxIterations', type: 'number', ph: '100', min: 1 },
       ] },
     { id: 'try', icon: 'shield', cat: 'flow',

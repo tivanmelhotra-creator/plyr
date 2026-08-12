@@ -2519,6 +2519,29 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   border-color: rgba(255, 138, 31, 0.55);
   box-shadow: 0 0 0 3px rgba(255, 138, 31, 0.09);
 }
+/* ---- code editor cell — see NdvUI.codeCell ------------------------------
+   A JS snippet is not a one-line value, so this overrides the fixed control
+   height and the ellipsis behaviour every other .aria-input relies on.
+   `resize: vertical` is kept: codeCell auto-fits to the line count, but a user
+   pasting a long function should still be able to open it up further. */
+.aria-input.aria-code {
+  height: auto;
+  min-height: var(--ndv-ctl-h, 30px);
+  padding: 7px 10px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;          /* matches wrap="off": a snippet scrolls, never re-flows */
+  overflow: auto;
+  resize: vertical;
+  tab-size: 2;
+  /* A code field is always LTR even in the fa (RTL) shell: JavaScript reads
+     left-to-right, and mirroring it would put the semicolons on the wrong side
+     and make an indented block unreadable. */
+  direction: ltr;
+  text-align: left;
+}
+
 /* ---- combobox (free text + chevron menu) — see NdvUI.comboCell ---------- */
 .aria-combo { position: relative; min-width: 0; }
 .aria-combo-input { padding-right: 26px; }
@@ -2998,7 +3021,17 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
 }
 /* Only the left-hand target is lifted to full text colour — the crop shows the
    selector marginally brighter than the operator/value that follow it. */
-.cb-tok.tone-selector, .cb-tok.tone-value { color: var(--text); }
+.cb-tok.tone-selector, .cb-tok.tone-value, .cb-tok.tone-code { color: var(--text); }
+/* A code chip is the row's left-hand target like a selector, so it takes the
+   same brightness — but monospace, because it is a fragment of JavaScript and
+   proportional type makes a snippet hard to recognise at a glance. It is also
+   pinned LTR for the same reason .aria-code is. */
+.cb-tok.tone-code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 11px;
+  direction: ltr;
+  unicode-bidi: isolate;   /* keeps a snippet from re-ordering inside the fa shell */
+}
 .cb-row-acts { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
 .cb-row-acts .aria-iconbtn {
   width: 22px; height: 22px; font-size: 11px;
@@ -3036,6 +3069,15 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
   font-size: 10.5px; color: var(--text-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The code editor is the only cell whose helper must be allowed to WRAP: it
+   explains that {{variables}} work and that a bare expression is fine, which
+   does not fit on one line, and a truncated explanation of a non-obvious
+   capability is the same as not having written it. */
+.cb-code-cell > .aria-cell-help {
+  white-space: normal;
+  line-height: 1.5;
+}
+
 /* Line 2: Operator · Right value */
 .cb-line-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); }
 .cb-line-2:has(> :first-child:last-child) { grid-template-columns: minmax(0, 1fr); }

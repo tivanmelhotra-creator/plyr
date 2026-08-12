@@ -42,7 +42,7 @@ These apply to **every** future change, not just the items below.
 | 2 | Opened node (NDV) must cover 80% of the screen — for every node | ✅ Done |
 | 3 | Outline panel closed by default | ✅ Done |
 | 4 | Menu collapse control at the top + slimmer collapsed rail | ✅ Done |
-| 5 | Condition node option parity with Automa (grouped value types + operators) | 🟡 Part 1 done (operators) · part 2 open (value types) |
+| 5 | Condition node option parity with Automa (grouped value types + operators) | ✅ Done (part 1 operators · part 2 value types) |
 | 6 | Simulated browser must browse for real; eye = element-select mode | ✅ Done |
 | 7 | Condition node with multiple prioritised paths + neutral `next` | ✅ Done |
 | 8 | Standing rule: always cross-check Automa when settling node options | ✅ Done (documented as **R1** above) |
@@ -345,32 +345,73 @@ like Automa's:
   bucketing loses/duplicates nothing and keeps registry order, fa+en label
   parity, real `<optgroup>` in the source, catalog declares every operator).
 
-#### ⬜ Part 2 — grouped **value types** (still open)
+#### ✅ Part 2 — grouped **value types** (done)
 
 Automa's `conditionBuilder.valueTypes` is the second dropdown, grouped *value* /
-*element*. What is left:
+*element*. Where each entry landed:
 
-| Automa value type | Aria today | Work needed |
-|-------------------|-----------|-------------|
-| Value | `content` kind | already covered |
-| Element text / attribute value | `source: 'text'` / `'attribute'` | capability exists; must appear as first-class entries in one grouped value-type dropdown |
-| Element exists / not exists / visible / hidden | `exists` / `not_exists` / `visible` / `hidden` | covered by the `dom` operator bucket; decide whether to *move* them into the value-type dropdown as Automa does |
-| **Code** | ✗ | a JS expression evaluated in the page; Automa adds a **Background / Active tab** execution-context dropdown and seeds the editor with `return true;` |
-| **Data exists** | partially (`is_empty` / `not_empty`) | an explicit "data exists" value type over a variable / expression |
-| **Element visible in screen** / **hidden in screen** | ✗ | in-viewport check (`locator.boundingBox()` ∩ viewport, or an in-page `IntersectionObserver`) — genuinely different from `visible` / `hidden` |
+| Automa value type | Result |
+|-------------------|--------|
+| Value | already covered by the `content` kind |
+| Element text / attribute value | already covered by `source: 'text'` / `'attribute'` inside the `content` kind |
+| Element exists / not exists / visible / hidden | kept in the `dom` **operator** bucket — see the decision below |
+| **Code** | ✅ new `source: 'code'`, a JS snippet run in the page; its RETURN VALUE is the left-hand value |
+| **Data exists** | ✅ covered, deliberately without a new control — see the decision below |
+| **Element visible in screen** / **hidden in screen** | ✅ new `in_screen` / `not_in_screen` operators, via an in-page `IntersectionObserver` |
 
-**Implementation order for part 2 (do not skip the backend):**
+Full write-up: `docs/uiux/19-HANDOFF-condition-value-types.md`.
 
-1. `public/js/ndv-model.js` — a grouped `CONDITION_VALUE_TYPES` registry beside
-   the operator one; keep `checkKindOf` / `applyCheckKind` honest (they are
-   *better* than Automa: they hide the fields the runtime would throw away).
-2. `src/core/ConditionEngine.ts` — new `ConditionSource` entries (L31) +
-   `SOURCES` (L56) + `readFromElement` (L209+), and the viewport / code paths.
-3. `public/js/graph-serialize.js` — `buildCondition` / `conditionToGroups` /
-   `CONDITION_ONLY_PARAMS` round-trip for every new field.
-4. `public/js/actions.js` — declare every new param (else it is dropped on save).
-5. `public/js/i18n.js` — fa + en keys (parity is asserted by tests).
-6. Tests — model, engine and round-trip.
+**Two decisions this mission was told to make, and the answers:**
+
+*Do the DOM operators move into the value-type dropdown, as Automa does?* **No.**
+Automa expresses "Element exists" as a *value type* and then has nothing to
+compare, so its operator dropdown goes unused for those rows. Our split is
+`checkKindOf` (which runtime path) × operator (how to compare), which is why an
+`element` row shows two fields instead of five. Moving them would mean the same
+choice appears in two dropdowns — the duplicate control problem rule R3 exists
+to prevent. `in_screen`/`not_in_screen` therefore joined the `dom` **operator**
+bucket, and an `element` row still collapses to a single `<optgroup>`.
+
+*Does "Data exists" need its own value type?* **No — it already exists twice
+over.** `is_truthy`/`is_falsy` (JS truthiness) and `is_empty`/`not_empty`
+(trimmed emptiness) both answer it, and they compose with every kind including
+the new `code` one: `code → is_truthy` IS Automa's "Data exists". A third
+spelling of the same test would be a control the user has to distinguish from
+two others that behave identically.
+
+**Everything below was MEASURED before it was built** —
+`tools/probe-condition-value-types.js`, 23 checks, run against a real Chromium.
+Four of the seven findings fail *silently* (a wrong branch, not an error), which
+is why the probe is committed rather than thrown away:
+
+1. `page.evaluate('return true;')` **throws** *Illegal return statement* — and
+   `return true;` is exactly Automa's editor seed. Every snippet must be wrapped.
+2. No single wrapper works: a statement body yields `undefined` for an
+   expression-only snippet, an expression body throws on a statement. Hence
+   `looksLikeStatement()`.
+3. A strict `script-src 'self'` CSP does **not** block `page.evaluate` —
+   Playwright injects through the debugger, not a `<script>` tag.
+4. `locator.evaluate('<function source>')` evaluates the string as an
+   *expression*, so it yields the function object and returns `undefined`
+   instead of calling it. The observer must be passed as a **real function**.
+5. `in_screen` is **not** a synonym for `visible`: an element 4000px below the
+   fold reports `isVisible() === true`.
+6. The observer promise needs a timeout backstop — it never fires for a detached
+   element (it settles in ~71 ms when it does fire).
+7. A runaway snippet (`while (true) {}`) wedges the page **permanently**: a later
+   `evaluate('1+1')` never returns either. So the call is raced, and a timeout
+   must report an unmet condition rather than retry a page that is already lost.
+
+Finding 5 also **overturned this document's own plan**: the suggested
+`locator.boundingBox()` ∩ viewport test reports IN-VIEW for an element scrolled
+out of sight inside an `overflow:hidden` container, because a single rect cannot
+account for ancestor clipping. `IntersectionObserver` gets it right.
+
+Shipped across: `src/core/ConditionEngine.ts`, `src/config.ts` + `.env.example`
+(3 tunables), `public/js/ndv-model.js` (4th kind + `CONDITION_KIND_GROUPS`),
+`ndv-nodes.js`, `ndv-ui.js` (`codeCell`), `graph-serialize.js` (`codeContext`
+round-trip), `actions.js` (`if` **and** `while`), `i18n.js` (11 keys × 2
+languages), `styles.css`. Tests: +14 engine, +9 model (suite 1677 → 1700).
 
 ---
 
@@ -400,11 +441,12 @@ Every shot must report `errors: none`.
 | `node --check` (touched client files) | ✅ clean |
 | `tests/unit/element-picker.test.ts` | ✅ 38/38 |
 | `tests/unit/editor-shell.test.ts` | ✅ 67/67 |
-| `tests/unit/condition-engine.test.ts` | ✅ 38/38 |
-| `tests/unit/ndv-designed-nodes.test.ts` | ✅ 30/30 |
+| `tests/unit/condition-engine.test.ts` | ✅ 52/52 |
+| `tests/unit/ndv-designed-nodes.test.ts` | ✅ 39/39 |
 | `tests/unit/condition-paths.test.ts` | ✅ 29/29 |
 | `tests/unit/webstore-install.test.ts` | ✅ 28/28 |
-| full `npx vitest run` | ✅ **44 files / 977 tests** |
+| full `npx vitest run` | ✅ **72 files / 1700 tests** |
+| `node tools/probe-condition-value-types.js` | ✅ **23/23 checks, VERDICT=PASS** |
 | `node tools/ui-shot.js` (3 shots) | ✅ `errors: none` |
 | line endings | ✅ `public/**` LF, `src/**` CRLF preserved |
 | Git | branch `genspark_ai_developer`, PR **#20** open against `main` |

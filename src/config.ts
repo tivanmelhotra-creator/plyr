@@ -427,6 +427,23 @@ export const config = {
   MAX_TOTAL_EXECUTION_OPS: parseInt(cleanEnv(process.env.MAX_TOTAL_EXECUTION_OPS) || '5000', 10),
   MAX_REQUEST_BODY_SIZE: cleanEnv(process.env.MAX_REQUEST_BODY_SIZE) || '20mb',
   MAX_REGEX_LENGTH: parseInt(cleanEnv(process.env.MAX_REGEX_LENGTH) || '100', 10),
+
+  // ---- Condition node value types (Mission 5 Part 2) ----
+  // How long the in-viewport check waits for IntersectionObserver to fire.
+  // MEASURED (tools/probe-condition-value-types.js finding 6): the observer
+  // settles in ~80ms, but it NEVER fires for a detached element, so the
+  // promise needs a backstop or the whole run hangs on one bad selector.
+  CONDITION_IN_SCREEN_TIMEOUT_MS: parseInt(cleanEnv(process.env.CONDITION_IN_SCREEN_TIMEOUT_MS) || '1000', 10),
+  // Upper bound on a JavaScript condition snippet, mirroring the
+  // MAX_REGEX_LENGTH precedent: a value this large is a paste accident or an
+  // injection attempt, not a condition someone wrote by hand.
+  CONDITION_CODE_MAX_LENGTH: parseInt(cleanEnv(process.env.CONDITION_CODE_MAX_LENGTH) || '5000', 10),
+  // Budget for a JavaScript condition snippet.
+  // MEASURED (finding 7): a runaway snippet such as `while (true) {}` wedges
+  // the page PERMANENTLY -- a later evaluate('1+1') never returns either. This
+  // race is the only escape, so the value must stay well under the step
+  // timeout to leave room for the engine to report the unmet condition.
+  CONDITION_CODE_TIMEOUT_MS: parseInt(cleanEnv(process.env.CONDITION_CODE_TIMEOUT_MS) || '5000', 10),
   USE_LUA_QUOTA: cleanEnv(process.env.USE_LUA_QUOTA) !== 'false',
 
   // ============================================
