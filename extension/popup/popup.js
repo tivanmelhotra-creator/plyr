@@ -24,6 +24,9 @@
     baseUrl: $('baseUrl'), apiKey: $('apiKey'), userId: $('userId'),
     saveCfg: $('saveCfg'), checkCfg: $('checkCfg'), openPanel: $('openPanel'),
     wflist: $('wflist'), wfCount: $('wfCount'), refreshWf: $('refreshWf'), runHeadful: $('runHeadful'),
+    inspMode: $('inspMode'), inspNode: $('inspNode'), inspSession: $('inspSession'),
+    inspect: $('inspect'), inspRefresh: $('inspRefresh'), inspStatus: $('inspStatus'),
+    modeSwitch: $('modeSwitch'),
     pick: $('pick'), record: $('record'),
     pickedBox: $('pickedBox'), pickedCss: $('pickedCss'), pickedXpath: $('pickedXpath'),
     addClick: $('addClick'), addExtract: $('addExtract'), copyCss: $('copyCss'),
@@ -325,6 +328,126 @@
     }
   }
 
+  /* ============================================================
+     ELEMENT INSPECTOR
+
+     The popup does NOT host the picker UI — an extension popup closes the
+     moment focus leaves it, and the picker's first act is moving the mouse
+     onto the page. The panel therefore lives in the page (content/inspector.js)
+     and the popup's job here is only: report what we are attached to, and arm
+     the picker.
+     ============================================================ */
+
+  var inspectorMode = '';
+  var inspectorModes = [];
+
+  function setInspStatus(text, kind) {
+    els.inspStatus.textContent = text || '';
+    els.inspStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  // Session and mode come from the backend, never from a local guess: the
+  // backend is the only thing that knows which node actually claimed the
+  // session, and a wrong guess here would be shown to the user as fact.
+  async function refreshInspector(quiet) {
+    var res = await bg({ type: 'AB_INSPECTOR_SESSION' });
+
+    if (res && res.sessionId) {
+      els.inspSession.textContent = res.sessionId;
+      els.inspSession.className = 'ivalue mono';
+    }
+
+    if (!res || !res.ok) {
+      var err = (res && res.error) || 'unreachable';
+      els.inspMode.textContent = '—';
+      els.inspMode.className = 'ivalue none';
+      els.inspNode.textContent = '—';
+      els.inspNode.className = 'ivalue none';
+      els.modeSwitch.hidden = true;
+      if (!quiet) {
+        setInspStatus(
+          err === 'no_base_url' ? 'Set the base URL first.'
+            : err === 'no_api_key' ? 'Set the API key first.'
+              : 'Cannot reach the project (' + err + ').',
+          'bad'
+        );
+      }
+      return;
+    }
+
+    var data = res.data || {};
+    inspectorMode = data.mode || '';
+    inspectorModes = data.modes || [];
+
+    els.inspMode.textContent = inspectorMode === 'local'
+      ? 'Local (your machine)'
+      : inspectorMode === 'remote' ? 'Remote (server)' : '—';
+    els.inspMode.className = 'ivalue ' + (inspectorMode || 'none');
+
+    // The switch button offers the OTHER mode, and only when that mode can
+    // actually be entered — offering "Local" with no agent connected would be
+    // offering a button that can only fail.
+    var other = inspectorMode === 'local' ? 'remote' : 'local';
+    var canOther = other === 'remote' || data.localAvailable;
+    els.modeSwitch.hidden = !(inspectorModes.length > 1 && canOther);
+    els.modeSwitch.textContent = other === 'local' ? 'Use Local' : 'Use Remote';
+    els.modeSwitch.dataset.target = other;
+
+    var node = data.activeNode;
+    if (node && node.nodeId) {
+      els.inspNode.textContent = node.label
+        || [node.action, node.nodeId].filter(Boolean).join(' ');
+      els.inspNode.className = 'ivalue';
+    } else {
+      els.inspNode.textContent = 'none — open a node in the project';
+      els.inspNode.className = 'ivalue none';
+    }
+
+    if (!quiet) {
+      if (!node || !node.nodeId) {
+        setInspStatus('No node is waiting. Open a node, then inspect.', 'warn');
+      } else if (data.pending) {
+        setInspStatus(data.pending + ' pick(s) waiting to be applied.', 'warn');
+      } else {
+        setInspStatus('Ready.', 'ok');
+      }
+    }
+  }
+
+  async function startInspector() {
+    setInspStatus('Arming\u2026', '');
+    var res = await bg({ type: 'AB_INSPECTOR_TOGGLE', desired: 'start' });
+    if (!res || !res.ok) {
+      var err = (res && res.error) || 'failed';
+      setInspStatus(
+        err === 'no_active_tab' ? 'No active tab.'
+          : err === 'no_content_script' || err === 'inject_failed'
+            ? 'Cannot inspect this page (browser-internal pages are off limits).'
+            : 'Could not start the inspector (' + err + ').',
+        'bad'
+      );
+      return;
+    }
+    setInspStatus('Hover an element and click it. Esc cancels.', 'ok');
+    // The popup is about to close anyway (focus moves to the page); closing it
+    // ourselves removes the dead window sitting over the page being inspected.
+    window.close();
+  }
+
+  async function switchMode() {
+    var target = els.modeSwitch.dataset.target;
+    if (!target) return;
+    setInspStatus('Switching to ' + target + '\u2026', '');
+    var res = await bg({ type: 'AB_MODE_SET', payload: { mode: target } });
+    if (!res || !res.ok) {
+      setInspStatus((res && res.error) || 'Could not switch mode.', 'bad');
+      await refreshInspector(true);
+      return;
+    }
+    await refreshInspector(true);
+    setInspStatus('Now using ' + (inspectorMode || target) + '.', 'ok');
+  }
+
   // ---- messages from content/background --------------------------------
   chrome.runtime.onMessage.addListener(function (msg) {
     if (!msg || !msg.type) return;
@@ -369,8 +492,14 @@
     setStatus('Cleared.', 'ok');
   });
   els.sendFlow.addEventListener('click', sendFlow);
+  els.inspect.addEventListener('click', startInspector);
+  els.inspRefresh.addEventListener('click', function () { refreshInspector(false); });
+  els.modeSwitch.addEventListener('click', switchMode);
 
   // init
   loadSettings();
   loadSteps();
+  // Quiet on open: an unconfigured extension should show a settings prompt in
+  // the Backend card, not a red inspector error the user cannot yet act on.
+  refreshInspector(true);
 })();

@@ -36,6 +36,10 @@ const JS_ALL = [
   'graph-serialize.js', 'ndv-model.js', 'ndv-ui.js', 'ndv-nodes.js',
   'flow-editor.js', 'live.js', 'live-view.js', 'run-state.js', 'run-panel.js',
   'browser-view.js', 'remote-io.js', 'real-chrome.js', 'views.js', 'app.js',
+  // Element Inspector receiver: takes the extension's picked element and writes
+  // it into the claimed node. Listed here so the emoji + icon-name guards below
+  // cover it too -- it renders toast text, which is user-visible copy.
+  'inspector-client.js',
 ];
 
 /**

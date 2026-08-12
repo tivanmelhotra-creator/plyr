@@ -305,6 +305,41 @@ export const config = {
   DESKTOP_NOVNC_WEB_ROOT: cleanEnv(process.env.DESKTOP_NOVNC_WEB_ROOT) || '',
 
   // ============================================
+  // Dual Browser Mode (remote on the server / local on the user's machine)
+  // ============================================
+  // The server browser is not going anywhere: it is the only thing that can
+  // run a queued job at 3am, and the only thing that works for a user whose
+  // machine is a phone. What it cannot do is feel instant — every mouse move
+  // is a round trip and every repaint is a JPEG crossing the internet.
+  //
+  // Local mode answers that by driving Chrome on the user's own Windows box
+  // through a reverse CDP tunnel (see core/LocalBridge.ts): rendering, mouse
+  // and keyboard stay local and free, and only automation commands travel.
+  // Same Playwright, same nodes — see core/BrowserAdapter.ts.
+
+  // Which mode a user gets before choosing. 'remote' because remote is the
+  // mode with no prerequisites (no agent, no local Chrome, no tunnel), so a
+  // fresh instance greets a new user with something that works.
+  BROWSER_MODE_DEFAULT: (cleanEnv(process.env.BROWSER_MODE_DEFAULT) || 'remote').toLowerCase(),
+
+  // Master switch. An operator who does not want inbound agent tunnels at all
+  // sets this false and the /local-browser/ws upgrade is refused outright —
+  // the mode is then not merely hidden in the UI, it is unreachable.
+  LOCAL_BROWSER_ENABLED: (cleanEnv(process.env.LOCAL_BROWSER_ENABLED)?.toLowerCase() ?? 'true') !== 'false',
+
+  // The debugging port the agent starts the user's Chrome on. Only ever used
+  // to write a useful error message ('start Chrome with --remote-debugging-port
+  // =9222'): the server never dials this port, the tunnel does. 9222 is
+  // Chrome's own default, so the message matches every tutorial the user finds.
+  LOCAL_BROWSER_CDP_PORT: parseInt(cleanEnv(process.env.LOCAL_BROWSER_CDP_PORT) || '9222', 10),
+
+  // How long to wait for connectOverCDP through the tunnel. Higher than a LAN
+  // connect because every byte makes a round trip to the user's machine, but
+  // still finite: a hung connect must fall back to remote, not hang the run.
+  LOCAL_BROWSER_CONNECT_TIMEOUT_MS:
+    parseInt(cleanEnv(process.env.LOCAL_BROWSER_CONNECT_TIMEOUT_MS) || '20000', 10),
+
+  // ============================================
   // Queue Settings
   // ============================================
   MAX_CONCURRENT: parseInt(cleanEnv(process.env.MAX_CONCURRENT) || '20', 10),

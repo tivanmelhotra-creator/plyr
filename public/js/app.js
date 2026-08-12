@@ -38,6 +38,15 @@
     themeToggle: document.getElementById('theme-toggle'),
     logoutBtn: document.getElementById('logout-btn'),
 
+    bmode: document.getElementById('bmode'),
+    bmodeBtn: document.getElementById('bmode-btn'),
+    bmodeDot: document.getElementById('bmode-dot'),
+    bmodeLabel: document.getElementById('bmode-label'),
+    bmodeMenu: document.getElementById('bmode-menu'),
+    bmodeOpts: document.getElementById('bmode-opts'),
+    bmodeNote: document.getElementById('bmode-note'),
+    bmodeAgent: document.getElementById('bmode-agent'),
+
     sysDot: document.getElementById('sys-dot'),
     sysText: document.getElementById('sys-text'),
 
@@ -128,6 +137,13 @@
     el.loginScreen.hidden = true;
     el.app.hidden = false;
     startHealthPolling();
+    // The Element Inspector's listener needs a valid key: both its socket and
+    // its inbox are authenticated, so it starts HERE rather than on page load.
+    // start() is idempotent, so arriving via a remembered key and via a fresh
+    // login both land in the same single connection.
+    if (window.InspectorClient) {
+      try { window.InspectorClient.start(); } catch (e) { /* never block the app */ }
+    }
     handleRoute();
   }
 
@@ -170,6 +186,13 @@
   }
 
   function doLogout() {
+    // Stop the Inspector BEFORE the key is cleared: its socket reconnects with
+    // backoff, and a logged-out page retrying an authenticated upgrade forever
+    // would be a rejected request every few seconds for as long as the tab is
+    // open. Order matters here.
+    if (window.InspectorClient) {
+      try { window.InspectorClient.stop(); } catch (e) {}
+    }
     API.clearKey();
     sessionStorage.removeItem('ab_session_only');
     toast(I18N.t('common.logoutDone'));
@@ -540,6 +563,189 @@
     items[next].focus();
   }
 
+  // ---------------------------------------------
+  // Dual Browser Mode switch (Remote / Local)
+  // ---------------------------------------------
+  // The header control for "which browser runs my automation". It renders from
+  // InspectorClient's live state, so the agent connecting or dying updates it
+  // without a reload -- which matters because whether Local is selectable at all
+  // depends on a socket that can drop at any moment.
+  //
+  // Everything shown here is derived from the SERVER's registry (modes[],
+  // localEnabled, localAvailable). Hardcoding the two options would let the UI
+  // offer a mode the server does not, which is the specific lie that produces a
+  // toolbar reading "Local Browser" while every job runs remotely.
+
+  /** Human label for a mode id, via i18n so fa/en both read correctly. */
+  function modeLabel(mode) {
+    return mode === 'local' ? I18N.t('mode.local') : I18N.t('mode.remote');
+  }
+
+  function bmodeOpen() {
+    return el.bmodeMenu && !el.bmodeMenu.hidden;
+  }
+
+  function closeBmode(focusBtn) {
+    if (!el.bmodeMenu) return;
+    el.bmodeMenu.hidden = true;
+    if (el.bmodeBtn) el.bmodeBtn.setAttribute('aria-expanded', 'false');
+    if (focusBtn && el.bmodeBtn) el.bmodeBtn.focus();
+  }
+
+  function openBmode() {
+    if (!el.bmodeMenu) return;
+    el.bmodeMenu.hidden = false;
+    if (el.bmodeBtn) el.bmodeBtn.setAttribute('aria-expanded', 'true');
+    // Re-read on open: the popover is the one moment the user is actually
+    // looking, so it must not show a cached answer to "is my agent connected?".
+    if (window.InspectorClient) {
+      try { window.InspectorClient.refreshMode(); } catch (e) {}
+    }
+  }
+
+  /**
+   * Paint the whole control from one state snapshot.
+   *
+   * Called on every InspectorClient change, so it must be idempotent and must
+   * never assume the previous contents.
+   */
+  function renderBmode(snap) {
+    if (!el.bmode || !el.bmodeLabel) return;
+    var s = snap || {};
+    var mode = s.mode || 'remote';
+    var modes = (s.modes && s.modes.length) ? s.modes : ['remote'];
+
+    el.bmodeLabel.textContent = modeLabel(mode);
+    el.bmode.setAttribute('data-mode', mode);
+    // The tooltip is set here rather than with a data-i18n-* attribute:
+    // I18N.apply() only handles [data-i18n] and [data-i18n-placeholder], so a
+    // `data-i18n-title` would have looked translated and silently never been.
+    if (el.bmodeBtn) el.bmodeBtn.setAttribute('title', I18N.t('mode.title'));
+    if (el.bmodeDot) {
+      // Local is only "live" when a browser is actually attached. Showing it as
+      // healthy on the strength of the setting alone would hide the one failure
+      // the user must see.
+      var live = mode === 'remote' || s.localAvailable === true;
+      el.bmodeDot.className = 'bmode-dot' + (live ? ' is-live' : ' is-down');
+    }
+
+    if (el.bmodeOpts) {
+      el.bmodeOpts.innerHTML = '';
+      modes.forEach(function (m) {
+        var enterable = m === 'remote' || (s.localEnabled !== false && s.localAvailable === true);
+        var row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'bmode-opt' + (m === mode ? ' is-on' : '');
+        row.setAttribute('role', 'radio');
+        row.setAttribute('aria-checked', m === mode ? 'true' : 'false');
+        // The CURRENT mode is never disabled even when unavailable: a user
+        // stranded in a broken local mode must still see which one they are in.
+        if (!enterable && m !== mode) row.disabled = true;
+
+        var radio = document.createElement('span');
+        radio.className = 'bmode-radio';
+        row.appendChild(radio);
+
+        var text = document.createElement('span');
+        text.className = 'bmode-opttext';
+        var name = document.createElement('span');
+        name.className = 'bmode-optname';
+        name.textContent = modeLabel(m);
+        var hint = document.createElement('span');
+        hint.className = 'bmode-opthint';
+        hint.textContent = m === 'local' ? I18N.t('mode.localHint') : I18N.t('mode.remoteHint');
+        text.appendChild(name);
+        text.appendChild(hint);
+        row.appendChild(text);
+
+        if (m === 'local') {
+          var badge = document.createElement('span');
+          badge.className = 'bmode-badge ' + (s.localAvailable ? 'is-live' : 'is-down');
+          badge.textContent = s.localAvailable
+            ? I18N.t('mode.connected') : I18N.t('mode.notConnected');
+          row.appendChild(badge);
+        }
+
+        row.addEventListener('click', function () { chooseMode(m); });
+        el.bmodeOpts.appendChild(row);
+      });
+    }
+
+    // The named actions the spec asks for ("Switch to Local Browser" / "Switch
+    // to Remote Browser") are the radios above; the note explains a refusal.
+    if (el.bmodeNote) {
+      var note = '';
+      if (s.localEnabled === false) note = I18N.t('mode.localDisabled');
+      else if (mode !== 'local' && s.localAvailable === false) note = I18N.t('mode.localUnavailable');
+      el.bmodeNote.textContent = note;
+      el.bmodeNote.hidden = !note;
+    }
+    if (el.bmodeAgent) {
+      // Only worth showing when local is possible but not connected: it is the
+      // command that fixes exactly that state.
+      var showAgent = s.localEnabled !== false && s.localAvailable !== true;
+      el.bmodeAgent.textContent = showAgent ? I18N.t('mode.agentHint') : '';
+      el.bmodeAgent.hidden = !showAgent;
+    }
+  }
+
+  function chooseMode(mode) {
+    if (!window.InspectorClient) return;
+    var snap = {};
+    try { snap = window.InspectorClient.state() || {}; } catch (e) {}
+    if (snap.mode === mode) { closeBmode(true); return; }
+
+    window.InspectorClient.setMode(mode).then(function (res) {
+      if (res && res.ok) {
+        // Switching must not lose the session or the node being edited, so this
+        // deliberately does NOT reload or re-render the editor: the mode lives
+        // server-side per user, and the adapter picks it up on the next action.
+        toast(I18N.t('mode.switched') + ': ' + modeLabel(res.mode));
+        closeBmode(true);
+        return;
+      }
+      // A refused switch keeps the popover OPEN: the reason and the fix are in
+      // it, and closing would hide the explanation the user needs.
+      var key = res && res.note === 'local_disabled' ? 'mode.localDisabled'
+        : res && res.note === 'local_unavailable' ? 'mode.localUnavailable'
+        : '';
+      toast(key ? I18N.t(key) : ((res && res.error) || I18N.t('mode.localUnavailable')), 'error');
+    });
+  }
+
+  function bindBmode() {
+    if (!el.bmodeBtn || !el.bmodeMenu) return;
+
+    el.bmodeBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (bmodeOpen()) closeBmode(); else openBmode();
+    });
+
+    // Same dismissal model as the launcher, so the two header popovers behave
+    // identically rather than each inventing their own rules.
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && bmodeOpen()) closeBmode(true);
+    });
+    document.addEventListener('click', function (ev) {
+      if (!bmodeOpen()) return;
+      if (el.bmode && el.bmode.contains(ev.target)) return;
+      closeBmode();
+    });
+
+    // Language changes have to repaint: every label in here is translated, and
+    // the control is built in JS so I18N.apply() cannot reach it.
+    document.addEventListener('i18n:change', function () {
+      if (!window.InspectorClient) return;
+      try { renderBmode(window.InspectorClient.state()); } catch (e) {}
+    });
+
+    if (window.InspectorClient && typeof window.InspectorClient.onChange === 'function') {
+      // onChange fires immediately with the current snapshot, so this both
+      // subscribes and performs the first paint.
+      window.InspectorClient.onChange(renderBmode);
+    }
+  }
+
   function bindLauncher() {
     if (!el.launcherBtn || !el.launcherMenu) return;
 
@@ -616,6 +822,7 @@
     el.themeToggle.addEventListener('click', toggleTheme);
     el.menuToggle.addEventListener('click', toggleSidebar);
     bindLauncher();
+    bindBmode();
 
     window.addEventListener('hashchange', handleRoute);
 

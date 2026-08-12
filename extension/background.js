@@ -254,6 +254,174 @@ async function openPanel() {
   });
 }
 
+/* ============================================================
+   ELEMENT INSPECTOR
+
+   The content script cannot POST the pick itself: a fetch from page context is
+   subject to the page's CSP and to CORS against the backend origin. The worker
+   holds host_permissions, so the request belongs here — same reason sendFlow
+   lives here.
+
+   The session id is minted here too, and persisted. It identifies WHICH
+   automation session this extension is attached to, so the backend can refuse a
+   pick aimed at a node that a different session claimed rather than deliver it
+   to the wrong place.
+   ============================================================ */
+
+// One id per extension installation, stable across popup opens and worker
+// restarts (MV3 workers are killed aggressively; an in-memory id would change
+// mid-session and every pick would then look like it came from a stranger).
+async function getSessionId() {
+  return new Promise(function (resolve) {
+    chrome.storage.local.get(['ab_sessionId'], function (s) {
+      var id = s && s.ab_sessionId;
+      if (id) { resolve(id); return; }
+      var fresh = 'ext-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      chrome.storage.local.set({ ab_sessionId: fresh }, function () { resolve(fresh); });
+    });
+  });
+}
+
+// Resolve base + key once for the inspector calls, with the same explicit
+// error keys the popup already knows how to render.
+async function inspectorContext() {
+  var cfg = await getSettings();
+  var base = normalizeBase(cfg.baseUrl);
+  if (!base) return { error: 'no_base_url' };
+  if (!cfg.apiKey) return { error: 'no_api_key' };
+  return { base: base, apiKey: cfg.apiKey, userId: cfg.userId || 'local' };
+}
+
+/**
+ * What is this extension attached to — which mode, which node is waiting?
+ * Asked when the popup opens, so the user can see the answer before picking
+ * rather than discovering it from a failed submit.
+ */
+async function inspectorSession() {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+  var res = await apiFetch(ctx.base + '/inspector/session', { method: 'GET' }, ctx.apiKey);
+  res.sessionId = await getSessionId();
+  return res;
+}
+
+/**
+ * Deliver a confirmed pick. Returns a flat, popup/panel-friendly shape:
+ * on refusal the backend's reason key and sentence are passed through
+ * UNCHANGED, because "no node is waiting" is a fixable problem and a generic
+ * failure message hides the fix.
+ */
+async function submitElement(payload) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+
+  var element = payload && payload.element;
+  var selected = (payload && payload.selected) || [];
+  if (!element) return { ok: false, error: 'no_element' };
+  if (!selected.length) return { ok: false, error: 'empty_selection' };
+
+  var sessionId = await getSessionId();
+  var res = await apiFetch(
+    ctx.base + '/inspector/element',
+    {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: sessionId, element: element, selected: selected })
+    },
+    ctx.apiKey
+  );
+
+  var data = res.data || {};
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'The element could not be delivered.',
+      activeNode: data.activeNode || null
+    };
+  }
+
+  var node = data.activeNode || {};
+  // A confirmation that NAMES the destination ("Click #buy") is what proves the
+  // pick did not silently go somewhere else.
+  var where = node.label || [node.action, node.nodeId].filter(Boolean).join(' ') || '';
+  return { ok: true, node: where, delivery: data.delivery || null, activeNode: node };
+}
+
+/** Read the current browser mode (Remote / Local) for the popup's indicator. */
+async function getBrowserMode() {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+  return apiFetch(ctx.base + '/browser-mode', { method: 'GET' }, ctx.apiKey);
+}
+
+/** Switch mode from the extension. 409 means the backend refused, with a note. */
+async function setBrowserMode(payload) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+  var mode = payload && payload.mode;
+  if (!mode) return { ok: false, error: 'no_mode' };
+
+  var res = await apiFetch(
+    ctx.base + '/browser-mode',
+    { method: 'POST', body: JSON.stringify({ mode: mode }) },
+    ctx.apiKey
+  );
+  var data = res.data || {};
+  if (!res.ok) {
+    return { ok: false, reason: data.note || res.error, error: data.error || 'Could not switch mode.', data: data };
+  }
+  return { ok: true, data: data };
+}
+
+/**
+ * Toggle the picker in the active tab.
+ *
+ * The content script is asked first; if it is not there (a tab opened before
+ * the extension was installed, or reloaded) it is injected on the spot, so the
+ * user is never told to reload the page.
+ */
+async function toggleInspector(desired) {
+  return new Promise(function (resolve) {
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      var tab = tabs && tabs[0];
+      if (!tab || tab.id == null) { resolve({ ok: false, error: 'no_active_tab' }); return; }
+
+      var type = desired === 'stop' ? 'ab-inspector-stop' : 'ab-inspector-start';
+      chrome.tabs.sendMessage(tab.id, { type: type }, function (resp) {
+        if (!chrome.runtime.lastError) { resolve(resp || { ok: true }); return; }
+        if (!chrome.scripting || !chrome.scripting.executeScript) {
+          resolve({ ok: false, error: 'no_content_script' });
+          return;
+        }
+        // Same file order as the manifest: extraction core and selectors must
+        // exist before inspector.js runs.
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['lib/ab-inspect.js', 'content/selector.js', 'content/inspector.js']
+        }, function () {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: 'inject_failed', message: chrome.runtime.lastError.message });
+            return;
+          }
+          chrome.tabs.sendMessage(tab.id, { type: type }, function (resp2) {
+            if (chrome.runtime.lastError) { resolve({ ok: false, error: 'no_content_script' }); return; }
+            resolve(resp2 || { ok: true });
+          });
+        });
+      });
+    });
+  });
+}
+
+// The keyboard shortcut works with no popup open. Note that Chrome may decline
+// to register Ctrl+Shift+C because DevTools claims it; inspector.js also listens
+// for the chord in-page, so the gesture works either way.
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener(function (command) {
+    if (command === 'toggle-inspector') toggleInspector('toggle');
+  });
+}
+
 // Relay a control message to the active tab's content script.
 async function relayToActiveTab(message) {
   return new Promise(function (resolve) {
@@ -297,6 +465,24 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
       return true; // async
     case 'AB_RELAY':
       relayToActiveTab(msg.message).then(sendResponse);
+      return true; // async
+
+    // ---- Element Inspector -------------------------------------------------
+    // Sent by content/inspector.js when the user presses "Confirm & Add to Node".
+    case 'ab-inspector-submit':
+      submitElement(msg).then(sendResponse);
+      return true; // async
+    case 'AB_INSPECTOR_SESSION':
+      inspectorSession().then(sendResponse);
+      return true; // async
+    case 'AB_INSPECTOR_TOGGLE':
+      toggleInspector(msg.desired).then(sendResponse);
+      return true; // async
+    case 'AB_MODE_GET':
+      getBrowserMode().then(sendResponse);
+      return true; // async
+    case 'AB_MODE_SET':
+      setBrowserMode(msg.payload).then(sendResponse);
       return true; // async
     default:
       return false;

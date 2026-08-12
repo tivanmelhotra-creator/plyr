@@ -47,6 +47,7 @@ These apply to **every** future change, not just the items below.
 | 7 | Condition node with multiple prioritised paths + neutral `next` | ✅ Done |
 | 8 | Standing rule: always cross-check Automa when settling node options | ✅ Done (documented as **R1** above) |
 | 9 | Install a Chrome extension by pasting its Web Store link (no remote desktop) | ✅ Done |
+| 10 | Dual Browser Mode (Remote **+** Local) + Element Inspector as a Chrome/Chromium extension | ✅ Done |
 
 ---
 
@@ -297,6 +298,77 @@ and the desktop is now marked optional.
 
 ---
 
+### ✅ 10. Dual Browser Mode + Element Inspector extension
+
+**Asked** (20-section Persian spec, `Dual Browser Mode + Chrome-Chromium Element
+Inspector Extension.md`), with two demands stated emphatically:
+
+> «Remote Browser حذف نمی‌شود و Local Browser نیز جایگزین آن نیست»
+> «نباید دو Inspector جداگانه ساخته شود»
+
+So: add a **Local Browser Mode** beside Remote (not replacing it), and build the
+Element Inspector as a **real Chrome/Chromium extension** — exactly one of them,
+working in both modes.
+
+**How Local mode works.** The user's machine dials **out** to the server over
+WSS/443, and the server runs CDP *backwards* through that tunnel:
+
+| Decision | Why not the obvious alternative |
+|---|---|
+| Reverse tunnel, agent dials out | Exposing port 9222 hands a logged-in browser to anyone who scans it — **CDP has no authentication at all**. And NAT/CGNAT makes inbound impossible for most users regardless. |
+| Multiplexed streams, `[op][streamId][payload]` | `connectOverCDP()` opens **several** connections (version probe, browser socket, one per target), so a single socket cannot serve it. |
+| Bytes copied, never parsed | A CDP-aware proxy would break on every Chrome/Playwright release. |
+| **No second automation engine** | Playwright stays server-side and reaches *through* the tunnel, so all ~40 node actions work in both modes unchanged. Re-implementing them would also lose auto-waiting and locators. |
+| Local adopts `contexts()[0]`, never `newContext()` | On an attached Chrome the latter is **incognito**, discarding the cookies and logins that are the entire point of using your own browser. |
+
+**The regression that had to be stopped.** Cleanup paths closed
+`context.browserContext` unconditionally — in local mode *that is the user's own
+Chrome*. A finishing workflow would have closed their browser, with their tabs in
+it. Fixed with `browserShared` + guards at **all three** close sites
+(`grep -c browserShared src/pipeline.ts` = 6).
+
+**Why the Inspector is an extension.** A `<canvas>` screencast can never show the
+extension toolbar, `chrome://` pages, Chrome's settings or the native file dialog
+— those are not drawn by the page compositor. An extension reads the **real DOM**,
+so selectors are real rather than inferred from pixels.
+
+**Why its panel is in the page, not the popup.** An extension popup **closes on
+focus loss**, so the first hover would dismiss it. The panel is injected into a
+**`closed` shadow root**: page CSS cannot restyle it, page scripts cannot read
+the picks. Listeners run in the **capture phase**, because sites call
+`stopPropagation()` on exactly the elements users most want to pick.
+
+**Attributes are generic, never a whitelist** (§8 forbids hardcoding):
+`extension/lib/ab-inspect.js` walks `el.attributes` and reports everything
+present. `TAG_HINTS`/`GLOBAL_HINTS` only **order** the rows — an attribute nobody
+anticipated is still extracted.
+
+**Delivery refuses rather than guesses.** The dangerous failure is a pick landing
+in the *wrong* node silently, so the server answers `409` with
+`no_active_node` / `stale_session` / `empty_selection` / `invalid_element`. The
+session id is per **tab** (`sessionStorage`), because `localStorage` is shared
+between tabs and would make two editing sessions indistinguishable.
+
+| Area | Files |
+|---|---|
+| Server | `src/core/BrowserMode.ts`, `LocalBridge.ts`, `BrowserAdapter.ts`, `InspectorHub.ts`, `InspectorSocket.ts`, `src/Routes/mode.routes.ts`, `src/pipeline.ts` |
+| Extension | `extension/manifest.json`, `lib/ab-inspect.js`, `content/inspector.js`, `background.js`, `popup/*` |
+| Dashboard | `public/js/inspector-client.js`, `flow-editor.js`, `app.js`, `browser-view.js`, `index.html` |
+| Agent | `tools/local-browser-agent.js` — **zero dependencies**, so the user runs one file with no `npm install` |
+| Tests | `extension-inspect` (20), `inspector-hub` (33), `local-bridge-tunnel` (20), `inspector-client` (19) = **92** |
+
+**Two bugs only probing could find.** (1) The agent's hand-rolled RFC 6455 GUID
+was mistyped `...95CA-5AB0DC85B11F` instead of `...95CA-C5AB0DC85B11` — that
+agent **could never have connected to anything**, and re-reading it would never
+have shown a wrong digest; interop-testing against the real `ws` server did, at
+once. (2) `http.close(cb)` **never fires while an upgraded socket is open**, which
+turned into 91s of timeouts that looked exactly like a broken tunnel (tracing
+proved the bytes had already arrived). Fixing teardown: 91s → 222ms.
+
+**Full write-up:** [`docs/uiux/20-HANDOFF-dual-browser-mode-inspector.md`](docs/uiux/20-HANDOFF-dual-browser-mode-inspector.md).
+
+---
+
 ## 3. Open missions / ماموریت‌های باقی‌مانده
 
 ### 🟡 5. Condition node: full option parity with Automa
@@ -445,9 +517,9 @@ Every shot must report `errors: none`.
 | `tests/unit/ndv-designed-nodes.test.ts` | ✅ 39/39 |
 | `tests/unit/condition-paths.test.ts` | ✅ 29/29 |
 | `tests/unit/webstore-install.test.ts` | ✅ 28/28 |
-| full `npx vitest run` | ✅ **72 files / 1700 tests** |
+| full `npx vitest run` | ✅ **78 files / 1871 tests** |
 | `node tools/probe-condition-value-types.js` | ✅ **23/23 checks, VERDICT=PASS** |
 | `node tools/ui-shot.js` (3 shots) | ✅ `errors: none` |
 | line endings | ✅ `public/**` LF, `src/**` CRLF preserved |
-| Git | branch `genspark_ai_developer`, PR **#20** open against `main` |
+| Git | branch `genspark_ai_developer`, PR **#38** open against `main` |
 | Live smoke test | ✅ store install + browser launch + popup render |

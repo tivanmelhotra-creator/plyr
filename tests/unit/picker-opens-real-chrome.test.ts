@@ -96,6 +96,29 @@ function openRealBrowserSource(): string {
   ].join('\n');
 }
 
+/**
+ * The same rule, for `requestPick`'s own helpers.
+ *
+ * `inspectorHint` is the Element Inspector's discoverability hint: the crosshair
+ * opens the real browser and then says how to finish the pick there (Ctrl+Shift+
+ * C), because the canvas simulator that used to do the picking is gone and the
+ * extension replaced it. It is a separate list from OPEN_REAL_BROWSER_DEPS on
+ * purpose -- filing a requestPick dependency under openRealBrowser would make
+ * the next reader believe openRealBrowser needs it, which it does not.
+ *
+ * Kept as a declared list for the reason the note above gives: a dependency the
+ * harness does not know about surfaces as `ReferenceError: inspectorHint is not
+ * defined` across a dozen tests, pointing at the harness instead of at the code.
+ */
+const REQUEST_PICK_DEPS = ['inspectorHint'] as const;
+
+function requestPickSource(): string {
+  return [
+    ...REQUEST_PICK_DEPS.map((n) => extractFunction(SRC, n)),
+    extractFunction(SRC, 'requestPick'),
+  ].join('\n');
+}
+
 type Recorder = {
   opened: Array<{ url: string; target: string }>;
   navigated: string[];
@@ -212,7 +235,7 @@ async function runRequestPick(
 
   const body = `
     ${openRealBrowserSource()}
-    ${extractFunction(SRC, 'requestPick')}
+    ${requestPickSource()}
     return requestPick(function () {}, OPTS);
   `;
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
@@ -463,7 +486,7 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
   it('the crosshair swallows the rejection after the toast', async () => {
     const caught = await unhandledFrom(`
       ${openRealBrowserSource()}
-      ${extractFunction(SRC, 'requestPick')}
+      ${requestPickSource()}
       requestPick(function () {}, {});
     `);
     expect(

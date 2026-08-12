@@ -39,6 +39,12 @@ import { buildStepWebhookPayload, buildShareToken, shouldDeliverStepEvent } from
 import { LiveBrowserManager } from './core/LiveBrowser';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
 import { DesktopProxy } from './core/DesktopProxy';
+// Dual browser mode: the reverse tunnel to a user's own Chrome, and the
+// Element Inspector's push channel. Both share this port with /live/ws and
+// /browser/ws, which is why the upgrade handler below multiplexes by path.
+import { localBridges, agentConnectPath } from './core/LocalBridge';
+import { InspectorSocketServer } from './core/InspectorSocket';
+import { onLocalBridgeLost } from './core/BrowserAdapter';
 
 import { setLiveSessionRebuilder } from './Routes/browser.routes';
 
@@ -148,6 +154,10 @@ const liveBrowserManager = new LiveBrowserManager(config.MAX_CONCURRENT > 0 ? Ma
 let browserStreamServer: BrowserStreamServer | null = null;
 // Serves the real Chrome's screen on this same port (see DesktopProxy).
 let desktopProxy: DesktopProxy | null = null;
+// The Element Inspector's push channel (/inspector/ws). Created in startServer
+// for the same reason as the others: it needs the HTTP server to exist before
+// it can take an upgrade.
+let inspectorSockets: InspectorSocketServer | null = null;
 
 // GLOBAL MANDATE: no user action may ever require "restart the server".
 // SelfHeal stops and restarts real Chrome to load a newly installed extension.
@@ -261,6 +271,11 @@ app.use('/me', asyncAuthMiddleware);
 app.use('/workflows', asyncAuthMiddleware);
 app.use('/workspace', asyncAuthMiddleware);
 app.use('/browser', asyncAuthMiddleware);
+// The mode switch decides which browser runs someone's automation, and the
+// inspector routes carry element data read off logged-in pages. Neither may be
+// reachable without a key.
+app.use('/browser-mode', asyncAuthMiddleware);
+app.use('/inspector', asyncAuthMiddleware);
 
 // Block check
 const blockCheck = asyncBlockCheck(connection);
@@ -273,6 +288,8 @@ app.use('/me', blockCheck);
 app.use('/workflows', blockCheck);
 app.use('/workspace', blockCheck);
 app.use('/browser', blockCheck);
+app.use('/browser-mode', blockCheck);
+app.use('/inspector', blockCheck);
 
 // ============================================
 // INITIALIZATION
@@ -310,6 +327,7 @@ const routes = createAllRoutes({
 app.use('/', routes.health);
 app.use('/', routes.user);
 app.use('/', routes.browser);
+app.use('/', routes.mode);
 app.use('/admin', routes.admin);
 
 // ============================================
@@ -756,6 +774,10 @@ const shutdown = async (signal: string) => {
 
     console.log('[SHUTDOWN] Closing Live Browser sessions...');
     if (browserStreamServer) await browserStreamServer.shutdown();
+    // Drop agent tunnels and inspector sockets before the browser goes: a
+    // client told the server is leaving reconnects, one left hanging does not.
+    if (inspectorSockets) inspectorSockets.shutdown();
+    localBridges.shutdown();
     if (liveServer) await liveServer.shutdown();
 
     console.log('[SHUTDOWN] Closing Global Browser...');
@@ -845,14 +867,45 @@ const startServer = async () => {
   // reverse proxy, or a one-port SSH tunnel. Mounting it at /desktop means the
   // operator never needs a second hostname to see the real browser.
   desktopProxy = new DesktopProxy();
+
+  // The Element Inspector's push channel, and the tunnel a local browser agent
+  // dials in on.
+  inspectorSockets = new InspectorSocketServer();
+
+  // ── ONE upgrade listener for three paths ──────────────────────────────────
+  // Each of these servers exposes matches() and returns without destroying a
+  // socket it does not recognise, so they can share a port. That is not
+  // politeness: a listener that destroyed foreign upgrades would silently kill
+  // /live/ws and /browser/ws, and the symptom would be 'the live view stopped
+  // working when I installed the agent'.
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';
     try { pathname = new URL(req.url || '', 'http://localhost').pathname; }
     catch { return; }
-    if (!desktopProxy || !desktopProxy.matches(pathname)) return; // not ours
-    desktopProxy.handleUpgrade(req, socket, head);
+
+    if (localBridges.matches(pathname)) {
+      localBridges.handleUpgrade(req, socket, head);
+      return;
+    }
+    if (inspectorSockets && inspectorSockets.matches(pathname)) {
+      inspectorSockets.handleUpgrade(req, socket, head);
+      return;
+    }
+    if (desktopProxy && desktopProxy.matches(pathname)) {
+      desktopProxy.handleUpgrade(req, socket, head);
+      return;
+    }
+    // Not ours: LiveServer and BrowserStreamServer have their own listeners.
+  });
+
+  // A dropped agent must also drop the Playwright attachment built on top of
+  // it, or the next node would be handed a handle to a browser that is gone.
+  localBridges.onChange((userId, connected) => {
+    if (!connected) onLocalBridgeLost(userId);
   });
   console.log('[LIVE] Real Chrome desktop proxied at /desktop/vnc.html');
+  console.log('[LIVE] Element Inspector channel ready at /inspector/ws');
+  console.log(`[LIVE] Local Browser agents may connect at ${agentConnectPath()}` + (config.LOCAL_BROWSER_ENABLED ? '' : ' (disabled by LOCAL_BROWSER_ENABLED=false)'));
 
   return server;
 };
