@@ -388,8 +388,16 @@
     var body = state === 'failed'
       ? '<h1>The remote browser did not start</h1>'
         + '<p class="e"></p>'
-        + '<p class="m">Nothing was left running. Close this tab and press the '
-        + 'crosshair again, or use Retry below.</p>'
+        + '<p class="m">Nothing was left running. Retry starts the virtual '
+        + 'screen and Chromium again from scratch.</p>'
+        // A "Missing: ..." error is not retryable — no amount of pressing a
+        // button installs a package — so say what to do instead of implying
+        // that trying again could help.
+        + '<p class="m" id="deps" hidden>This one will keep failing until the '
+        + 'packages are installed on the server. Run '
+        + '<code>bash scripts/desktop.sh install</code> (or '
+        + '<code>sudo apt-get install -y xvfb x11vnc novnc websockify openbox</code>) '
+        + 'and then Retry.</p>'
         + '<p><a id="again" href="">Retry</a></p>'
       : '<h1>Starting the remote browser…</h1>'
         + '<p class="m">Chromium and the virtual screen are being started. '
@@ -425,8 +433,23 @@
       // BE an HTML document (that is exactly what the closed-port page was).
       var errNode = doc.querySelector && doc.querySelector('.e');
       if (errNode && detail) errNode.textContent = String(detail);
+      // Reveal the install instructions only for the failure they actually fix.
+      // Shown unconditionally they would read as "your server is broken" after
+      // an unrelated hiccup on a box where everything is already installed.
+      var deps = doc.getElementById && doc.getElementById('deps');
+      if (deps && /Missing:/i.test(String(detail || ''))) deps.hidden = false;
       var direct = doc.getElementById && doc.getElementById('direct');
       if (direct) direct.setAttribute('href', directViewHref());
+      // Retry points at the view, and that is only correct because the view now
+      // STARTS the stack on load (ChromeView.startThenConnect). It used not to:
+      //
+      //   «بعد من همین Retry رو میزنم شروع میکنه به starting cromium... ولی باز
+      //    فقط میچرخه و چیزی بالا نمیاد»
+      //
+      // the link led from a page that said "did not start" to a page that only
+      // waits for something already started, so Retry could not recover -- it
+      // just relocated the dead end. Do not point this at a view that cannot
+      // start anything again. See tools/probe-remote-browser-retry.js.
       var again = doc.getElementById && doc.getElementById('again');
       if (again) again.setAttribute('href', directViewHref());
     } catch (x) { /* a cross-origin tab: nothing we can do, and nothing broken */ }

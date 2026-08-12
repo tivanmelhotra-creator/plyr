@@ -108,6 +108,8 @@ type Recorder = {
   errors: string[];
   /** href set on the self-service links, keyed by element id. */
   links: Record<string, string>;
+  /** Elements whose `hidden` was set false, keyed by id (the install hint). */
+  unhidden: Record<string, boolean>;
   /** Interleaved trace: 'write' / 'post' / 'navigate' / 'close'. */
   order: string[];
 };
@@ -143,6 +145,10 @@ function fakeTabDocument(rec: Recorder) {
           setAttribute(name: string, value: string) {
             if (name === 'href') rec.links[id] = value;
           },
+          // The install hint is revealed by clearing `hidden`, not by an
+          // attribute, so the fake has to record that assignment or the
+          // "only for a Missing: failure" rule cannot be tested at all.
+          set hidden(v: boolean) { rec.unhidden[id] = v === false; },
         };
       }
       return slots[id];
@@ -153,7 +159,7 @@ function fakeTabDocument(rec: Recorder) {
 function newRecorder(): Recorder {
   return {
     opened: [], navigated: [], closed: 0, posted: [], toasts: [],
-    wrote: [], errors: [], links: {}, order: [],
+    wrote: [], errors: [], links: {}, unhidden: {}, order: [],
   };
 }
 
@@ -314,6 +320,56 @@ describe('clicking the crosshair', () => {
   it('still tells the operator via a toast as well', async () => {
     const rec = await runRequestPick({}, { ok: false, error: 'desktop_not_running' });
     expect(rec.toasts.join(' ')).toContain('desktop_not_running');
+  });
+});
+
+/**
+ * The reported dead end:
+ *
+ *   «The remote browser did not start / Missing: Xvfb …
+ *    بعد من همین Retry رو میزنم شروع میکنه به starting cromium... ولی باز فقط
+ *    میچرخه و چیزی بالا نمیاد»
+ *
+ * Two halves. Retry has to lead somewhere that STARTS the stack — which is now
+ * true of the view itself (ChromeView.startThenConnect), so the link is correct
+ * only as long as it points at the view and the view keeps that behaviour;
+ * tools/probe-remote-browser-retry.js pins the second half. And a failure that
+ * NO button can fix has to say what will fix it, instead of offering a retry
+ * that is guaranteed to fail again.
+ */
+describe('a failure the operator can actually act on', () => {
+  it('offers the install command when, and only when, packages are missing', async () => {
+    const missing = await runRequestPick(
+      {},
+      { ok: false, error: 'Missing: Xvfb. Install the virtual display: sudo apt-get install -y xvfb' },
+    );
+    // Revealed for this failure...
+    expect(missing.unhidden.deps).toBe(true);
+    const page = missing.wrote[missing.wrote.length - 1];
+    expect(page).toContain('scripts/desktop.sh install');
+    // ...and the server's own wording is preserved, since it names the package.
+    expect(missing.errors[0]).toContain('Missing: Xvfb');
+
+    // ...but NOT for an unrelated failure, where it would read as "your server
+    // is broken" on a box that has everything installed.
+    const other = await runRequestPick({}, { ok: false, error: 'desktop_not_running' });
+    expect(other.unhidden.deps).toBeUndefined();
+  });
+
+  it('sends Retry to a destination that starts the stack, not to a dead end', async () => {
+    const rec = await runRequestPick({}, { ok: false, error: 'boom' });
+    // The view is the correct target ONLY because it now starts the stack on
+    // load. If this ever points at something inert again, the operator is back
+    // to a Retry that cannot recover.
+    expect(rec.links.again).toBe('/desktop/chrome?api_key=THE-KEY');
+  });
+
+  it('no longer claims a retry is all that is needed', async () => {
+    // The old copy said "Close this tab and press the crosshair again", which
+    // for a missing package is advice that cannot work.
+    const rec = await runRequestPick({}, { ok: false, error: 'Missing: Xvfb.' });
+    const page = rec.wrote[rec.wrote.length - 1];
+    expect(page).not.toContain('press the crosshair again');
   });
 });
 

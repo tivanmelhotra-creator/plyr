@@ -163,8 +163,16 @@ interface Harness {
   el: (id: string) => FakeEl;
   /** Click an element the page registered a handler on. */
   click: (id: string) => void;
-  /** Every fetch() the page made, in order. */
+  /**
+   * The file bar's fetches, in order. Excludes the boot POST to
+   * /browser/real/open, which every run makes and which no test in this file is
+   * counting; use `starts` for that one.
+   */
   fetches: Array<{ url: string; init: Record<string, unknown> }>;
+  /** The POSTs to /browser/real/open, from page load and from Retry. */
+  starts: Array<{ url: string; init: Record<string, unknown> }>;
+  /** Press "Try again" on the status overlay. */
+  retry: () => void;
   /** What /browser/real/downloads will answer with. */
   setDownloads: (rows: unknown[]) => void;
   /** Make the downloads fetch reject outright. */
@@ -342,10 +350,21 @@ function makeEl(tag: string, hidden = false): FakeEl {
  * Run the view's script with fake DOM/browser globals and return handles to
  * everything it touched. `new Function` is the repo's convention for this —
  * there is no jsdom.
+ *
+ * ASYNC, and it has to be. The page no longer attaches an RFB the instant it is
+ * evaluated: it first POSTs /browser/real/open and only then connects, which is
+ * what makes Retry able to recover a stopped desktop. So immediately after
+ * evaluation there is no RFB and no listener on it — a synchronous handle would
+ * hand every test a page that has not booted yet. `runView` therefore awaits
+ * the boot before returning, and the tests read as they did before.
  */
-function runView(
-  opts: { rejectReadText?: boolean; rejectWriteText?: boolean; search?: string } = {},
-): Harness {
+async function runView(
+  opts: {
+    rejectReadText?: boolean; rejectWriteText?: boolean; search?: string;
+    /** Make POST /browser/real/open fail, as it does when Xvfb is absent. */
+    failStart?: boolean;
+  } = {},
+): Promise<Harness> {
   const winListeners = new Map<string, Array<(ev: unknown) => void>>();
   const rfbListeners = new Map<string, Array<(ev: unknown) => void>>();
   const pushed: string[] = [];
@@ -367,6 +386,15 @@ function runView(
     downloadErrorBody: { success: false, error: 'That file is gone.' } as unknown,
     uploadStatus: 200,
     uploadErrorBody: { success: false, error: 'File is too large.' } as unknown,
+    // How POST /browser/real/open answers. Success by default: almost every
+    // test here is about the file bar and needs a page that got as far as
+    // connecting.
+    startOk: opts.failStart === undefined ? true : !opts.failStart,
+    startStatus: 200,
+    startErrorBody: {
+      success: false,
+      error: 'Missing: Xvfb. Install the virtual display: sudo apt-get install -y xvfb',
+    } as unknown,
   };
 
   // One element per id, kept, so a handler the page attaches survives and the
@@ -379,8 +407,22 @@ function runView(
     return byId.get(id)!;
   };
 
-  const fetches: Array<{ url: string; init: Record<string, unknown> }> = [];
+  const allFetches: Array<{ url: string; init: Record<string, unknown> }> = [];
   const conc = { inFlight: 0, max: 0 };
+
+  /**
+   * The POST that brings the stack up. The view fires it on load and on Retry,
+   * because Retry pointing at a page that only CONNECTS was the reported dead
+   * end (see ChromeView.startThenConnect).
+   *
+   * It is held apart from `fetches` on purpose. Every assertion in this file
+   * that counts requests is asking about the file bar's own traffic — "nothing
+   * was fetched merely by connecting" means the downloads LIST was not fetched.
+   * Folding an unrelated boot request into those counts would turn each of them
+   * into an off-by-one puzzle. Nothing is hidden: `starts` exposes it, and the
+   * boot POST has its own tests below.
+   */
+  const isStart = (url: string) => url.indexOf('/browser/real/open') >= 0;
 
   /**
    * A response with the parts the real server sends. `text()` matters: the page
@@ -416,7 +458,18 @@ function runView(
   };
 
   const fetch = (url: string, init: Record<string, unknown> = {}) => {
-    fetches.push({ url, init });
+    allFetches.push({ url, init });
+    // Answered BEFORE the upload fallthrough below. Without a case of its own
+    // the boot POST landed in that branch, which resolves after a timer and
+    // reports an upload token: startThenConnect() then never reached connect(),
+    // so attach() never ran and no RFB listener was ever registered. MEASURED:
+    // 12 failures reading `expected [] to include 'copied in the remote
+    // browser'` — the clipboard was fine, the page had simply never started.
+    if (isStart(url)) {
+      return Promise.resolve(state.startOk
+        ? reply({ body: { success: true, viewPath: '/desktop/chrome' } })
+        : reply({ status: state.startStatus, body: state.startErrorBody }));
+    }
     if (url.indexOf('/browser/real/downloads') >= 0) {
       if (state.failDownloadsFetch) return Promise.reject(new Error('browser not up'));
       return Promise.resolve(reply({
@@ -561,6 +614,12 @@ function runView(
     parseInt,
   );
 
+  // Let the boot POST resolve, so the page has reached attach() and registered
+  // its RFB listeners. Two turns: one for the fetch promise, one for the
+  // loadRFB() promise that connect() chains onto it.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+
   return {
     fire: (type, ev) => (winListeners.get(type) || []).forEach((f) => f(ev)),
     pushed,
@@ -575,7 +634,12 @@ function runView(
     connected: () => (rfbListeners.get('connect') || []).forEach((f) => f({})),
     el,
     click: (id) => el(id).emit('click'),
-    fetches,
+    /** The file bar's traffic: everything except the boot POST. */
+    get fetches() { return allFetches.filter((f) => !isStart(f.url)); },
+    /** The boot/Retry POSTs, so the start behaviour can be asserted directly. */
+    get starts() { return allFetches.filter((f) => isStart(f.url)); },
+    /** Press "Try again" on the overlay. */
+    retry: () => el('retry').emit('click'),
     setDownloads: (rows) => { state.downloads = rows; },
     get failDownloadsFetch() { return state.failDownloadsFetch; },
     set failDownloadsFetch(v: boolean) { state.failDownloadsFetch = v; },
@@ -619,14 +683,14 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('remote clipboard: the desktop copies, the operator pastes locally', () => {
   it('mirrors text copied inside the desktop into the local clipboard', async () => {
-    const h = runView();
+    const h = await runView();
     h.remoteCopy('copied in the remote browser');
     await settle();
     expect(h.written).toContain('copied in the remote browser');
   });
 
   it('ignores an empty clipboard event instead of clearing what the user had', async () => {
-    const h = runView();
+    const h = await runView();
     h.remoteCopy('');
     await settle();
     expect(h.written).toEqual([]);
@@ -635,7 +699,7 @@ describe('remote clipboard: the desktop copies, the operator pastes locally', ()
   it('survives writeText being refused, which happens whenever the tab is unfocused', async () => {
     // The copy already happened inside the desktop; a rejection here must not
     // become an unhandled rejection on a page whose job is to look like it works.
-    const h = runView({ rejectWriteText: true });
+    const h = await runView({ rejectWriteText: true });
     const seen: unknown[] = [];
     const onRej = (e: unknown) => seen.push(e);
     process.on('unhandledRejection', onRej);
@@ -652,7 +716,7 @@ describe('remote clipboard: the desktop copies, the operator pastes locally', ()
 
 describe('remote clipboard: the operator copies locally, then pastes into the desktop', () => {
   it('ships pasted text to the desktop, which is what Ctrl+V there will read', async () => {
-    const h = runView();
+    const h = await runView();
     h.fire('paste', { clipboardData: { getData: () => 'from my machine' } });
     await settle();
     expect(h.pushed).toContain('from my machine');
@@ -661,7 +725,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
   it('reads the local clipboard when the tab regains focus', async () => {
     // There is no "clipboard changed" event, and readText only works while the
     // document is focused — so focus is the one moment this can be done.
-    const h = runView();
+    const h = await runView();
     h.setLocalClipboard('copied in another app');
     h.fire('focus');
     await settle();
@@ -671,7 +735,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
   it('does NOT echo text that came from the desktop back to the desktop', async () => {
     // Mirroring remote -> local and then polling local -> remote is a loop that
     // would overwrite a selection made while it was in flight.
-    const h = runView();
+    const h = await runView();
     h.remoteCopy('from the desktop');
     await settle();
     h.setLocalClipboard('from the desktop');
@@ -681,7 +745,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
   });
 
   it('still sends genuinely new text after an echo was suppressed', async () => {
-    const h = runView();
+    const h = await runView();
     h.remoteCopy('first');
     await settle();
     h.setLocalClipboard('first');
@@ -694,7 +758,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
   });
 
   it('ignores a paste that carries no text (an image, or an empty clipboard)', async () => {
-    const h = runView();
+    const h = await runView();
     h.fire('paste', { clipboardData: { getData: () => '' } });
     h.fire('paste', {});
     await settle();
@@ -705,7 +769,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
     // Focus fires on every return to the tab, and readText resolves with '' when
     // the clipboard is empty. Sending that would wipe the remote selection just
     // because the operator clicked back into the window.
-    const h = runView();
+    const h = await runView();
     h.setLocalClipboard('');
     h.fire('focus');
     await settle();
@@ -717,7 +781,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
     // "same as last time" guard no longer happens to cover the empty string, so
     // an empty read would be forwarded and would clear the remote clipboard --
     // destroying something the operator copied inside the desktop.
-    const h = runView();
+    const h = await runView();
     h.remoteCopy('selected inside the desktop');
     await settle();
     h.setLocalClipboard('');
@@ -730,7 +794,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
     // Focus fires constantly (alt-tab, clicking back in). Re-sending the
     // clipboard every time floods the desktop with redundant selection updates,
     // each of which clobbers anything selected there in the meantime.
-    const h = runView();
+    const h = await runView();
     h.setLocalClipboard('one copy');
     h.fire('focus');
     await settle();
@@ -742,7 +806,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
   });
 
   it('sends the same text only ONCE when pasted repeatedly', async () => {
-    const h = runView();
+    const h = await runView();
     const ev = { clipboardData: { getData: () => 'repeated' } };
     h.fire('paste', ev);
     h.fire('paste', ev);
@@ -751,7 +815,7 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
   });
 
   it('survives readText being denied, as it is in browsers without the API', async () => {
-    const h = runView({ rejectReadText: true });
+    const h = await runView({ rejectReadText: true });
     const seen: unknown[] = [];
     const onRej = (e: unknown) => seen.push(e);
     process.on('unhandledRejection', onRej);
@@ -784,21 +848,21 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
 const KEY_SEARCH = '?api_key=k3y%2Fneeds%2Fescaping';
 
 describe('the file bar appears only when there is a desktop to exchange files with', () => {
-  it('is hidden while Chromium is still starting', () => {
-    const h = runView();
+  it('is hidden while Chromium is still starting', async () => {
+    const h = await runView();
     // The module body has run and connect() has been called, but the desktop
     // has not answered yet.
     expect(h.el('files').hidden).toBe(true);
   });
 
-  it('is revealed once the desktop connects', () => {
-    const h = runView();
+  it('is revealed once the desktop connects', async () => {
+    const h = await runView();
     h.connected();
     expect(h.el('files').hidden).toBe(false);
   });
 
-  it('keeps the downloads panel collapsed until it is asked for', () => {
-    const h = runView();
+  it('keeps the downloads panel collapsed until it is asked for', async () => {
+    const h = await runView();
     h.connected();
     expect(h.el('panel').hidden).toBe(true);
     // And nothing was fetched merely by connecting.
@@ -806,9 +870,54 @@ describe('the file bar appears only when there is a desktop to exchange files wi
   });
 });
 
+/**
+ * The reported dead end, from the other side:
+ *
+ *   «موقعه ای که میخام مرورگر ریموت رو بالا بیارم … Missing: Xvfb … بعد من همین
+ *    Retry رو میزنم شروع میکنه به starting cromium... ولی باز فقط میچرخه و چیزی
+ *    بالا نمیاد»
+ *
+ * Retry used to lead to this page, and this page only CONNECTED — so it waited
+ * for a desktop nobody had started, for ever. These tests hold the page to
+ * starting the stack itself, and to saying so when it cannot.
+ */
+describe('bringing the stack up, not just connecting to it', () => {
+  it('asks the server to start everything before it tries to connect', async () => {
+    const h = await runView({ search: KEY_SEARCH });
+    expect(h.starts).toHaveLength(1);
+    expect(String(h.starts[0].init.method).toUpperCase()).toBe('POST');
+    // The credential has to be a header: /browser/* is not covered by the
+    // desktop cookie (Path=/desktop), and a key in the URL outlives the request.
+    const headers = h.starts[0].init.headers as Record<string, string>;
+    expect(headers['x-api-key']).toBe('k3y/needs/escaping');
+    expect(h.starts[0].url).not.toContain('api_key=');
+  });
+
+  it('reports the server own reason instead of spinning for ever', async () => {
+    // The spinner WAS the bug: a failure that looks exactly like a slow start.
+    const h = await runView({ failStart: true });
+    expect(h.el('note').hidden).not.toBe(true);
+    // The message names the missing package, because that is the only part the
+    // operator can act on — a generic "could not start" throws it away.
+    expect(h.el('msg').textContent).toContain('Missing: Xvfb');
+    // And the button is offered, not the spinner.
+    expect(h.el('retry').hidden).toBe(false);
+    expect(h.el('spin').hidden).toBe(true);
+  });
+
+  it('actually retries: the button starts the stack again', async () => {
+    // Retry that merely re-renders is what sent the operator round in circles.
+    const h = await runView({ failStart: true });
+    expect(h.starts).toHaveLength(1);
+    h.retry();
+    await settle();
+    expect(h.starts).toHaveLength(2);
+  });
+});
+
 describe('listing what the remote browser downloaded', () => {
   it('fetches the list when the panel is opened, not before', async () => {
-    const h = runView({ search: KEY_SEARCH });
+    const h = await runView({ search: KEY_SEARCH });
     h.connected();
     h.click('dlbtn');
     await settle();
@@ -824,7 +933,7 @@ describe('listing what the remote browser downloaded', () => {
     // It travels as a HEADER. A key in the query string is copied into the
     // download history, the address bar and every proxy log in between, which
     // for a whole-instance credential outlives the request that needed it.
-    const h = runView({ search: KEY_SEARCH });
+    const h = await runView({ search: KEY_SEARCH });
     h.connected();
     h.click('dlbtn');
     await settle();
@@ -834,7 +943,7 @@ describe('listing what the remote browser downloaded', () => {
   });
 
   it('closes the panel again on a second press and does not refetch', async () => {
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.click('dlbtn');
     await settle();
@@ -845,7 +954,7 @@ describe('listing what the remote browser downloaded', () => {
   });
 
   it('links a completed download to the token url that serves its real name', async () => {
-    const h = runView({ search: KEY_SEARCH });
+    const h = await runView({ search: KEY_SEARCH });
     h.setDownloads([
       { token: 'dl_9f2c8a1b4e7d0c3f5a6b2e91', name: 'report.png', state: 'completed', size: 2048 },
     ]);
@@ -872,7 +981,7 @@ describe('listing what the remote browser downloaded', () => {
     // The list endpoint RETURNS `owner` precisely so a client does not hardcode
     // it. Writing the bytes under one identity and looking for them under
     // another is the documented ENOENT hand-over bug.
-    const h = runView();
+    const h = await runView();
     h.setOwner('someone-else');
     h.setDownloads([
       { token: 'dl_9f2c8a1b4e7d0c3f5a6b2e91', name: 'report.png', state: 'completed', size: 2048 },
@@ -887,7 +996,7 @@ describe('listing what the remote browser downloaded', () => {
   it('puts the remote-supplied name in text, never in markup', async () => {
     // The name arrived from a remote server Content-Disposition header. Writing
     // it as innerHTML would execute it.
-    const h = runView();
+    const h = await runView();
     const nasty = '<img src=x onerror=alert(1)>.png';
     h.setDownloads([{ token: 'dl_aaaaaaaaaaaaaaaaaaaaaaaa', name: nasty, state: 'completed', size: 1 }]);
     h.connected();
@@ -902,7 +1011,7 @@ describe('listing what the remote browser downloaded', () => {
   });
 
   it('offers no link for a failed download, and says why', async () => {
-    const h = runView();
+    const h = await runView();
     h.setDownloads([
       { token: 'dl_bbbbbbbbbbbbbbbbbbbbbbbb', name: 'huge.iso', state: 'failed', error: 'too large' },
     ]);
@@ -918,7 +1027,7 @@ describe('listing what the remote browser downloaded', () => {
   });
 
   it('offers no link for a download still in flight', async () => {
-    const h = runView();
+    const h = await runView();
     h.setDownloads([
       { token: 'dl_cccccccccccccccccccccccc', name: 'movie.mp4', state: 'inProgress' },
     ]);
@@ -933,7 +1042,7 @@ describe('listing what the remote browser downloaded', () => {
   });
 
   it('says so plainly when nothing has been downloaded', async () => {
-    const h = runView();
+    const h = await runView();
     h.setDownloads([]);
     h.connected();
     h.click('dlbtn');
@@ -946,7 +1055,7 @@ describe('listing what the remote browser downloaded', () => {
 
   it('replaces the previous rows instead of appending to them', async () => {
     // Reopening the panel twice must not show every file twice.
-    const h = runView();
+    const h = await runView();
     h.setDownloads([{ token: 'dl_dddddddddddddddddddddddd', name: 'a.png', state: 'completed', size: 1 }]);
     h.connected();
     h.click('dlbtn');
@@ -961,7 +1070,7 @@ describe('listing what the remote browser downloaded', () => {
   });
 
   it('does not crash when the browser is not up yet, so it can be retried', async () => {
-    const h = runView();
+    const h = await runView();
     h.failDownloadsFetch = true;
     const seen: unknown[] = [];
     const onRej = (e: unknown) => seen.push(e);
@@ -988,15 +1097,15 @@ describe('listing what the remote browser downloaded', () => {
 });
 
 describe('uploading a local file so the remote browser can pick it up', () => {
-  it('opens the hidden file chooser when Upload is pressed', () => {
-    const h = runView();
+  it('opens the hidden file chooser when Upload is pressed', async () => {
+    const h = await runView();
     h.connected();
     h.click('upbtn');
     expect(h.el('up').clicks).toBe(1);
   });
 
   it('posts the chosen file to the upload endpoint with its name', async () => {
-    const h = runView({ search: KEY_SEARCH });
+    const h = await runView({ search: KEY_SEARCH });
     h.connected();
     h.chooseFiles(['quarterly report.xlsx']);
     await new Promise((r) => setTimeout(r, 120));
@@ -1017,7 +1126,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
   it('clears the input before uploading, so the same file can be sent twice', async () => {
     // Picking an identical file fires no 'change' at all unless value is reset,
     // which reads to the operator as the upload being ignored.
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.chooseFiles(['same.txt']);
     // Cleared synchronously inside the handler, i.e. before awaiting anything:
@@ -1034,7 +1143,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
   });
 
   it('uploads several files one at a time rather than all at once', async () => {
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.chooseFiles(['a.txt', 'b.txt', 'c.txt']);
     await new Promise((r) => setTimeout(r, 120));
@@ -1048,7 +1157,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
   });
 
   it('does nothing at all when the chooser was cancelled', async () => {
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.chooseFiles([]);
     // The button must not claim work it never did. Without the early return the
@@ -1061,7 +1170,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
   });
 
   it('reports progress and then returns the button to being a button', async () => {
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.chooseFiles(['doc.pdf']);
     // Mid-flight the operator must see that something is happening.
@@ -1075,7 +1184,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
   }, 8000);
 
   it('tells the operator when an upload was rejected, then recovers', async () => {
-    const h = runView();
+    const h = await runView();
     h.failUploads = true;
     const seen: unknown[] = [];
     const onRej = (e: unknown) => seen.push(e);
@@ -1097,7 +1206,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
   }, 8000);
 
   it('stops the chain when one file of several fails', async () => {
-    const h = runView();
+    const h = await runView();
     h.failUploads = true;
     h.connected();
     h.chooseFiles(['a.txt', 'b.txt']);
@@ -1181,7 +1290,7 @@ describe('fetching a downloaded file to the operator machine', () => {
     // "Failed - Unknown server error" and throws the server's sentence away, so
     // an expired token, a missing file and a wrong key become one
     // indistinguishable failure. HEAD is what makes the reason readable.
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     await clickTheDownload(h);
     const byteCalls = h.fetches.filter((f) => f.url.indexOf('/browser/downloads/') >= 0);
@@ -1192,7 +1301,7 @@ describe('fetching a downloaded file to the operator machine', () => {
     // The row's name is a stale copy: the server renames an extension-less
     // download once it has identified the bytes, so the row can still say
     // "download" where the served file is "report.png". This is «اسم و فرمت».
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     h.setServedFile({ disposition: 'attachment; filename="report.png"' });
     await clickTheDownload(h);
@@ -1204,7 +1313,7 @@ describe('fetching a downloaded file to the operator machine', () => {
   it('prefers the RFC 6266 filename* copy, because the ascii copy is lossy', async () => {
     // The server transliterates the plain `filename=` copy, so a Persian name
     // arrives as _____.png. The starred form carries the real characters.
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     h.setServedFile({
       disposition: "attachment; filename=\"_____.png\"; filename*=UTF-8''%D8%B5%D9%81%D8%AD%D9%87.png",
@@ -1214,7 +1323,7 @@ describe('fetching a downloaded file to the operator machine', () => {
   });
 
   it('sends the key in a header and keeps it out of the bytes url', async () => {
-    const h = runView({ search: KEY_SEARCH });
+    const h = await runView({ search: KEY_SEARCH });
     h.setDownloads(ONE_ROW);
     await clickTheDownload(h);
     const byteCalls = h.fetches.filter((f) => f.url.indexOf('/browser/downloads/') >= 0);
@@ -1227,7 +1336,7 @@ describe('fetching a downloaded file to the operator machine', () => {
   });
 
   it('clicks an anchor that is IN the document, or Firefox ignores it', async () => {
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     await clickTheDownload(h);
     const a = h.anchors()[0];
@@ -1238,7 +1347,7 @@ describe('fetching a downloaded file to the operator machine', () => {
   it('does not revoke the object url while the transfer is still running', async () => {
     // Revoking synchronously after click() cancels the transfer it just started,
     // measured as a 0-byte file. The revoke must be deferred.
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     await clickTheDownload(h);
     expect(h.objectUrls).toHaveLength(1);
@@ -1246,7 +1355,7 @@ describe('fetching a downloaded file to the operator machine', () => {
   });
 
   it('shows the server own words when the bytes are refused', async () => {
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     h.failDownloadBytes(404, { success: false, error: 'That file is no longer on the server.' });
     await clickTheDownload(h);
@@ -1257,7 +1366,7 @@ describe('fetching a downloaded file to the operator machine', () => {
   });
 
   it('still says something useful when the refusal carries no message', async () => {
-    const h = runView();
+    const h = await runView();
     h.setDownloads(ONE_ROW);
     h.failDownloadBytes(401, 'not json at all');
     await clickTheDownload(h);
@@ -1268,7 +1377,7 @@ describe('fetching a downloaded file to the operator machine', () => {
     // A Blob holds the whole file in the tab's memory, which is the thing that
     // breaks first on a big download. Over the limit the browser streams it, and
     // that is the ONE path allowed to carry the token in the query.
-    const h = runView({ search: KEY_SEARCH });
+    const h = await runView({ search: KEY_SEARCH });
     h.setDownloads(ONE_ROW);
     h.setServedFile({ length: 65 * 1024 * 1024 });
     await clickTheDownload(h);
@@ -1286,7 +1395,7 @@ describe('uploading tells the truth about what the server did', () => {
     // /browser/uploads answers 200 with { success:false, error } for a rejected
     // file, so checking res.ok alone reports "Uploaded" for a file the server
     // threw away. That is the "it does not actually work" that was reported.
-    const h = runView();
+    const h = await runView();
     h.failUploadWith(200, { success: false, error: 'File is too large (40000000 bytes).' });
     h.connected();
     h.chooseFiles(['huge.iso']);
@@ -1300,7 +1409,7 @@ describe('uploading tells the truth about what the server did', () => {
     // hand; Playwright is not holding its file dialog open, so there is no
     // chooser to answer. What the operator needs is the name to type into
     // Chromium's own dialog, which IS visible on the virtual screen.
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.chooseFiles(['cookies.json']);
     await new Promise((r) => setTimeout(r, 140));
@@ -1310,7 +1419,7 @@ describe('uploading tells the truth about what the server did', () => {
   });
 
   it('reports the files that DID arrive before a later one failed', async () => {
-    const h = runView();
+    const h = await runView();
     h.connected();
     h.chooseFiles(['ok.txt']);
     await new Promise((r) => setTimeout(r, 140));
