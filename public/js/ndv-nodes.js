@@ -808,29 +808,47 @@
     // panel showed settings that the run would silently ignore.
     //
     // Now the row asks ONE question first — "what do you want to check?" — and
-    // then shows exactly the fields the chosen path consumes. The three choices
-    // are not invented UI categories: they are the runtime's own three branches
+    // then shows exactly the fields the chosen path consumes. The four choices
+    // are not invented UI categories: they are the runtime's own four branches
     // (NdvModel.CONDITION_KINDS documents the mapping to ConditionEngine).
     //
     //   element  → CSS Selector · Operator                        (2 fields)
     //   content  → CSS Selector · Read · [Attribute] · Op · [Value] (3–5)
     //   variable → Variable · Operator · [Value]                  (2–3)
+    //   code     → JavaScript · Operator · [Value]                (2–3)
     //
     // `kind` is derived from the stored row, never persisted, so params.groups
     // and every already-saved workflow are untouched.
     var kind = m.checkKindOf(row);
+    var kindMeta = m.CONDITION_KINDS.filter(function (k) { return k.id === kind; })[0];
     var body = ui.el('div', 'cb-row-body');
 
+    // Grouped into "read the page" vs "a value I already have" — Automa's own
+    // valueTypes split (rule R1). With a fourth kind the flat list stopped
+    // saying which options need a selector, which is the first thing the user
+    // has to know before choosing.
     var kindCell = ui.fieldCell(t('cb.checkKind'),
-      ui.selectCell(m.CONDITION_KINDS.map(function (k) {
-        return { value: k.id, label: t(k.label) };
+      ui.selectCell(m.groupedCheckKinds().map(function (bucket) {
+        return {
+          group: t(bucket.group),
+          options: bucket.options.map(function (k) {
+            return { value: k.id, label: t(k.label) };
+          }),
+        };
       }), kind, function (v) {
         if (v === kind) return;
         var next = m.applyCheckKind(row, v);
+        // REPLACE the row's contents rather than merging over them:
+        // applyCheckKind returns a NORMALISED row, and `codeContext` is
+        // conditionally absent from it. A plain Object.keys() copy would leave a
+        // stale key behind on the old object, so the field is deleted first.
+        Object.keys(row).forEach(function (k) {
+          if (!(k in next)) delete row[k];
+        });
         Object.keys(next).forEach(function (k) { row[k] = next[k]; });
         o.onChange();
         rebuild();
-      }), t(m.CONDITION_KINDS.filter(function (k) { return k.id === kind; })[0].hint),
+      }), t(kindMeta.hint),
       null, { info: t('cb.checkKindHelp') });
     kindCell.className += ' cb-kind-cell';
     body.appendChild(kindCell);
@@ -846,6 +864,23 @@
         exprContext: o.exprCtx,
         onChange: function (v) { row.value = v; o.onChange(); },
       }), null, null, { info: t('cb.variableNameHelp') }));
+    } else if (kind === 'code') {
+      // The snippet IS the left-hand value: the engine runs it in the page and
+      // compares whatever it returned, so there is no selector on this path
+      // either. It gets a full-width row of its own because a function does not
+      // fit in a third of a line beside a dropdown.
+      //
+      // Not an exprField: {{variables}} ARE resolved (the engine substitutes
+      // them before wrapping), but the expression pill's single-line input and
+      // drag-drop chips fight a multi-line editor, and Tab-to-indent cannot
+      // coexist with the pill's focus handling. The helper text below says so
+      // rather than leaving the capability undiscoverable.
+      var codeCell = ui.fieldCell(t('cb.codeSnippet'),
+        ui.codeCell(row.value, m.CONDITION_CODE_SEED, function (v) {
+          row.value = v; o.onChange();
+        }), t('cb.codeSnippetHelp'), null, { info: t('cb.codeSnippetHelp') });
+      codeCell.className += ' cb-code-cell';
+      l1.appendChild(codeCell);
     } else {
       var selHost = exprField({
         value: row.selector,

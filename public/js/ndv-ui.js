@@ -182,6 +182,50 @@
     return inp;
   }
 
+  // ---- code editor cell ----------------------------------------------------
+  // A monospace <textarea> for a JavaScript snippet (the Condition Builder's
+  // `code` value type). Deliberately NOT a syntax-highlighting editor: rule R5
+  // forbids a CDN or framework, and the honest options were a plain textarea or
+  // ~2k lines of hand-rolled highlighter that would still lag behind the
+  // language. A textarea also keeps native undo, spellcheck-off and IME intact.
+  //
+  // `rows` grows with the content up to a cap so a one-line `return true;` does
+  // not reserve a 6-line hole, and a pasted function is not edited through a
+  // 2-line slit.
+  function codeCell(value, placeholder, onInput) {
+    var ta = el('textarea', 'aria-input aria-code');
+    ta.placeholder = placeholder || '';
+    ta.value = value != null ? String(value) : '';
+    ta.spellcheck = false;
+    ta.setAttribute('autocapitalize', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    ta.setAttribute('wrap', 'off');   // a snippet scrolls; it must not re-flow
+    function fit() {
+      var lines = String(ta.value || '').split('\n').length;
+      ta.rows = Math.max(3, Math.min(12, lines + 1));
+    }
+    fit();
+    ta.addEventListener('input', function () {
+      fit();
+      if (onInput) onInput(ta.value);
+    });
+    // Tab must indent inside a code field, not tab away from it — but only when
+    // there is something to indent, so an empty editor stays keyboard-escapable
+    // (a trap here would make the panel unusable without a mouse).
+    ta.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Tab' || ev.shiftKey || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (!ta.value) return;
+      ev.preventDefault();
+      var s = ta.selectionStart;
+      var e = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(e);
+      ta.selectionStart = ta.selectionEnd = s + 2;
+      fit();
+      if (onInput) onInput(ta.value);
+    });
+    return ta;
+  }
+
   // ---- combobox: free text + a chevron menu of suggestions -----------------
   // The locked Condition NDV crop draws `Attribute name` with the SAME chevron
   // as the `Left source` <select> beside it, but an attribute name is
@@ -531,6 +575,7 @@
     withInfo: withInfo,
     selectCell: selectCell,
     textCell: textCell,
+    codeCell: codeCell,
     comboCell: comboCell,
     numberCell: numberCell,
     toggle: toggle,

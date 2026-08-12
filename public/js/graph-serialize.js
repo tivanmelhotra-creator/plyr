@@ -138,6 +138,11 @@
       cond.source = row.source;
     }
     if (row && row.attribute !== undefined && row.attribute !== '') cond.attribute = row.attribute;
+    // `codeContext` only ever arrives from an imported Automa workflow — this
+    // product has a single execution context and therefore no control for it
+    // (rule R3). Passed through rather than defaulted, so a round-trip does not
+    // silently drop it AND a row that never had it stays byte-identical.
+    if (row && row.codeContext === 'page') cond.codeContext = 'page';
     return cond;
   }
 
@@ -242,6 +247,10 @@
     }
     if (c.source !== undefined) row.source = String(c.source);
     if (c.attribute !== undefined) row.attribute = String(c.attribute);
+    // The reverse half of the pass-through in buildSimpleCondition. Only the one
+    // value the engine's type allows is accepted, so a hand-edited or imported
+    // workflow cannot smuggle an execution context that does not exist here.
+    if (c.codeContext === 'page') row.codeContext = 'page';
     return row;
   }
 

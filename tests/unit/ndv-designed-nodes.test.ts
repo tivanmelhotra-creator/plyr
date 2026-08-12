@@ -53,10 +53,17 @@ interface Serializer {
 interface Model {
   isDesigned: (action: string) => boolean;
   CONDITION_OPERATORS: { id: string; dom?: boolean; list?: boolean }[];
-  CONDITION_KINDS: { id: string }[];
+  CONDITION_KINDS: { id: string; label: string; hint: string; group?: string }[];
+  CONDITION_KIND_GROUPS: { id: string; label: string }[];
+  CONDITION_CODE_SEED: string;
   checkKindOf: (row: Record<string, unknown>) => string;
   applyCheckKind: (row: Record<string, unknown>, kind: string) => Record<string, string>;
+  groupedCheckKinds: () => { group: string; options: { id: string }[] }[];
   operatorsForKind: (kind: string) => { id: string }[];
+  operatorMeta: (id: string) => { id: string; label: string };
+  codeChipText: (raw: unknown) => string;
+  rowChips: (row: Record<string, unknown>) => { kind: string; text?: string; i18n?: string }[];
+  normalizeRow: (raw: unknown) => Record<string, unknown>;
   DESIGNED_NODES: Record<string, unknown>;
   CLICK_DEFAULTS: Record<string, unknown>;
   conditionSummary: (params: Record<string, unknown>, t?: (k: string) => string) => string;
@@ -288,13 +295,47 @@ describe('condition NDV — if / while declare the Condition Builder params', ()
     expect('kind' in cond).toBe(false);
   });
 
-  /** Only the four DOM operators may be offered for an `element` row. */
+  /** Only the DOM operators may be offered for an `element` row. */
   it('offers only the operators each kind can evaluate', () => {
     expect(NM.operatorsForKind('element').map((o: any) => o.id))
-      .toEqual(['exists', 'not_exists', 'visible', 'hidden']);
+      .toEqual(['exists', 'not_exists', 'visible', 'hidden', 'in_screen', 'not_in_screen']);
     const content = NM.operatorsForKind('content').map((o: any) => o.id);
     expect(content).not.toContain('visible');
+    expect(content).not.toContain('in_screen');
     expect(content).toContain('in_list');
+    // `code` is a value the engine already holds, so it compares like any other
+    // non-DOM row — it must NOT be offered the selector-only operators.
+    expect(NM.operatorsForKind('code').map((o: any) => o.id))
+      .toEqual(content);
+  });
+
+  /**
+   * in_screen is NOT a second name for visible, and this is the assertion that
+   * stops someone "simplifying" the two away. MEASURED
+   * (tools/probe-condition-value-types.js finding 5): an element 4000px below
+   * the fold reports isVisible() === true, because Playwright's "visible" means
+   * "has a box and is not visibility:hidden" and says nothing about scroll
+   * position. So the labels must not reuse the visible/hidden wording either.
+   */
+  it('keeps the in-screen operators distinct from visible/hidden', () => {
+    const ids = NM.CONDITION_OPERATORS.map((o) => o.id);
+    expect(ids).toContain('in_screen');
+    expect(ids).toContain('not_in_screen');
+    // they live in the dom bucket, so an `element` row stays ONE optgroup
+    const dom = (NM.CONDITION_OPERATORS as unknown as { id: string; group?: string }[])
+      .filter((o) => o.group === 'dom').map((o) => o.id);
+    expect(dom).toContain('in_screen');
+    // both need no right-hand value, exactly like exists/visible
+    const meta = (id: string) => NM.operatorMeta(id) as unknown as
+      { dom: boolean; needsExpected: boolean };
+    for (const id of ['in_screen', 'not_in_screen']) {
+      expect(meta(id).dom, `${id} must take the engine's DOM path`).toBe(true);
+      expect(meta(id).needsExpected, `${id} compares nothing`).toBe(false);
+    }
+    // and the labels are their own, not a copy of the visible/hidden ones
+    const label = (id: string) => (NM.operatorMeta(id) as unknown as { label: string }).label;
+    expect(new Set([label('visible'), label('hidden'),
+      label('in_screen'), label('not_in_screen')]).size).toBe(4);
   });
 
   it('marks the groups blob as internal so no generic editor renders raw JSON', () => {
@@ -557,6 +598,155 @@ describe('condition operators — Automa parity + grouped dropdown', () => {
       expect(field, `${action}.operator field missing`).toBeTruthy();
       const missing = ids.filter((id) => !(field!.options ?? []).includes(id));
       expect(missing, `${action}.operator options missing: ${missing.join(', ')}`).toEqual([]);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Mission 5 Part 2 — the `code` value type and the grouped kind dropdown.
+  // -------------------------------------------------------------------------
+
+  it('derives the code kind and keeps it out of the content "Read" dropdown', () => {
+    expect(NM.checkKindOf({ operator: 'is_truthy', source: 'code' })).toBe('code');
+    // `code` takes its left value from `value`, never from the selector beside
+    // it, so offering it as "which part of the element to read" would be a lie —
+    // the same reason `variable` is not in that dropdown either.
+    const readable = (NM as unknown as { contentSources: () => { id: string }[] })
+      .contentSources().map((s) => s.id);
+    expect(readable).not.toContain('code');
+    expect(readable).not.toContain('variable');
+  });
+
+  it('swaps the left-hand value when switching between code and variable', () => {
+    // A JS snippet is a nonsense variable NAME and a variable name is a nonsense
+    // snippet, so a naive switch would leave a value the new path misreads.
+    const asCode = NM.applyCheckKind({ operator: 'equals', source: 'variable', value: 'status' }, 'code');
+    expect(asCode.source).toBe('code');
+    expect(asCode.value).toBe(NM.CONDITION_CODE_SEED);
+    expect(asCode.selector).toBe('');
+
+    const backToVar = NM.applyCheckKind(
+      { operator: 'equals', source: 'code', value: 'return document.title;' }, 'variable');
+    expect(backToVar.source).toBe('variable');
+    expect(backToVar.value).toBe('');
+
+    // …and a DOM operator cannot survive the move, because the code path never
+    // reaches the engine's DOM branch.
+    const fromElement = NM.applyCheckKind({ operator: 'visible', selector: '.x' }, 'code');
+    expect(fromElement.operator).toBe('is_truthy');
+
+    // going to `content`, both value-bearing sources must fall back to the
+    // engine default rather than keeping a source with no selector behind it
+    for (const from of ['code', 'variable']) {
+      const asContent = NM.applyCheckKind({ operator: 'equals', source: from, value: 'x' }, 'content');
+      expect(asContent.source, `${from} -> content`).toBe('text');
+      expect(asContent.value).toBe('');
+    }
+  });
+
+  it('seeds a code row with the form the engine can actually run', () => {
+    // MEASURED (tools/probe-condition-value-types.js finding 1):
+    // page.evaluate('return true;') throws "Illegal return statement", so the
+    // engine wraps every snippet. Seeding the RETURN form is how the user learns
+    // that `return` is allowed here — but it only works because of that wrap,
+    // which condition-engine.test.ts asserts against the engine itself.
+    expect(NM.CONDITION_CODE_SEED).toBe('return true;');
+    // the seed must be what the editor actually shows, not a second constant
+    expect(NODES_SRC).toContain('m.CONDITION_CODE_SEED');
+  });
+
+  it('buckets the check kinds into real optgroups without losing one', () => {
+    const buckets = NM.groupedCheckKinds();
+    expect(buckets.every((b) => b.options.length > 0)).toBe(true);
+    const flat = buckets.flatMap((b) => b.options.map((k) => k.id));
+    // same set, same order as the flat registry — the two views cannot disagree
+    expect(flat).toEqual(NM.CONDITION_KINDS.map((k) => k.id));
+    expect(new Set(flat).size).toBe(flat.length);
+    // the split is the point: element/content read the page, variable/code do not
+    const groupOf = (id: string) => buckets.find((b) => b.options.some((k) => k.id === id))!.group;
+    expect(groupOf('element')).toBe(groupOf('content'));
+    expect(groupOf('variable')).toBe(groupOf('code'));
+    expect(groupOf('element')).not.toBe(groupOf('code'));
+    // and the row must actually USE the grouped accessor
+    expect(NODES_SRC).toContain('m.groupedCheckKinds()');
+  });
+
+  it('translates every kind, hint and group label in both dictionaries', () => {
+    const dicts = dictSlices();
+    const keys = [
+      ...NM.CONDITION_KINDS.flatMap((k) => [k.label, k.hint]),
+      ...NM.CONDITION_KIND_GROUPS.map((g) => g.label),
+      'cvg.other',            // the orphan-safety bucket must be translatable too
+      'cb.codeSnippet', 'cb.codeSnippetHelp', 'cb.codeContext',
+    ];
+    const missFa = [...new Set(keys)].filter((k) => !dicts.fa.includes(`'${k}':`));
+    const missEn = [...new Set(keys)].filter((k) => !dicts.en.includes(`'${k}':`));
+    expect(missFa, `missing from fa: ${missFa.join(', ')}`).toEqual([]);
+    expect(missEn, `missing from en: ${missEn.join(', ')}`).toEqual([]);
+  });
+
+  it('summarises a code row by its first line instead of the whole snippet', () => {
+    expect(NM.codeChipText('return true;')).toBe('return true;');
+    // a multi-line snippet is elided — a wall of pasted JS in a one-line header
+    // defeats the entire purpose of a collapsed summary
+    const multi = NM.codeChipText('const a = 1;\nconst b = 2;\nreturn a < b;');
+    expect(multi).toContain('const a = 1;');
+    expect(multi).not.toContain('const b');
+    expect(multi.endsWith('…')).toBe(true);
+    // a single very long line is capped too
+    const long = NM.codeChipText('return ' + 'x'.repeat(200) + ';');
+    expect(long.length).toBeLessThan(40);
+    // and it must NOT pre-escape: the renderer escapes text chips, so doing it
+    // here would show the user a literal &lt;
+    expect(NM.codeChipText('return a < b;')).toContain('<');
+
+    const chips = NM.rowChips({ operator: 'is_truthy', source: 'code', value: 'return true;' });
+    expect(chips[0].kind).toBe('code');
+    expect(chips[0].text).toBe('return true;');
+  });
+
+  /**
+   * codeContext exists ONLY so an imported Automa workflow round-trips: Automa
+   * records Background / Active tab, this product has one context, and rule R3
+   * forbids a dropdown whose second entry behaves like the first. The risk is
+   * the opposite one — that it starts appearing on rows that never had it and
+   * changes params.groups for every already-saved workflow.
+   */
+  it('round-trips codeContext without adding it to rows that lack it', () => {
+    const plain = NM.normalizeRow({ operator: 'is_truthy', source: 'code', value: 'return true;' });
+    expect('codeContext' in plain).toBe(false);
+    const cond: Record<string, unknown> = GS.buildCondition({
+      groups: JSON.stringify([[plain]]),
+    }) as Record<string, unknown>;
+    expect('codeContext' in cond).toBe(false);
+    expect(Object.keys(cond).sort()).toEqual(['operator', 'source', 'value']);
+
+    // an imported row that HAS it keeps it, in both directions
+    const imported = NM.normalizeRow({
+      operator: 'is_truthy', source: 'code', value: 'return true;', codeContext: 'page',
+    });
+    expect(imported.codeContext).toBe('page');
+    const kept = GS.buildCondition({ groups: JSON.stringify([[imported]]) }) as Record<string, unknown>;
+    expect(kept.codeContext).toBe('page');
+    expect(GS.conditionToGroups({ all: [kept, kept] })![0][0].codeContext).toBe('page');
+
+    // a bogus context is refused rather than passed to a runtime that has no
+    // such branch
+    expect('codeContext' in NM.normalizeRow({
+      operator: 'is_truthy', source: 'code', codeContext: 'background',
+    })).toBe(false);
+  });
+
+  it('declares codeContext and the code source on if AND while', () => {
+    for (const action of ['if', 'while']) {
+      const def = catalog.ACTIONS.find((a) => a.id === action)!;
+      // an undeclared param is silently dropped by coerceParams() on save, so a
+      // missing line here means an imported workflow loses the field
+      const ctx = def.fields.find((f) => f.k === 'codeContext');
+      expect(ctx, `${action}.codeContext must be declared`).toBeTruthy();
+      expect((ctx as Field & { internal?: boolean }).internal,
+        `${action}.codeContext is a passthrough, not a control`).toBe(true);
+      const src = def.fields.find((f) => f.k === 'source') as Field & { options?: string[] };
+      expect(src.options, `${action}.source must offer code`).toContain('code');
     }
   });
 });
