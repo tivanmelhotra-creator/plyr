@@ -49,6 +49,8 @@ import path from 'path';
 
 import { enableSessionRestore, RealChrome } from '../../src/core/RealChrome';
 import { config } from '../../src/config';
+import { resolveFlags } from '../../src/core/ChromeFlags';
+import { PROFILE_DEFAULTS } from '../../src/core/EnvProfile';
 
 let dir = '';
 
@@ -200,10 +202,31 @@ describe('the launch arguments', () => {
     'utf8',
   );
 
-  it('passes --restore-last-session, without which the pref does nothing', async () => {
+  it('passes --restore-last-session, without which the pref does nothing', () => {
     // MEASURED: pref alone restored 0 of 3 tabs. The pref says what "startup"
     // means; the flag says this launch IS such a startup.
-    expect(await launchSource()).toContain("'--restore-last-session'");
+    //
+    // This used to grep RealChrome.ts for the literal. The switch now comes from
+    // the catalogue (src/core/ChromeFlags.ts), so asserting on the source text
+    // of one file would pass while the browser received nothing -- the exact
+    // failure class this file exists to catch. Assert the ARGUMENT that is
+    // actually handed to Playwright instead.
+    expect(resolveFlags({ overrides: { 'restore-last-session': true } }).args)
+      .toContain('--restore-last-session');
+  });
+
+  it('is in the default selection, not just available to opt into', () => {
+    // A flag nobody selects is a flag nobody gets. The reported bug was tabs
+    // being lost on a DEFAULT launch, so the recommended preset must carry it.
+    expect(resolveFlags().args).toContain('--restore-last-session');
+  });
+
+  it('drops the switch when the kill switch is off — no silent half-fix', () => {
+    // The other direction matters just as much: if the override could not turn
+    // the flag OFF, REAL_CHROME_RESTORE_TABS=false would write no pref and still
+    // pass the flag, which is one of the measured zero-tab combinations.
+    expect(resolveFlags({ overrides: { 'restore-last-session': false } }).args)
+      .not.toContain('--restore-last-session');
   });
 
   it('gates the flag and the pref on the SAME setting', async () => {
@@ -211,7 +234,9 @@ describe('the launch arguments', () => {
     // no-op: one lever on, one off, zero tabs restored, and a config flag that
     // appears to be working.
     const src = await launchSource();
-    const flagLine = src.split('\n').find((l) => l.includes("'--restore-last-session'"));
+    // The catalogue OVERRIDE is how the flag is now gated; the id, not the
+    // `--`-prefixed switch, is what appears at the call site.
+    const flagLine = src.split('\n').find((l) => l.includes("'restore-last-session':"));
     expect(flagLine, 'the CLI flag must be conditional on restoreTabs')
       .toMatch(/restoreTabs/);
     // The CALL, not the `export async function` declaration — matching the
@@ -235,6 +260,26 @@ describe('the launch arguments', () => {
 
   it('is on by default, because losing the tabs was the reported bug', () => {
     expect(config.REAL_CHROME_RESTORE_TABS).toBe(true);
+  });
+
+  it('no environment profile may quietly turn it off', () => {
+    // REGRESSION. When the profile system landed, its `test` profile set
+    // REAL_CHROME_RESTORE_TABS='false' -- "a test should start from a known
+    // state". vitest sets NODE_ENV=test, so the entire suite silently began
+    // asserting against a configuration no operator ever runs, and the test
+    // directly above this one started failing while the product was fine.
+    //
+    // A profile may tune what is genuinely environmental (no screen in CI, no
+    // rate limit in a test run). It may NOT overturn a product decision that
+    // other tests pin, because then the tests stop describing the shipped
+    // behaviour. Anything needing tabs off sets the variable explicitly, where
+    // a reader can see it.
+    for (const [id, defaults] of Object.entries(PROFILE_DEFAULTS)) {
+      expect(
+        defaults?.REAL_CHROME_RESTORE_TABS?.value,
+        `profile "${id}" must not disable tab restore behind the operator's back`,
+      ).not.toBe('false');
+    }
   });
 });
 

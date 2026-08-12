@@ -1,11 +1,30 @@
 import 'dotenv/config';
 import path from 'path';
 import os from 'os';
+import { detectProfile, profiledEnv } from './core/EnvProfile';
 
 const cleanEnv = (val: string | undefined): string | undefined => {
   if (!val) return undefined;
   return val.split('#')[0].trim();
 };
+
+// ============================================
+// Environment profile
+// ============================================
+// The operator's complaint: 77 environment variables read here, and reaching a
+// sane setup meant hand-editing a dozen of them. Variables whose CORRECT value
+// depends on the situation (headed browser while developing, headless in
+// production) now tune themselves. See src/core/EnvProfile.ts for the rule that
+// makes this safe: an explicit value ALWAYS wins, a profile only fills gaps.
+//
+// `profiled()` is a drop-in replacement for `cleanEnv(process.env.X)` and is
+// used ONLY for the variables listed in PROFILE_DEFAULTS. Ports, secrets and
+// directories keep reading the environment directly -- a profile guessing a
+// secret, or silently moving where a user's files land, is a nastier surprise
+// than typing it out.
+const ACTIVE_PROFILE = detectProfile(process.env);
+const profiled = (name: string): string | undefined =>
+  profiledEnv(name, process.env, ACTIVE_PROFILE.id);
 
 // ============================================
 // Plan Configuration Interface
@@ -160,7 +179,12 @@ export const config = {
   // Server
   // ============================================
   PORT: parseInt(cleanEnv(process.env.PORT) || '3000', 10),
-  NODE_ENV: cleanEnv(process.env.NODE_ENV) || 'development',
+  NODE_ENV: cleanEnv(process.env.NODE_ENV) || 'development',
+  // Which profile filled in the gaps, and where that was read from. Surfaced
+  // so the UI can say "development chose this for you" rather than leaving the
+  // operator guessing which of 77 variables is in play.
+  APP_PROFILE: ACTIVE_PROFILE.id,
+  APP_PROFILE_SOURCE: ACTIVE_PROFILE.source,
   
   // ============================================
   // Redis
@@ -227,7 +251,9 @@ export const config = {
   // shell has no extension host at all, so leaving this true on a server without
   // an X server is a launch failure, not a degraded mode. Run scripts/desktop.sh
   // (Xvfb) first, or point REAL_CHROME_DISPLAY at an existing display.
-  REAL_CHROME_HEADLESS: cleanEnv(process.env.REAL_CHROME_HEADLESS)?.toLowerCase() === 'true',
+  // Profiled: headed while developing (you need to SEE it), headless in
+  // production and test (nobody is watching, and CI has no screen).
+  REAL_CHROME_HEADLESS: profiled('REAL_CHROME_HEADLESS')?.toLowerCase() === 'true',
 
   // X display for the headed Chrome. Ignored when a DISPLAY is already exported.
   REAL_CHROME_DISPLAY: cleanEnv(process.env.REAL_CHROME_DISPLAY) || ':99',
@@ -235,7 +261,9 @@ export const config = {
   // Chrome's own DevTools endpoint. This is the literal "expose the browser on a
   // port" request: with this on you can attach any CDP client, or open
   // chrome://inspect from your own Chrome and drive the remote one.
-  REAL_CHROME_DEBUG_PORT: parseInt(cleanEnv(process.env.REAL_CHROME_DEBUG_PORT) || '0', 10),
+  // Profiled: forced off in production and test. An open DevTools port is
+  // remote code execution and full cookie theft for anyone who can reach it.
+  REAL_CHROME_DEBUG_PORT: parseInt(profiled('REAL_CHROME_DEBUG_PORT') || '0', 10),
 
   // 127.0.0.1 by default and deliberately so: an open DevTools port is remote
   // code execution and full cookie theft for anyone who can reach it. Set
@@ -258,7 +286,7 @@ export const config = {
   // not something to discard because the container restarted. Set false to get
   // a fresh window every time.
   REAL_CHROME_RESTORE_TABS:
-    (cleanEnv(process.env.REAL_CHROME_RESTORE_TABS)?.toLowerCase() ?? 'true') !== 'false',
+    (profiled('REAL_CHROME_RESTORE_TABS')?.toLowerCase() ?? 'true') !== 'false',
 
   // ============================================
   // Remote desktop (Xvfb + VNC + noVNC)
@@ -266,7 +294,9 @@ export const config = {
   // Seeing the real Chrome — including extension popups, the extension toolbar
   // and native file dialogs — needs the X display itself, not a page screencast.
   // noVNC serves that display over HTTP so it opens in a normal browser tab.
-  DESKTOP_ENABLED: cleanEnv(process.env.DESKTOP_ENABLED)?.toLowerCase() === 'true',
+  // Profiled: on in development (a headed browser needs a display to be
+  // visible on), off elsewhere (an idle VNC desktop is just attack surface).
+  DESKTOP_ENABLED: profiled('DESKTOP_ENABLED')?.toLowerCase() === 'true',
   DESKTOP_VNC_PORT: parseInt(cleanEnv(process.env.DESKTOP_VNC_PORT) || '5900', 10),
   DESKTOP_NOVNC_PORT: parseInt(cleanEnv(process.env.DESKTOP_NOVNC_PORT) || '6080', 10),
   // Empty means "no VNC password". Only acceptable when the port is bound to
@@ -293,7 +323,9 @@ export const config = {
   // Browser
   // ============================================
   DEFAULT_HEADLESS: cleanEnv(process.env.DEFAULT_HEADLESS)?.toLowerCase() !== 'false',
-  TURBO_MODE: cleanEnv(process.env.TURBO_MODE) === 'true',
+  // Profiled off in development: turbo trades diagnosability for speed, and
+  // during development that trade is backwards.
+  TURBO_MODE: profiled('TURBO_MODE') === 'true',
 
   // ============================================
   // Garbage Collector
@@ -307,7 +339,9 @@ export const config = {
   // ============================================
   // Rate Limiting
   // ============================================
-  RATE_LIMIT_ENABLED: cleanEnv(process.env.RATE_LIMIT_ENABLED) !== 'false',
+  // Profiled: off while developing (rate-limiting yourself wastes an afternoon
+  // on a non-bug), on in production (an unlimited public endpoint is a bill).
+  RATE_LIMIT_ENABLED: profiled('RATE_LIMIT_ENABLED') !== 'false',
   RATE_LIMIT_PER_MINUTE: parseInt(cleanEnv(process.env.RATE_LIMIT_PER_MINUTE) || '120', 10),
   ADMIN_RATE_LIMIT_PER_MINUTE: parseInt(cleanEnv(process.env.ADMIN_RATE_LIMIT_PER_MINUTE) || '30', 10),
 

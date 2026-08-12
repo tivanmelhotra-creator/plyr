@@ -45,7 +45,6 @@ import http from 'http';
 
 import { config } from '../config';
 import {
-  ANTI_AUTOMATION_ARGS,
   IGNORED_DEFAULT_ARGS,
   realisticUserAgent,
   withUtf8Locale,
@@ -55,6 +54,7 @@ import {
   extensionLaunchArgs,
   type InstalledExtension,
 } from './ChromeExtensions';
+import { resolveFlags, type ResolveFlagsInput, type ResolvedFlags } from './ChromeFlags';
 import { Desktop, displayGuidance } from './Desktop';
 import {
   RealChromeShelf,
@@ -451,6 +451,49 @@ export class RealChrome {
   }
 
   /**
+   * The flag selection the NEXT launch will use.
+   *
+   * Held here rather than passed through `getContext()` because the browser is a
+   * shared singleton: the picker, the routes and the desktop all call
+   * `getContext()` and only one of them is the operator expressing a preference.
+   * A flag choice therefore has to outlive the request that made it.
+   *
+   * Null means "nothing chosen" — resolveFlags() then applies the recommended
+   * preset, which reproduces exactly what shipped before this existed.
+   */
+  private static flagChoice: ResolveFlagsInput | null = null;
+  private static launchedWith: ResolvedFlags | null = null;
+
+  /**
+   * Choose the flags for the next launch.
+   *
+   * Returns what WOULD be used, including anything unknown or forced, so the
+   * caller can show the operator the consequences before restarting. Does not
+   * touch a running browser: Chrome reads these only at startup, and pretending
+   * otherwise would be the same silent lie as a dropped flag.
+   */
+  static setFlagChoice(input: ResolveFlagsInput | null): ResolvedFlags {
+    this.flagChoice = input;
+    return resolveFlags(input ?? {});
+  }
+
+  /** The selection queued for the next launch (not necessarily the live one). */
+  static currentFlagChoice(): ResolvedFlags {
+    return resolveFlags(this.flagChoice ?? {});
+  }
+
+  /**
+   * What the RUNNING browser was actually started with.
+   *
+   * Distinct from `currentFlagChoice()` on purpose: after changing the
+   * selection the two disagree until a restart, and that gap is exactly what
+   * the UI must be able to point at ("restart to apply").
+   */
+  static activeFlags(): ResolvedFlags | null {
+    return this.launchedWith;
+  }
+
+  /**
    * Start (or return) the shared Chrome.
    *
    * Concurrent callers share one in-flight launch: the picker opening twice in
@@ -498,20 +541,30 @@ export class RealChrome {
     // configured size when there is no display to ask (headless, no xdpyinfo).
     const screen = headless ? null : await Desktop.screenSize();
 
+    // The switches now come from the CATALOGUE (src/core/ChromeFlags.ts) rather
+    // than from a hard-coded array here, so the operator can pick them from a
+    // form instead of reading this source and searching the web for what each
+    // one does. The default selection is byte-identical to the array this
+    // replaced, minus one accidental duplicate of --no-default-browser-check
+    // (it was listed here AND in ANTI_AUTOMATION_ARGS) -- pinned by the
+    // `reproduces the previously hard-coded arg list` test.
+    //
+    // REAL_CHROME_RESTORE_TABS still wins over the selection: it is the
+    // documented kill switch for the tab-restore feature, and a preset quietly
+    // re-enabling something the operator turned off in .env would be the exact
+    // betrayal EnvProfile.ts refuses to commit.
+    const chosen = resolveFlags({
+      ...(this.flagChoice ?? {}),
+      overrides: {
+        ...(this.flagChoice?.overrides ?? {}),
+        'restore-last-session': restoreTabs,
+      },
+    });
+    this.launchedWith = chosen;
+
     const args = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-background-networking',
-      '--disable-sync',
-      // The second half of the tab-restore fix. Without it the pref set above
-      // does nothing at all: Chrome treats this launch as a fresh window rather
-      // than a startup that should reopen the previous session.
-      ...(restoreTabs ? ['--restore-last-session'] : []),
+      ...chosen.args,
       ...windowArgs(screen),
-      ...ANTI_AUTOMATION_ARGS,
       ...extensionLaunchArgs(extensions),
     ];
 

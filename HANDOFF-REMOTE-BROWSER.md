@@ -301,3 +301,92 @@ Tabs come back now because Chrome is *asked* to bring them back (pref **and** fl
 `REAL_CHROME_RESTORE_TABS`), and a wedged Chromium is no longer handed back to the caller —
 `isResponsive()` proves liveness with a real `1+1` round trip and `recycleIfWedged()` replaces it.
 `GET /browser/real/health` and `POST /browser/real/recover` expose that from outside.
+
+---
+
+## 8. Configuration that tunes itself (the operator's follow-up request)
+
+> «متغییر ها خیلی شدن و الان بخام یه حالت استاندارد برسم باید کلی متغیر سروکله زد در حالی که من میخام
+> نسبت به موقعیت متغیر ها تنظیم بشن … به جای اینکه من بخام دونه دونه سرچ کنم تگ ها رو پیدا کنم … حواسمون
+> به کاربران تازه کار هم باشه … من نمیخام کاربر با متغییر ها درگیر بشه که نفهمه این متغییر چه گزینه هایی
+> میتونه داشته باشه و گیج بشه»
+
+Two complaints, one theme: **77 environment variables, and no way to know what any of them may be set to.**
+
+### 8.1 Profiles — `src/core/EnvProfile.ts`
+
+One word decides the situation, and the situational variables follow it:
+
+| | development | production | test |
+|---|---|---|---|
+| `REAL_CHROME_HEADLESS` | `false` — you need to SEE it | `true` — nothing is watching | `true` — CI has no screen |
+| `DESKTOP_ENABLED` | `true` | `false` | `false` |
+| `RATE_LIMIT_ENABLED` | `false` | `true` | `false` |
+| `REAL_CHROME_DEBUG_PORT` | — | `0` | `0` |
+| `TURBO_MODE` | `false` | — | — |
+
+Precedence, in one line: **explicit env var → profile default → built-in default.** `''` counts as absent;
+`false` is explicit and wins. So the profile can never take a decision away from you.
+
+**`APP_ENV`, not `NODE_ENV`.** `NODE_ENV` is written by everything — vitest forces `test`, bundlers force
+`production` — so it cannot express *your* intent. `APP_ENV` is yours and wins; `NODE_ENV` is still
+honoured when `APP_ENV` is absent. Short forms `dev` / `prod` / `ci` work.
+
+**Provenance is the feature, not the values.** `GET /config/profile` returns, per variable, the `value`,
+the `source` (`explicit` / `profile` / `default`), a bilingual `why`, what the profile *would* have chosen
+(`profileValue`), and `overridden`. "You set this" and "development set this for you" must never look
+alike, or the operator debugs the wrong layer — which is how this project lost days.
+
+### 8.2 The flag catalogue — `src/core/ChromeFlags.ts`
+
+The hard-coded launch-argument array is gone. **15 switches**, each with a stable id, a group, bilingual
+label and reason, and a `risk` (`safe` / `caution` / `dangerous`); **6 groups**; **5 presets**.
+
+- **Beginners** pick a preset: `standard` **(recommended, pre-ticked)**, `stealth`, `lean`, `debug`.
+- **Experts** tick individual boxes, or choose `custom`.
+- `required` flags (e.g. `--no-sandbox` in a container) are **never offered as a checkbox** — a tick box
+  that bricks the browser is a trap. Trying to switch one off is reported back in `forced`.
+- Unknown ids are **reported in `unknown`, never silently dropped**. A flag the operator believes they set
+  and the browser never received is precisely the failure class that cost this project days.
+
+`standard` is byte-identical to the array it replaced, minus one accidental duplicate of
+`--no-default-browser-check` — pinned by a regression test that reconstructs the old list from git history.
+
+### 8.3 It applies without asking for a restart
+
+`POST /browser/real/flags` first answered `restartRequired: true`. That violates this repo's mandate —
+*never ask the user to do something we could have done* — and `tests/unit/self-heal.test.ts` fails the
+build on exactly that. The route now relaunches Chrome itself via `SelfHeal.reloadExtensions(report,
+swapLiveSessions)`, rebuilding live sessions so **tabs survive the swap**, and only when the selection
+actually changed *and* a browser is running.
+
+### 8.4 Two real bugs this work found in itself
+
+1. **`.env.example` defeated the whole system.** It set all six self-tuning variables explicitly, and
+   explicit always wins — so anyone following the documented "copy it to `.env`" step would have been back
+   to editing six variables by hand. They are now commented out, each annotated with what the profile
+   picks and why.
+2. **The `test` profile overturned a shipped default.** It set `REAL_CHROME_RESTORE_TABS='false'`
+   ("a test should start from a known state"). vitest sets `NODE_ENV=test`, so the entire suite began
+   asserting against a configuration no operator ever runs, and it quietly reversed the §3.2 fix above.
+   `chrome-tab-restore.test.ts` caught it. **Rule learned: a profile may tune what is environmental; it
+   may not flip a product decision that other tests pin.** A guard now fails if any profile re-adds it.
+
+### 8.5 Verified
+
+- **72 files / 1677 tests green**, `tsc --noEmit` clean.
+- Proven end-to-end through the **real router** and the **live `config` object**, not replicas: dev →
+  `headless:false, desktop:true`; prod → `headless:true, desktop:false, rateLimit:true`;
+  `APP_ENV=production REAL_CHROME_HEADLESS=false` → `false [explicit] overridden=true`.
+- `.env.example` loaded as dotenv would: one word changed, six behaviours followed.
+- i18n parity checked mechanically: **75 `rc.*` keys in both `fa` and `en`**, every key the UI asks for
+  defined in both.
+- New guards mutation-tested — re-adding the profile entry and dropping the flag from the recommended
+  preset each fail loudly.
+
+### 8.6 If you extend this
+
+Add a variable to `PROFILE_DEFAULTS` **only if its best value genuinely differs by situation**, and give
+it a real `why` in both languages — the `why` is what the operator reads instead of searching the web.
+Add a flag to `FLAG_CATALOGUE` with an honest `risk` and a reason that says **what it costs**, not just
+what it does. Do not add a flag to a preset without saying why in the preset's `summary`.
