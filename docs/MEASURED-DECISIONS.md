@@ -144,3 +144,136 @@ synchronously so we can show a real credentials modal.
   measured root cause of the disappearing popup/extension tab.
 - A page stays usable after its CDP session is detached, and a **fresh** CDP
   session can be re-bound to the same page — recovery does not need a new tab.
+
+## Remote file transfer: "the remote browser must feel local" (2026-08-12)
+
+The operator's requirement, in full: a file chosen inside the remote browser must
+travel **Windows → server → website** with no manual step, and a download must
+travel **website → server → Windows** *keeping the real name and the real
+extension, generically, for every format*. The previous simulator got the name
+wrong (files called `file`, missing suffixes, extensions supported only for a
+hardcoded handful).
+
+Every design decision below is a measurement, not a preference. Probes are in
+`tools/probe-dl-*.js`, `tools/probe-upload-vnc.js`, `tools/probe-chooser-hold.js`,
+`tools/probe-activation-window.js`, `tools/probe-auto-download.js`.
+
+### The filename source — `tools/probe-dl-final.js`
+
+40 cases: 8 real `Content-Disposition` shapes × 5 ways a site can start a
+download (anchor, same-tab navigation, `target=_blank`, form POST, `window.open`).
+
+| source of the name | correct |
+|---|---|
+| `download.suggestedFilename()` (what the shelf used) | **25/40 (63%)** |
+| the response's own `Content-Disposition`, read by us | **40/40 (100%)** |
+
+`suggestedFilename()` collapses to the literal string `download` for **every**
+name carried in RFC 5987 form (`filename*=UTF-8''…`) and for every raw-UTF-8
+header — 15 of 40 cases, including `فاکتور.xlsx`. **This is the root cause of
+the reported "wrong name / no extension / everything called `file`".** It is not
+a locale bug and it is not fixable downstream: by the time Playwright reports the
+name, the real one is already gone.
+
+So the name is now taken from the header, and `suggestedFilename()` is only a
+fallback. Sniffing bytes and mapping MIME types are fallbacks *below that*,
+because a name the site actually declared needs no guessing at all.
+
+### Why not CDP — `tools/probe-dl-cdp.js`
+
+`Browser.downloadWillBegin` looked like the authoritative source. Measured, it is
+strictly worse: **4/15** correct, and enabling
+`Browser.setDownloadBehavior{eventsEnabled:true}` **suppressed Playwright's own
+`download` event** (`(NO EVENT)` in 6/18 rows) — i.e. it would have broken the
+working shelf to get worse names. Rejected on evidence.
+
+`context.on('response')` is used rather than `page.on('response')`: a per-page
+listener missed **8/20** downloads in `tools/probe-dl-names2.js`, all of them the
+ones that open a new tab, because the page did not exist yet when it was attached.
+`context.on('download')` never fires at all (**30/30** misses) — only
+`page.on('download')` does, which is why the shelf still attaches per page.
+
+### Upload can be fully automatic — the handoff doc was wrong
+
+`HANDOFF-REMOTE-BROWSER.md` §2 states upload *cannot* be automatic here, because
+Playwright "is not holding its dialogs open" when the operator clicks with their
+own mouse over VNC, and concludes the operator must type a filename into the
+server's own dialog. **Measured false** (`tools/probe-upload-vnc.js`): headed
+Chromium on Xvfb, the input clicked with `xdotool` — a genuine X11 event from
+outside the browser, exactly what a VNC client delivers:
+
+```
+FILECHOOSER_EVENT_FIRED    = true
+CHOOSER_ANSWERED_BY_SERVER = true
+PAGE_SEES_FILE             = GOT:probe-upload-src.txt:25
+NATIVE_GTK_DIALOG_OPEN     = no
+```
+
+Interception is a property of the CDP connection, not of who moved the mouse. So
+the dialog can be answered with bytes uploaded from the operator's machine, and
+the server's filesystem is never shown.
+
+### The dialog survives a human — `tools/probe-chooser-hold.js`
+
+Holding it unanswered for **47.8 s** (while the operator browses their own disk):
+`SET_FILES_AFTER_DELAY_OK = true`, the page received the file, and
+`RENDERER_RESPONSIVE_WHILE_PENDING = true` — the remote view does not freeze
+while the dialog waits.
+
+### The local picker may open by itself — `tools/probe-activation-window.js`
+
+The viewer raises the operator's *own* picker after the server reports a pending
+dialog, so it needs transient user activation to survive the round trip.
+Measured window: **works up to 4900 ms, fails at 6000 ms.** The poll interval is
+set well inside that, and the fallback is a visible button — never a dead end.
+
+### Saving many files needs no per-file click — `tools/probe-auto-download.js`
+
+`BLOB_ANCHOR_DOWNLOADS_DELIVERED = 5/5`, names intact. Chrome's
+"multiple automatic downloads" gate does not block the blob+anchor route, so a
+page that emits several files still lands all of them.
+
+### End to end on the real stack — `tools/probe-e2e-transfer.js`
+
+The nine probes above each measured **one** question. This one runs the whole
+chain with the **real product classes** (`RealChromeShelf`, `RemoteFileChooser`,
+`resolveDownload`, `saveUpload`), a **real headed Chromium on Xvfb**, and a real
+HTTP server declaring names the way real sites declare them. It asserts and
+exits non-zero, so it is a check rather than something to read by eye.
+
+**ALL CHECKS PASSED.** Eight download shapes, every name exact:
+
+```
+["calendar.ics","contract.docx","bundle_v2.zip","quarterly",
+ "گزارش.pdf","فاکتور.xlsx","invoice_2026.xlsx","report_final.pdf"]
+```
+
+- The operator's own two examples land verbatim: `report_final.pdf`,
+  `invoice_2026.xlsx`.
+- **`فاکتور.xlsx` and `گزارش.pdf` are the decisive rows.** `suggestedFilename()`
+  answers the literal `download` for an RFC 5987 name, so these could only have
+  come from the declared header. Both header orders work
+  (`filename` first, and `filename*` first).
+- **`quarterly` keeps no extension.** The body was `application/octet-stream`;
+  inventing `.bin` would have been the wrong-suffix bug in a new coat.
+- **`calendar.ics` had no declared filename at all** — the extension came from the
+  MIME database, which is what "generic for all formats" means.
+- Bytes are reachable behind every token, and the stored basename equals the
+  declared name.
+- Upload: a path is refused **and the page released**, the page can then ask
+  again, and the website ends up with the operator's own bytes:
+  `GOT|my notes.txt|36|operator-file-contents-…`.
+
+**Two bugs this probe found in ITSELF, both worth recording** — because both
+looked exactly like catastrophic product failures on the first run:
+
+1. `shelf.list()` is **newest-first**. Reading `rows[rows.length - 1]` compared
+   every case against the *oldest* row, so all eight reported `report_final.pdf`
+   and it read as "the name is never updated". The product had been right the
+   whole time.
+2. Asserting `declaredCount() > 0` at the end **failed correctly**: `track()`
+   calls `headers.forget(url)` when a download completes, so the index is empty
+   by design. That assertion was demanding a memory leak.
+
+The lesson is the one this file exists for: a measurement that disagrees with the
+code is not automatically a bug in the code.

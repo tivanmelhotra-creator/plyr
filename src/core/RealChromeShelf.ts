@@ -60,7 +60,8 @@ import {
   discardDownload,
   MAX_DOWNLOAD_BYTES,
 } from './RemoteDownloads';
-import { safeFileName } from './RemoteUploads';
+import { safeFileName, extensionOf } from './RemoteUploads';
+import { DownloadHeaderIndex } from './DownloadHeaders';
 
 /** One row of the shelf, as the view renders it. */
 export interface ShelfEntry {
@@ -99,6 +100,51 @@ export const REAL_CHROME_SHELF_USER = 'local';
  * before (a GUID with no extension) and therefore the part a test must be able
  * to drive directly, with real bytes on a real disk and no browser involved.
  */
+/**
+ * The name the WEBSITE declared, preferred over the one Chrome guessed.
+ *
+ * WHY THE ORDER IS THIS WAY — MEASURED, and it is the whole reported bug.
+ * ----------------------------------------------------------------------
+ * The requirement is «نام واقعی و Extension واقعی که خود Website اعلام کرده» —
+ * whatever the website itself declared. MEASURED (tools/probe-dl-final.js) over
+ * 40 cases (8 `Content-Disposition` shapes × 5 ways a site starts a download):
+ *
+ *     download.suggestedFilename()       25/40 correct  (63%)
+ *     the response's Content-Disposition  40/40 correct (100%)
+ *
+ * `suggestedFilename()` returns the literal `download` for every RFC 5987
+ * (`filename*=UTF-8''…`) and raw-UTF-8 name — 15 of the 40, `فاکتور.xlsx`
+ * among them. So the header comes FIRST and Chrome's guess is the fallback.
+ *
+ * The declared name is still only a NAME: it came from a remote server, so the
+ * caller sanitises it before it touches a filesystem.
+ */
+export function preferDeclaredName(declared: string, suggested: string): string {
+  const fromSite = String(declared || '').trim();
+  const fromChrome = String(suggested || '').trim();
+  if (!fromSite) return fromChrome;
+
+  // A declared name that already carries an extension is the best answer
+  // available, full stop.
+  if (extensionOf(fromSite)) return fromSite;
+
+  // The site named the file but gave no suffix, while Chrome's guess has one
+  // (Chrome derives one from the response type: MEASURED, `application/rtf`
+  // with no filename became `rtf.rtf`). Keep the SITE's name and borrow only
+  // the suffix, so `export` + `export.xlsx` becomes `export.xlsx` instead of
+  // discarding either half.
+  const ext = extensionOf(fromChrome);
+  if (ext) {
+    const stem = fromChrome.slice(0, fromChrome.length - ext.length);
+    // Only when Chrome was talking about the same file. If the two names
+    // disagree, the site's own name wins untouched and `ensureUsableExtension`
+    // decides the suffix from the bytes or the type — inventing a pairing here
+    // could staple a `.pdf` onto an unrelated name.
+    if (!stem || stem === fromSite) return fromSite + ext;
+  }
+  return fromSite;
+}
+
 export async function finalizeDownloadName(
   savedPath: string,
   url: string,
@@ -125,7 +171,20 @@ export class RealChromeShelf {
   private rows: ShelfEntry[] = [];
   private seen = new WeakSet<Page>();
 
+  /**
+   * What each website declared its files are called.
+   *
+   * The single most important input to naming a download correctly — see
+   * `preferDeclaredName` for the 63% vs 100% measurement.
+   */
+  private readonly headers = new DownloadHeaderIndex();
+
   constructor(private readonly userId: string) {}
+
+  /** Declarations remembered so far. For tests and diagnostics. */
+  declaredCount(): number {
+    return this.headers.size();
+  }
 
   /** Newest first — the file just downloaded is the one being looked for. */
   list(): ShelfEntry[] {
@@ -142,6 +201,12 @@ export class RealChromeShelf {
    * download in a tab the user opened later would be silently dropped.
    */
   watch(ctx: BrowserContext): void {
+    // Responses FIRST, and at the context level. This is what learns the real
+    // filename, and it must be listening before anything can navigate: MEASURED
+    // (tools/probe-dl-names2.js) a per-page listener missed 8/20 downloads —
+    // every one of them a download that opened a new tab, whose page did not
+    // exist yet when a per-page listener would have been attached.
+    this.headers.watch(ctx);
     for (const p of ctx.pages()) this.watchPage(p);
     ctx.on('page', (p) => this.watchPage(p));
   }
@@ -163,10 +228,17 @@ export class RealChromeShelf {
    */
   async track(dl: Download): Promise<ShelfEntry> {
     const url = (() => { try { return dl.url(); } catch { return ''; } })();
-    // The suggested name comes from a remote server's Content-Disposition, so
-    // it is sanitised BEFORE it reaches a filesystem or the UI: a name carrying
-    // a bidi override can make `report.exe` read as `report.txt` on the shelf.
-    const suggested = safeFileName(String(dl.suggestedFilename() || '')) || 'download';
+
+    // What the WEBSITE said this file is called, which is the answer whenever it
+    // exists: 40/40 correct against suggestedFilename()'s 25/40. Chrome's guess
+    // is only the fallback — it reports the literal string `download` for every
+    // RFC 5987 and raw-UTF-8 name, which is the reported bug.
+    const declared = this.headers.lookup(url);
+    const chosen = preferDeclaredName(declared?.name || '', String(dl.suggestedFilename() || ''));
+    // Sanitised BEFORE it reaches a filesystem or the UI, wherever it came from:
+    // a name carrying a bidi override can make `report.exe` read as `report.txt`
+    // on the shelf.
+    const suggested = safeFileName(chosen) || 'download';
 
     const entry: ShelfEntry = {
       token: mintDownloadToken(),
@@ -187,8 +259,11 @@ export class RealChromeShelf {
       // Chrome could not always name the FORMAT. A site that streams bytes with
       // no filename and no Content-Disposition leaves suggestedFilename() with
       // no extension at all — measured here as a bare GUID. The bytes are on
-      // disk now, so the format can be identified from them.
-      const done = await finalizeDownloadName(target, url);
+      // disk now, so the format can be identified from them, and the response's
+      // own Content-Type is passed as the last resort below that: for a format
+      // with no magic number (an .xlsx served as octet-stream, a .csv, an .rtf)
+      // the header is the ONLY evidence that exists.
+      const done = await finalizeDownloadName(target, url, declared?.contentType || '');
       entry.name = done.name;
       entry.size = done.size;
       entry.state = 'completed';
@@ -209,6 +284,12 @@ export class RealChromeShelf {
       entry.state = 'failed';
       entry.error = (e as Error)?.message || 'download_failed';
     }
+    // The declaration has been used, so drop it. An endpoint like `/export`
+    // legitimately returns a DIFFERENT file every time it is called, and keeping
+    // the first response's name would make the second download inherit it.
+    // Done after the try/catch so a failed download does not leave a stale name
+    // behind for the retry either.
+    this.headers.forget(url);
     return entry;
   }
 

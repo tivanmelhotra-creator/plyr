@@ -324,6 +324,10 @@ function attach() {
     // the "Starting Chromium..." spinner would offer an upload with nowhere to
     // go, and a download list that cannot be populated.
     filesEl.hidden = false;
+    // And only now start watching for files moving in either direction: before
+    // the desktop is up there is no page that can ask for a file and nothing
+    // that can have downloaded one.
+    startWatching();
   });
 
   rfb.addEventListener('disconnect', (ev) => {
@@ -640,17 +644,35 @@ function renderDownloads(rows) {
   });
 }
 
-function refreshDownloads() {
-  return fetch('/browser/real/downloads', {
+/**
+ * Read the shelf. Returns the rows, so the watcher can act on them.
+ *
+ * 'quiet' skips the re-render. The watcher runs every WATCH_MS and rebuilding
+ * the list that often would reset the scroll position of a panel the operator
+ * may be reading, and discard a per-row error message they have not read yet.
+ * The panel is re-rendered when it is OPENED, which is when it is looked at.
+ */
+function refreshDownloads(quiet) {
+  // The marker is for the READER of a log, not for the server, which ignores
+  // unknown query parameters. A shelf endpoint that is hit every WATCH_MS looks
+  // alarming in an access log until you can tell the background watch from the
+  // operator actually opening the panel; this distinguishes them at a glance.
+  return fetch('/browser/real/downloads' + (quiet ? '?watch=1' : ''), {
     headers: authHeaders(),
     credentials: 'same-origin',
   })
     .then((r) => r.json())
     .then((j) => {
       if (j && j.owner) shelfOwner = String(j.owner);
-      renderDownloads((j && j.downloads) || []);
+      const rows = (j && j.downloads) || [];
+      if (!quiet) renderDownloads(rows);
+      return rows;
     })
-    .catch(() => { /* the browser may not be up yet; the button can be pressed again */ });
+    .catch(() => {
+      // The browser may not be up yet. The button can be pressed again, and the
+      // watcher's next tick asks again by itself.
+      return null;
+    });
 }
 
 document.getElementById('dlbtn').addEventListener('click', () => {
@@ -694,79 +716,361 @@ function uploadOne(file) {
   }));
 }
 
-/**
- * Where an uploaded file actually lands, said out loud.
- *
- * WHY THIS IS SHOWN RATHER THAN A SILENT "Uploaded"
- * ------------------------------------------------
- * On the SIMULATED browser an upload could be handed straight to the page,
- * because Playwright drives that browser and intercepts its file dialog
- * (page.on('filechooser') -> setFiles) -- see core/RemoteUploads. This view is
- * not that: it is a VNC screen onto a real Chromium the operator drives with
- * their own mouse, and Playwright is not holding its dialogs open. There is
- * therefore no dialog to answer at upload time, and pretending otherwise is
- * what made the old button meaningless -- it said "Uploaded" and the file was
- * unreachable from every page on the screen.
- *
- * What DOES work, and needs no interception at all: Chromium's own file dialog
- * is drawn on the virtual screen, so it IS visible and clickable over VNC, and
- * it browses the SERVER's disk -- which is where the bytes now are. So the one
- * thing the operator needs is the name to type into that dialog.
- */
-function showUploadResult(names) {
+/** Put a line in the panel, and make sure the panel is where it can be read. */
+function noteInPanel(className, text, sub) {
   const li = document.createElement('li');
-  li.className = 'uphint';
-  li.textContent = names.length === 1
-    ? 'Ready on the remote browser as: ' + names[0]
-    : 'Ready on the remote browser: ' + names.join(', ');
-  const how = document.createElement('div');
-  how.className = 'sub';
-  how.textContent = 'In the remote page press its own Choose/Browse button and '
-    + 'type this name into the dialog on screen.';
-  li.appendChild(how);
+  li.className = className;
+  li.textContent = text;
+  if (sub) {
+    const extra = document.createElement('div');
+    extra.className = 'sub';
+    extra.textContent = sub;
+    li.appendChild(extra);
+  }
   dls.insertBefore(li, dls.firstChild || null);
   panel.hidden = false;
+  return li;
 }
+
+/**
+ * What happened to an upload that no page had asked for yet.
+ *
+ * THE OLD TEXT WAS THE BUG, NOT THE WORDING
+ * -----------------------------------------
+ * This used to read "press its own Choose/Browse button and type this name into
+ * the dialog on screen", on the theory that a real Chromium driven by a real
+ * mouse has no interceptable dialog, so the operator had to bridge the gap by
+ * hand. MEASURED (tools/probe-upload-vnc.js) that theory is false: a genuine
+ * X11 click IS intercepted, because interception is a property of the CDP
+ * connection and not of who moved the mouse. So there is no name to type and no
+ * server filesystem to browse; the file is simply sent when the page asks. Which
+ * is the whole requirement:
+ *
+ *   «کاربر نباید مجبور باشد ابتدا فایل را دستی روی سرور Upload کند و بعد از
+ *    سرور آن را روی سایت بفرستد»
+ */
+function showUploadResult(names) {
+  noteInPanel(
+    'uphint',
+    names.length === 1 ? 'Ready to send: ' + names[0] : 'Ready to send: ' + names.join(', '),
+    'Press the page own Choose/Browse button and this goes straight to the site.',
+  );
+}
+
+/**
+ * Uploads that are on the server but have not been given to a page yet.
+ *
+ * This is what makes the Upload button worth pressing BEFORE the page asks. When
+ * a chooser then appears it is answered from here without another prompt, so the
+ * operator picks a file once and never twice.
+ */
+let readyTokens = [];
+let readyNames  = [];
 
 upInput.addEventListener('change', () => {
   const list = Array.from(upInput.files || []);
   // Reset first: picking the same file twice in a row fires no 'change' at all
   // unless the value is cleared, which reads as the upload being ignored.
   upInput.value = '';
-  if (!list.length) return;
+  // Captured NOW, before any await. If the page's request expires mid-upload the
+  // file must not be delivered to whatever asked next.
+  const answering = pendingId;
+  if (!list.length) {
+    // The operator opened their own picker and chose nothing. The remote page is
+    // still waiting on a dialog, and a page that thinks a dialog is open behaves
+    // as if it is still waiting for input -- so release it.
+    if (answering) void cancelPending(answering);
+    return;
+  }
   const btn = document.getElementById('upbtn');
   btn.textContent = 'Uploading…';
   const done = [];
+  const tokens = [];
   let failure = '';
   // Sequential on purpose: parallel uploads of several large files on a server
   // that is also running a browser is how both end up slow.
   list.reduce(
     (chain, file) => chain.then(() => uploadOne(file).then((d) => {
       done.push((d && d.name) || file.name);
+      if (d && d.token) tokens.push(d.token);
     })),
     Promise.resolve(),
   )
     .then(() => {
+      // The bytes are on the server. If a page is waiting for them, that is the
+      // whole point -- hand them over now rather than telling the operator to go
+      // and do it themselves.
+      if (answering && tokens.length) return answerPending(answering, tokens, done, btn);
       btn.textContent = 'Uploaded';
+      readyTokens = readyTokens.concat(tokens);
+      readyNames  = readyNames.concat(done);
       showUploadResult(done);
+      return null;
     })
     .catch((e) => {
       btn.textContent = 'Upload failed';
       failure = (e && e.message) ? e.message : 'The upload failed.';
       // Say WHY, in the panel, where it stays readable. A button that flicks
       // back to "Upload" after 2.5 s has told the operator nothing.
-      const li = document.createElement('li');
-      li.className = 'rowerr';
-      li.textContent = failure;
-      dls.insertBefore(li, dls.firstChild || null);
-      panel.hidden = false;
+      noteInPanel('rowerr', failure);
+      // A page still waiting on a dialog we cannot answer must be released, or
+      // the operator is left looking at a page that never moves.
+      if (answering) void cancelPending(answering);
       // Files that DID arrive before the failure are still usable, and saying
       // so is the difference between "retry the rest" and "start over".
-      if (done.length) showUploadResult(done);
+      if (done.length) {
+        readyTokens = readyTokens.concat(tokens);
+        readyNames  = readyNames.concat(done);
+        showUploadResult(done);
+      }
     })
     // Whatever happened, the button must go back to being a button.
     .then(() => setTimeout(() => { btn.textContent = 'Upload'; }, 2500));
 });
+
+// A picker the operator dismissed. Modern browsers fire this and NOT 'change',
+// so without it a cancelled pick would leave the remote page waiting on a dialog
+// until the server's own timeout released it minutes later.
+upInput.addEventListener('cancel', () => {
+  const answering = pendingId;
+  if (answering) void cancelPending(answering);
+});
+
+// ── AUTOMATIC TRANSFER, BOTH DIRECTIONS ────────────────────────────────────
+// The two requirements this implements, in the operator's own words:
+//
+//   «Windows کاربر → Backend/Server → Website ... کاربر نباید مجبور باشد ابتدا
+//    فایل را دستی روی سرور Upload کند»
+//   «کلیک روی Download → فایل مستقیماً روی Windows کاربر ذخیره شود»
+//
+// Neither can be driven by the operator pressing something in this bar, because
+// the thing that starts them happens INSIDE the remote page. So the page watches
+// the server instead, and both directions complete on their own.
+//
+// WHY POLLING, AND WHY AT THIS RATE
+// ---------------------------------
+// Opening the operator's own file picker requires transient user activation, and
+// the activation in play is the click they just made on the remote screen -- this
+// canvas -- to press the page's Choose button. That activation has to survive the
+// round trip to the server and back. MEASURED
+// (tools/probe-activation-window.js): the picker still opens 4900 ms after the
+// gesture and fails at 6000 ms. So the interval is set an order of magnitude
+// inside the budget, leaving room for a slow request rather than sitting on the
+// edge of it. A WebSocket would need no interval at all, but this page's only
+// socket is the RFB stream and adding a second one is a new authentication
+// surface for a saving of a few hundred milliseconds.
+const WATCH_MS = 700;
+
+/** The request the remote page is currently waiting on, and its details. */
+let pendingId = '';
+let pendingAccept = '';
+let pendingMultiple = false;
+/** The prompt shown for it, so it can be removed once it is answered. */
+let pendingRow = null;
+
+/**
+ * Downloads already given to the operator's browser.
+ *
+ * Keyed by token, so a file is delivered exactly once no matter how many times
+ * it appears in a poll. Without it every tick would re-save the same file.
+ */
+const delivered = {};
+/**
+ * Whether the first list has been seen.
+ *
+ * The first poll SEEDS this map instead of delivering: the shelf can already
+ * hold files from before this tab was opened, and dumping a previous session's
+ * downloads into the operator's Downloads folder because they opened a viewer is
+ * not what "the file I just downloaded arrives on my machine" means.
+ */
+let seeded = false;
+
+let watching = false;
+
+/** Start the watch loop. Called once, when the desktop connects. */
+function startWatching() {
+  if (watching) return;
+  watching = true;
+  void tick();
+}
+
+/**
+ * setTimeout and not setInterval, deliberately: a tick that is slower than the
+ * interval would otherwise overlap itself, and two overlapping ticks can see the
+ * same new download and deliver it twice.
+ */
+function tick() {
+  return watchOnce()
+    .catch(() => { /* a failed poll is a poll; the next one still runs */ })
+    .then(() => { setTimeout(() => { void tick(); }, WATCH_MS); });
+}
+
+function watchOnce() {
+  return Promise.resolve()
+    .then(() => pollChooser())
+    .then(() => pollDownloads());
+}
+
+/** Is a page asking for a file? If so, get the operator's file to it. */
+function pollChooser() {
+  return fetch('/browser/real/chooser', {
+    headers: authHeaders(),
+    credentials: 'same-origin',
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      const c = j && j.chooser;
+      if (!c || !c.id) {
+        // The request is gone: answered, cancelled, or its page closed. Take the
+        // prompt down so the bar does not ask for a file nothing is waiting for.
+        if (pendingId) clearPending();
+        return null;
+      }
+      // Already handling this one. Re-opening the picker on every tick would
+      // fight the operator for the dialog they are standing in.
+      if (c.id === pendingId) return null;
+      pendingId = String(c.id);
+      pendingAccept = String(c.accept || '');
+      pendingMultiple = !!c.multiple;
+      return offerFile();
+    })
+    .catch(() => { /* the browser may be down; the next tick finds out */ });
+}
+
+/**
+ * Get a file to the page that is asking, with as few gestures as possible.
+ *
+ * Nothing here is a dead end. If the picker cannot be raised -- the activation
+ * expired, or the operator's browser refuses -- the prompt in the panel is a
+ * real button that opens it, so the request is always answerable by hand.
+ */
+function offerFile() {
+  // Already uploaded something and it has not been used yet: the operator has
+  // ALREADY chosen. Asking again would be the manual second step this feature
+  // exists to remove.
+  if (readyTokens.length) {
+    const tokens = pendingMultiple ? readyTokens : readyTokens.slice(0, 1);
+    const names  = pendingMultiple ? readyNames  : readyNames.slice(0, 1);
+    readyTokens = pendingMultiple ? [] : readyTokens.slice(1);
+    readyNames  = pendingMultiple ? [] : readyNames.slice(1);
+    return answerPending(pendingId, tokens, names, document.getElementById('upbtn'));
+  }
+
+  pendingRow = noteInPanel(
+    'uphint',
+    'The page is asking for a file.',
+    'Choose it on your own computer and it goes straight to the site.',
+  );
+  const pick = document.createElement('button');
+  pick.className = 'fbtn';
+  pick.type = 'button';
+  pick.textContent = 'Choose file';
+  pick.addEventListener('click', () => openLocalPicker());
+  pendingRow.appendChild(pick);
+
+  // The attempt itself. It works while the click on the remote screen still
+  // counts as activation; when it does not, the button above is right there.
+  openLocalPicker();
+  return null;
+}
+
+/** Raise the operator's OWN file dialog, filtered like the page's input. */
+function openLocalPicker() {
+  // Mirror the input's own accept/multiple, so the operator is not offered files
+  // the page will reject -- and so a single-file input cannot be handed five.
+  upInput.accept = pendingAccept;
+  upInput.multiple = pendingMultiple;
+  try { upInput.click(); } catch (e) { /* the button in the panel still works */ }
+}
+
+/** Hand uploaded tokens to the waiting page. */
+function answerPending(id, tokens, names, btn) {
+  return fetch('/browser/real/chooser', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+    body: JSON.stringify({ id: id, tokens: tokens }),
+    credentials: 'same-origin',
+  })
+    .then((r) => r.text().then((txt) => {
+      let d = null;
+      try { d = JSON.parse(txt); } catch (e) { /* not JSON: the status decides */ }
+      if (!r.ok || !d || !d.success) {
+        throw new Error((d && d.error) || 'The page stopped waiting for the file.');
+      }
+      return d;
+    }))
+    .then(() => {
+      if (btn) btn.textContent = 'Sent';
+      clearPending();
+      noteInPanel('uphint', names.length === 1
+        ? 'Sent to the site: ' + names[0]
+        : 'Sent to the site: ' + names.join(', '));
+      return null;
+    })
+    .catch((e) => {
+      if (btn) btn.textContent = 'Upload failed';
+      // The file IS on the server; only the hand-over failed. Saying which is
+      // the difference between "pick it again" and "press the page button again".
+      noteInPanel('rowerr', (e && e.message) ? e.message : 'The file could not be sent.');
+      readyTokens = readyTokens.concat(tokens);
+      readyNames  = readyNames.concat(names);
+      clearPending();
+      return null;
+    });
+}
+
+/** Tell the server nobody is going to answer, so the page is released. */
+function cancelPending(id) {
+  clearPending();
+  return fetch('/browser/real/chooser?id=' + encodeURIComponent(id), {
+    method: 'DELETE',
+    headers: authHeaders(),
+    credentials: 'same-origin',
+  }).catch(() => { /* the server times it out anyway */ });
+}
+
+function clearPending() {
+  pendingId = '';
+  pendingAccept = '';
+  pendingMultiple = false;
+  if (pendingRow) {
+    pendingRow.remove();
+    pendingRow = null;
+  }
+}
+
+/**
+ * Deliver anything newly downloaded straight to the operator's machine.
+ *
+ * «کلیک روی Download → فایل مستقیماً روی Windows کاربر ذخیره شود ... نباید کاربر
+ *  مجبور باشد ابتدا فایل را روی Server دانلود کند و بعد آن را جداگانه از Server
+ *  دریافت کند» -- so a completed download is fetched and saved without anyone
+ *  pressing a row. It goes through fetchDownload, which is what reads the name
+ *  off the SERVED response (Content-Disposition, filename* preferred) rather
+ *  than off the shelf row, so the name and extension are the website's own.
+ *
+ * MEASURED (tools/probe-auto-download.js) that this scales past one file:
+ * BLOB_ANCHOR_DOWNLOADS_DELIVERED = 5/5 with names intact, so Chrome's
+ * "multiple automatic downloads" gate does not block the blob+anchor route.
+ */
+function pollDownloads() {
+  return refreshDownloads(true).then((rows) => {
+    if (!rows) return null;
+    rows.forEach((r) => {
+      if (!r || !r.token) return;
+      // In-flight and failed rows are not files yet. They stay unmarked so the
+      // tick that sees them complete is the one that delivers them.
+      if (r.state !== 'completed') return;
+      if (delivered[r.token]) return;
+      delivered[r.token] = true;
+      // Seeding, not delivering: see the 'seeded' flag above.
+      if (!seeded) return;
+      void fetchDownload(r, (message) => { noteInPanel('rowerr', message); });
+    });
+    seeded = true;
+    return null;
+  });
+}
 
 // 'Try again' must START, not merely reconnect -- see startThenConnect().
 retry.addEventListener('click', () => { void startThenConnect(); });

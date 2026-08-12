@@ -255,12 +255,78 @@ const CONTENT_TYPE_EXT: Readonly<Record<string, string>> = {
   'video/webm': '.webm',
 };
 
+/**
+ * Types that name no format at all, so they must never yield an extension.
+ *
+ * `application/octet-stream` is "some bytes" — it is what a server sends when it
+ * is NOT saying what the file is. The `mime-types` database maps it to `.bin`,
+ * which on a real `.xlsx` is a WRONG suffix, and a wrong suffix sends the user's
+ * OS to the wrong application. That is worse than none, so these are refused
+ * before the generic lookup below ever runs.
+ */
+const OPAQUE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'application/octet-stream',
+  'binary/octet-stream',
+  'application/binary',
+  'application/download',
+  'application/force-download',
+  'application/unknown',
+  'application/x-download',
+  '*/*',
+]);
+
+/**
+ * The extension a response's own `Content-Type` declares — for ANY type.
+ *
+ * WHY THERE IS A GENERIC LOOKUP UNDER THE CURATED TABLE
+ * ----------------------------------------------------
+ * The operator's complaint about the previous attempt was explicit: extension
+ * support was «به‌صورت محدود و فقط برای بعضی فرمت‌ها» — limited, only some
+ * formats — and the requirement is that it work «برای تمام فرمت‌ها به‌صورت
+ * Generic … نه اینکه برای PDF، ZIP، DOCX، XLSX و... Logic جداگانه و Hardcode
+ * بنویسیم».
+ *
+ * The curated table above IS that hardcoded list, and it is missing the formats
+ * an office user actually exports: `.docx`, `.xlsx`, `.pptx`, `.rtf`, `.7z`,
+ * `.rar`, and hundreds more. So `mime-types` — the IANA-derived database Express
+ * itself already depends on, ~1000 types — answers for anything the table does
+ * not know. Adding a format is now nobody's job.
+ *
+ * The curated table still WINS where it has an opinion, and that is deliberate:
+ * it encodes choices the database does not share — `image/jpeg` → `.jpg` (the
+ * database says `.jpeg`) and `audio/mpeg` → `.mp3` (it says `.mpga`). Those are
+ * the names users expect to see on their own disk.
+ *
+ * Anything unknown, or opaque, still yields `''` rather than a guess.
+ */
 export function extensionFromContentType(contentType: string): string {
   // `text/html; charset=utf-8` -> `text/html`. Measured against real servers:
   // every page tested carried a charset parameter, so ignoring it is required
   // rather than defensive.
   const type = String(contentType || '').split(';')[0].trim().toLowerCase();
-  return CONTENT_TYPE_EXT[type] || '';
+  if (!type) return '';
+  const curated = CONTENT_TYPE_EXT[type];
+  if (curated) return curated;
+  if (OPAQUE_CONTENT_TYPES.has(type)) return '';
+
+  // Generic, database-backed, and deliberately last: this is what makes a format
+  // nobody hardcoded still arrive with its own suffix.
+  let generic = '';
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    const mime = require('mime-types') as { extension(t: string): string | false };
+    const found = mime.extension(type);
+    generic = typeof found === 'string' ? found : '';
+  } catch {
+    // The dependency ships with Express, but a missing optional module must
+    // degrade to "no suffix" and never throw in the middle of a download.
+    return '';
+  }
+  if (!generic) return '';
+  const ext = `.${generic.toLowerCase()}`;
+  // The same shape `extensionOf` accepts, so a database oddity cannot produce
+  // something that is not a plausible extension.
+  return /^\.[a-z0-9]{1,12}$/.test(ext) ? ext : '';
 }
 
 /**

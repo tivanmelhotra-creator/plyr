@@ -61,6 +61,7 @@ import {
   REAL_CHROME_SHELF_USER,
   type ShelfEntry,
 } from './RealChromeShelf';
+import { RemoteFileChooser, type PendingChooser } from './RemoteFileChooser';
 import {
   parseCookieFile,
   type CookieImportResult,
@@ -338,8 +339,45 @@ export class RealChrome {
    */
   private static shelf: RealChromeShelf | null = null;
 
+  /**
+   * The file dialogs this browser opens.
+   *
+   * Also not optional, and for the mirror-image reason. Without an interceptor
+   * the page's "Choose file" opens a native GTK dialog that browses the SERVER's
+   * disk — so the operator was told to upload to the server first and then type
+   * the name into a dialog on the screen. MEASURED
+   * (tools/probe-upload-vnc.js) that a real X11 click IS intercepted, which is
+   * what makes «کاربر نباید مجبور باشد ابتدا فایل را دستی روی سرور Upload کند»
+   * achievable. See core/RemoteFileChooser.
+   */
+  private static chooser: RemoteFileChooser | null = null;
+
   static isEnabled(): boolean {
     return config.REAL_CHROME_ENABLED === true;
+  }
+
+  /**
+   * The file dialog the remote page is waiting on, if any.
+   *
+   * Null when the browser is not running, because a dialog belongs to a live
+   * page: reporting one for a browser that no longer exists would make the view
+   * prompt for a file nothing can receive.
+   */
+  static pendingChooser(): PendingChooser | null {
+    return this.chooser ? this.chooser.pending() : null;
+  }
+
+  /** Answer that dialog with files already uploaded under `downloadOwner()`. */
+  static async acceptChooserFiles(id: string, tokens: string[]): Promise<{ count: number }> {
+    if (!this.chooser) {
+      throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
+    }
+    return this.chooser.accept(id, tokens);
+  }
+
+  /** Dismiss it. An empty id cancels whatever is pending. */
+  static async cancelChooser(id = ''): Promise<boolean> {
+    return this.chooser ? this.chooser.cancel(id) : false;
   }
 
   /**
@@ -623,6 +661,15 @@ export class RealChrome {
       this.shelf = new RealChromeShelf(REAL_CHROME_SHELF_USER);
       this.shelf.watch(context);
 
+      // And for the same reason, before anyone can press a page's "Choose file":
+      // an un-intercepted chooser opens a native dialog onto the SERVER's disk,
+      // which is the manual round trip the operator explicitly rejected. Sharing
+      // the shelf's identity is deliberate — the bytes are written under
+      // REAL_CHROME_SHELF_USER by /browser/uploads and must be looked for under
+      // the same id, which is the documented ENOENT hand-over bug.
+      this.chooser = new RemoteFileChooser(REAL_CHROME_SHELF_USER);
+      this.chooser.watch(context);
+
       context.on('close', () => {
         this.context = null;
         this.loaded = [];
@@ -631,6 +678,10 @@ export class RealChrome {
         // they were claimed with saveAs into the user's download directory and
         // are fetched by token, so a link already handed out keeps working.
         this.shelf = null;
+        // A pending dialog, by contrast, cannot outlive its browser: the page
+        // that asked is gone, so keeping the row would have the view prompting
+        // for a file with nowhere to put it.
+        this.chooser = null;
       });
 
       if (config.REAL_CHROME_DEBUG_PORT > 0) {

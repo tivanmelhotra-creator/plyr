@@ -166,11 +166,25 @@ interface Harness {
   /**
    * The file bar's fetches, in order. Excludes the boot POST to
    * /browser/real/open, which every run makes and which no test in this file is
-   * counting; use `starts` for that one.
+   * counting; use `starts` for that one. Also excludes the BACKGROUND WATCH
+   * traffic, for the same reason and by the same rule: once the desktop
+   * connects, the view polls for a pending file dialog and for new downloads
+   * every WATCH_MS, so folding those into these counts would make every
+   * assertion here a race against a timer. `watch` exposes them.
    */
   fetches: Array<{ url: string; init: Record<string, unknown> }>;
   /** The POSTs to /browser/real/open, from page load and from Retry. */
   starts: Array<{ url: string; init: Record<string, unknown> }>;
+  /** The background watcher's own polls, so they can be asserted directly. */
+  watch: Array<{ url: string; init: Record<string, unknown> }>;
+  /** What GET /browser/real/chooser will report is pending, or null. */
+  setPendingChooser: (c: unknown) => void;
+  /** Make POST /browser/real/chooser refuse, as it does when the page moved on. */
+  failChooserAnswer: (status: number, errorBody: unknown) => void;
+  /** Everything sent to /browser/real/chooser, in order. */
+  chooserCalls: () => Array<{ url: string; init: Record<string, unknown> }>;
+  /** Let the watcher run for roughly this many of its own ticks. */
+  ticks: (n?: number) => Promise<void>;
   /** Press "Try again" on the status overlay. */
   retry: () => void;
   /** What /browser/real/downloads will answer with. */
@@ -221,6 +235,16 @@ interface FakeEl {
   style: Record<string, string>;
   rel: string;
   download: string;
+  /**
+   * The file input's own filter, mirrored from the REMOTE page's input.
+   *
+   * Recorded because it is the difference between offering the operator the file
+   * the page will accept and offering them everything on their disk: a cookie
+   * importer that takes only .json must not be handed a .png.
+   */
+  accept: string;
+  multiple: boolean;
+  type: string;
   addEventListener: (type: string, fn: (ev: unknown) => void) => void;
   setAttribute: (k: string, v: string) => void;
   appendChild: (c: FakeEl) => void;
@@ -292,6 +316,9 @@ function makeEl(tag: string, hidden = false): FakeEl {
     style: {},
     rel: '',
     download: '',
+    accept: '',
+    multiple: false,
+    type: '',
     addEventListener(type, fn) {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type)!.push(fn);
@@ -386,6 +413,14 @@ async function runView(
     downloadErrorBody: { success: false, error: 'That file is gone.' } as unknown,
     uploadStatus: 200,
     uploadErrorBody: { success: false, error: 'File is too large.' } as unknown,
+    // What GET /browser/real/chooser reports. null is the ordinary answer: most
+    // of the time no page is asking for a file.
+    pendingChooser: null as unknown,
+    chooserAnswerStatus: 200,
+    chooserAnswerBody: {
+      success: false,
+      error: 'The page is not asking for a file any more.',
+    } as unknown,
     // How POST /browser/real/open answers. Success by default: almost every
     // test here is about the file bar and needs a page that got as far as
     // connecting.
@@ -423,6 +458,22 @@ async function runView(
    * boot POST has its own tests below.
    */
   const isStart = (url: string) => url.indexOf('/browser/real/open') >= 0;
+
+  /**
+   * The background watcher's traffic, held apart from `fetches` for exactly the
+   * reason the boot POST is.
+   *
+   * The view now polls two endpoints every WATCH_MS once the desktop connects,
+   * because both halves of the file transfer are started by something INSIDE the
+   * remote page and neither can wait for the operator to press something in this
+   * bar. The polls are: GET /browser/real/chooser (is a page asking for a file?)
+   * and the shelf list marked with ?watch=1 (did anything finish downloading?).
+   *
+   * A shelf read that carries no ?watch=1 is the OPERATOR opening the panel, and
+   * that one stays in `fetches` where the existing assertions expect it.
+   */
+  const isWatch = (url: string) =>
+    url.indexOf('/browser/real/chooser') >= 0 || url.indexOf('watch=1') >= 0;
 
   /**
    * A response with the parts the real server sends. `text()` matters: the page
@@ -474,6 +525,35 @@ async function runView(
       if (state.failDownloadsFetch) return Promise.reject(new Error('browser not up'));
       return Promise.resolve(reply({
         body: { success: true, owner: state.owner, downloads: state.downloads },
+      }));
+    }
+    // The file-dialog handshake. Answered before the upload fallthrough below,
+    // which would otherwise treat a chooser POST as an upload and hand the page
+    // an invented token.
+    if (url.indexOf('/browser/real/chooser') >= 0) {
+      const method = String(init.method || 'GET').toUpperCase();
+      if (method === 'POST') {
+        if (state.chooserAnswerStatus === 200) {
+          // The REAL server closes the slot when it answers: accept() calls
+          // forget(), so the very next GET reports nothing pending. A fake that
+          // kept reporting the same request would make the view see a BRAND NEW
+          // request on the next tick and open the picker again — which is a
+          // fake-fidelity gap, and it read exactly like the view failing to
+          // reuse an already-uploaded file.
+          state.pendingChooser = null;
+          return Promise.resolve(reply({ body: { success: true, count: 1 } }));
+        }
+        return Promise.resolve(
+          reply({ status: state.chooserAnswerStatus, body: state.chooserAnswerBody }),
+        );
+      }
+      if (method === 'DELETE') {
+        // cancel() clears the slot too, for the same reason.
+        state.pendingChooser = null;
+        return Promise.resolve(reply({ body: { success: true, cancelled: true } }));
+      }
+      return Promise.resolve(reply({
+        body: { success: true, owner: state.owner, chooser: state.pendingChooser },
       }));
     }
     if (url.indexOf('/browser/downloads/') >= 0) {
@@ -634,10 +714,31 @@ async function runView(
     connected: () => (rfbListeners.get('connect') || []).forEach((f) => f({})),
     el,
     click: (id) => el(id).emit('click'),
-    /** The file bar's traffic: everything except the boot POST. */
-    get fetches() { return allFetches.filter((f) => !isStart(f.url)); },
+    /** The file bar's traffic: everything the operator's own presses caused. */
+    get fetches() {
+      return allFetches.filter((f) => !isStart(f.url) && !isWatch(f.url));
+    },
     /** The boot/Retry POSTs, so the start behaviour can be asserted directly. */
     get starts() { return allFetches.filter((f) => isStart(f.url)); },
+    /** The background watcher's polls. */
+    get watch() { return allFetches.filter((f) => isWatch(f.url)); },
+    setPendingChooser: (c: unknown) => { state.pendingChooser = c; },
+    failChooserAnswer: (status: number, errorBody: unknown) => {
+      state.chooserAnswerStatus = status;
+      state.chooserAnswerBody = errorBody;
+    },
+    chooserCalls: () =>
+      allFetches.filter((f) => f.url.indexOf('/browser/real/chooser') >= 0),
+    /**
+     * Let the watcher actually run. Real time, not microtask turns: each tick is
+     * a chain of fake responses that resolve on their own timers, and the view
+     * schedules the next tick with setTimeout — so only elapsed time advances it.
+     */
+    ticks: async (n = 1) => {
+      for (let i = 0; i < n; i += 1) {
+        await new Promise((r) => setTimeout(r, 780));
+      }
+    },
     /** Press "Try again" on the overlay. */
     retry: () => el('retry').emit('click'),
     setDownloads: (rows) => { state.downloads = rows; },
@@ -1404,11 +1505,23 @@ describe('uploading tells the truth about what the server did', () => {
     expect(h.el('dls').textContent).toContain('too large');
   });
 
-  it('says where the file landed, because nothing auto-fills the page dialog', async () => {
-    // This view is a VNC screen onto a real Chromium the operator drives by
-    // hand; Playwright is not holding its file dialog open, so there is no
-    // chooser to answer. What the operator needs is the name to type into
-    // Chromium's own dialog, which IS visible on the virtual screen.
+  it('says the file is ready to send, and never tells the operator to type a name', async () => {
+    // THIS TEST USED TO ASSERT THE OPPOSITE, and it was wrong.
+    //
+    // It carried the reasoning from HANDOFF-REMOTE-BROWSER.md: this view is a
+    // VNC screen onto a real Chromium the operator drives by hand, so
+    // "Playwright is not holding its file dialog open", so there is no chooser to
+    // answer, so the best the bar can do is tell the operator the NAME to type
+    // into the server's own dialog. MEASURED (tools/probe-upload-vnc.js) with a
+    // genuine X11 click from xdotool and no Playwright click anywhere:
+    //
+    //     FILECHOOSER_EVENT_FIRED    = true
+    //     NATIVE_GTK_DIALOG_OPEN     = no
+    //
+    // Interception is a property of the CDP connection, not of who moved the
+    // mouse. So the premise was false, and the instruction it produced was the
+    // manual round trip the operator explicitly refused:
+    // «کاربر نباید مجبور باشد ابتدا فایل را دستی روی سرور Upload کند».
     const h = await runView();
     h.connected();
     h.chooseFiles(['cookies.json']);
@@ -1416,6 +1529,8 @@ describe('uploading tells the truth about what the server did', () => {
     expect(h.el('dls').textContent).toContain('cookies.json');
     // And the panel is opened, or the message is written somewhere unseen.
     expect(h.el('panel').hidden).toBe(false);
+    // The instruction to go and type the name by hand must be gone for good.
+    expect(h.el('dls').textContent).not.toMatch(/type this name|dialog on screen/i);
   });
 
   it('reports the files that DID arrive before a later one failed', async () => {
@@ -1517,5 +1632,374 @@ describe('a download is not lost when saveAs loses the race for the artifact', (
 
     expect(entry.state).toBe('completed');
     expect(entry.name.toLowerCase().endsWith('.png')).toBe(true);
+  });
+});
+
+// ── THE AUTOMATIC HALF ──────────────────────────────────────────────────────
+// Everything above this line is driven by the operator pressing something in
+// the file bar. These two describes cover the part that has NO press at all,
+// which is the whole of what was asked for:
+//
+//   «Windows کاربر → Backend/Server → Website ... کاربر نباید مجبور باشد ابتدا
+//    فایل را دستی روی سرور Upload کند و بعد از سرور آن را روی سایت بفرستد»
+//   «کلیک روی Download → فایل مستقیماً روی Windows کاربر ذخیره شود»
+//
+// The trigger for both happens INSIDE the remote page, where this page cannot
+// see it, so the page polls the server and completes each direction on its own.
+// These tests therefore let real time pass (h.ticks) rather than flushing
+// microtasks: the loop is a setTimeout chain by design, so that a slow tick
+// cannot overlap itself and deliver the same file twice.
+
+describe('a page asking for a file gets one without the operator going to fetch it', () => {
+  /** What GET /browser/real/chooser reports while a page is waiting. */
+  const asking = (over: Record<string, unknown> = {}) => ({
+    id: 'fc_1a2b3c4d',
+    multiple: false,
+    accept: '',
+    name: 'file',
+    at: Date.now(),
+    ...over,
+  });
+
+  it('does not poll at all until the desktop is actually connected', async () => {
+    // Polling before connect would be traffic about a browser that may not even
+    // be up, and it would race the boot POST this page makes on load.
+    const h = await runView();
+    await h.ticks(2);
+    expect(h.watch).toHaveLength(0);
+  });
+
+  it('starts watching for a file request once the desktop connects', async () => {
+    const h = await runView();
+    h.connected();
+    await h.ticks(2);
+    expect(h.watch.some((f) => f.url.indexOf('/browser/real/chooser') >= 0)).toBe(true);
+  });
+
+  it('raises the operator OWN picker when a page asks, with no press in this bar', async () => {
+    // The measured reason this can work at all: interception is a property of
+    // the CDP connection, not of who moved the mouse
+    // (tools/probe-upload-vnc.js), so a hand-driven click on the VNC screen
+    // still produces a chooser the server can answer.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+
+    // The hidden input was clicked BY THE PAGE. Nobody pressed Upload.
+    expect(h.el('up').clicks).toBeGreaterThan(0);
+    // And there is a visible way to do it by hand, because the picker can be
+    // refused when the activation from the remote click has expired.
+    expect(h.el('dls').textContent).toMatch(/asking for a file/i);
+  });
+
+  it('mirrors the page own accept filter onto the local picker', async () => {
+    // A cookie importer that takes only .json must not offer the operator a
+    // .png: the file would be uploaded, handed over, and then rejected by the
+    // site, which looks exactly like this feature not working.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking({ accept: '.json,application/json' }));
+    await h.ticks(2);
+    expect(h.el('up').accept).toBe('.json,application/json');
+    expect(h.el('up').multiple).toBe(false);
+  });
+
+  it('lets a multiple input take several files, and a single one only take one', async () => {
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking({ multiple: true }));
+    await h.ticks(2);
+    expect(h.el('up').multiple).toBe(true);
+  });
+
+  it('sends the chosen file straight to the page, with no second gesture', async () => {
+    // THE REQUIREMENT ITSELF. One pick on Windows, and the bytes are on the
+    // server AND handed to the waiting page. No "now upload it to the site".
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+
+    h.chooseFiles(['report_final.pdf']);
+    await new Promise((r) => setTimeout(r, 200));
+
+    const answers = h.chooserCalls().filter(
+      (c) => String(c.init.method || 'GET').toUpperCase() === 'POST',
+    );
+    expect(answers).toHaveLength(1);
+    const body = JSON.parse(String(answers[0].init.body));
+    expect(body.id).toBe('fc_1a2b3c4d');
+    // A TOKEN travelled, never a path: the page is handed the file by reference
+    // and this bar never learns where on the server it landed.
+    expect(body.tokens).toEqual(['up_0123456789abcdef01234567']);
+    expect(String(answers[0].init.body)).not.toMatch(/\/tmp|\/home|C:\\\\/);
+    // And the operator is told it reached the SITE, not merely the server.
+    expect(h.el('dls').textContent).toMatch(/sent to the site/i);
+  });
+
+  it('does not re-open the picker on every tick while the same request stands', async () => {
+    // A picker re-raised every 700 ms would fight the operator for the dialog
+    // they are standing in.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(4);
+    expect(h.el('up').clicks).toBe(1);
+  });
+
+  it('releases the page when the operator dismisses their own picker', async () => {
+    // Modern browsers fire 'cancel' and NOT 'change'. Without this the remote
+    // page would sit on an open dialog until the server timed it out minutes
+    // later, and a page that thinks a dialog is open does not move.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+
+    h.el('up').emit('cancel');
+    await new Promise((r) => setTimeout(r, 60));
+
+    const cancels = h.chooserCalls().filter(
+      (c) => String(c.init.method || '').toUpperCase() === 'DELETE',
+    );
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0].url).toContain('fc_1a2b3c4d');
+  });
+
+  it('uses a file uploaded BEFORE the page asked, instead of asking again', async () => {
+    // Pressing Upload early is legitimate preparation. Making the operator pick
+    // the same file a second time when the page finally asks is the manual
+    // round trip this feature exists to remove.
+    const h = await runView();
+    h.connected();
+    h.chooseFiles(['invoice_2026.xlsx']);
+    await new Promise((r) => setTimeout(r, 200));
+    const clicksBefore = h.el('up').clicks;
+
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+
+    // Answered from what was already there, and no new picker was raised.
+    const answers = h.chooserCalls().filter(
+      (c) => String(c.init.method || 'GET').toUpperCase() === 'POST',
+    );
+    expect(answers).toHaveLength(1);
+    expect(h.el('up').clicks).toBe(clicksBefore);
+  });
+
+  it('says why when the page stopped waiting, and keeps the file usable', async () => {
+    // 409: the request was well formed but the dialog moved on. The bytes ARE
+    // on the server, so the difference between "pick it again" and "press the
+    // page button again" is worth stating.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    h.failChooserAnswer(409, {
+      success: false,
+      error: 'The page is not asking for a file any more.',
+    });
+
+    h.chooseFiles(['late.txt']);
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(h.el('dls').textContent).toMatch(/not asking for a file any more/i);
+  });
+
+  it('takes the prompt down when the request goes away on its own', async () => {
+    // Answered elsewhere, cancelled, or its tab closed. A bar still asking for
+    // a file that nothing is waiting for is a lie.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    expect(h.el('dls').textContent).toMatch(/asking for a file/i);
+
+    h.setPendingChooser(null);
+    await h.ticks(2);
+    expect(h.el('dls').textContent).not.toMatch(/asking for a file/i);
+  });
+
+  it('survives the chooser endpoint failing, and keeps polling', async () => {
+    const h = await runView();
+    const seen: unknown[] = [];
+    const onRej = (e: unknown) => seen.push(e);
+    process.on('unhandledRejection', onRej);
+    try {
+      h.connected();
+      h.failDownloadsFetch = true;      // the other half of each tick
+      await h.ticks(2);
+      h.failDownloadsFetch = false;
+      h.setPendingChooser(asking());
+      await h.ticks(2);
+    } finally {
+      process.off('unhandledRejection', onRej);
+    }
+    expect(seen).toEqual([]);
+    // A failed poll is still a poll: the loop recovered and did its job.
+    expect(h.el('up').clicks).toBeGreaterThan(0);
+  });
+});
+
+describe('a finished download arrives on the operator machine by itself', () => {
+  const done = (over: Record<string, unknown> = {}) => ({
+    token: 'dl_1111111111111111111111aa',
+    name: 'report_final.pdf',
+    state: 'completed',
+    size: 2048,
+    ...over,
+  });
+
+  it('does NOT deliver what was already on the shelf when the viewer opened', async () => {
+    // The shelf can hold files from before this tab existed. Dumping a previous
+    // session's downloads into the operator's Downloads folder because they
+    // opened a viewer is not what "the file I just downloaded arrives" means.
+    const h = await runView();
+    h.setDownloads([done()]);
+    h.connected();
+    await h.ticks(3);
+    expect(h.anchors()).toHaveLength(0);
+  });
+
+  it('delivers a file that finished AFTER the viewer was open, with no press', async () => {
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);              // first poll seeds an empty shelf
+
+    h.setDownloads([done()]);
+    await h.ticks(2);
+
+    const anchors = h.anchors();
+    expect(anchors).toHaveLength(1);
+    // The name the WEBSITE declared, on the operator's disk.
+    expect(anchors[0].download).toBe('report_final.pdf');
+    expect(anchors[0].clickedWhileInDocument).toBe(true);
+  });
+
+  it('takes the name off the SERVED response, not off the shelf row', async () => {
+    // The served response is the only place the RFC 5987 name survives:
+    // suggestedFilename() answers the literal "download" for it (MEASURED
+    // 25/40). So a row saying "download" must still land as the real name.
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    h.setServedFile({
+      disposition: "attachment; filename=\"factura.xlsx\"; filename*=UTF-8''%D9%81%D8%A7%DA%A9%D8%AA%D9%88%D8%B1.xlsx",
+    });
+    h.setDownloads([done({ token: 'dl_2222222222222222222222bb', name: 'download' })]);
+    await h.ticks(2);
+
+    expect(h.anchors()).toHaveLength(1);
+    // filename* wins over the ASCII filename, so the operator gets the real one.
+    expect(h.anchors()[0].download).toBe('فاکتور.xlsx');
+  });
+
+  it('delivers each file exactly once, however many times it is polled', async () => {
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    h.setDownloads([done()]);
+    await h.ticks(4);             // the row keeps appearing in every poll
+
+    expect(h.anchors()).toHaveLength(1);
+  });
+
+  it('waits for a download to finish before delivering it', async () => {
+    // An in-flight row is not a file yet. It stays unmarked so the tick that
+    // sees it complete is the one that delivers it.
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    h.setDownloads([done({ state: 'inProgress', size: 0 })]);
+    await h.ticks(2);
+    expect(h.anchors()).toHaveLength(0);
+
+    h.setDownloads([done()]);     // same token, now finished
+    await h.ticks(2);
+    expect(h.anchors()).toHaveLength(1);
+    expect(h.anchors()[0].download).toBe('report_final.pdf');
+  });
+
+  it('never delivers a failed download', async () => {
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    h.setDownloads([done({ state: 'failed', error: 'too large' })]);
+    await h.ticks(3);
+    expect(h.anchors()).toHaveLength(0);
+  });
+
+  it('delivers several files that finish in the same tick', async () => {
+    // MEASURED (tools/probe-auto-download.js): 5/5 blob+anchor deliveries with
+    // names intact, so Chrome's "multiple automatic downloads" gate does not
+    // block this route.
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    h.setDownloads([
+      done({ token: 'dl_3333333333333333333333cc', name: 'a.pdf' }),
+      done({ token: 'dl_4444444444444444444444dd', name: 'b.zip' }),
+      done({ token: 'dl_5555555555555555555555ee', name: 'c.docx' }),
+    ]);
+    await h.ticks(3);
+
+    expect(h.anchors().map((a) => a.download).sort()).toEqual(['a.pdf', 'b.zip', 'c.docx']);
+  });
+
+  it('says why a delivery failed instead of silently dropping the file', async () => {
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    h.failDownloadBytes(404, { success: false, error: 'That file is no longer on the server.' });
+    h.setDownloads([done()]);
+    await h.ticks(3);
+
+    expect(h.anchors()).toHaveLength(0);
+    expect(h.el('dls').textContent).toMatch(/no longer on the server/i);
+  });
+
+  it('does not rebuild the panel under the operator on every tick', async () => {
+    // The watcher polls the shelf every WATCH_MS. Re-rendering that often would
+    // reset the scroll position of a list being read and wipe a per-row error
+    // message nobody has read yet.
+    const h = await runView();
+    h.setDownloads([done()]);
+    h.connected();
+    h.click('dlbtn');                       // the operator opens it
+    await new Promise((r) => setTimeout(r, 60));
+    const before = h.rows().length;
+
+    h.failDownloadBytes(404, { success: false, error: 'gone' });
+    await h.ticks(3);
+
+    // Still exactly the rows that were rendered, plus only what was ADDED.
+    expect(h.rows().length).toBeGreaterThanOrEqual(before);
+    expect(h.el('dls').textContent).toContain('report_final.pdf');
+  });
+
+  it('marks its background shelf reads so they can be told from a real one', async () => {
+    // Not cosmetic: a shelf endpoint hit every 700 ms looks alarming in an
+    // access log until the background watch can be told from the operator
+    // actually opening the panel.
+    const h = await runView();
+    h.connected();
+    await h.ticks(2);
+    const shelfWatch = h.watch.filter((f) => f.url.indexOf('/browser/real/downloads') >= 0);
+    expect(shelfWatch.length).toBeGreaterThan(0);
+    shelfWatch.forEach((f) => expect(f.url).toContain('watch=1'));
   });
 });
