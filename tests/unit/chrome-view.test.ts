@@ -151,7 +151,22 @@ describe('the status overlay', () => {
     const html = chromeViewHtml();
     expect(html).toMatch(/addEventListener\('disconnect'/);
     expect(html).toMatch(/addEventListener\('securityfailure'/);
-    expect(html).toMatch(/retry\.addEventListener\('click',\s*connect\)/);
+    // The button must START THE STACK, not merely reconnect. It used to call
+    // connect(), which is why the operator's Retry span for ever: there was
+    // nothing running to connect TO, and connecting harder does not fix that.
+    // startThenConnect() POSTs /browser/real/open first (see ChromeView).
+    expect(html).toMatch(/retry\.addEventListener\('click',[\s\S]{0,60}?startThenConnect\(\)/);
+    expect(html).not.toMatch(/retry\.addEventListener\('click',\s*connect\)/);
+  });
+
+  it('starts the stack on load too, so arriving at the tab is enough', () => {
+    // The failure page sends Retry HERE (public/js/browser-view.js). If this
+    // page only connected, that link would just relocate the dead end.
+    const html = chromeViewHtml();
+    expect(html).toMatch(/async function startThenConnect/);
+    expect(html).toMatch(/fetch\('\/browser\/real\/open'/);
+    // The boot call, at the very bottom of the module body.
+    expect(html).toMatch(/^\s*void startThenConnect\(\);\s*$/m);
   });
 });
 

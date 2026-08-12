@@ -170,14 +170,49 @@ export function chromeViewHtml(): string {
   <button id="retry" type="button" hidden>Try again</button>
 </div>
 <script type="module">
-// A bare relative import is correct here: the desktop session cookie the server
-// set alongside this page authenticates rfb.js AND all 41 modules it pulls in.
-// (An earlier attempt appended the api_key to this specifier. MEASURED: the
-// query is not inherited by the module's own relative imports, so every
-// dependency 401'd, the graph never instantiated, and this top-level await
-// never resolved -- which is precisely why the page spun forever with no
-// error on screen. Do not reintroduce that.)
-import RFB from './core/rfb.js';
+// A bare relative specifier is correct here: the desktop session cookie the
+// server set alongside this page authenticates rfb.js AND all 41 modules it
+// pulls in. (An earlier attempt appended the api_key to it. MEASURED: the query
+// is not inherited by the module's own relative imports, so every dependency
+// 401'd, the graph never instantiated, and the page spun forever with no error
+// on screen. Do not reintroduce that.)
+//
+// WHY THIS IS A DYNAMIC import() AND MUST STAY ONE.
+// rfb.js is served by PROXYING to websockify, so when the desktop is down the
+// specifier itself fails (MEASURED: HTTP 503). A static top-level 'import'
+// makes that fatal to the WHOLE module: the body never executes, so the very
+// handlers that would have reported the failure are inside the thing that did
+// not load. The operator was then left on the initial 'Starting Chromium...'
+// markup with a spinning spinner and no button, forever:
+//
+//   MEASURED before this change
+//     t=2s   msg="Starting Chromium..."  spinner=true  retryBtn=false
+//     t=8s   msg="Starting Chromium..."  spinner=true  retryBtn=false
+//     t=20s  msg="Starting Chromium..."  spinner=true  retryBtn=false
+//
+//   «باز فقط میچرخه و چیزی بالا نمیاد»
+//
+// Loading it dynamically keeps the failure INSIDE a catch, where it can be
+// turned into a message and a working button. See tools/probe-remote-browser-retry.js.
+//
+// The binding is NOT called 'RFB'. The unit harnesses (chrome-view.test.ts,
+// real-chrome-shelf.test.ts) run this script body with 'new Function(...)' and
+// pass a fake RFB as a PARAMETER of that name; a 'let RFB' here is a
+// redeclaration of the same binding and throws before a line executes
+// ("SyntaxError: Identifier 'RFB' has already been declared" -- MEASURED, 48
+// tests). Using a private name keeps the injected one visible, which is also
+// what lets those harnesses reach 'attach()' without a real network import.
+let rfbCtor = null;
+async function loadRFB() {
+  if (rfbCtor) return rfbCtor;
+  // Injected by the test harness (and absent in the browser, where the import
+  // below is the only source). typeof avoids a ReferenceError under a bundler
+  // that would otherwise treat the bare name as a global read.
+  if (typeof RFB !== 'undefined' && RFB) { rfbCtor = RFB; return rfbCtor; }
+  const mod = await import('./core/rfb.js');
+  rfbCtor = mod.default || mod;
+  return rfbCtor;
+}
 
 const screenEl = document.getElementById('screen');
 const note  = document.getElementById('note');
@@ -207,12 +242,69 @@ const wsUrl  = scheme + '://' + location.host + '/desktop/websockify';
 
 let rfb = null;
 
+/**
+ * Ask the server to bring the whole stack up, then connect.
+ *
+ * THIS IS WHAT 'RETRY' HAS TO DO. The failure page used to point Retry at this
+ * very view, which starts nothing -- so the operator went from a page saying
+ * "did not start" to a page waiting for something nobody had started. The only
+ * endpoint that starts the display, the window manager, x11vnc, noVNC and a
+ * headed Chromium is POST /browser/real/open, and it is idempotent, so calling
+ * it when everything is already up costs one round trip and changes nothing.
+ *
+ * AUTHENTICATION. /browser/* is NOT covered by the desktop session cookie --
+ * that cookie is deliberately scoped to Path=/desktop so it cannot ride along
+ * on ordinary API calls. MEASURED when this first shipped without a credential:
+ * the endpoint answered 401 and the page reported
+ * 'Could not start the remote browser: Authentication required' -- an honest
+ * message about the wrong problem. So it sends the same x-api-key HEADER as
+ * every other fetch on this page (see authHeaders), never a query key: a
+ * whole-instance credential in a URL is copied into history and proxy logs.
+ *
+ * Defined above authHeaders/apiKey but only ever CALLED from the bottom of the
+ * module, after both are initialised.
+ */
+async function startThenConnect() {
+  show('Starting Chromium\\u2026', true);
+  try {
+    const r = await fetch('/browser/real/open', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: '{}',
+      credentials: 'same-origin',
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j || !j.success) {
+      // Show the SERVER's own reason. It is the one that names the missing
+      // package, and a generic "could not start" would throw that away.
+      const why = (j && j.error) || ('HTTP ' + r.status);
+      show('Could not start the remote browser: ' + why, false);
+      return;
+    }
+  } catch (e) {
+    show('Could not reach the server to start the remote browser: '
+      + ((e && e.message) || 'network error'), false);
+    return;
+  }
+  connect();
+}
+
 function connect() {
   show('Starting Chromium\\u2026', true);
 
   if (rfb) { try { rfb.disconnect(); } catch (e) { /* already gone */ } rfb = null; }
 
-  rfb = new RFB(screenEl, wsUrl, {
+  // Failure to LOAD rfb.js is the down-desktop case (the specifier is proxied
+  // to websockify). Report it and offer the button, instead of leaving the
+  // initial spinner up for ever.
+  loadRFB().then(() => { attach(); }).catch(() => {
+    show('The remote desktop is not running, so there is nothing to show yet.'
+      + ' Press "Try again" to start it.', false);
+  });
+}
+
+function attach() {
+  rfb = new rfbCtor(screenEl, wsUrl, {
     // Only used when the server was started with DESKTOP_VNC_PASSWORD. Passing
     // it up front is what keeps noVNC's credentials PROMPT from ever appearing,
     // which is half of the UI the operator did not want.
@@ -676,8 +768,14 @@ upInput.addEventListener('change', () => {
     .then(() => setTimeout(() => { btn.textContent = 'Upload'; }, 2500));
 });
 
-retry.addEventListener('click', connect);
-connect();
+// 'Try again' must START, not merely reconnect -- see startThenConnect().
+retry.addEventListener('click', () => { void startThenConnect(); });
+
+// And so must the first load. This page is reached by a tab that was opened for
+// the operator (the crosshair) or by the operator following the "Retry" link on
+// the failure page; in both cases arriving here means "I want the browser up",
+// and the endpoint is idempotent, so an already-running stack is unaffected.
+void startThenConnect();
 </script>
 </body>
 </html>`;
