@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Automation Backend Helper",
-  "version": "1.0.0",
-  "description": "Element Inspector + action recorder for automation-backend. Inspect any element (Ctrl+Shift+C), pick the attributes you want, and send them straight into the node you are editing — in both Remote and Local browser mode.",
+  "version": "1.1.0",
+  "description": "Element Inspector, action recorder, and Remote→Local session handoff for automation-backend. Inspect any element (Ctrl+Shift+C), and move a running remote browser session onto this machine with a pairing code — same tabs, same order, same active tab.",
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
@@ -19,7 +19,8 @@
         "lib/ab-inspect.js",
         "content/selector.js",
         "content/inspector.js",
-        "content/recorder.js"
+        "content/recorder.js",
+        "content/presence.js"
       ],
       "run_at": "document_idle",
       "all_frames": false

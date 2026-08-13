@@ -835,9 +835,28 @@
       // an optional extra now that extensions install from the store, and an
       // orange block here reads as "your setup is wrong" for a feature most
       // people never need.
-      note(s4, t('rc.desktopOptional',
-        'Not installed — and not needed for extensions.') + ' ' +
-        (desk.installHint || ('Missing: ' + desk.missing.join(', '))));
+      // "Not installed" no longer means "go install it": pressing Start desktop
+      // provisions the stack without root. So the button is offered here too,
+      // rather than only in the branch where nothing was missing -- that branch
+      // condition was the UI half of the same dead end as the Retry button:
+      // the one state that needed the action was the one state that hid it.
+      note(s4, t('rc.desktopProvisionable',
+        'Not installed yet — the server can install it itself, no root needed. ' +
+        'Start desktop does it; the first run takes about a minute.'));
+      var provDesk = btn(t('rc.startDesktop', 'Start desktop'), 'btn btn-sm');
+      provDesk.addEventListener('click', function () {
+        setBusy(provDesk, true, t('rc.installing', 'installing…'));
+        window.API.post('/browser/desktop/start', {})
+          .then(refresh)
+          .catch(function (e) {
+            // The server's hint describes what IT could not do (mirror
+            // unreachable, provisioning disabled). That is the actionable part,
+            // so it is preferred over the bare transport error.
+            toast(desk.installHint || e.message, 'error');
+          })
+          .then(function () { setBusy(provDesk, false); });
+      });
+      dRow.appendChild(provDesk);
     } else if (desk.running) {
       var openDesk = btn(t('rc.openDesktop', 'Open desktop'), 'btn btn-primary btn-sm');
       openDesk.addEventListener('click', function () {

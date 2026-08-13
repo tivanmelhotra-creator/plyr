@@ -40,6 +40,11 @@ const JS_ALL = [
   // it into the claimed node. Listed here so the emoji + icon-name guards below
   // cover it too -- it renders toast text, which is user-visible copy.
   'inspector-client.js',
+  // Remote <-> Local session handoff: renders the switch button label, the
+  // pairing dialog and the "what could not be carried over" sentence. Listed so
+  // the emoji ban and the icon-name check below cover it as well -- all three of
+  // those surfaces are user-visible copy.
+  'browser-handoff.js',
 ];
 
 /**

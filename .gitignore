@@ -54,3 +54,10 @@ downloads/
 # untracked and unignored, the next `git add -A` would commit a stale duplicate
 # of a source file, which is a confusing thing to find later.
 *.mutbak
+
+# ───────── Rootless virtual-display stack (core/DesktopProvision.ts) ─────────
+# The provisioner downloads ~66 .deb packages and unpacks them into a private
+# prefix so Remote Browser can run without root. That tree is hundreds of MB of
+# third-party binaries: a build artefact, never a deliverable. It is rebuilt on
+# demand and adopted instantly when already present, so losing it costs nothing.
+.desktop-stack/

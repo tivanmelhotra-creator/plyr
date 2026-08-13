@@ -33,11 +33,25 @@ import {
   browserModes,
   reportBrowserMode,
   isBrowserMode,
+  normalizeBrowserMode,
   type BrowserModeName,
 } from '../core/BrowserMode';
 import { localBridges, agentConnectPath, defaultAgentCdpPort } from '../core/LocalBridge';
 import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
+import {
+  sessionHandoff,
+  formatPairingCode,
+  buildSnapshot,
+  type HandoffSnapshot,
+} from '../core/SessionHandoff';
+import { loadTabs } from '../core/BrowserTabs';
+import { loadStorageState } from '../core/BrowserProfile';
+import { liveBrowserSessions } from '../core/LiveSessions';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 /**
  * Whose session is this?
@@ -67,6 +81,100 @@ const SWITCH_NOTES: Record<string, string> = {
   already_in_mode:
     'Already in this mode.',
 };
+
+/**
+ * Why a pairing code was refused.
+ *
+ * Three distinct sentences because they call for three different actions, and a
+ * single "invalid code" would hide which one applies: expired means press the
+ * button again, already-used means something else consumed it (worth noticing —
+ * it is the only one that might indicate a leak), unknown means a typo.
+ */
+const PAIR_MESSAGES: Record<'unknown' | 'expired' | 'already_used', string> = {
+  unknown:
+    'That pairing code was not recognised. Check the code shown in the app and try again.',
+  expired:
+    'That pairing code has expired. Press "Switch to Local" again to get a fresh one.',
+  already_used:
+    'That pairing code has already been used. Press "Switch to Local" again for a new one.',
+};
+
+/**
+ * Where the extension comes from, generated from config so it cannot drift out
+ * of step with the server the user is actually talking to.
+ *
+ * `unpacked` is listed first and is not an afterthought: this is a self-hosted
+ * project, so most users are loading the folder from their own clone rather than
+ * installing from a store listing that may not exist for their build. Telling
+ * them to visit a store page that 404s would be the least useful possible
+ * instruction.
+ */
+function describeExtensionInstall(): {
+  storeUrl: string;
+  unpackedPath: string;
+  downloadPath: string;
+  steps: string[];
+} {
+  return {
+    storeUrl: config.EXTENSION_STORE_URL || '',
+    unpackedPath: 'extension/',
+    downloadPath: '/extension/download',
+    steps: [
+      'Open chrome://extensions in Chrome.',
+      'Turn on Developer mode (top right).',
+      'Click "Load unpacked" and choose the extension/ folder.',
+      'Click the extension, then enter the pairing code shown in the app.',
+    ],
+  };
+}
+
+/**
+ * Snapshot what the user can see right now, from the best source available.
+ *
+ * TWO SOURCES, IN THIS ORDER, and the order is the point:
+ *
+ *   1. the LIVE session, when the user has the browser open. This is the only
+ *      source that knows the CURRENT tab strip and which tab is in front, and it
+ *      is also the only one that can produce fresh cookies.
+ *   2. the PERSISTED tab list plus saved storage state. This is what makes the
+ *      switch work for a user who is not staring at the live view — pressing
+ *      "Switch to Local" from the workflow editor must still move their pages,
+ *      and falling back here is the difference between "it works from anywhere"
+ *      and "it works only on one screen".
+ *
+ * Always returns a snapshot, even an empty one. An empty snapshot is a truthful
+ * "there was nothing open to move" and `limits.notes` says `no_tabs`; throwing
+ * would turn a user with a fresh browser into an error message.
+ */
+async function captureCurrentSnapshot(
+  userId: string,
+  sessionId: string,
+  target: BrowserModeName,
+): Promise<HandoffSnapshot> {
+  const fromMode: BrowserModeName = target === 'local' ? 'remote' : 'local';
+
+  const live = liveBrowserSessions.forUser(userId);
+  if (live) {
+    try {
+      const snap = await live.snapshotForHandoff(sessionId);
+      return { ...snap, fromMode };
+    } catch {
+      // Fall through to the persisted copy rather than fail the switch.
+    }
+  }
+
+  const [tabs, storage] = await Promise.all([
+    loadTabs(userId).catch(() => []),
+    loadStorageState(userId).catch(() => undefined),
+  ]);
+
+  return buildSnapshot({
+    sessionId,
+    fromMode,
+    tabs,
+    storage: storage as { cookies?: unknown[]; origins?: unknown[] } | undefined,
+  });
+}
 
 const REFUSAL_MESSAGES: Record<InspectorRefusal, string> = {
   no_active_node:
@@ -180,6 +288,281 @@ export const createModeRoutes = (): Router => {
       dropped,
       ...reportBrowserMode(userId),
     });
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Session handoff — Remote ⇄ Local, one automation session
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * Who am I, and what is waiting to be moved?
+   *
+   * The `sessionId` here is the answer to the operator's central requirement:
+   * both modes report the SAME automation session id, so "Remote and Local are
+   * not two sessions" is something a client can verify rather than be told.
+   */
+  router.get('/browser-mode/session', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    sessionHandoff.sweep();
+    const pending = sessionHandoff.peekSnapshot(userId);
+    res.json({
+      success: true,
+      sessionId: sessionHandoff.sessionId(userId),
+      ...reportBrowserMode(userId),
+      bridge: localBridges.info(userId),
+      pendingHandoff: pending
+        ? {
+          fromMode: pending.fromMode,
+          capturedAt: pending.capturedAt,
+          tabCount: pending.tabs.length,
+          limits: pending.limits,
+        }
+        : null,
+    });
+  });
+
+  /**
+   * Begin a switch: snapshot the browser the user is looking at NOW.
+   *
+   * Capture happens BEFORE the extension install detour, not after, and that
+   * ordering is the whole reason this is a separate call. By the time a user has
+   * installed an extension and come back, the remote session may have been
+   * reaped — and then there would be nothing left to move. Taking the snapshot
+   * on the click freezes their tabs while they still exist.
+   *
+   * Returns a pairing code only when one is needed (going to local). Switching
+   * back to remote needs no pairing: the server already has the browser.
+   */
+  router.post('/browser-mode/handoff/start', async (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const target = normalizeBrowserMode((req.body || {}).to, 'local');
+    const sessionId = sessionHandoff.sessionId(userId);
+
+    const snapshot = await captureCurrentSnapshot(userId, sessionId, target);
+    sessionHandoff.putSnapshot(userId, snapshot);
+
+    // Only the local side needs to prove who it is; the server side is already
+    // authenticated by the API key on this very request.
+    const pairing = target === 'local' ? sessionHandoff.issuePairing(userId) : null;
+
+    res.json({
+      success: true,
+      sessionId,
+      to: target,
+      captured: {
+        fromMode: snapshot.fromMode,
+        tabCount: snapshot.tabs.length,
+        limits: snapshot.limits,
+      },
+      ...(pairing
+        ? {
+          pairing: {
+            code: pairing.code,
+            display: formatPairingCode(pairing.code),
+            expiresAt: pairing.expiresAt,
+            expiresInMs: pairing.expiresInMs,
+          },
+          extension: describeExtensionInstall(),
+        }
+        : {}),
+    });
+  });
+
+  /**
+   * The extension redeems a pairing code for a session token.
+   *
+   * UNAUTHENTICATED BY DESIGN, and this is the security-critical decision in the
+   * whole feature. The point of a pairing code is that the extension does NOT
+   * need the API key — that key grants full control of the instance, and pasting
+   * it into a browser extension puts an unrevocable master credential on the
+   * most-attacked surface of the user's machine. What guards this route instead
+   * is the code itself: 31^8 possibilities, single-use, five-minute TTL,
+   * compared in constant time, and only ever issued to an already-authenticated
+   * caller. A brute force must therefore land inside a five-minute window on a
+   * code that dies the instant it is used once.
+   */
+  router.post('/browser-mode/handoff/pair', (req: AuthenticatedRequest, res: Response) => {
+    sessionHandoff.sweep();
+    const result = sessionHandoff.redeemPairing((req.body || {}).code);
+
+    if (!result.ok) {
+      // 410 for a code that WAS valid and is now gone, 404 for one that never
+      // existed: "press the button again" and "check what you typed" are
+      // different actions, and a single generic error would hide which applies.
+      const status = result.reason === 'unknown' ? 404 : 410;
+      res.status(status).json({
+        success: false,
+        reason: result.reason,
+        error: PAIR_MESSAGES[result.reason],
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      token: result.token,
+      sessionId: result.sessionId,
+      /** So the extension can label itself with the session it joined. */
+      mode: browserModes.modeOf(result.userId),
+    });
+  });
+
+  /**
+   * The extension collects the tabs and cookies to restore.
+   *
+   * Authenticated by the session token, not the API key. PEEKS by default for
+   * the same reason the inspector inbox does: a service worker that Chrome
+   * recycles mid-restore must be able to ask again, and a drain-by-default would
+   * have destroyed the only record of where the user's tabs were. `?drain=1` is
+   * for a client that has committed to applying the result.
+   */
+  router.get('/browser-mode/handoff/pull', (req: AuthenticatedRequest, res: Response) => {
+    const owner = sessionHandoff.resolveToken(
+      req.get('x-session-token') || (req.query.token as string) || '',
+    );
+    if (!owner) {
+      res.status(401).json({
+        success: false,
+        error: 'This browser is not paired with a session. Pair it again from the app.',
+      });
+      return;
+    }
+
+    const drain = String(req.query.drain || '') === '1';
+    const snap = drain
+      ? sessionHandoff.takeSnapshot(owner.userId)
+      : sessionHandoff.peekSnapshot(owner.userId);
+
+    if (!snap) {
+      res.json({ success: true, sessionId: owner.sessionId, snapshot: null, expired: true });
+      return;
+    }
+
+    res.json({
+      success: true,
+      sessionId: owner.sessionId,
+      snapshot: {
+        fromMode: snap.fromMode,
+        capturedAt: snap.capturedAt,
+        // Same URLs, same order; exactly one carries `active`.
+        tabs: snap.tabs,
+        storage: snap.storage || null,
+        limits: snap.limits,
+      },
+    });
+  });
+
+  /**
+   * The local side reports what it managed to restore, and the switch completes.
+   *
+   * The mode flips HERE rather than at /handoff/start, and that ordering is the
+   * guarantee that a switch never breaks the session: until the other browser
+   * has actually opened the tabs, the user stays in a mode that works. A switch
+   * that flipped the registry first would leave anyone whose install failed
+   * stranded in a mode with no browser behind it.
+   */
+  router.post('/browser-mode/handoff/complete', (req: AuthenticatedRequest, res: Response) => {
+    const body = req.body || {};
+    // Either credential is acceptable: the extension has a session token, and
+    // the app itself (switching BACK to remote) has the API key.
+    const owner = sessionHandoff.resolveToken(req.get('x-session-token') || body.token || '');
+    const userId = owner ? owner.userId : resolveUserId(req);
+    const target = normalizeBrowserMode(body.to, owner ? 'local' : 'remote');
+
+    const result = browserModes.set(userId, target);
+    if (result.changed && result.mode === 'remote') forgetLocalConnection(userId);
+
+    // The snapshot has served its purpose; holding it would let a later,
+    // unrelated pair replay someone's tab list.
+    if (result.changed) sessionHandoff.clearSnapshot(userId);
+
+    const refused = !result.changed && result.note !== '' && result.note !== 'already_in_mode';
+    res.status(refused ? 409 : 200).json({
+      success: !refused,
+      sessionId: sessionHandoff.sessionId(userId),
+      restored: {
+        tabs: Number(body.restoredTabs) || 0,
+        activeTab: Boolean(body.activeTabRestored),
+      },
+      ...result,
+      message: result.note ? SWITCH_NOTES[result.note] || '' : '',
+      ...reportBrowserMode(userId),
+    });
+  });
+
+  /** Abandon a switch: drop the snapshot and any unredeemed code. */
+  router.post('/browser-mode/handoff/cancel', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    sessionHandoff.clearSnapshot(userId);
+    sessionHandoff.sweep();
+    res.json({ success: true, sessionId: sessionHandoff.sessionId(userId) });
+  });
+
+  /** Where to get the extension. Generated from config so it cannot drift. */
+  router.get('/browser-mode/extension', (_req: AuthenticatedRequest, res: Response) => {
+    res.json({ success: true, ...describeExtensionInstall() });
+  });
+
+  /**
+   * Download the extension as a zip.
+   *
+   * THIS EXISTS BECAUSE THE PATH WAS ALREADY ADVERTISED. `describeExtensionInstall`
+   * returned `downloadPath: '/extension/download'` while no such route existed, so
+   * the install screen offered a link that 404s -- and the request was explicitly
+   * that installing be EASY. An install step that dead-ends is worse than no link
+   * at all, because the user cannot tell whether they or the server is at fault.
+   *
+   * Zipped with the system `zip` rather than a new npm dependency: this is one
+   * route, `zip` is present on every image this runs on, and adding a package to
+   * the dependency tree for it would be the larger change. If `zip` is missing the
+   * route says so and points at the unpacked folder, which still works.
+   *
+   * `-x` excludes the generated bootstrap: it carries the settings the SERVER
+   * seeds into the remote browser's copy (including an API key). Shipping that in
+   * a download every user can fetch would hand one user's credential to the next,
+   * so the exclusion is a security boundary, not tidiness.
+   */
+  router.get('/extension/download', async (_req: AuthenticatedRequest, res: Response) => {
+    const source = path.resolve(process.cwd(), 'extension');
+    try {
+      const st = await fs.stat(source);
+      if (!st.isDirectory()) throw new Error('not a directory');
+    } catch {
+      res.status(404).json({
+        success: false,
+        error: 'The extension folder is not present in this deployment.',
+        ...describeExtensionInstall(),
+      });
+      return;
+    }
+
+    const out = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'ab-ext-')),
+      'automation-backend-extension.zip',
+    );
+
+    execFile(
+      'zip',
+      ['-r', '-q', out, '.', '-x', 'bootstrap.config.js', '-x', '*/.DS_Store'],
+      { cwd: source, timeout: 30_000 },
+      (err) => {
+        if (err) {
+          res.status(500).json({
+            success: false,
+            error: 'Could not package the extension on the server. '
+              + 'Load the unpacked extension/ folder instead — it works the same.',
+            ...describeExtensionInstall(),
+          });
+          return;
+        }
+        // download() sets Content-Disposition, so the browser saves rather than
+        // renders it. The temp dir is removed afterwards either way: a failed
+        // send still leaves a file behind, and this route can be hit repeatedly.
+        res.download(out, 'automation-backend-extension.zip', () => {
+          void fs.rm(path.dirname(out), { recursive: true, force: true });
+        });
+      },
+    );
   });
 
   // ════════════════════════════════════════════════════════════════

@@ -6076,6 +6076,39 @@ body.route-fullbleed .fe-mm-restore {
   color: var(--text-faint, #5E6876);
   line-height: 1.5;
 }
+
+/* ── The pairing code ──────────────────────────────────────────────────────
+ * This code is read off one screen and typed into another window, under a
+ * five-minute deadline, so every rule here exists to prevent a misread:
+ *   - monospace + letter-spacing, because the alphabet still contains 8/B and
+ *     5/S even after 0/O/1/I/L were excluded from it;
+ *   - large and high-contrast, because it is the one thing on the panel the user
+ *     must actually transcribe;
+ *   - `user-select: all`, so one click selects the whole code and a partial
+ *     drag-selection cannot silently truncate it. `dir: ltr` because the code is
+ *     always Latin and must not be reordered in the fa (RTL) layout — a
+ *     bidi-reversed credential is unusable and looks like a server bug. */
+.bvp-ho-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev-1, rgba(255, 255, 255, 0.03));
+}
+.bvp-ho-code.is-off { display: none; }
+.bvp-ho-codetext {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--text-strong, #E6ECF5);
+  user-select: all;
+}
 .bvp-modal-foot {
   display: flex;
   justify-content: flex-end;

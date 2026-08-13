@@ -390,14 +390,18 @@
         + '<p class="e"></p>'
         + '<p class="m">Nothing was left running. Retry starts the virtual '
         + 'screen and Chromium again from scratch.</p>'
-        // A "Missing: ..." error is not retryable — no amount of pressing a
-        // button installs a package — so say what to do instead of implying
-        // that trying again could help.
-        + '<p class="m" id="deps" hidden>This one will keep failing until the '
-        + 'packages are installed on the server. Run '
-        + '<code>bash scripts/desktop.sh install</code> (or '
-        + '<code>sudo apt-get install -y xvfb x11vnc novnc websockify openbox</code>) '
-        + 'and then Retry.</p>'
+        // A "Missing: ..." error USED to be un-retryable, and this page said so.
+        // That is no longer true and the old wording is now actively harmful:
+        // the server installs the display stack into its own directory without
+        // root, so Retry is exactly the right button. Telling a user their only
+        // option is a sudo command they may not have is what turned a solvable
+        // failure into a permanent one. The one caveat worth keeping is that the
+        // first attempt downloads ~100 packages, so it is slow rather than stuck.
+        + '<p class="m" id="deps" hidden>The server installs the display stack '
+        + 'itself, into its own directory — no root needed. Press Retry: the '
+        + 'first attempt downloads and unpacks the packages and can take about a '
+        + 'minute. If it still fails, the server could not reach its package '
+        + 'mirror or <code>DESKTOP_AUTO_PROVISION</code> is switched off.</p>'
         + '<p><a id="again" href="">Retry</a></p>'
       : '<h1>Starting the remote browser…</h1>'
         + '<p class="m">Chromium and the virtual screen are being started. '
@@ -617,6 +621,11 @@
       ps.healEtaTimers.forEach(function (id) { clearTimeout(id); });
       ps.healEtaTimers = [];
     }
+    // The handoff poller and its code countdown are the same class of leak: both
+    // are intervals that would keep running after the overlay is gone, one of
+    // them polling the server every 1.5s for ever. Registered as a closure by
+    // the setup block because that is where their timer ids live.
+    if (ps.hoCleanup) { try { ps.hoCleanup(); } catch (e) {} }
     if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
     if (ps.rio) { try { ps.rio.detach(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
@@ -661,6 +670,19 @@
           '<button class="btn btn-sm" id="bvp-real" type="button" ' +
             'title="' + esc(t('bvp.openReal')) + '">' +
             BIC('globe', 14) + ' ' + esc(t('bvp.realShort')) + '</button>' +
+          // ── Move this session between the server and the user's machine ──
+          // Sits next to Real Chrome because both answer "I want the browser
+          // somewhere else", but they are NOT the same move and the difference
+          // matters: Real Chrome changes what you LOOK AT (same machine, whole
+          // window instead of one page's pixels), this changes WHICH MACHINE the
+          // browser runs on. The requirement behind it was speed — a remote
+          // canvas over a slow link is painful — so it has to be reachable from
+          // the bar the user is already looking at, not from a settings page.
+          //
+          // Hidden until the session is read: the label depends on which side we
+          // are on, and a button that says the wrong direction is worse than one
+          // that appears a moment late.
+          '<button class="btn btn-sm is-off" id="bvp-switch" type="button"></button>' +
           // ── Zoom ────────────────────────────────────────────────────────
           // Ctrl+ / Ctrl− / Ctrl+0 are wired on the stage as well, but the
           // buttons have to exist: the keyboard versions only work while the
@@ -821,6 +843,42 @@
                   esc(t('bvp.authCancel')) + '</button>' +
                 '<button class="btn btn-primary btn-sm" id="bvp-auth-yes">' +
                   esc(t('bvp.authOk')) + '</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          // ── Move the session to the user's own browser ───────────────────
+          // Built up-front and toggled, exactly like the dialog modals above and
+          // for the same reason: this appears at the moment the user has just
+          // committed to a switch, and a panel that fails to construct then would
+          // leave them holding a code with nowhere to put it.
+          '<div class="bvp-modal is-off" id="bvp-ho" role="dialog" aria-modal="true">' +
+            '<div class="bvp-modal-card">' +
+              '<div class="bvp-modal-head">' +
+                // `repeat` (two arrows looping back on each other) and not
+                // `globe`: globe is already the Real Chrome button a few
+                // positions away, and a shared glyph would say the two buttons do
+                // the same thing. The name must be a REGISTRY entry in icons.js,
+                // not an ACTION_ICONS key -- Icons.svg() falls back to `dot` for
+                // anything it cannot resolve, so a wrong name degrades to a
+                // meaningless dot rather than erroring. `laptop`/`monitor` do not
+                // exist, and `switch` is only an action-id alias for `shuffle`.
+                '<span class="bvp-modal-icon">' + BIC('repeat', 16) + '</span>' +
+                '<span class="bvp-modal-title" id="bvp-ho-title"></span>' +
+              '</div>' +
+              '<p class="bvp-modal-from" id="bvp-ho-intro"></p>' +
+              // The code, big and selectable. It is read off this screen and
+              // typed into another window, so it is monospace, spaced, and
+              // clickable-to-copy — three properties that all exist to stop a
+              // misread of a credential that dies in five minutes.
+              '<div class="bvp-ho-code is-off" id="bvp-ho-codebox">' +
+                '<code class="bvp-ho-codetext" id="bvp-ho-code"></code>' +
+                '<button class="btn btn-ghost btn-sm" id="bvp-ho-copy"></button>' +
+              '</div>' +
+              '<p class="bvp-modal-from" id="bvp-ho-expiry"></p>' +
+              '<p class="bvp-modal-note" id="bvp-ho-note"></p>' +
+              '<div class="bvp-modal-foot">' +
+                '<button class="btn btn-ghost btn-sm" id="bvp-ho-cancel"></button>' +
+                '<button class="btn btn-primary btn-sm is-off" id="bvp-ho-install"></button>' +
               '</div>' +
             '</div>' +
           '</div>' +
@@ -3232,6 +3290,196 @@
       if (pickState && pickState.rio) pickState.rio.pullClipboard();
       else toast(t('rio.notConnected'), 'info');
     });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Move this session between the server and the user's own machine
+    //
+    // All the deciding lives in window.BrowserHandoff (pure, unit-tested). What
+    // is left here is only the DOM: paint the button, show the code, poll until
+    // the other browser reports in.
+    //
+    // THE INVARIANT, restated because this is where it would be broken: the mode
+    // flips on the SERVER, at /handoff/complete, and only after the receiving
+    // browser has actually opened the tabs. Nothing in this file may flip it
+    // early — that is what keeps a failed install from stranding the user in a
+    // mode with no browser behind it.
+    // ══════════════════════════════════════════════════════════════════════
+    var HO = window.BrowserHandoff || null;
+    var hoCountdown = 0;
+
+    function hoHide() {
+      if (HO) HO.stopWatch();
+      if (hoCountdown) { window.clearInterval(hoCountdown); hoCountdown = 0; }
+      var box = q('bvp-ho');
+      if (box) box.classList.add('is-off');
+    }
+
+    /** Repaint the switch button from the live session. */
+    function refreshSwitchButton() {
+      var btn = q('bvp-switch');
+      if (!btn || !HO) return Promise.resolve();
+      return HO.readSession().then(function (info) {
+        // No session endpoint (older server, or not authenticated yet) means we
+        // cannot know which way the button should point, so it stays hidden
+        // rather than guessing a direction and lying about it.
+        if (!info) { btn.classList.add('is-off'); return; }
+        var st = HO.switchButtonState(info);
+        btn.classList.toggle('is-off', !st.visible);
+        if (!st.visible) return;
+        btn.disabled = !st.enabled;
+        btn.dataset.target = st.target;
+        btn.title = st.title;
+        // Same glyph as the modal head, and same reason it is `repeat`: it is a
+        // registered icon, so it renders instead of silently becoming a dot.
+        btn.innerHTML = BIC('repeat', 14) + ' ' + esc(st.label);
+      });
+    }
+
+    function hoShowPairing(plan, captured) {
+      var box = q('bvp-ho');
+      q('bvp-ho-title').textContent = t('ho.title');
+      q('bvp-ho-intro').textContent = t('ho.codeIntro');
+      q('bvp-ho-code').textContent = plan.code;
+      q('bvp-ho-codebox').classList.remove('is-off');
+      q('bvp-ho-copy').textContent = t('ho.copyCode');
+      q('bvp-ho-install').classList.add('is-off');
+      q('bvp-ho-cancel').textContent = t('ho.cancel');
+
+      // What is waiting to move, plus anything that will NOT survive. Said here,
+      // before the user commits, rather than discovered afterwards.
+      var n = (captured && captured.tabCount) || 0;
+      var limits = HO.describeLimits(captured && captured.limits);
+      q('bvp-ho-note').textContent =
+        tf('ho.tabsCaptured', { n: n }) + (limits ? ' ' + limits : '')
+        + ' ' + t('ho.waitingHint');
+
+      // A live countdown, because the code really does die. A static "valid for
+      // 5 minutes" is unreadable the moment the user looks away, and the failure
+      // it causes (typing a dead code) looks like the feature is broken.
+      var expiry = q('bvp-ho-expiry');
+      function tick() {
+        var left = HO.secondsLeft(plan.expiresAt, Date.now());
+        if (left <= 0) {
+          expiry.textContent = t('ho.expired');
+          if (hoCountdown) { window.clearInterval(hoCountdown); hoCountdown = 0; }
+          return;
+        }
+        expiry.textContent = tf('ho.expiresIn', { time: HO.formatCountdown(left) });
+      }
+      tick();
+      if (hoCountdown) window.clearInterval(hoCountdown);
+      hoCountdown = window.setInterval(tick, 1000);
+
+      box.classList.remove('is-off');
+
+      // Poll for the extension finishing. There is no event to listen for: the
+      // party that completes the handoff talks to the SERVER, not to this page.
+      HO.watchForCompletion({
+        onDone: function (res) {
+          hoHide();
+          if (res && res.ok) {
+            toast(t('ho.nowLocal'), 'success');
+            refreshSwitchButton();
+          } else if (res && res.timedOut) {
+            // Nothing was destroyed, and saying so is the point: the user's
+            // session is still on remote and still usable.
+            toast(t('ho.timedOut'), 'info');
+          }
+        }
+      });
+    }
+
+    function hoShowInstall(plan, captured) {
+      var box = q('bvp-ho');
+      q('bvp-ho-title').textContent = t('ho.installTitle');
+      q('bvp-ho-intro').textContent = t('ho.installIntro');
+      q('bvp-ho-codebox').classList.add('is-off');
+      q('bvp-ho-expiry').textContent = '';
+      // `steps` is an ARRAY of instructions. String() on it would render
+      // "Open chrome://extensions,Turn on Developer mode,…" — commas where the
+      // sentence breaks should be, which is exactly the kind of small wrongness
+      // that makes an install screen look untrustworthy.
+      var steps = (plan.install && plan.install.steps) || [];
+      q('bvp-ho-note').textContent = Array.isArray(steps) ? steps.join(' ') : String(steps);
+      q('bvp-ho-cancel').textContent = t('ho.cancel');
+
+      var go = q('bvp-ho-install');
+      go.textContent = t('ho.installOpen');
+      go.classList.remove('is-off');
+      go.onclick = function () {
+        // Store URL when one is configured, otherwise the zip this server builds
+        // from its own extension/ folder — so the button always leads somewhere.
+        // Preferring the store is deliberate: a store install updates itself,
+        // whereas an unpacked copy silently goes stale.
+        var inst = plan.install || {};
+        var url = inst.storeUrl || inst.downloadPath || '';
+        if (url) window.open(url, '_blank', 'noopener');
+        // Move straight to the code. The snapshot was taken before this detour
+        // precisely so it is still here when they come back — and the code is
+        // still valid, so re-issuing one would only invalidate what they may
+        // already have started typing.
+        go.textContent = t('ho.installDone');
+        go.onclick = function () { hoShowPairing(plan, captured); };
+      };
+      box.classList.remove('is-off');
+    }
+
+    q('bvp-ho-copy').addEventListener('click', function () {
+      var code = q('bvp-ho-code').textContent || '';
+      if (!code) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(function () {
+          toast(t('ho.copied'), 'success');
+        }).catch(function () { /* selection is still available by hand */ });
+      }
+    });
+    q('bvp-ho-cancel').addEventListener('click', function () {
+      hoHide();
+      // Drop the frozen snapshot and the unredeemed code. Leaving them would let
+      // a later, unrelated pairing replay this tab list.
+      if (HO) HO.cancelSwitch();
+    });
+
+    q('bvp-switch').addEventListener('click', function () {
+      var btn = q('bvp-switch');
+      if (!HO || btn.disabled) return;
+      var target = btn.dataset.target || 'local';
+      btn.disabled = true;
+
+      if (target === 'remote') {
+        // No pairing, no modal: the server already holds that browser.
+        setStatus(t('ho.toRemote'), 'warn');
+        HO.switchToRemote()
+          .then(function () {
+            // The remote browser is a different attachment point, so the canvas
+            // must be re-pointed at it. Without this the user is left looking at
+            // a dead last frame and concludes the switch failed.
+            if (pickState.ws && pickState.ws.readyState === WebSocket.OPEN) send({ t: 'resync' });
+            else connect();
+          })
+          .catch(function (e) { toast((e && e.message) || t('ho.failed'), 'error'); })
+          .then(function () { btn.disabled = false; refreshSwitchButton(); });
+        return;
+      }
+
+      HO.startLocalSwitch()
+        .then(function (r) {
+          if (r.plan.step === 'error') throw new Error(t('ho.failed'));
+          if (r.plan.step === 'install') hoShowInstall(r.plan, r.captured);
+          else hoShowPairing(r.plan, r.captured);
+        })
+        .catch(function (e) { toast((e && e.message) || t('ho.failed'), 'error'); })
+        .then(function () { btn.disabled = false; });
+    });
+
+    // Hand closePick() the way to stop our two intervals. Without this the
+    // completion poll survives the modal and keeps hitting the server for ever.
+    pickState.hoCleanup = hoHide;
+
+    // Paint the button now that it is wired. It starts hidden (the label depends
+    // on which side we are on), so without this call it would stay hidden until
+    // the user's first switch — i.e. for ever.
+    refreshSwitchButton();
     // Reconnect, and a NEW tab. Both send commands, so both are no-ops until
     // there is a socket — `connect()` opens one on the URL that is in the bar,
     // which is the same rule the Go button follows.

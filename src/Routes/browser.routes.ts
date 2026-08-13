@@ -768,7 +768,17 @@ export const createBrowserRoutes = (): Router => {
 
   router.get('/browser/desktop/status', async (_req, res) => {
     try {
-      res.json({ success: true, desktop: await Desktop.status() });
+      // `provision` rides along with every status poll because the first start
+      // on a fresh machine downloads and unpacks ~100 packages and takes the
+      // better part of a minute. The UI already polls this endpoint while
+      // waiting, so attaching the current step here means the wait can be
+      // narrated ("extracting 40/98") instead of appearing hung -- which is the
+      // same complaint that made the old blank about:blank tab so hard to trust.
+      res.json({
+        success: true,
+        desktop: await Desktop.status(),
+        provision: Desktop.provisionState(),
+      });
     } catch (e) { sendError(res, e); }
   });
 

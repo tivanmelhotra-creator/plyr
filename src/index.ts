@@ -37,6 +37,7 @@ import { LiveBus, JobLivePublisher } from './core/LiveBus';
 import { LiveServer, authorizeLive } from './core/LiveServer';
 import { buildStepWebhookPayload, buildShareToken, shouldDeliverStepEvent } from './core/StepReporter';
 import { LiveBrowserManager } from './core/LiveBrowser';
+import { setLiveSessionProvider } from './core/LiveSessions';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
 import { DesktopProxy } from './core/DesktopProxy';
 // Dual browser mode: the reverse tunnel to a user's own Chrome, and the
@@ -151,6 +152,15 @@ const liveBus = new LiveBus(connection);
 let liveServer: LiveServer | null = null;
 // Step 12: interactive Live Browser View (CDP screencast + input + element picker).
 const liveBrowserManager = new LiveBrowserManager(config.MAX_CONCURRENT > 0 ? Math.min(config.MAX_CONCURRENT, 8) : 8);
+// Let HTTP routes find the live session a user is looking at.
+//
+// The manager stays owned here -- sessions are created and destroyed by the
+// socket server, which is the correct owner of their lifetime. This only
+// PUBLISHES a read-only lookup, because the Remote/Local handoff arrives over a
+// plain HTTP route that knows who is asking but has no way to reach this local
+// binding, and it must snapshot the tabs the user can actually see rather than
+// guess at them. See core/LiveSessions.ts for why registration beats exporting.
+setLiveSessionProvider(liveBrowserManager);
 let browserStreamServer: BrowserStreamServer | null = null;
 // Serves the real Chrome's screen on this same port (see DesktopProxy).
 let desktopProxy: DesktopProxy | null = null;

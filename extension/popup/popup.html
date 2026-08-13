@@ -34,6 +34,39 @@
     </div>
   </section>
 
+  <!-- Move a remote session onto this machine.
+       Placed directly under Backend and ABOVE the Inspector because a user who
+       just clicked "Switch to Local" in the app arrives here holding a code that
+       expires in five minutes; making them scroll past three cards to find the
+       box for it is the one thing this card must not do. -->
+  <section class="card">
+    <h2>Move session here</h2>
+    <div class="insp">
+      <div class="inspline">
+        <span class="ilabel">Paired</span>
+        <span class="ivalue" id="hoState">—</span>
+        <button class="btn ghost xs" id="hoUnpair" hidden>Unpair</button>
+      </div>
+      <div class="inspline">
+        <span class="ilabel">Session</span>
+        <span class="ivalue mono" id="hoSession">—</span>
+      </div>
+    </div>
+    <label class="field">
+      <span>Pairing code from the app</span>
+      <!-- maxlength 9 fits ABCD-EFGH: the code is 8 characters plus the dash we
+           show it with, so a user can paste exactly what is on their screen. -->
+      <input id="hoCode" type="text" placeholder="ABCD-EFGH" autocomplete="off"
+             spellcheck="false" maxlength="9">
+    </label>
+    <div class="row">
+      <button class="btn primary" id="hoPair">Pair &amp; move my tabs</button>
+      <button class="btn ghost sm" id="hoApply" hidden>Restore my tabs</button>
+    </div>
+    <div class="hintline">In the app, click <b>Switch to Local</b> on the node you are running. It shows a code — type it above and your open tabs move here, in the same order.</div>
+    <div class="status" id="hoStatus"></div>
+  </section>
+
   <!-- Element Inspector: what the extension is attached to, and where a pick
        will land. Shown ABOVE the workflow list because a pick that cannot be
        delivered is the first thing a user needs to know about. -->

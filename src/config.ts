@@ -304,6 +304,55 @@ export const config = {
   DESKTOP_VNC_PASSWORD: cleanEnv(process.env.DESKTOP_VNC_PASSWORD) || '',
   DESKTOP_NOVNC_WEB_ROOT: cleanEnv(process.env.DESKTOP_NOVNC_WEB_ROOT) || '',
 
+  /**
+   * Install the virtual-display stack ourselves when it is missing (default ON).
+   *
+   * WHY THIS DEFAULTS TO TRUE. The bug this exists for was that Remote Browser
+   * failed with "Missing: x11vnc, websockify" and the only remedy offered was
+   * `sudo apt-get install ...` -- MEASURED impossible on the reporting box
+   * (uid 1000, no sudo, /usr not writable), so Retry could never succeed. The
+   * rootless provisioner in core/DesktopProvision.ts needs no privilege, so
+   * having it OFF by default would leave the original dead end in place for
+   * exactly the users who hit it. Set to `false` on a box where the stack is
+   * managed by the image/operator and downloads are unwanted.
+   */
+  DESKTOP_AUTO_PROVISION:
+    (cleanEnv(process.env.DESKTOP_AUTO_PROVISION)?.toLowerCase() ?? 'true') !== 'false',
+
+  /**
+   * Where the private prefix lives. Empty -> <cwd>/.desktop-stack.
+   *
+   * NOT under /tmp by default, and that is load bearing: /tmp is a 493M tmpfs
+   * here, filling it made `dpkg-deb -x` fail SILENTLY and leave a zero-byte
+   * Xvfb, which presented as "Xvfb exits immediately" and cost a full debug
+   * cycle. Real disk avoids the whole failure class.
+   */
+  DESKTOP_PROVISION_DIR: cleanEnv(process.env.DESKTOP_PROVISION_DIR) || '',
+
+  /**
+   * Use the unprivileged user-namespace + overlayfs route instead of patching
+   * the Xvfb binary (default OFF).
+   *
+   * Both solve the same problem -- Xvfb hardcodes /usr/bin/xkbcomp -- but the
+   * ELF string patch works everywhere, while userns is disabled outright on
+   * many hardened kernels and container runtimes. So the patch is the default
+   * and this is the escape hatch for a box where writing a patched copy is
+   * undesirable.
+   */
+  DESKTOP_USE_NAMESPACE: cleanEnv(process.env.DESKTOP_USE_NAMESPACE)?.toLowerCase() === 'true',
+
+  /**
+   * Web Store listing for the helper extension, when this build has one.
+   *
+   * Empty by DEFAULT and that is correct for a self-hosted project: most
+   * operators run their own clone, whose extension was never submitted to any
+   * store. Pointing users at a store page that 404s would be the least useful
+   * instruction possible, so the install guidance leads with "Load unpacked"
+   * from the repo's own extension/ folder and only mentions a store URL when an
+   * operator has actually published one.
+   */
+  EXTENSION_STORE_URL: cleanEnv(process.env.EXTENSION_STORE_URL) || '',
+
   // ============================================
   // Dual Browser Mode (remote on the server / local on the user's machine)
   // ============================================

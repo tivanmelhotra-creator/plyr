@@ -30,6 +30,10 @@ import {
   type SavedTab,
 } from './BrowserTabs';
 import {
+  buildSnapshot,
+  type HandoffSnapshot,
+} from './SessionHandoff';
+import {
   buildKeyEvents,
   modifierMask,
   buttonsMask,
@@ -870,6 +874,47 @@ export class LiveBrowserSession {
   }
 
   activeTabId(): string { return this.activeId; }
+
+  /**
+   * Everything the OTHER browser needs to look like this one — the capture half
+   * of the Remote ⇄ Local handoff.
+   *
+   * WHY IT LIVES HERE. This session is the only thing that knows the truth about
+   * what the user can see: which tabs exist, what ORDER they are in, and which
+   * one is in front. The handoff registry deliberately holds no browser handles,
+   * so if it tried to work this out itself it would be guessing. Ordering is
+   * taken straight from `this.tabs`, which IS the tab strip the user is looking
+   * at — "same URLs in the same order" was an explicit requirement, and the only
+   * way to honour it is to read the ordered list rather than reconstruct one.
+   *
+   * The cookies come from Playwright's `storageState()`, i.e. the same mechanism
+   * that already persists a login across restarts. That is what makes the moved
+   * browser still be logged in instead of merely being on the right URL.
+   *
+   * Failures degrade rather than throw: a session that cannot produce cookies
+   * should still hand over the tab list, because landing on your pages and
+   * signing in again is much better than not moving at all. `buildSnapshot`
+   * records the gap in `limits` so the UI can say what did not come across.
+   */
+  async snapshotForHandoff(sessionId: string): Promise<HandoffSnapshot> {
+    const tabs = this.tabList().map((t) => ({
+      url: t.url,
+      title: t.title,
+      ...(t.active ? { active: true } : {}),
+    }));
+
+    let storage: { cookies?: unknown[]; origins?: unknown[] } | undefined;
+    try {
+      if (this.context) {
+        const state = await this.context.storageState();
+        storage = { cookies: state.cookies, origins: state.origins };
+      }
+    } catch {
+      // Left undefined on purpose — see the note about `limits` above.
+    }
+
+    return buildSnapshot({ sessionId, fromMode: 'remote', tabs, storage });
+  }
 
   // ════════════════════════════════════════════════════════════════════════
   // Start-up
@@ -3614,6 +3659,31 @@ export class LiveBrowserManager {
       this.sessions.delete(id);
       await s.close();
     }
+  }
+
+  /**
+   * This user's live session, if they have one open — the lookup the Remote ⇄
+   * Local handoff needs.
+   *
+   * Sessions are keyed by socket id because that is what creates them, but a
+   * handoff arrives over a plain HTTP route that only knows WHO is asking. It
+   * must find the browser the user is actually looking at in order to snapshot
+   * its tabs; without this it could only guess, and a handoff that captured the
+   * wrong session's tabs would move a stranger's pages onto the user's machine.
+   *
+   * Newest wins. A user with two live views open is looking at the one they
+   * opened last, and that is the one whose tabs they mean by "my browser".
+   * Closed sessions are skipped rather than returned, because a snapshot from a
+   * dead session is silently empty — the worst outcome, since it looks like a
+   * successful handoff of a browser with no tabs.
+   */
+  forUser(userId: string): LiveBrowserSession | null {
+    let found: LiveBrowserSession | null = null;
+    for (const s of this.sessions.values()) {
+      if (s.userId !== userId || s.isClosed()) continue;
+      found = s; // later entries are newer: Map preserves insertion order
+    }
+    return found;
   }
 
   async shutdown(): Promise<void> {

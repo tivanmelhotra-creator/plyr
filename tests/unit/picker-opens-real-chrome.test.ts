@@ -361,7 +361,7 @@ describe('clicking the crosshair', () => {
  * that is guaranteed to fail again.
  */
 describe('a failure the operator can actually act on', () => {
-  it('offers the install command when, and only when, packages are missing', async () => {
+  it('explains the missing-package failure when, and only when, packages are missing', async () => {
     const missing = await runRequestPick(
       {},
       { ok: false, error: 'Missing: Xvfb. Install the virtual display: sudo apt-get install -y xvfb' },
@@ -369,8 +369,29 @@ describe('a failure the operator can actually act on', () => {
     // Revealed for this failure...
     expect(missing.unhidden.deps).toBe(true);
     const page = missing.wrote[missing.wrote.length - 1];
-    expect(page).toContain('scripts/desktop.sh install');
-    // ...and the server's own wording is preserved, since it names the package.
+
+    // This assertion CHANGED, and the reason is the whole point of it. It used to
+    // require the page to print `scripts/desktop.sh install`, i.e. to tell the
+    // user to run a root command by hand. The server now provisions the display
+    // stack itself, rootlessly, into its own directory, so that instruction is no
+    // longer true -- and telling a user without sudo to run sudo is exactly the
+    // dead end the original bug report was about. What must survive is the
+    // guard's INTENT: this screen has to say what will actually fix it.
+    //
+    // So: Retry is now the real remedy, and the page must say so...
+    expect(page).toContain('Retry');
+    // ...must warn that the first attempt is slow, or the user aborts a working
+    // provision at 40 seconds thinking it hung...
+    expect(page).toMatch(/minute/i);
+    // ...must name the two things that genuinely stop it, since those are the
+    // only cases left where a human has to intervene...
+    expect(page).toContain('DESKTOP_AUTO_PROVISION');
+    expect(page).toMatch(/mirror/i);
+    // ...and must NOT resurrect the manual root instruction.
+    expect(page).not.toContain('scripts/desktop.sh install');
+    expect(page).not.toContain('apt-get install');
+
+    // The server's own wording is still preserved, since it names the package.
     expect(missing.errors[0]).toContain('Missing: Xvfb');
 
     // ...but NOT for an unrelated failure, where it would read as "your server
