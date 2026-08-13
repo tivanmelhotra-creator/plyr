@@ -517,9 +517,47 @@ Every shot must report `errors: none`.
 | `tests/unit/ndv-designed-nodes.test.ts` | ✅ 39/39 |
 | `tests/unit/condition-paths.test.ts` | ✅ 29/29 |
 | `tests/unit/webstore-install.test.ts` | ✅ 28/28 |
-| full `npx vitest run` | ✅ **78 files / 1871 tests** |
+| full `npx vitest run` | ✅ **80 files / 1898 tests** |
 | `node tools/probe-condition-value-types.js` | ✅ **23/23 checks, VERDICT=PASS** |
 | `node tools/ui-shot.js` (3 shots) | ✅ `errors: none` |
 | line endings | ✅ `public/**` LF, `src/**` CRLF preserved |
-| Git | branch `genspark_ai_developer`, PR **#38** open against `main` |
+| Git | branch `genspark_ai_developer` (the old GitHub account was banned; republished as a fresh repo) |
 | Live smoke test | ✅ store install + browser launch + popup render |
+
+---
+
+## 6. Audit of the two browser missions (2026-08-13)
+
+Both missions were re-audited end to end against the running code, not against
+their own commit messages. **Two real defects and one false alarm** came out of
+it. The false alarm is listed with the same weight as the defects on purpose: a
+retracted finding is part of the audit result, not an embarrassment to hide.
+
+| # | Finding | Status | Proof |
+|---|---------|--------|-------|
+| **BUG 1** | Every «Confirm & Add to Node» was refused with `stale_session`, so the Element Inspector could pick an element but never deliver it. The dashboard claims a node under a per-tab id it mints (`ui-…`); the extension submitted under an id **it** minted (`ext-…`); `InspectorHub.submit` compares the two for equality. Two independently generated strings are never equal. | **FIXED** | `tests/unit/inspector-session-handoff.test.ts` — 9 tests. Reverting the fix turns **4** of them red. |
+| **GAP 2** | The Inspector extension was never present in Remote mode. `REAL_CHROME_EXTENSIONS_DIR` (`profiles/extensions`) was expected to contain it and **nothing ever wrote it there**, so the one-inspector-for-both-modes requirement held only in Local mode. | **FIXED** | `src/core/InspectorExtension.ts` seeds it (SHA-256 fingerprint, generated `bootstrap.config.js`). Verified in a real headed Chromium: service worker live, `ABInspect` present, generic extraction returned `["id=buy","href=/checkout","data-sku=SKU-1","data-anything=yes"]`. |
+| **~~BUG 3~~** | *Claimed:* the dashboard's download shelf lost half of all real filenames (`suggestedFilename()` 12/24). **RETRACTED — the code was already correct.** The 12/24 was measured by a probe launching Chromium with a bare environment; the product launches with `withUtf8Locale(process.env)` at **both** browser sites, and re-measured that way it is **24/24**. | **NOT A BUG** | `docs/MEASURED-DECISIONS.md` § «The 12/24 that never existed». |
+
+What was kept from the retracted item, because it is independently justified:
+
+- The **declared-header lookup** stays as defence in depth — the 24/24 depends on
+  an environment variable set in another file, and the header cannot be lost that
+  way. The tests now assert `withUtf8Locale` is present at both launch sites, so
+  a removal fails a test instead of reaching a user.
+- The **`contentType` argument** to `ensureUsableExtension` stays because it is a
+  measured fix, though a narrow one: **4/7** tricky shapes. It matters only when
+  the site named the file and the name had no extension (`export` → `export.csv`,
+  `گزارش` → `گزارش.csv`). Verified to bite: removing it turns 4 behavioural
+  assertions red.
+
+Everything else specified in the two missions was found **implemented and
+working**: the upload gesture (Windows → backend → website in one motion), the
+auto-download return path, RFC 6266/5987 name parsing with the documented source
+priority, Remote mode surviving alongside Local mode, the single Playwright
+automation engine behind a Browser Adapter, the MV3 extension being a real
+installable extension rather than browser-UI furniture, `Ctrl+Shift+C` picking,
+hover highlight, fully generic `data-*` extraction with no whitelist,
+multi-attribute selection, and the explicit refusal set
+(`no_active_node` / `stale_session` / `empty_selection` / `invalid_element`).
+The deleted Simulated Browser was **not** resurrected.

@@ -352,9 +352,17 @@
   async function refreshInspector(quiet) {
     var res = await bg({ type: 'AB_INSPECTOR_SESSION' });
 
+    // The session shown is the EDITING session that holds the claim — the one a
+    // pick is actually submitted under. Showing this extension's own id here
+    // (which is what it used to show) made a broken hand-off look correct: the
+    // two ids are generated independently and never match, so a displayed
+    // `ext-…` was a session no pick could ever be delivered under.
     if (res && res.sessionId) {
       els.inspSession.textContent = res.sessionId;
       els.inspSession.className = 'ivalue mono';
+    } else {
+      els.inspSession.textContent = 'none — open a node in the project';
+      els.inspSession.className = 'ivalue none';
     }
 
     if (!res || !res.ok) {
