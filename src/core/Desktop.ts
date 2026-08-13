@@ -40,6 +40,14 @@ import os from 'os';
 import path from 'path';
 
 import { config } from '../config';
+import {
+  provisionDesktopStack,
+  adoptProvisionedStack,
+  isProvisioned,
+  layoutFor,
+  resolveXkbDataDir,
+  type ProvisionReporter,
+} from './DesktopProvision';
 
 const execFileAsync = promisify(execFile);
 
@@ -88,15 +96,27 @@ export interface DesktopStatus {
   lastError: string;
 }
 
+// These hints are what a user sees AFTER the automatic provisioner has already
+// tried and failed. That ordering is why they no longer lead with
+// `apt-get install`: the reported bug was `Missing: x11vnc, websockify` where
+// Retry failed forever, and the reason was that a hint requiring root was the
+// only thing on offer to a process running as uid 1000. Advertising a command
+// the reader cannot run is what made that failure permanent, so root commands
+// are now named last, as the fallback for whoever does have root -- not as the
+// instruction. DESKTOP_AUTO_PROVISION is named because if someone switched the
+// automatic path off, that is the actual cause and nothing else here applies.
 const INSTALL_HINT =
-  'Install the virtual display stack: sudo apt-get install -y xvfb x11vnc novnc websockify openbox ' +
-  '(or run: bash scripts/desktop.sh install). openbox is the window manager — without one, ' +
-  'a second Chrome window cannot be focused, raised or closed.';
+  'The server tried to install the virtual display stack into its own directory and could not. ' +
+  'Check DESKTOP_AUTO_PROVISION is not disabled, and that the server can reach the package ' +
+  'mirror and write to its provision directory. With root available: ' +
+  'sudo apt-get install -y xvfb x11vnc novnc websockify openbox (or bash scripts/desktop.sh install). ' +
+  'openbox is the window manager — without one, a second Chrome window cannot be focused, raised or closed.';
 
 /** Just the display. Chrome needs this one; the other two are for watching. */
 export const DISPLAY_INSTALL_HINT =
-  'Install the virtual display: sudo apt-get install -y xvfb ' +
-  '(or run: bash scripts/desktop.sh install).';
+  'The server tried to provision Xvfb automatically and could not. ' +
+  'Check DESKTOP_AUTO_PROVISION is enabled and that the package mirror is reachable. ' +
+  'With root available: sudo apt-get install -y xvfb (or bash scripts/desktop.sh install).';
 
 /**
  * The message a user gets when a headed Chrome has nowhere to draw.
@@ -276,6 +296,61 @@ function portOpen(port: number, host = '127.0.0.1', timeoutMs = 800): Promise<bo
   });
 }
 
+/**
+ * The `-xkbdir` arguments for Xvfb — empty unless we have a directory that
+ * really contains keymap rules.
+ *
+ * THIS EMPTINESS IS THE FIX, not an omission. After the ELF patch made Xvfb
+ * find xkbcomp, it still died with:
+ *
+ *     XKB: Failed to compile keymap
+ *     Keyboard initialization failed. This could be a missing or incorrect
+ *     setup of xkeyboard-config.
+ *     (EE) Failed to activate virtual core keyboard: 2
+ *
+ * even though the shim's `xkbcomp -version` printed `xkbcomp 1.4.7` and `ldd`
+ * showed no missing libraries. The binary was fine; we were passing
+ * `-xkbdir <private-tree>/usr/share/X11/xkb`, and that directory DID NOT EXIST
+ * — `xkb-data` is already installed system-wide here, so the closure resolver
+ * correctly skipped downloading it, leaving the private tree without keymap
+ * rules. A non-existent -xkbdir is WORSE than none, because it overrides a
+ * perfectly good /usr/share/X11/xkb. So we pass the flag only when
+ * resolveXkbDataDir() has confirmed a directory containing `rules/`, and
+ * otherwise let X use its own default.
+ */
+async function xkbDirArgs(): Promise<string[]> {
+  const layout = layoutFor();
+  if (!(await isProvisioned(layout))) return []; // system Xvfb: its default is right
+  const dir = await resolveXkbDataDir(layout);
+  return dir ? ['-xkbdir', dir] : [];
+}
+
+/**
+ * How to launch websockify.
+ *
+ * Pure-ish and exported so it can be unit-tested, because it encodes a
+ * non-obvious MEASURED fact: the Debian console script does NOT work when the
+ * package is unpacked rather than installed. It resolves its own version
+ * through `importlib.metadata.from_name`, which raises StopIteration with no
+ * .dist-info present:
+ *
+ *     <tree>/usr/bin/websockify ...  ->  StopIteration
+ *     python3 -m websockify ...      ->  port listening, /vnc.html -> 200
+ *
+ * So when we are running from the private tree we invoke the MODULE. A real
+ * system-installed websockify is used directly, since its metadata is intact.
+ */
+export async function websockifyLauncher(
+  probe: (bin: string) => Promise<string> = which,
+): Promise<{ bin: string; prefix: string[] }> {
+  const layout = layoutFor();
+  if (await isProvisioned(layout)) {
+    return { bin: 'python3', prefix: ['-m', 'websockify'] };
+  }
+  if (await probe('websockify')) return { bin: 'websockify', prefix: [] };
+  return { bin: 'python3', prefix: ['-m', 'websockify'] };
+}
+
 export class DesktopError extends Error {
   constructor(message: string) {
     super(message);
@@ -288,6 +363,94 @@ export class Desktop {
   private static lastError = '';
   private static passwordFile = '';
 
+  /** Human-readable provisioning progress, newest last. Surfaced by status(). */
+  private static provisionSteps: string[] = [];
+  /**
+   * Is a provisioning run in flight?
+   *
+   * Provisioning takes minutes, and the UI button WILL be pressed again while
+   * it runs. Without this guard two runs would `apt-get download` into the same
+   * directory and `dpkg-deb -x` over each other's files — the exact recipe for
+   * the half-written binaries that isRealExecutable() exists to catch. Second
+   * and later callers wait for the first run instead of starting their own.
+   */
+  private static provisioning: Promise<string[]> | null = null;
+
+  /** What the provisioner is doing right now, for the UI to display. */
+  static provisionState(): { active: boolean; steps: string[] } {
+    return { active: this.provisioning !== null, steps: [...this.provisionSteps] };
+  }
+
+  /**
+   * Make these binaries exist — THE ROOT-CAUSE FIX.
+   *
+   * The reported bug was `Missing: x11vnc, websockify`, with Retry reproducing
+   * it forever. The reason was structural, not cosmetic: this class looked the
+   * binaries up with `which`, and when they were absent its ONLY move was to
+   * print `sudo apt-get install ...`. MEASURED on the reporting box:
+   *
+   *     id                  ->  uid=1000(user)
+   *     sudo -n true        ->  fails (no passwordless sudo)
+   *     touch /usr/bin/__t  ->  Permission denied
+   *
+   * so the instruction could not be followed, and Retry re-ran the same
+   * lookups against an unchanged filesystem. No error-message rewording or
+   * retry-flow change could ever have fixed that; the missing capability was
+   * an install path that needs no privilege. DesktopProvision supplies one
+   * (`apt-get download` + `dpkg-deb -x` into a private prefix), so this method
+   * now INSTALLS the stack instead of blaming the operator for its absence.
+   *
+   * Returns the binaries that are STILL missing afterwards. Deliberately
+   * honest: if provisioning genuinely cannot work (no network to the mirror,
+   * no disk) the caller must still fail loudly rather than pretend.
+   */
+  static async ensureBinaries(
+    bins: string[],
+    report: ProvisionReporter = () => {},
+  ): Promise<string[]> {
+    const stillMissing = async (): Promise<string[]> => {
+      const out: string[] = [];
+      for (const b of bins) if (!(await which(b))) out.push(b);
+      return out;
+    };
+
+    let missing = await stillMissing();
+    if (!missing.length) return [];
+
+    // Fast path: a tree from an earlier run (or another user's request) only
+    // needs its PATH re-published into this process. Milliseconds, not minutes.
+    if (await adoptProvisionedStack()) {
+      missing = await stillMissing();
+      if (!missing.length) return [];
+    }
+
+    if (!config.DESKTOP_AUTO_PROVISION) return missing;
+
+    // Coalesce concurrent callers onto one run — see `provisioning` above.
+    if (!this.provisioning) {
+      this.provisionSteps = [];
+      const sink: ProvisionReporter = (step, state, detail) => {
+        const line = `${step}: ${state}${detail ? ` (${detail})` : ''}`;
+        this.provisionSteps.push(line);
+        // Keep the tail bounded; this is a progress feed, not a log file.
+        if (this.provisionSteps.length > 40) this.provisionSteps.shift();
+        report(step, state, detail);
+      };
+      this.provisioning = provisionDesktopStack(sink)
+        .then((res) => {
+          if (!res.ok && res.error) this.lastError = res.error;
+          return stillMissing();
+        })
+        .catch((e: unknown) => {
+          this.lastError = `provisioning failed: ${(e as Error).message}`;
+          return stillMissing();
+        })
+        .finally(() => { this.provisioning = null; });
+    }
+
+    return this.provisioning;
+  }
+
   static get display(): string {
     return process.env.DISPLAY || config.REAL_CHROME_DISPLAY || ':99';
   }
@@ -298,7 +461,10 @@ export class Desktop {
 
   private static async novncRoot(): Promise<string> {
     if (config.DESKTOP_NOVNC_WEB_ROOT) return config.DESKTOP_NOVNC_WEB_ROOT;
-    for (const root of NOVNC_ROOTS) {
+    // The provisioned tree comes FIRST: when novnc was unpacked privately, its
+    // vnc.html is the copy that matches the websockify we are about to launch,
+    // and /usr/share/novnc very likely does not exist at all on this box.
+    for (const root of [layoutFor().novncRoot, ...NOVNC_ROOTS]) {
       try {
         const st = await fs.stat(root);
         if (st.isDirectory()) return root;
@@ -344,9 +510,14 @@ export class Desktop {
       return;
     }
 
+    // Install it if it is absent, rather than telling the user to run a command
+    // they have no privilege to run. See ensureBinaries() for the measurements.
     if (!(await which('Xvfb'))) {
-      this.lastError = `Missing: Xvfb. ${DISPLAY_INSTALL_HINT}`;
-      throw new DesktopError(this.lastError);
+      const still = await this.ensureBinaries(['Xvfb']);
+      if (still.includes('Xvfb')) {
+        this.lastError = `Missing: Xvfb. ${DISPLAY_INSTALL_HINT}`;
+        throw new DesktopError(this.lastError);
+      }
     }
 
     const display = this.display;
@@ -361,6 +532,7 @@ export class Desktop {
         '-screen', '0', `${w}x${h}x24`,
         '-nolisten', 'tcp',      // the display itself is never on the network
         '-ac',
+        ...(await xkbDirArgs()),
       ]);
       await this.waitFor(() => fs.stat(lock).then(() => true).catch(() => false), 8000,
         `Xvfb did not create ${lock}`);
@@ -457,10 +629,10 @@ export class Desktop {
     // still want the screen up, because that is the half that unblocks Chrome.
     await this.ensureDisplay();
 
-    const missing: string[] = [];
-    for (const bin of ['x11vnc', 'websockify']) {
-      if (!(await which(bin))) missing.push(bin);
-    }
+    // THE REPORTED FAILURE SITE. This used to be a bare `which` loop whose only
+    // outcome on a normal unprivileged box was `Missing: x11vnc, websockify`
+    // plus an apt-get line the user could not run. It now installs them.
+    const missing = await this.ensureBinaries(['x11vnc', 'websockify']);
     if (missing.length) {
       this.lastError = `Missing: ${missing.join(', ')}. ${INSTALL_HINT}`;
       throw new DesktopError(this.lastError);
@@ -500,11 +672,15 @@ export class Desktop {
           'DESKTOP_NOVNC_WEB_ROOT to the directory containing vnc.html.';
         throw new DesktopError(this.lastError);
       }
-      this.spawnTracked('novnc', 'websockify', websockifyArgs({
-        webRoot: web,
-        listenPort: config.DESKTOP_NOVNC_PORT,
-        vncPort: config.DESKTOP_VNC_PORT,
-      }));
+      const launcher = await websockifyLauncher();
+      this.spawnTracked('novnc', launcher.bin, [
+        ...launcher.prefix,
+        ...websockifyArgs({
+          webRoot: web,
+          listenPort: config.DESKTOP_NOVNC_PORT,
+          vncPort: config.DESKTOP_VNC_PORT,
+        }),
+      ]);
       await this.waitFor(() => portOpen(config.DESKTOP_NOVNC_PORT), 10000,
         `websockify did not listen on ${config.DESKTOP_NOVNC_PORT}`);
     }

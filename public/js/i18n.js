@@ -551,6 +551,41 @@
       'bvp.realOpening': 'در حال آماده‌سازی کروم واقعی…',
       'bvp.realFailed': 'باز کردن کروم واقعی ممکن نشد',
 
+      // ── جابه‌جایی بین مرورگر ریموت و مرورگر خودم ──────────────────────
+      // نکتهٔ کلیدی در همهٔ این پیام‌ها: کاربر نباید حس کند یک مرورگر تازه باز
+      // شده. پس همه‌جا از «همین نشست» حرف می‌زنیم، نه از «نشست جدید» — چون در
+      // عمل هم همین‌طور است: هر دو طرف به یک Automation Session وصل‌اند.
+      'ho.toLocal': 'انتقال به مرورگر خودم',
+      'ho.toLocalHint': 'همین نشست با همان تب‌ها و همان ترتیب روی مرورگر خودت باز می‌شود',
+      'ho.toRemote': 'بازگشت به مرورگر ریموت',
+      'ho.toRemoteHint': 'همین نشست به سرور برمی‌گردد؛ نودهای در حال اجرا قطع نمی‌شوند',
+      'ho.nowRemote': 'نشست به مرورگر ریموت برگشت.',
+      'ho.nowLocal': 'نشست روی مرورگر خودت باز شد.',
+      'ho.failed': 'جابه‌جایی انجام نشد',
+      'ho.title': 'انتقال نشست به مرورگر خودت',
+      // «چرا کد؟» را عمداً توضیح می‌دهیم: کاربری که نمی‌داند چرا باید کد بزند،
+      // آن را یک مانع می‌بیند، نه یک محافظ.
+      'ho.codeIntro': 'این کد را در افزونه بزن تا مرورگرت به همین نشست وصل شود. کد یک‌بارمصرف است و کلید API تو جایی ذخیره نمی‌شود.',
+      'ho.codeLabel': 'کد اتصال',
+      'ho.expiresIn': 'اعتبار تا {time}',
+      'ho.expired': 'این کد منقضی شد. دوباره «انتقال به مرورگر خودم» را بزن.',
+      'ho.copyCode': 'کپی کد',
+      'ho.copied': 'کد کپی شد',
+      'ho.installTitle': 'اول افزونه را نصب کن',
+      'ho.installIntro': 'برای انتقال نشست به مرورگر خودت، افزونهٔ این پروژه لازم است.',
+      'ho.installOpen': 'دریافت افزونه',
+      'ho.installDone': 'نصب کردم، ادامه',
+      'ho.waiting': 'در انتظار مرورگر تو…',
+      'ho.waitingHint': 'کد را در افزونه بزن. همین‌که تب‌ها آن‌جا باز شدند، این پنجره خودش بسته می‌شود.',
+      'ho.timedOut': 'پاسخی از مرورگرت نرسید. نشست دست‌نخورده روی ریموت باقی است.',
+      'ho.cancel': 'انصراف',
+      'ho.tabsCaptured': '{n} تب برای انتقال آماده شد.',
+      // محدودیت‌ها را پنهان نمی‌کنیم: کاربری که بی‌خبر از حساب خارج شود، فکر
+      // می‌کند قابلیت خراب است.
+      'ho.limitTabs': '{n} تب منتقل نشد (به سقف تب رسید).',
+      'ho.limitStorage': 'ممکن است در بعضی سایت‌ها لازم شود دوباره وارد شوی.',
+      'ho.limitNoTabs': 'تب بازی برای انتقال نبود.',
+
       // ── زوم ───────────────────────────────────────────────────────────
       'bvp.zoomIn': 'بزرگ‌نمایی (Ctrl و +)',
       'bvp.zoomOut': 'کوچک‌نمایی (Ctrl و −)',
@@ -1961,6 +1996,41 @@
       'bvp.realShort': 'Real Chrome',
       'bvp.realOpening': 'Starting the real Chrome…',
       'bvp.realFailed': 'Could not open the real Chrome',
+
+      // ── Moving the session between Remote and the user's own browser ───
+      // The through-line in all of these: never imply a NEW browser or a NEW
+      // session. Both sides attach to one automation session, so the wording
+      // says "this session" throughout — which is also simply the truth.
+      'ho.toLocal': 'Move to my browser',
+      'ho.toLocalHint': 'Opens this same session in your own browser — same tabs, same order',
+      'ho.toRemote': 'Move back to remote',
+      'ho.toRemoteHint': 'Returns this session to the server; running nodes are not interrupted',
+      'ho.nowRemote': 'Session moved back to the remote browser.',
+      'ho.nowLocal': 'Session opened in your own browser.',
+      'ho.failed': 'The switch did not go through',
+      'ho.title': 'Move this session to your browser',
+      // Say WHY there is a code. A user who does not know why is being asked
+      // reads it as an obstacle rather than a protection.
+      'ho.codeIntro': 'Enter this code in the extension to attach your browser to this same session. It is single-use, and your API key is never stored in the browser.',
+      'ho.codeLabel': 'Pairing code',
+      'ho.expiresIn': 'Valid for {time}',
+      'ho.expired': 'That code expired. Press “Move to my browser” again.',
+      'ho.copyCode': 'Copy code',
+      'ho.copied': 'Code copied',
+      'ho.installTitle': 'Install the extension first',
+      'ho.installIntro': 'Moving the session to your own browser needs this project’s extension.',
+      'ho.installOpen': 'Get the extension',
+      'ho.installDone': 'I installed it — continue',
+      'ho.waiting': 'Waiting for your browser…',
+      'ho.waitingHint': 'Enter the code in the extension. This closes itself as soon as your tabs are open there.',
+      'ho.timedOut': 'Your browser did not report back. The session is untouched on remote.',
+      'ho.cancel': 'Cancel',
+      'ho.tabsCaptured': '{n} tab(s) ready to move.',
+      // Limits are surfaced, never swallowed: a user who is silently signed out
+      // concludes the feature is broken.
+      'ho.limitTabs': '{n} tab(s) could not be moved (tab limit reached).',
+      'ho.limitStorage': 'You may need to sign in again on some sites.',
+      'ho.limitNoTabs': 'There were no open tabs to move.',
 
       // ── Zoom ─────────────────────────────────────────────────────────
       'bvp.zoomIn': 'Zoom in (Ctrl and +)',

@@ -235,6 +235,9 @@
   <script src="/js/real-chrome.js"></script>
   <!-- Must precede browser-view.js: both of its surfaces attach RemoteIO. -->
   <script src="/js/remote-io.js"></script>
+  <!-- Remote ⇄ Local session handoff. Must precede browser-view.js, which reads
+       window.BrowserHandoff when it draws the switch button in the picker bar. -->
+  <script src="/js/browser-handoff.js"></script>
   <script src="/js/browser-view.js"></script>
   <!-- Element Inspector receiver. Must load AFTER flow-editor.js: it delivers
        picked elements through FlowEditor.applyInspectorFields(). It only starts

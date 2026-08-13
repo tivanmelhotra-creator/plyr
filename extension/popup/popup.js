@@ -24,6 +24,8 @@
     baseUrl: $('baseUrl'), apiKey: $('apiKey'), userId: $('userId'),
     saveCfg: $('saveCfg'), checkCfg: $('checkCfg'), openPanel: $('openPanel'),
     wflist: $('wflist'), wfCount: $('wfCount'), refreshWf: $('refreshWf'), runHeadful: $('runHeadful'),
+    hoState: $('hoState'), hoSession: $('hoSession'), hoUnpair: $('hoUnpair'),
+    hoCode: $('hoCode'), hoPair: $('hoPair'), hoApply: $('hoApply'), hoStatus: $('hoStatus'),
     inspMode: $('inspMode'), inspNode: $('inspNode'), inspSession: $('inspSession'),
     inspect: $('inspect'), inspRefresh: $('inspRefresh'), inspStatus: $('inspStatus'),
     modeSwitch: $('modeSwitch'),
@@ -442,6 +444,108 @@
     window.close();
   }
 
+  // ---- Remote -> Local handoff -----------------------------------------
+  //
+  // Every step is delegated to the background worker. The popup never opens the
+  // tabs itself, because the popup dies the moment focus moves to a newly
+  // created tab — which is the very first thing a restore does. Hosting the
+  // sequence here would reliably kill it after tab one.
+
+  function setHoStatus(text, kind) {
+    els.hoStatus.textContent = text || '';
+    els.hoStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  async function refreshHandoff() {
+    var res = await bg({ type: 'AB_HANDOFF_STATUS' });
+    var paired = !!(res && res.paired);
+
+    els.hoState.textContent = paired ? 'yes' : 'not yet';
+    els.hoState.className = 'ivalue ' + (paired ? 'local' : 'none');
+    els.hoSession.textContent = (res && res.sessionId) ? res.sessionId : '—';
+    els.hoUnpair.hidden = !paired;
+
+    // Once paired, the code box is no longer the main action — restoring is. A
+    // paired browser can be asked to pull again at any time, which is what makes
+    // an interrupted restore recoverable instead of a dead end.
+    els.hoApply.hidden = !paired;
+    els.hoPair.textContent = paired ? 'Pair with a new code' : 'Pair & move my tabs';
+    return paired;
+  }
+
+  // Format as the user types so what they see matches what the app showed them.
+  // Purely cosmetic: the server normalises separators away, so a dash the user
+  // types, or does not type, changes nothing about whether the code works.
+  function onCodeInput() {
+    var raw = (Core && Core.normalizePairingCode)
+      ? Core.normalizePairingCode(els.hoCode.value)
+      : String(els.hoCode.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    els.hoCode.value = raw.length > 4 ? raw.slice(0, 4) + '-' + raw.slice(4, 8) : raw;
+  }
+
+  async function pairHandoff() {
+    var code = els.hoCode.value;
+    if (Core && Core.looksLikePairingCode && !Core.looksLikePairingCode(code)) {
+      setHoStatus('Enter the 8-character code shown in the app (like ABCD-EFGH).', 'bad');
+      return;
+    }
+
+    els.hoPair.disabled = true;
+    setHoStatus('Pairing\u2026', '');
+    var res = await bg({ type: 'AB_HANDOFF_PAIR', payload: { code: code } });
+    if (!res || !res.ok) {
+      els.hoPair.disabled = false;
+      // The worker forwards the server's specific reason; showing it verbatim is
+      // the difference between "try again" and "you need a fresh code", which
+      // are different actions.
+      setHoStatus((res && res.error) || 'Pairing failed.', 'bad');
+      return;
+    }
+
+    // Paired: immediately do the thing the user actually wanted. Requiring a
+    // second click here would be asking them to confirm the request they just
+    // made.
+    setHoStatus('Paired. Moving your tabs\u2026', 'ok');
+    await refreshHandoff();
+    els.hoCode.value = '';
+    await applyHandoff(true);
+    els.hoPair.disabled = false;
+  }
+
+  async function applyHandoff(chained) {
+    els.hoApply.disabled = true;
+    if (!chained) setHoStatus('Moving your tabs\u2026', '');
+
+    var res = await bg({ type: 'AB_HANDOFF_APPLY' });
+    els.hoApply.disabled = false;
+
+    if (!res || !res.ok) {
+      await refreshHandoff();
+      setHoStatus((res && res.error) || 'Could not move the session.', 'bad');
+      return;
+    }
+
+    var n = res.restored || 0;
+    var msg = n === 0
+      ? 'Session moved here. There were no tabs open to bring across.'
+      : 'Moved ' + n + ' tab' + (n === 1 ? '' : 's') + ' here'
+        + (res.activeTabRestored ? ', and focused the one you were on.' : '.');
+
+    // Limits are reported, never hidden. Cookies in particular cannot always be
+    // carried across, and a user who is silently signed out will conclude the
+    // feature is broken; a user who was told will not.
+    if (res.limits) msg += ' Note: ' + res.limits + '.';
+    setHoStatus(msg, 'ok');
+    await refreshHandoff();
+    await refreshInspector(true);
+  }
+
+  async function unpairHandoff() {
+    await bg({ type: 'AB_HANDOFF_UNPAIR' });
+    await refreshHandoff();
+    setHoStatus('This browser is no longer paired.', '');
+  }
+
   async function switchMode() {
     var target = els.modeSwitch.dataset.target;
     if (!target) return;
@@ -503,10 +607,20 @@
   els.inspect.addEventListener('click', startInspector);
   els.inspRefresh.addEventListener('click', function () { refreshInspector(false); });
   els.modeSwitch.addEventListener('click', switchMode);
+  els.hoPair.addEventListener('click', pairHandoff);
+  els.hoApply.addEventListener('click', function () { applyHandoff(false); });
+  els.hoUnpair.addEventListener('click', unpairHandoff);
+  els.hoCode.addEventListener('input', onCodeInput);
+  // Enter submits: this box is usually reached by pasting a code, and reaching
+  // for the mouse afterwards is friction on a credential that expires.
+  els.hoCode.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); pairHandoff(); }
+  });
 
   // init
   loadSettings();
   loadSteps();
+  refreshHandoff();
   // Quiet on open: an unconfigured extension should show a settings prompt in
   // the Backend card, not a red inspector error the user cannot yet act on.
   refreshInspector(true);
