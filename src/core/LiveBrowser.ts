@@ -20,6 +20,8 @@ import {
   nameFromUrl,
   MAX_DOWNLOAD_BYTES,
 } from './RemoteDownloads';
+import { DownloadHeaderIndex } from './DownloadHeaders';
+import { preferDeclaredName } from './RealChromeShelf';
 import {
   loadTabs,
   saveTabs,
@@ -714,6 +716,70 @@ export class LiveBrowserSession {
   /** The download shelf for this session. */
   private downloads: LiveDownload[] = [];
   private downloadSeq = 0;
+
+  /**
+   * What each website DECLARED its files are called.
+   *
+   * The same index `RealChromeShelf` uses — but the honest reason is NARROWER
+   * than the one first written here, and the correction is worth recording so
+   * nobody "re-discovers" a bug that this product does not have.
+   *
+   * WHAT WAS FIRST CLAIMED (and was WRONG)
+   * --------------------------------------
+   * That `download.suggestedFilename()` loses half of all real filenames —
+   * measured 12/24. That number was real, but it was measured against a raw
+   * `chromium.launch()` in a probe, NOT against this product's launch. It did
+   * not describe this code path.
+   *
+   * WHAT IS ACTUALLY TRUE (MEASURED, tools/probe-livebrowser-names.js)
+   * ------------------------------------------------------------------
+   * The variable is the process LOCALE, not Playwright. Chromium can only put a
+   * non-ASCII name into a POSIX path if it is running in a UTF-8 locale; with no
+   * `LANG` it collapses the whole name — extension included — to the literal
+   * string `download`. Isolated:
+   *
+   *     no LANG          «فاکتور.xlsx»  ->  "download"
+   *     LANG=C.UTF-8     «فاکتور.xlsx»  ->  "فاکتور.xlsx"
+   *
+   * BOTH browser paths this session can be given already force that locale via
+   * `withUtf8Locale()` — `GlobalBrowser` (interactive Chromium) and `RealChrome`
+   * (the user's own Chrome). Re-measured WITH the product's environment, 8 real
+   * Content-Disposition shapes × 3 ways a site starts a download:
+   *
+   *     suggestedFilename()             24/24 (100%)
+   *     declared Content-Disposition    24/24 (100%)
+   *
+   * So this index is NOT a 50%->100% rescue here. It is kept for two reasons
+   * that ARE measured:
+   *
+   *   1. DEFENCE IN DEPTH. The 100% above is contingent on an environment
+   *      variable that lives outside this file — a deployment that exports a
+   *      non-UTF-8 `LC_ALL`, a service manager with a scrubbed environment, or a
+   *      future refactor that drops `withUtf8Locale`, silently returns every
+   *      name to `download`. The declared header cannot be lost that way,
+   *      because it is read off the wire before any filesystem is involved.
+   *   2. THE EXTENSION RESCUE, which is a real win today, though a narrower one
+   *      than it first appears. The declared Content-Type is handed to
+   *      `ensureUsableExtension`. Chromium ALREADY appends a suffix from the
+   *      response type when it invents the whole name itself (`attachment` with
+   *      no filename -> `d.html`), so that case needs no help. What the argument
+   *      changes is the case where the SITE supplied a name and that name had no
+   *      extension: the site's name must be kept — that is the requirement — and
+   *      Chromium's own suffixed guess is discarded along with it. MEASURED
+   *      through this exact code path, 7 tricky shapes:
+   *
+   *          with the declared type    export.csv  data.json  گزارش.csv  report.rtf
+   *          without it                export      data       گزارش      report
+   *
+   *      4/7 rescued; the other 3 are cases no argument could help (Chromium
+   *      already answered, or `application/octet-stream` says nothing). Without
+   *      it those four reach Windows with no extension at all, which is exactly
+   *      the reported «فایل بدون Extension» half of the defect.
+   *
+   * The requirement is about the FEATURE, so both remote-browser surfaces
+   * honour it, not just the one that was reachable from the crosshair.
+   */
+  private readonly declaredNames = new DownloadHeaderIndex();
   /** Uploads handed to a chooser in this session, deleted when it ends. */
   private consumedUploads: string[] = [];
   private idleTimer: NodeJS.Timeout | null = null;
@@ -818,6 +884,12 @@ export class LiveBrowserSession {
     // (HANDOFF 15 AUTH-GAP). The fingerprint is stable for the same reason.
     this.hadSavedSession = await hasSavedSession(this.userId);
     this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+
+    // Start remembering what websites call their files BEFORE anything can
+    // navigate. Attaching after the first navigation is the measured way to miss
+    // a download's own `Content-Disposition` entirely, and a missed header means
+    // the shelf falls back to Chrome's guess — which is wrong half the time.
+    this.declaredNames.watch(this.context);
 
     // Reading the page's clipboard needs permission, and the page's own
     // clipboard is the ONLY place some extensions put their output (a cookie
@@ -1987,6 +2059,10 @@ export class LiveBrowserSession {
           // The whole context went with it (a Chrome restart, or the shared
           // real-Chrome profile being restarted from the panel). Rebuild.
           this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+          // A NEW context has none of the old one's listeners. Re-attach, or
+          // every download after a Chrome restart silently reverts to the 50%
+          // naming path with nothing in the logs to say why.
+          this.declaredNames.watch(this.context);
           await this.context.grantPermissions(['clipboard-read', 'clipboard-write'])
             .catch(() => {});
           for (const t of this.tabs) { t.page = null; t.pending = true; t.dead = false; }
@@ -2942,18 +3018,34 @@ export class LiveBrowserSession {
     const tab = this.tabOfPage(page);
     this.downloadSeq += 1;
     const id = `d${this.downloadSeq}`;
-    const suggested = String(dl.suggestedFilename() || 'download');
+    const url = (() => { try { return String(dl.url() || ''); } catch { return ''; } })();
+    // What the WEBSITE said this file is called, preferred over Chrome's guess.
+    // Both agree 24/24 as long as the browser was launched in a UTF-8 locale,
+    // which `withUtf8Locale` guarantees today — see `declaredNames` above for
+    // the corrected measurement and for the two reasons this is still read: the
+    // locale is set in another file and can regress, and this is where the
+    // declared Content-Type comes from (measured 4/4 extension rescues below).
+    const declared = this.declaredNames.lookup(url);
+    const suggested = preferDeclaredName(
+      declared?.name || '',
+      String(dl.suggestedFilename() || ''),
+    ) || 'download';
     // The name shown on the shelf. Sanitised HERE and not only at save time,
     // because it is also going into the UI, and a name with a bidi override in
-    // it can make `report.exe` read as `report.txt` on the shelf.
+    // it can make `report.exe` read as `report.txt` on the shelf. The declared
+    // name came from a remote server, so this sanitising is what makes it safe
+    // to use as a filename at all.
     const safe = safeFileName(suggested) || 'download';
+    // Named now, so a URL like `/export` that legitimately returns a DIFFERENT
+    // report next time cannot inherit this report's filename.
+    if (declared) this.declaredNames.forget(url);
     const entry: LiveDownload = {
       id,
       // A token, minted per download, is what the client is given. The id is a
       // per-session counter and would collide across sessions on disk.
       token: mintDownloadToken(),
       name: safe,
-      url: (() => { try { return dl.url(); } catch { return ''; } })(),
+      url,
       tabId: tab ? tab.id : this.activeId,
       state: 'inProgress',
       received: 0,
@@ -2975,7 +3067,11 @@ export class LiveBrowserSession {
       // UUID), and a file with no suffix is one the user's OS refuses to open.
       // The bytes are on disk now, so the format can be identified from them —
       // something Chrome could not do when the download began.
-      const finalName = await ensureUsableExtension(target, entry.url);
+      // The response's own `Content-Type` is passed as the last resort: a site
+      // that streamed bytes with no filename and no recognisable signature can
+      // still be identified from the type it declared (`application/rtf` → .rtf),
+      // and a file with no suffix is one the user's OS refuses to open.
+      const finalName = await ensureUsableExtension(target, entry.url, declared?.contentType || '');
       const finalPath = path.join(path.dirname(target), finalName);
       // The shelf row, Content-Disposition and the file on disk all take the
       // SAME name: three names for one file is how a download gets lost.

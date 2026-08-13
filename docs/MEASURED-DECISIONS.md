@@ -277,3 +277,123 @@ looked exactly like catastrophic product failures on the first run:
 
 The lesson is the one this file exists for: a measurement that disagrees with the
 code is not automatically a bug in the code.
+
+---
+
+## The «12/24» that never existed — an audit finding retracted
+
+**Date:** 2026-08-13 · **Files:** `src/core/LiveBrowser.ts`,
+`tools/probe-livebrowser-names.js`, `tests/unit/live-browser-download-names.test.ts`
+
+This entry records a **wrong** measurement of mine and the correct one that
+replaced it, because the wrong one was already in a code comment and on its way
+into an audit report, and the previous entry's own closing line applies to it:
+*a measurement that disagrees with the code is not automatically a bug in the code.*
+
+### What I claimed
+
+That the dashboard's Live Browser shelf lost half of all real filenames:
+
+```
+suggestedFilename()             12/24  (50%)
+declared Content-Disposition    24/24 (100%)
+```
+
+and therefore that `LiveBrowser.trackDownload` was **broken** in the same way
+`RealChromeShelf` had been — the reported
+«فایل بدون Extension / نام اشتباه / همه با نام file» defect, still live on a
+second surface.
+
+### Why it was wrong
+
+The probe launched its own browser:
+
+```js
+const browser = await chromium.launch();          // bare environment
+```
+
+The product launches, at **both** sites a live session can be handed a browser —
+`GlobalBrowser` (line ~92) and `RealChrome` (line ~646):
+
+```ts
+env: withUtf8Locale(process.env)                  // LANG=C.UTF-8
+```
+
+The locale is the entire variable. Chromium builds a download's filename as a
+`base::FilePath`, a byte string on POSIX; with no UTF-8 locale it cannot
+represent a non-ASCII name and discards the **whole** name, extension included,
+for its hardcoded fallback. Isolated to that one variable:
+
+```
+no LANG          «فاکتور.xlsx»  ->  "download"
+LANG=C.UTF-8     «فاکتور.xlsx»  ->  "فاکتور.xlsx"
+```
+
+Re-measured **with the product's environment**, 8 Content-Disposition shapes × 3
+ways a site starts a download:
+
+```
+suggestedFilename()             24/24 (100%)
+declared Content-Disposition    24/24 (100%)
+```
+
+**There is no 50% loss on the real code path.** Reporting one would have been a
+false audit finding — a bug that only exists in the harness that looked for it.
+`tools/probe-livebrowser-names.js` now launches with the product's environment,
+and takes `AB_PROBE_BARE_ENV=1` to reproduce the old number deliberately, as a
+demonstration of the dependency rather than a claim about shipped code.
+
+### What the declared-header index is actually worth here
+
+Two things, and they are worth keeping — but as robustness and a narrow fix, not
+as a 50%→100% rescue:
+
+**1. Defence in depth.** The 24/24 above is contingent on an environment variable
+set in a *different file*. A deployment exporting a non-UTF-8 `LC_ALL`, a service
+manager with a scrubbed environment, or a refactor that drops `withUtf8Locale`
+silently returns every filename to `download`. The declared header cannot be lost
+that way, because it is read off the wire before any filesystem is involved.
+`tests/unit/live-browser-download-names.test.ts` therefore asserts the locale fix
+is present at **both** launch sites — a removal is caught by a test rather than by
+a user.
+
+**2. A narrow, real extension rescue.** The declared `Content-Type` is passed to
+`ensureUsableExtension`. My first figure for this — "4/4 otherwise-extensionless
+downloads" — was **also** measured wrongly, by calling the function directly
+instead of through the browser. Chromium *already* appends a suffix from the
+response type when it invents the whole name itself:
+
+```
+attachment, no filename, text/html   ->  d.html      (no help needed)
+```
+
+The argument only changes the outcome when the **site named the file and the name
+had no extension** — because then the site's name must be kept (that is the
+requirement) and Chromium's own suffixed guess is discarded along with it.
+MEASURED through `trackDownload` itself, 7 tricky shapes:
+
+```
+                          with declared type    without it
+filename="export"    csv     export.csv           export
+filename="data"      json    data.json            data
+filename*=گزارش      csv     گزارش.csv            گزارش
+filename="report"    rtf     report.rtf           report
+attachment (no name) html    d.html               d.html      (unchanged)
+filename="notes"  /f.bin     notes.bin            notes.bin   (URL answered)
+filename="x"       octet     x                    x           (nothing to say)
+```
+
+**4/7 rescued**, and the three that do not move are cases no argument could help.
+The four that do are exactly the reported «فایل بدون Extension». The tests were
+rewritten to those shapes after the original ones were found to pass **either
+way** — a test that cannot fail proves nothing, and this one was verified to turn
+4 assertions red when the argument is removed.
+
+### The transferable lesson
+
+A probe is a program, and a program launched differently from the product measures
+a different program. Before a measurement is allowed to call shipped code broken,
+it has to be shown to run on the **same code path** — same launcher, same
+environment, same call order. Both wrong numbers here came from skipping that
+check, and both were caught only by asking "does the fix still look necessary if I
+put it back?"

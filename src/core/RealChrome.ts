@@ -55,6 +55,7 @@ import {
   type InstalledExtension,
 } from './ChromeExtensions';
 import { resolveFlags, type ResolveFlagsInput, type ResolvedFlags } from './ChromeFlags';
+import { seedInspectorExtension } from './InspectorExtension';
 import { Desktop, displayGuidance } from './Desktop';
 import {
   RealChromeShelf,
@@ -565,6 +566,30 @@ export class RealChrome {
     // each restore ZERO tabs. See enableSessionRestore for the table.
     const restoreTabs = config.REAL_CHROME_RESTORE_TABS === true;
     const restoreSaid = restoreTabs ? await enableSessionRestore(userDataDir) : 'disabled';
+
+    // The Element Inspector this repository SHIPS, made present before the
+    // extension list is read.
+    //
+    // The spec forbids a second Inspector («نباید دو Inspector جداگانه ساخته
+    // شود») and requires the one Inspector to serve BOTH modes. Local mode gets
+    // it for free — it is installed in the user's own Chrome. REMOTE mode did
+    // not: this launcher only side-loads what is already in `extensionsDir`, and
+    // nothing ever put `extension/` there, so on a fresh checkout that directory
+    // did not exist and the remote Chromium started with no Inspector at all.
+    // Seeding here (and not, say, at server start) is deliberate: this is the
+    // one place that decides what THIS Chromium loads, so the install cannot be
+    // missed by a launch that took another path.
+    const seeded = await seedInspectorExtension(extensionsDir);
+    if (seeded.reason === 'failed') {
+      // Degrade, do not fail. A browser that will not start is worse than a
+      // browser without the Inspector, and the message says which happened.
+      console.warn(`[REAL-CHROME] Inspector extension not seeded: ${seeded.error}`);
+    } else if (seeded.seeded) {
+      console.log(
+        `[REAL-CHROME] 🔍 Element Inspector ${seeded.reason} `
+        + `(v${seeded.version || '?'}) → ${seeded.dir}`,
+      );
+    }
 
     const extensions = await listExtensions(extensionsDir);
     const headless = config.REAL_CHROME_HEADLESS === true;

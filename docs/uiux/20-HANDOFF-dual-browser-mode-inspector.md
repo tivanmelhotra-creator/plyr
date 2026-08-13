@@ -319,3 +319,92 @@ The full suite caught 17 failures from this work, both real, both fixed:
 - `picker-opens-real-chrome.test.ts` — 16 × `inspectorHint is not defined`; the
   harness evaluates `requestPick` as a source slice, so the new helper needed a
   declared dependency entry (the pattern that file already documents).
+
+---
+
+## Addendum — audit 2026-08-13: two defects this handoff did not know about
+
+This document described the feature as complete, and the code it described was
+mostly there. Two things it claimed were **not true at run time**, both found by
+driving the product rather than re-reading it. Both are fixed; the tests that
+prove it are named below so the next reader can check rather than trust.
+
+### 1. «Confirm & Add to Node» never delivered anything
+
+The requirement — a pick lands in the **active node**, session-based — was
+implemented on both sides, and the two sides could not agree:
+
+| side | id it used | where |
+|------|-----------|-------|
+| dashboard | `ui-<random>` (per browser tab, `sessionStorage`) | `public/js/inspector-client.js` |
+| extension | `ext-<random>` (per installation, `chrome.storage.local`) | `extension/background.js` |
+
+`InspectorHub.submit` compares them for equality:
+
+```ts
+if (!sessionId || sessionId !== session.sessionId) return { ok: false, reason: 'stale_session' };
+```
+
+Two independently minted strings are never equal, so **every** pick was refused.
+The refusal was correct behaviour reached for the wrong reason, which is why it
+never looked like a crash — the popup showed a plausible session id (its own) and
+the user saw a generic failure.
+
+**Fix:** the extension no longer authors a session. `claimedSessionId()` reads
+`activeNode.sessionId` from `GET /inspector/session` immediately before
+submitting, so the id it sends is the one the project is actually editing — and a
+claim that moved while the user was hunting for the element is honoured rather
+than overridden. The installation id is still reported to the popup, but under a
+separate name (`installId`) and never as the claim.
+
+**Why the guard is still safe:** its purpose is to stop a pick landing in a node
+the user is no longer editing. That protection lives in the **claim**, not in who
+authored the string — a submission with no claim open is still refused with
+`no_active_node`, now without a round trip.
+
+**Test:** `tests/unit/inspector-session-handoff.test.ts` — 9 tests. It runs the
+real `background.js` in a `vm` with a fake `chrome`, routes its `fetch` into a
+real `InspectorHub`, and drives a pick through the real `onMessage` handler.
+Reverting `submitElement` to `getSessionId()` turns **4** assertions red.
+
+### 2. The extension was absent from Remote mode
+
+Line 29 of this document — «exactly one extension, works in both modes» — was the
+requirement, and it held only in Local mode. In Remote mode Chromium is launched
+with `--load-extension` pointed at `REAL_CHROME_EXTENSIONS_DIR`
+(`profiles/extensions`), and **nothing in the codebase ever wrote the Inspector
+there**. The directory did not even exist on a fresh clone, so the remote browser
+launched with no Inspector at all, silently.
+
+**Fix:** `src/core/InspectorExtension.ts` seeds the authored `extension/`
+directory into `REAL_CHROME_EXTENSIONS_DIR` during `RealChrome.launch()`, before
+`listExtensions` runs. Details worth knowing:
+
+- The freshness check is a **SHA-256 content fingerprint**, not mtime, so a
+  `git checkout` does not retrigger a copy — but changing `PORT` or `API_TOKEN`
+  *does*, because the generated bootstrap text is part of the fingerprint.
+- It writes a generated `bootstrap.config.js` so the popup inside a remote desktop
+  is pre-configured. Those values are applied as **defaults only** — a value the
+  user typed is never overwritten, on this launch or any later one.
+- It **never throws**. A failure to seed logs and lets the browser start; an
+  Inspector that is missing is worse than one that is missing *and* takes the
+  browser down with it.
+- `profiles/` is gitignored, so the repo stays clean.
+
+**Verified in a real headed Chromium (Xvfb)**, not statically: the service worker
+was live at `chrome-extension://…/background.js`, `ABInspect` / `ABSelector` were
+present in the page, generic extraction returned
+`["id=buy","href=/checkout","data-sku=SKU-1","data-anything=yes"]` — including a
+`data-*` attribute nothing in this codebase has ever heard of, which is the
+no-whitelist requirement — and the bootstrap storage read back
+`{"baseUrl":"http://127.0.0.1:3000","hasKey":true,"userId":"local"}`. Idempotency
+was exercised as fresh → unchanged → updated.
+
+### Not a defect: the download-shelf «12/24»
+
+For completeness, since it was investigated in the same pass and briefly written
+into a code comment as a bug: the claim that the dashboard's download shelf lost
+half of all real filenames was **wrong**, and has been retracted. The number came
+from a probe launching Chromium without the product's environment. See
+`docs/MEASURED-DECISIONS.md` § «The 12/24 that never existed» for the full
+retraction and the corrected measurements.
