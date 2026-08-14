@@ -1649,6 +1649,22 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
 .ndv-preview.ok { color: var(--success); }
 .ndv-preview.err { color: var(--danger); }
 
+/* "Connect Inspector" — issues a one-time code for THIS field.
+ * Wraps rather than truncates: the code is the payload of the whole
+ * interaction, so it must never be the thing that gets clipped. */
+.ndv-connect { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.ndv-connect-out { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+.ndv-connect-out.ok .ndv-connect-msg { color: var(--success); }
+.ndv-connect-out.err .ndv-connect-msg { color: var(--danger); }
+.ndv-connect-msg { color: var(--text-faint); }
+/* user-select:all so one click selects the whole code — it is read across to
+ * another window, and a half-selected code is a silent pairing failure. */
+.ndv-connect-code {
+  font-family: ui-monospace, monospace; font-size: 12px; font-weight: 600;
+  letter-spacing: .06em; padding: 1px 6px; border-radius: 4px;
+  background: var(--bg-subtle, rgba(127, 127, 127, .14)); user-select: all;
+}
+
 /* ===========================================================================
  * Step 26 — live run/log drawer + on-node run badges + pin indicator
  * ======================================================================== */

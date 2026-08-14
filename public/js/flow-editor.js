@@ -1739,8 +1739,103 @@
     prev.dataset.fk = f.k;
     feedback.appendChild(prev);
     row.appendChild(feedback);
+
+    // The project side of pairing. Only on fields that can actually receive a
+    // pick, because a Connect button on a checkbox would issue a code for a
+    // destination the server refuses.
+    if (pickableFields(node.action).indexOf(f.k) !== -1) {
+      row.appendChild(buildConnectRow(node, f));
+    }
+
     row._field = f;
     return row;
+  }
+
+  /**
+   * "Connect Inspector" for ONE field.
+   *
+   * The code is issued here, in the project, by the person looking at the field.
+   * That is the whole mechanism behind §8: the extension redeems a code that is
+   * already bound to one destination, so it never gets to name a target itself.
+   * A "pair the extension" button living in the extension could not have this
+   * property.
+   */
+  function buildConnectRow(node, f) {
+    var wrap = document.createElement('div');
+    wrap.className = 'ndv-connect';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn ghost xs ndv-connect-btn';
+    btn.textContent = t('insp.connect');
+    btn.title = t('insp.connectHint');
+
+    var out = document.createElement('span');
+    out.className = 'ndv-connect-out';
+
+    // Rendered as text, never innerHTML: the code comes from the server, and
+    // this is the habit that keeps it impossible for any value to become markup.
+    function show(msg, kind, code) {
+      out.className = 'ndv-connect-out' + (kind ? ' ' + kind : '');
+      out.textContent = '';
+      if (msg) {
+        var label = document.createElement('span');
+        label.className = 'ndv-connect-msg';
+        label.textContent = msg;
+        out.appendChild(label);
+      }
+      if (code) {
+        // The code must be selectable — users read it across to the extension,
+        // and some will paste rather than retype.
+        var el = document.createElement('code');
+        el.className = 'ndv-connect-code';
+        el.textContent = code;
+        out.appendChild(el);
+      }
+    }
+
+    btn.addEventListener('click', function () {
+      var ic = inspectorClient();
+      // The id is the SERVER's, looked up from what this page registered. There
+      // is deliberately no way to type one in: a client-chosen id is exactly the
+      // stale/forged delivery the random suffix exists to prevent.
+      var targetFieldId = myTargetIdFor(node.id, f.k);
+      if (!ic || typeof ic.authorizeTarget !== 'function' || !targetFieldId) {
+        show(t('insp.err.TARGET_FIELD_NOT_FOUND'), 'err', '');
+        return;
+      }
+
+      btn.disabled = true;
+      show(t('common.loading') || '…', '', '');
+      ic.authorizeTarget(targetFieldId).then(function (offer) {
+        btn.disabled = false;
+        if (!offer) { show(t('insp.codeFailed'), 'err', ''); return; }
+        // Name the lifetime: a code with no stated expiry looks broken rather
+        // than expired when it later stops working.
+        show(t('insp.codeReady') + ' · ' + t('insp.codeExpires'), 'ok', offer.display);
+      }).catch(function () {
+        btn.disabled = false;
+        show(t('insp.codeFailed'), 'err', '');
+      });
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(out);
+    return wrap;
+  }
+
+  /** The server-minted id this page holds for one node's field, or ''. */
+  function myTargetIdFor(nodeId, fieldKey) {
+    var ic = inspectorClient();
+    if (!ic || typeof ic.myTargets !== 'function') return '';
+    var mine = [];
+    try { mine = ic.myTargets() || []; } catch (e) { return ''; }
+    for (var i = 0; i < mine.length; i++) {
+      if (mine[i] && mine[i].nodeId === nodeId && mine[i].fieldKey === fieldKey) {
+        return mine[i].targetFieldId || '';
+      }
+    }
+    return '';
   }
 
   // Re-evaluate every expression field's preview against the node's INPUT
@@ -1862,52 +1957,93 @@
     return b || (dom && dom.inspector) || null;
   }
 
-  // ---- Element Inspector claim ---------------------------------------------
-  // An open NDV is the ONLY thing that makes a picked element deliverable: the
-  // server refuses a submission when no node is waiting, rather than guessing a
-  // destination. So opening a node claims it and closing one releases it, which
-  // keeps "where does my pick go?" answerable by looking at the screen.
+  // ---- Element Inspector target fields --------------------------------------
+  // A picked element needs a DESTINATION, and the destination is a FIELD, not a
+  // node. A `type` node has both a selector and the text to type; delivering to
+  // "the node" cannot say which of them the user meant, so the server had to
+  // guess — and a guess that writes into the wrong field is worse than a
+  // refusal, because it looks like it worked.
   //
-  // Both calls are wrapped and optional: inspector-client.js is a separate
+  // Opening a node therefore registers one Target Field per pickable field it
+  // declares, and closing the node releases exactly those. The server mints each
+  // id with a random suffix, so re-opening a node yields NEW ids and a pick
+  // queued against the old ones resolves to nothing rather than landing in a
+  // field the user already closed.
+  //
+  // Every call is wrapped and optional: inspector-client.js is a separate
   // script, and a page that loaded without it must still open nodes normally.
   function inspectorClient() {
-    return (window.InspectorClient && typeof window.InspectorClient.claim === 'function')
+    return (window.InspectorClient && typeof window.InspectorClient.registerTarget === 'function')
       ? window.InspectorClient : null;
   }
 
-  function claimForInspector(id) {
+  /**
+   * Which of an action's declared fields can meaningfully hold a picked value.
+   *
+   * Read from the action's OWN declaration rather than a hard-coded list, so a
+   * `fieldKey` is always a key the action really has. The server re-checks this
+   * against the same catalogue and refuses anything undeclared, because
+   * coerceParams() drops undeclared keys on save — a value written to one would
+   * vanish silently, leaving a node that looks configured and runs unconfigured.
+   */
+  function pickableFields(action) {
+    var act = actionById(action);
+    if (!act || !act.fields) return [];
+    var out = [];
+    for (var i = 0; i < act.fields.length; i++) {
+      var f = act.fields[i];
+      if (!f || !f.k) continue;
+      // A checkbox, a number or a fixed dropdown cannot hold a CSS selector or
+      // an attribute value; offering them would invite a pick that could only
+      // ever be nonsense.
+      var ty = f.type;
+      if (ty === 'boolean' || ty === 'number' || ty === 'options' || ty === 'select') continue;
+      out.push(f.k);
+    }
+    return out;
+  }
+
+  function registerTargetsFor(id) {
     var ic = inspectorClient();
     if (!ic || !state || !state.nodes[id]) return;
     var node = state.nodes[id];
-    try {
-      ic.claim(id, {
-        action: node.action,
-        workflowId: (currentWorkflow && currentWorkflow.id) || '',
-        label: ndvTitle(node),
-      });
-    } catch (e) { /* a failed claim costs a refusal the user can retry, not the editor */ }
+    var keys = pickableFields(node.action);
+    var title = ndvTitle(node);
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        ic.registerTarget(id, keys[i], {
+          action: node.action,
+          workflowId: (currentWorkflow && currentWorkflow.id) || '',
+          // Names the FIELD, not just the node: the extension shows this as the
+          // destination, and "Click" alone is ambiguous the moment a node has
+          // two pickable fields.
+          label: title + ' → ' + keys[i],
+        });
+      } catch (e) { /* a failed registration costs a retry, not the editor */ }
+    }
   }
 
-  function releaseInspector() {
+  function releaseTargetsFor(id) {
     var ic = inspectorClient();
-    if (!ic || typeof ic.release !== 'function') return;
-    try { ic.release(); } catch (e) {}
+    if (!ic || typeof ic.releaseNode !== 'function' || !id) return;
+    try { ic.releaseNode(id); } catch (e) {}
   }
 
   function closeNdv() {
+    var was = ndvOpen;
     ndvOpen = null;
     var b = document.querySelector('.ndv-backdrop');
     if (b && b.parentNode) b.parentNode.removeChild(b);
-    // Nothing is waiting for an element any more. Leaving the claim behind is
-    // how a later pick lands in a node the user already closed.
-    releaseInspector();
+    // Nothing is waiting for an element any more. Leaving the fields registered
+    // is how a later pick lands in a node the user already closed.
+    releaseTargetsFor(was);
   }
 
   function openNdv(id) {
     if (!state || !state.nodes[id] || state.nodes[id].action === '__start__') return;
     ndvOpen = id;
     renderInspector();
-    claimForInspector(id);
+    registerTargetsFor(id);
   }
 
   /**

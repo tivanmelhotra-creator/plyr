@@ -30,6 +30,7 @@ import { URL } from 'url';
 import { authorizeLive } from './LiveServer';
 import { reportBrowserMode } from './BrowserMode';
 import { inspectorHub, type InspectorDelivery } from './InspectorHub';
+import { targetFields } from './TargetFieldRegistry';
 import { localBridges } from './LocalBridge';
 
 interface InspectorClient {
@@ -138,7 +139,10 @@ export class InspectorSocketServer {
     this.send(ws, 'hello', {
       ...reportBrowserMode(userId),
       bridge: localBridges.info(userId),
-      activeNode: inspectorHub.activeNode(userId),
+      // Every live destination, not one "current" node: several Target Fields
+      // coexist, so a single-valued field here would misdescribe the state and
+      // the tab would render the wrong one as authoritative.
+      targets: targetFields.list(userId),
       pending: inspectorHub.peek(userId),
     });
 

@@ -39,6 +39,8 @@ import {
 import { localBridges, agentConnectPath, defaultAgentCdpPort } from '../core/LocalBridge';
 import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
+import { targetFields } from '../core/TargetFieldRegistry';
+import { inspectorAuth } from '../core/InspectorAuthorization';
 import {
   sessionHandoff,
   formatPairingCode,
@@ -176,15 +178,57 @@ async function captureCurrentSnapshot(
   });
 }
 
+/**
+ * §27 error codes and their English sentences.
+ *
+ * The KEY is what crosses the wire, so the extension and the web UI can render
+ * their own fa/en text; the sentence is here for API clients and logs, which have
+ * no dictionary. The codes are the spec's own strings rather than internal names,
+ * so a message table and an extension `switch` key off the same value with no
+ * translation layer in between to drift.
+ *
+ * `BACKEND_UNREACHABLE` and `INVALID_API_KEY` are absent on purpose: the first
+ * can only be observed by the client (a server that answers is by definition
+ * reachable) and the second is produced by the auth middleware before any route
+ * runs. Inventing them here would mean two places could disagree.
+ */
 const REFUSAL_MESSAGES: Record<InspectorRefusal, string> = {
-  no_active_node:
-    'No node is waiting for an element. Open a node in the workflow editor and press its picker button first.',
-  stale_session:
-    'That pick belongs to an older editing session. Re-open the node and pick again.',
-  empty_selection:
-    'No attributes were selected. Tick at least one attribute before confirming.',
-  invalid_element:
-    'The element data was incomplete and could not be used.',
+  TARGET_FIELD_NOT_FOUND:
+    'Target Field unavailable. The authorized Field no longer exists — re-open the node and press its picker button again.',
+  TARGET_NOT_AUTHORIZED:
+    'Target not authorized. This Inspector is not authorized for the requested Field — request a new Authorization Code.',
+  ELEMENT_INSPECTION_FAILED:
+    'Unable to inspect element. Try selecting the element again.',
+  ATTRIBUTE_SEND_FAILED:
+    'Unable to send attribute. Select one attribute with a value, then retry the send.',
+};
+
+/** The pairing-step failures, kept beside the send-step ones for one lookup. */
+const AUTHORIZATION_MESSAGES: Record<string, string> = {
+  INVALID_AUTHORIZATION_CODE:
+    'Authorization code invalid. Request a new Authorization Code.',
+  AUTHORIZATION_EXPIRED:
+    'Authorization code expired. Start a new Inspector authorization.',
+};
+
+/**
+ * Why a Target Field could not be registered.
+ *
+ * `undeclared_field` is the interesting one. It is not a pedantic check: on save
+ * `coerceParams()` keeps only the keys the action declares, so a value written to
+ * an undeclared key would show up in the editor and then vanish on run — a node
+ * that looks configured and runs unconfigured. Refusing at registration is the
+ * only point where that is still visible to the user.
+ */
+const REGISTER_MESSAGES: Record<string, string> = {
+  invalid_node_id:
+    'nodeId is required and must be a plain identifier.',
+  invalid_field_key:
+    'fieldKey is required and must be a plain identifier.',
+  unknown_action:
+    'action is not a known action id.',
+  undeclared_field:
+    'That field is not declared by this action, so a value written to it would be discarded on save.',
 };
 
 export const createModeRoutes = (): Router => {
@@ -586,56 +630,174 @@ export const createModeRoutes = (): Router => {
       modes: report.modes,
       localAvailable: report.localAvailable,
       bridge: localBridges.info(userId),
-      activeNode: inspectorHub.activeNode(userId),
+      // Every live destination, not one "current" node. Several must be able to
+      // coexist, so a single-valued answer here would misdescribe the state.
+      targets: targetFields.list(userId),
+      // What THIS extension may write to. A different key gets a different list.
+      authorized: inspectorAuth.bindingsFor(req.apiKey || ''),
       pending: inspectorHub.peek(userId).length,
     });
   });
 
-  /** "Session S is editing node N." Sent by the workflow UI, not the extension. */
-  router.post('/inspector/claim', (req: AuthenticatedRequest, res: Response) => {
+  /**
+   * Register a Target Field. Sent by the workflow UI when a field's picker is
+   * pressed — never by the extension.
+   *
+   * The id is minted HERE, including its random suffix. If the client supplied
+   * it, it could re-register a suffix it had seen before and revive a destination
+   * the user had closed, which is exactly the stale delivery the suffix exists to
+   * prevent. `fieldKey` is checked against the action's declared params for the
+   * reason spelled out on REGISTER_MESSAGES.
+   */
+  router.post('/inspector/target', (req: AuthenticatedRequest, res: Response) => {
     const userId = resolveUserId(req);
     const body = req.body || {};
-    const session = inspectorHub.claim(userId, {
-      sessionId: body.sessionId,
+    const registration = targetFields.register(userId, {
       nodeId: body.nodeId,
+      fieldKey: body.fieldKey,
       action: body.action,
       workflowId: body.workflowId,
-      field: body.field,
       label: body.label,
     });
 
-    if (!session) {
+    if (!registration.ok || !registration.target) {
+      const reason = String(registration.reason || 'invalid_node_id');
       res.status(400).json({
         success: false,
-        error: 'sessionId and nodeId are both required',
+        reason,
+        error: REGISTER_MESSAGES[reason] || 'The target field could not be registered.',
+        // For `undeclared_field`, name what IS declared: the caller is a UI that
+        // must tell the user what to fix, and a bare refusal cannot.
+        declared: registration.declared,
       });
       return;
     }
-    res.json({ success: true, activeNode: session, mode: browserModes.modeOf(userId) });
-  });
 
-  /** Stop waiting for an element (node closed, or the user cancelled). */
-  router.post('/inspector/release', (req: AuthenticatedRequest, res: Response) => {
-    const userId = resolveUserId(req);
-    const released = inspectorHub.release(userId, (req.body || {}).sessionId);
-    res.json({ success: true, released, activeNode: inspectorHub.activeNode(userId) });
+    res.json({
+      success: true,
+      target: registration.target,
+      mode: browserModes.modeOf(userId),
+    });
   });
 
   /**
-   * The extension confirms a pick. THE route this whole feature exists for.
+   * Forget one Target Field (node closed, or the user cancelled).
    *
-   * 409 with the reason on refusal. The user then sees "no node is waiting"
-   * instead of a pick that vanished, which is the difference between a UI they
-   * can learn and one they distrust.
+   * Scoped to a single id BY DESIGN, and it revokes only that id's pairings.
+   * Closing one node must not disturb another node's live destination — the
+   * single-slot claim this replaced could not express that.
+   */
+  router.post('/inspector/target/release', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const targetFieldId = String((req.body || {}).targetFieldId || '');
+    const released = targetFields.unregister(userId, targetFieldId);
+    const revoked = released ? inspectorAuth.revoke(targetFieldId) : 0;
+    res.json({ success: true, released, revoked, targets: targetFields.list(userId) });
+  });
+
+  /**
+   * Issue a one-time Authorization Code for one Target Field.
+   *
+   * The API key already answers "which account is this?". It cannot answer "which
+   * of the fields this account has open did the human mean?" — and without a
+   * deliberate pairing step the server would have to guess. The code makes that
+   * choice an explicit act, performed once per destination.
+   */
+  router.post('/inspector/authorize', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const targetFieldId = String((req.body || {}).targetFieldId || '');
+
+    // Authorize only a target that actually exists and belongs to this account.
+    // Issuing a code for an unknown id would let a caller discover valid ids by
+    // watching which ones produce a code.
+    const target = targetFields.resolve(userId, targetFieldId);
+    if (!target) {
+      res.status(404).json({
+        success: false,
+        reason: 'TARGET_FIELD_NOT_FOUND',
+        error: REFUSAL_MESSAGES.TARGET_FIELD_NOT_FOUND,
+      });
+      return;
+    }
+
+    const offer = inspectorAuth.issue(userId, target.targetFieldId);
+    if (!offer) {
+      res.status(500).json({
+        success: false,
+        reason: 'ATTRIBUTE_SEND_FAILED',
+        error: 'The authorization code could not be issued. Try again.',
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      // Grouped for display, like the handoff code. The raw form is included
+      // because that is what `redeem` compares.
+      code: offer.code,
+      display: formatPairingCode(offer.code),
+      target,
+      expiresAt: offer.expiresAt,
+      expiresInMs: offer.expiresInMs,
+    });
+  });
+
+  /**
+   * Redeem the code — the extension's one-time pairing step.
+   *
+   * The target is taken from the CODE, never from the body. §8: «The Extension
+   * must NEVER be able to choose an arbitrary Target Field.» After this, ordinary
+   * sends need only the API key.
+   */
+  router.post('/inspector/pair', (req: AuthenticatedRequest, res: Response) => {
+    const body = req.body || {};
+    const apiKey = req.apiKey || '';
+    const result = inspectorAuth.redeem(apiKey, String(body.code || ''));
+
+    if (!result.ok) {
+      const reason = result.reason;
+      // 403, not 409: the credential presented is not sufficient. Expired and
+      // invalid are reported separately because "ask for a new code" and "check
+      // what you typed" are different instructions.
+      res.status(403).json({
+        success: false,
+        reason,
+        error: AUTHORIZATION_MESSAGES[reason] || 'The authorization code was refused.',
+      });
+      return;
+    }
+
+    // Resolved for display so the extension can show the destination it is now
+    // bound to, rather than an opaque id.
+    const target = targetFields.resolve(result.binding.userId, result.binding.targetFieldId);
+    res.json({
+      success: true,
+      binding: result.binding,
+      target,
+      mode: browserModes.modeOf(result.binding.userId),
+    });
+  });
+
+  /**
+   * The extension sends the ONE radio-selected attribute. THE route this whole
+   * feature exists for.
+   *
+   * 409 with a §27 code on refusal. «Do not silently redirect to another Field» —
+   * so a submission that cannot be placed correctly is not placed at all, and the
+   * user sees why instead of a pick that vanished.
    */
   router.post('/inspector/element', (req: AuthenticatedRequest, res: Response) => {
     const userId = resolveUserId(req);
     const body = req.body || {};
 
     const result = inspectorHub.submit(userId, {
-      sessionId: body.sessionId,
+      targetFieldId: body.targetFieldId,
+      // From the credential, never from the body: a body-supplied key would let
+      // any caller claim another client's pairing.
+      apiKey: req.apiKey || '',
       element: body.element,
-      selected: body.selected,
+      displayAttributes: body.displayAttributes,
+      sendAttribute: body.sendAttribute,
       mode: body.mode || browserModes.modeOf(userId),
     });
 
@@ -645,17 +807,22 @@ export const createModeRoutes = (): Router => {
         success: false,
         reason,
         error: REFUSAL_MESSAGES[reason] || 'The element could not be delivered.',
-        activeNode: inspectorHub.activeNode(userId),
+        targets: targetFields.list(userId),
       });
       return;
     }
 
+    const delivery = result.delivery!;
+    // The §24 success shape: naming the field, the attribute and the value is
+    // what proves to the user it did not go elsewhere.
     res.json({
       success: true,
-      delivery: result.delivery,
-      // Echoed so the extension can show "added to: Click #buy" — a confirmation
-      // naming the actual destination is what proves it did not go elsewhere.
-      activeNode: result.delivery?.session,
+      targetFieldId: delivery.target.targetFieldId,
+      nodeName: delivery.target.label || delivery.target.nodeId,
+      fieldName: delivery.target.fieldKey,
+      attribute: delivery.attribute,
+      value: delivery.value,
+      delivery,
     });
   });
 

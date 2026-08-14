@@ -26,9 +26,11 @@
     wflist: $('wflist'), wfCount: $('wfCount'), refreshWf: $('refreshWf'), runHeadful: $('runHeadful'),
     hoState: $('hoState'), hoSession: $('hoSession'), hoUnpair: $('hoUnpair'),
     hoCode: $('hoCode'), hoPair: $('hoPair'), hoApply: $('hoApply'), hoStatus: $('hoStatus'),
-    inspMode: $('inspMode'), inspNode: $('inspNode'), inspSession: $('inspSession'),
+    inspMode: $('inspMode'), inspNode: $('inspNode'), inspTarget: $('inspTarget'),
     inspect: $('inspect'), inspRefresh: $('inspRefresh'), inspStatus: $('inspStatus'),
     modeSwitch: $('modeSwitch'),
+    inspPairBox: $('inspPairBox'), inspCode: $('inspCode'), inspPair: $('inspPair'),
+    inspPairStatus: $('inspPairStatus'), inspUnpair: $('inspUnpair'),
     pick: $('pick'), record: $('record'),
     pickedBox: $('pickedBox'), pickedCss: $('pickedCss'), pickedXpath: $('pickedXpath'),
     addClick: $('addClick'), addExtract: $('addExtract'), copyCss: $('copyCss'),
@@ -348,24 +350,43 @@
     els.inspStatus.className = 'status' + (kind ? ' ' + kind : '');
   }
 
-  // Session and mode come from the backend, never from a local guess: the
-  // backend is the only thing that knows which node actually claimed the
-  // session, and a wrong guess here would be shown to the user as fact.
+  // Name the destination the way the user chose it: the node, then the field.
+  // An opaque `node_…__url__a1b2c3d4` is correct and useless — it names nothing
+  // the user can match against what they are looking at in the project.
+  function targetName(target) {
+    if (!target) return '';
+    if (target.label) return target.label;
+    var node = target.action || target.nodeId || 'node';
+    return target.fieldKey ? node + ' \u2192 ' + target.fieldKey : node;
+  }
+
+  // Destination and mode come from the backend, never from a local guess: the
+  // backend is the only thing that knows which fields are live and which of them
+  // this extension may write to, and a wrong guess here would be shown as fact.
   async function refreshInspector(quiet) {
     var res = await bg({ type: 'AB_INSPECTOR_SESSION' });
 
-    // The session shown is the EDITING session that holds the claim — the one a
-    // pick is actually submitted under. Showing this extension's own id here
-    // (which is what it used to show) made a broken hand-off look correct: the
-    // two ids are generated independently and never match, so a displayed
-    // `ext-…` was a session no pick could ever be delivered under.
-    if (res && res.sessionId) {
-      els.inspSession.textContent = res.sessionId;
-      els.inspSession.className = 'ivalue mono';
+    // Three distinct states, because they need three different actions from the
+    // user: connected (pick away), connected-to-something-now-gone (re-connect),
+    // and never connected (enter a code). Collapsing the middle one into "not
+    // connected" would hide the reason a pick just started failing.
+    var paired = !!(res && res.targetFieldId);
+    var live = !!(res && res.authorized && res.target);
+    if (live) {
+      els.inspTarget.textContent = targetName(res.target);
+      els.inspTarget.className = 'ivalue local';
+    } else if (paired) {
+      els.inspTarget.textContent = 'connected, but that field is no longer open';
+      els.inspTarget.className = 'ivalue none';
     } else {
-      els.inspSession.textContent = 'none — open a node in the project';
-      els.inspSession.className = 'ivalue none';
+      els.inspTarget.textContent = 'not connected — enter an Authorization Code';
+      els.inspTarget.className = 'ivalue none';
     }
+    els.inspUnpair.hidden = !paired;
+    // Once connected the code box is no longer the main action, but it stays
+    // reachable: re-pairing to a different field is a normal thing to want.
+    els.inspPairBox.hidden = false;
+    els.inspPair.textContent = paired ? 'Connect to a different field' : 'Connect';
 
     if (!res || !res.ok) {
       var err = (res && res.error) || 'unreachable';
@@ -403,25 +424,92 @@
     els.modeSwitch.textContent = other === 'local' ? 'Use Local' : 'Use Remote';
     els.modeSwitch.dataset.target = other;
 
-    var node = data.activeNode;
-    if (node && node.nodeId) {
-      els.inspNode.textContent = node.label
-        || [node.action, node.nodeId].filter(Boolean).join(' ');
+    // How many fields are open across the project, which is not the same
+    // question as which one THIS extension is connected to. Both are shown
+    // because "nothing is open" and "I am not connected to what is open" need
+    // different fixes, and one line cannot say which applies.
+    var targets = data.targets || [];
+    if (!targets.length) {
+      els.inspNode.textContent = 'no fields open — press Connect Inspector on a field';
+      els.inspNode.className = 'ivalue none';
+    } else if (targets.length === 1) {
+      els.inspNode.textContent = targetName(targets[0]);
       els.inspNode.className = 'ivalue';
     } else {
-      els.inspNode.textContent = 'none — open a node in the project';
-      els.inspNode.className = 'ivalue none';
+      els.inspNode.textContent = targets.length + ' fields open';
+      els.inspNode.className = 'ivalue';
     }
 
     if (!quiet) {
-      if (!node || !node.nodeId) {
-        setInspStatus('No node is waiting. Open a node, then inspect.', 'warn');
+      if (!targets.length) {
+        setInspStatus('No field is waiting. Open a node in the project, then connect.', 'warn');
+      } else if (!paired) {
+        setInspStatus('Not connected yet — enter an Authorization Code below.', 'warn');
+      } else if (!live) {
+        // The pairing survived, the field did not. Saying "not connected" here
+        // would send the user looking for the wrong problem.
+        setInspStatus('The connected field is no longer open. Connect again.', 'warn');
       } else if (data.pending) {
         setInspStatus(data.pending + ' pick(s) waiting to be applied.', 'warn');
       } else {
-        setInspStatus('Ready.', 'ok');
+        setInspStatus('Ready \u2014 picks go to ' + targetName(res.target) + '.', 'ok');
       }
     }
+  }
+
+  /* ----------------------------------------------------------
+     PAIRING — the one-time step that gives this extension a destination.
+
+     The code is redeemed by the backend, which decides the field. Nothing here
+     names a target: an extension that could pick its own destination could aim
+     a pick at a field the user never offered.
+     ---------------------------------------------------------- */
+  function setPairStatus(text, kind) {
+    els.inspPairStatus.textContent = text || '';
+    els.inspPairStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  // Cosmetic only — the server normalises separators away, so a dash the user
+  // types, or does not type, changes nothing about whether the code works.
+  function onInspCodeInput() {
+    var raw = (Core && Core.normalizePairingCode)
+      ? Core.normalizePairingCode(els.inspCode.value)
+      : String(els.inspCode.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    els.inspCode.value = raw.length > 4 ? raw.slice(0, 4) + '-' + raw.slice(4, 8) : raw;
+  }
+
+  async function pairInspector() {
+    var code = els.inspCode.value;
+    if (Core && Core.looksLikePairingCode && !Core.looksLikePairingCode(code)) {
+      setPairStatus('Enter the 8-character code shown on the field (like ABCD-EFGH).', 'bad');
+      return;
+    }
+
+    els.inspPair.disabled = true;
+    setPairStatus('Connecting\u2026', '');
+    var res = await bg({ type: 'AB_INSPECTOR_PAIR', payload: { code: code } });
+    els.inspPair.disabled = false;
+
+    if (!res || !res.ok) {
+      // The worker forwards the server's specific §27 reason. Showing it
+      // verbatim is the difference between "check what you typed" and "ask for a
+      // fresh code", which are different actions.
+      setPairStatus((res && (res.error || res.reason)) || 'The code was refused.', 'bad');
+      return;
+    }
+
+    // Name what was connected. A bare "connected" leaves the user to trust that
+    // the code pointed where they thought it did.
+    var name = targetName(res.target);
+    setPairStatus('Connected' + (name ? ' to ' + name : '') + '.', 'ok');
+    els.inspCode.value = '';
+    await refreshInspector(true);
+  }
+
+  async function unpairInspector() {
+    await bg({ type: 'AB_INSPECTOR_UNPAIR' });
+    setPairStatus('Disconnected. Enter a new code to connect again.', '');
+    await refreshInspector(true);
   }
 
   async function startInspector() {
@@ -607,6 +695,14 @@
   els.inspect.addEventListener('click', startInspector);
   els.inspRefresh.addEventListener('click', function () { refreshInspector(false); });
   els.modeSwitch.addEventListener('click', switchMode);
+  els.inspPair.addEventListener('click', pairInspector);
+  els.inspUnpair.addEventListener('click', unpairInspector);
+  els.inspCode.addEventListener('input', onInspCodeInput);
+  // Enter submits, same reasoning as the handoff box: the code is usually
+  // pasted, and it expires, so reaching for the mouse is pure friction.
+  els.inspCode.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); pairInspector(); }
+  });
   els.hoPair.addEventListener('click', pairHandoff);
   els.hoApply.addEventListener('click', function () { applyHandoff(false); });
   els.hoUnpair.addEventListener('click', unpairHandoff);
