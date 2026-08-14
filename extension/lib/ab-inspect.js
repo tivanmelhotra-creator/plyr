@@ -262,42 +262,90 @@
   }
 
   /* ----------------------------------------------------------
-     THE CHECKBOX LIST the panel renders.
+     THE ROW LIST the panel renders.
 
-     Identity keys come first and are always present, because they are how a
-     node FINDS the element and are meaningful even when empty (an element with
-     no id still has a CSS path). Then every real attribute. Ticking is
-     multi-select: the user confirms a set, not a single field.
+     §14: «Missing attributes must simply not appear in the dynamically
+     discovered list… The Attributes panel should look like a real browser DOM
+     inspector, not a checklist of all possible HTML attributes.»
+
+     THE DISTINCTION THAT MATTERS IS *PRESENCE*, NOT TRUTHINESS.
+
+     A row is dropped when the thing it describes DOES NOT EXIST. It is kept when
+     the thing exists but is empty, because `<ol reversed>`, `<input required>`
+     and `<div hidden>` are real attributes with the empty string as their value —
+     that is how HTML spells a boolean attribute. Real DevTools shows them as
+     `reversed=""`; hiding them would lose information the element genuinely
+     carries, and would break the requirement that every discovered attribute be
+     reachable. So the discovered-attribute loop below emits a row for everything
+     in `byName`, empty value or not.
+
+     The DERIVED rows are the ones that need the §14 guard, because they are
+     synthesised here rather than read off the element:
+
+       id / class / text  — a <div> with no id has no id. An `id —` line is
+                            exactly the placeholder the spec forbids, and it is
+                            worse than mere noise: it offers a radio the user can
+                            select and then be refused for, since the server
+                            rejects a send whose value is empty.
+
+       tag / css / xpath  — always emitted, and that is not a §14 exception,
+                            because these are never MISSING. Every element has a
+                            tag name, and describeElement computes a CSS path and
+                            an XPath for every element, since a path can always be
+                            built from the document root. They are also the only
+                            rows that say how a node FINDS the element, so a panel
+                            that could omit them would leave nothing selectable
+                            to send.
+
+     The original ORDER is kept (tag, id, class, css, xpath, text) so a user who
+     knows the panel still finds the rows where they were; absent ones simply
+     close up.
      ---------------------------------------------------------- */
   function attributeRows(described) {
     if (!described) return [];
     var rows = [];
 
-    function row(key, label, value, group) {
+    /** Emit unconditionally — for things that exist even when empty. */
+    function push(key, label, value, group) {
       rows.push({
         key: key,
         label: label,
         value: (value == null) ? '' : String(value),
         group: group,
+        // Retained on the row shape so a renderer can style a boolean attribute
+        // (`reversed=""`) differently from one carrying text.
         empty: !value
       });
     }
 
-    row('tag', 'Tag Name', described.tag, 'identity');
+    /** §14: a DERIVED property with no value describes nothing, so no row. */
+    function row(key, label, value, group) {
+      if (!value) return;
+      push(key, label, value, group);
+    }
+
+    push('tag', 'Tag Name', described.tag, 'identity');
     row('id', 'ID', described.id, 'identity');
     row('class', 'Class', (described.classes || []).join(' '), 'identity');
-    row('css', 'CSS Selector', described.css, 'identity');
-    row('xpath', 'XPath', described.xpath, 'identity');
+    push('css', 'CSS Selector', described.css, 'identity');
+    push('xpath', 'XPath', described.xpath, 'identity');
     row('text', 'Text', described.text, 'content');
     if (described.value) row('value', 'Value', described.value, 'content');
     if (described.name) row('name', 'Name', described.name, 'content');
     if (described.role) row('role', 'Role', described.role, 'content');
     if (described.type) row('type', 'Type', described.type, 'content');
 
-    // Every attribute the element carries. `id`, `class` and `type` are skipped
-    // here only because they already have a row above — the DATA is identical,
-    // so a second checkbox would be a duplicate the user could tick twice.
-    var already = { id: true, class: true, type: true, name: true, role: true, value: true };
+    // Every attribute the element carries. A key is skipped here only when it
+    // ALREADY GOT A ROW above — the data would be identical, and a second
+    // checkbox for it is a duplicate the user could tick twice.
+    //
+    // Derived from the rows actually emitted rather than a fixed list, so the
+    // §14 guard and this skip-list cannot disagree. The case that makes the
+    // difference is `<div id="">`: the derived `id` row is dropped (it describes
+    // nothing), and because it was dropped, the attribute is still reachable
+    // here as the present-but-empty attribute it really is.
+    var already = {};
+    rows.forEach(function (r) { already[r.key] = true; });
     var order = suggestedKeys({
       // suggestedKeys wants an element; feed it a shim backed by the attrs we
       // already collected, so this function needs no live DOM node and stays
@@ -317,8 +365,16 @@
 
     order.forEach(function (key) {
       if (already[key]) return;
-      if (!(key in byName)) return; // suggested-but-absent globals are not rows
-      row(key, key, byName[key], key.indexOf('data-') === 0 ? 'data' : 'attribute');
+      // §14 IS ENFORCED HERE, and this single line is the whole of it: an
+      // attribute the element does not carry gets no row, no matter how strongly
+      // GLOBAL_HINTS suggests it for this tag. That is what keeps the panel from
+      // becoming "a checklist of all possible HTML attributes".
+      if (!(key in byName)) return;
+      // `push`, not `row`: everything reaching this point EXISTS on the element.
+      // A boolean attribute (`<ol reversed>`, `<input required>`) has the empty
+      // string as its value, and dropping it would hide an attribute the element
+      // genuinely carries — the opposite of what §14 asks for.
+      push(key, key, byName[key], key.indexOf('data-') === 0 ? 'data' : 'attribute');
     });
 
     return rows;

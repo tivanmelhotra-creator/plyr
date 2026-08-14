@@ -79,13 +79,18 @@
           <span class="ivalue" id="inspMode">—</span>
           <button class="btn ghost xs" id="modeSwitch" hidden>Switch</button>
         </div>
+        <!-- The DESTINATION, not a session id. A pick is delivered to one
+             specific field, and that field is what the user needs to see before
+             picking. The session id this replaced was an internal handle that
+             named nothing the user could recognise. -->
         <div class="inspline">
-          <span class="ilabel">Active node</span>
-          <span class="ivalue" id="inspNode">—</span>
+          <span class="ilabel">Destination</span>
+          <span class="ivalue" id="inspTarget">—</span>
+          <button class="btn ghost xs" id="inspUnpair" hidden>Disconnect</button>
         </div>
         <div class="inspline">
-          <span class="ilabel">Session</span>
-          <span class="ivalue mono" id="inspSession">—</span>
+          <span class="ilabel">Waiting</span>
+          <span class="ivalue" id="inspNode">—</span>
         </div>
       </div>
 
@@ -94,10 +99,30 @@
         <button class="btn ghost sm" id="inspRefresh" title="Re-read status">↻</button>
       </div>
       <div class="hintline">
-        Or press <b>Ctrl + Shift + C</b> on the page. Hover, click, tick the attributes you
-        want, then Confirm &amp; Add to Node.
+        Or press <b>Ctrl + Shift + C</b> on the page. Hover, click, tick what you want to
+        see, choose the one value to send, then Confirm &amp; Add to Node.
       </div>
       <div class="status" id="inspStatus"></div>
+
+      <!-- ── Connect to a field ──────────────────────────────────────────
+           One-time pairing. The code decides the destination server-side, so
+           this box is the ONLY way a destination is chosen — the extension
+           cannot name a field itself, by design. Shown collapsed once
+           connected, because it is then a re-pairing tool rather than the
+           main action. -->
+      <div class="sub" id="inspPairBox">
+        <h3>Connect to a field</h3>
+        <p class="lede">In the project, press <b>Connect Inspector</b> on the field you want to fill, then type the code it shows.</p>
+        <label class="field">
+          <span>Authorization Code</span>
+          <input id="inspCode" type="text" placeholder="ABCD-EFGH" autocomplete="off"
+                 autocapitalize="characters" spellcheck="false" maxlength="9">
+        </label>
+        <div class="row">
+          <button class="btn primary" id="inspPair">Connect</button>
+        </div>
+        <div class="status" id="inspPairStatus"></div>
+      </div>
 
       <!-- Capture was its own card, which split "get a selector" across two
            places that looked unrelated. It is the same job, so it is the same

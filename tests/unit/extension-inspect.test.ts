@@ -264,17 +264,123 @@ describe('ab-inspect: roles', () => {
   });
 });
 
-describe('ab-inspect: rows, defaults and labels', () => {
-  it('always offers the identity keys, even when empty', () => {
-    // An element with no id still has a CSS path, so the identity rows are how
-    // a node finds it and must never be hidden.
+// ════════════════════════════════════════════════════════════════
+// §14 — MISSING ATTRIBUTES MUST NOT BE DISPLAYED
+//
+// «Missing attributes must simply not appear in the dynamically discovered
+// list… The Attributes panel should look like a real browser DOM inspector, not
+// a checklist of all possible HTML attributes.»
+//
+// This is not only cosmetic. A placeholder row offers the user a radio they can
+// select, and the server refuses a send whose value is empty — so it is a button
+// whose only outcome is an error.
+//
+// THE LINE IS *PRESENCE*, NOT TRUTHINESS, and these tests pin that distinction
+// from both sides:
+//
+//   MISSING  — the element does not carry it. No row. (`<div>` has no href.)
+//   PRESENT  — the element carries it, even as the empty string. Row kept,
+//              because `<ol reversed>` and `<input required>` are exactly how
+//              HTML spells a boolean attribute, and real DevTools shows them.
+//
+// tag / css / xpath are always emitted, and that is not a §14 exception: they
+// are never missing. Every element has a tag name, and describeElement computes
+// a path and an XPath for every element. They are also the only rows that tell a
+// node how to FIND the element.
+// ════════════════════════════════════════════════════════════════
+
+describe('ab-inspect §14: a row appears only when the thing exists', () => {
+  it('omits the derived id, class and text rows for an element that has none', () => {
     const el = new FakeEl('span');
-    const rows = ABInspect.attributeRows(ABInspect.describeElement(el, fakeSelectors));
-    const keys = rows.map((r) => r.key);
-    ['tag', 'id', 'class', 'css', 'xpath', 'text'].forEach((k) => expect(keys).toContain(k));
-    expect(rows.find((r) => r.key === 'id')!.empty).toBe(true);
+    const keys = ABInspect.attributeRows(
+      ABInspect.describeElement(el, fakeSelectors),
+    ).map((r) => r.key);
+    expect(keys).not.toContain('id');
+    expect(keys).not.toContain('class');
+    expect(keys).not.toContain('text');
   });
 
+  it('still always offers tag, css and xpath', () => {
+    // Without these the panel would have nothing selectable to send.
+    const el = new FakeEl('span');
+    const keys = ABInspect.attributeRows(
+      ABInspect.describeElement(el, fakeSelectors),
+    ).map((r) => r.key);
+    expect(keys).toContain('tag');
+    expect(keys).toContain('css');
+    expect(keys).toContain('xpath');
+  });
+
+  it('shows id, class and text as soon as they DO have a value', () => {
+    const el = new FakeEl('span', { id: 'buy', class: 'btn primary' });
+    el.innerText = 'Buy now';
+    const rows = ABInspect.attributeRows(ABInspect.describeElement(el, fakeSelectors));
+    const byKey: Record<string, Row> = {};
+    rows.forEach((r) => { byKey[r.key] = r; });
+    expect(byKey.id!.value).toBe('buy');
+    expect(byKey.class!.value).toBe('btn primary');
+    expect(byKey.text!.value).toBe('Buy now');
+  });
+
+  it('KEEPS a present-but-empty attribute, because that is a boolean attribute', () => {
+    // The other side of the rule. `<ol reversed>` carries `reversed=""`; hiding
+    // it would lose information the element genuinely has, and would contradict
+    // the requirement that every discovered attribute be reachable.
+    const ol = new FakeEl('ol', { reversed: '' });
+    const rows = ABInspect.attributeRows(ABInspect.describeElement(ol, fakeSelectors));
+    const reversed = rows.find((r) => r.key === 'reversed');
+    expect(reversed).toBeTruthy();
+    expect(reversed!.value).toBe('');
+    // Flagged so a renderer can style it differently from a row carrying text.
+    expect(reversed!.empty).toBe(true);
+  });
+
+  it('emits no row for an attribute the element does not carry', () => {
+    // The general form, asserted over the whole list rather than a named few:
+    // every non-identity row must correspond to a real attribute.
+    const el = new FakeEl('div', { 'data-sku': 'A1' });
+    const rows = ABInspect.attributeRows(ABInspect.describeElement(el, fakeSelectors));
+    const carried = new Set(Object.keys(el.attrs));
+    const derived = new Set(['tag', 'css', 'xpath', 'id', 'class', 'text', 'value', 'name', 'role', 'type']);
+    const invented = rows.filter((r) => !derived.has(r.key) && !carried.has(r.key));
+    expect(invented).toEqual([]);
+  });
+
+  it('keeps the panel free of the whole global-attribute checklist', () => {
+    // GLOBAL_HINTS is an ORDERING hint, not a row source. A bare <div> must not
+    // sprout `style —`, `title —`, `dir —`, `lang —` rows.
+    const el = new FakeEl('div');
+    const keys = ABInspect.attributeRows(
+      ABInspect.describeElement(el, fakeSelectors),
+    ).map((r) => r.key);
+    ['style', 'title', 'dir', 'lang', 'hidden', 'placeholder', 'src', 'alt', 'method']
+      .forEach((k) => expect(keys).not.toContain(k));
+    // …and the panel is short, like a real DOM inspector.
+    expect(keys).toEqual(['tag', 'css', 'xpath']);
+  });
+
+  it('preserves the familiar row order when values are present', () => {
+    const el = new FakeEl('a', { id: 'buy', class: 'btn' });
+    el.innerText = 'Buy';
+    const keys = ABInspect.attributeRows(
+      ABInspect.describeElement(el, fakeSelectors),
+    ).map((r) => r.key);
+    expect(keys.slice(0, 6)).toEqual(['tag', 'id', 'class', 'css', 'xpath', 'text']);
+  });
+
+  it('an explicitly empty id stays reachable as the attribute it really is', () => {
+    // `<div id="">` HAS an id attribute whose value is empty. The derived `id`
+    // row is dropped (it describes nothing useful), but the attribute itself is
+    // still discovered — the skip-list is built from the rows actually emitted,
+    // so the two rules cannot disagree and silently hide it.
+    const el = new FakeEl('div', { id: '' });
+    const rows = ABInspect.attributeRows(ABInspect.describeElement(el, fakeSelectors));
+    expect(rows.filter((r) => r.key === 'id')).toHaveLength(1);
+    expect(rows.find((r) => r.key === 'id')!.group).toBe('attribute');
+  });
+});
+
+describe('ab-inspect: rows, defaults and labels', () => {
   it('marks data-* rows as their own group so the panel can highlight them', () => {
     const el = new FakeEl('div', { 'data-sku': 'A1', href: '#' });
     const rows = ABInspect.attributeRows(ABInspect.describeElement(el, fakeSelectors));

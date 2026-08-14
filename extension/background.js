@@ -331,25 +331,24 @@ async function openPanel() {
    holds host_permissions, so the request belongs here — same reason sendFlow
    lives here.
 
-   The session id is minted here too, and persisted. It identifies WHICH
-   automation session this extension is attached to, so the backend can refuse a
-   pick aimed at a node that a different session claimed rather than deliver it
-   to the wrong place.
-   ============================================================ */
+   THE DESTINATION IS A TARGET FIELD, AND IT IS PAIRED ONCE
+   -------------------------------------------------------
+   This worker used to mint its own `ext-…` session id and submit picks under it.
+   The dashboard claimed nodes under a per-TAB `ui-…` id, and the server compared
+   the two for equality — two independently generated strings, so every pick was
+   refused. The id was then read back from the server purely to satisfy the
+   comparison, a round trip that carried no information: the value sent was the
+   value the server had handed over moments earlier.
 
-// One id per extension installation, stable across popup opens and worker
-// restarts (MV3 workers are killed aggressively; an in-memory id would change
-// mid-session and every pick would then look like it came from a stranger).
-async function getSessionId() {
-  return new Promise(function (resolve) {
-    chrome.storage.local.get(['ab_sessionId'], function (s) {
-      var id = s && s.ab_sessionId;
-      if (id) { resolve(id); return; }
-      var fresh = 'ext-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-      chrome.storage.local.set({ ab_sessionId: fresh }, function () { resolve(fresh); });
-    });
-  });
-}
+   That whole mechanism is gone. The destination is now a Target Field the
+   project registers, addressed by `targetFieldId`, and this extension is bound
+   to it ONCE by typing an Authorization Code. After that, ordinary sends carry
+   only the API key and the id — no session, no echo, nothing to keep in sync.
+
+   The extension therefore stores exactly one new thing: which Target Field it is
+   currently sending to. That is a user CHOICE, so it is persisted rather than
+   re-derived, and it survives worker restarts (MV3 kills workers aggressively).
+   ============================================================ */
 
 // Resolve base + key once for the inspector calls, with the same explicit
 // error keys the popup already knows how to render.
@@ -361,89 +360,130 @@ async function inspectorContext() {
   return { base: base, apiKey: cfg.apiKey, userId: cfg.userId || 'local' };
 }
 
+/** Which Target Field this extension is currently sending to, if any. */
+function getTargetFieldId() {
+  return new Promise(function (resolve) {
+    chrome.storage.local.get(['ab_targetFieldId'], function (s) {
+      resolve((s && s.ab_targetFieldId) || '');
+    });
+  });
+}
+
+function setTargetFieldId(id) {
+  return new Promise(function (resolve) {
+    chrome.storage.local.set({ ab_targetFieldId: id || '' }, function () { resolve(id || ''); });
+  });
+}
+
 /**
- * What is this extension attached to — which mode, which node is waiting?
- * Asked when the popup opens, so the user can see the answer before picking
- * rather than discovering it from a failed submit.
+ * What is this extension attached to — which mode, which fields are open, and
+ * which of them may it write to?
  *
- * `sessionId` in the answer is the EDITING session that actually holds the
- * claim (`data.activeNode.sessionId`), not this installation's own id — see
- * `claimedSessionId` below for why that distinction was a shipped bug.
+ * Asked when the popup opens, so the user sees the answer before picking rather
+ * than discovering it from a failed send. `authorized` comes back scoped to THIS
+ * API key, so the popup can show "connected to this Field" truthfully instead of
+ * listing fields the extension cannot actually reach.
  */
 async function inspectorSession() {
   var ctx = await inspectorContext();
   if (ctx.error) return { ok: false, error: ctx.error };
   var res = await apiFetch(ctx.base + '/inspector/session', { method: 'GET' }, ctx.apiKey);
-  var active = (res && res.data && res.data.activeNode) || null;
-  res.sessionId = (active && active.sessionId) || '';
-  // Kept separate and clearly named: it identifies the INSTALLATION, which is
-  // useful in a log, and is deliberately never sent as the claim's session.
-  res.installId = await getSessionId();
+  var data = (res && res.data) || {};
+  var chosen = await getTargetFieldId();
+
+  var authorized = data.authorized || [];
+  var isAuthorized = authorized.some(function (b) { return b.targetFieldId === chosen; });
+
+  res.targetFieldId = chosen;
+  res.authorized = isAuthorized;
+  // The full record for the DESTINATION panel: node name, field name, label.
+  res.target = (data.targets || []).filter(function (t) {
+    return t.targetFieldId === chosen;
+  })[0] || null;
   return res;
 }
 
 /**
- * The session id to submit a pick under: the one the PROJECT says is editing.
+ * Redeem an Authorization Code — the one-time pairing step.
  *
- * THE BUG THIS FIXES
- * ------------------
- * This worker used to submit `getSessionId()` — an id minted HERE, in the
- * extension, of the form `ext-…`. The dashboard claims a node under a per-TAB
- * id of the form `ui-…` (public/js/inspector-client.js), and InspectorHub
- * compares the two for equality:
- *
- *     if (!sessionId || sessionId !== session.sessionId) -> 'stale_session'
- *
- * Two independently generated ids can never be equal, so EVERY pick was
- * refused with `stale_session`. Measured against the real class:
- * claim('ui-abc123') then submit('ext-zzz999') -> {ok:false,'stale_session'}.
- * The whole «Confirm & Add to Node» path was therefore dead, and no test caught
- * it because each side was only ever tested with ids it had chosen itself.
- *
- * WHY READING IT BACK IS STILL SAFE
- * ---------------------------------
- * The guard's purpose is to stop a pick landing in a node the user is no longer
- * editing. That protection lives in the CLAIM, not in who authored the string:
- * the server hands out the session of the node that is open RIGHT NOW, and a
- * submission is refused when no node is open (`no_active_node`). Fetching the
- * value immediately before submitting also means a claim that moved between
- * arming the picker and confirming is honoured, not overridden.
+ * The target is decided by the CODE, server-side. This function deliberately
+ * does not send a `targetFieldId`: «The Extension must NEVER be able to choose
+ * an arbitrary Target Field.» What comes back is the field the code was scoped
+ * to, and THAT is what gets stored.
  */
-async function claimedSessionId(ctx) {
-  var res = await apiFetch(ctx.base + '/inspector/session', { method: 'GET' }, ctx.apiKey);
-  if (!res.ok) return { error: res.error || 'unreachable', message: res.message || '' };
-  var active = (res.data && res.data.activeNode) || null;
-  if (!active || !active.sessionId) return { error: 'no_active_node' };
-  return { sessionId: active.sessionId, activeNode: active };
+async function inspectorPair(payload) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+
+  var code = String((payload && payload.code) || '').trim();
+  if (!code) return { ok: false, reason: 'INVALID_AUTHORIZATION_CODE', error: 'Enter the Authorization Code.' };
+
+  var res = await apiFetch(
+    ctx.base + '/inspector/pair',
+    { method: 'POST', body: JSON.stringify({ code: code }) },
+    ctx.apiKey
+  );
+
+  var data = res.data || {};
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'The authorization code was refused.'
+    };
+  }
+
+  var target = data.target || null;
+  var id = (data.binding && data.binding.targetFieldId) || (target && target.targetFieldId) || '';
+  await setTargetFieldId(id);
+  return { ok: true, targetFieldId: id, target: target };
+}
+
+/** Forget the pairing locally. The server keeps its binding until the field closes. */
+async function inspectorUnpair() {
+  await setTargetFieldId('');
+  return { ok: true };
 }
 
 /**
- * Deliver a confirmed pick. Returns a flat, popup/panel-friendly shape:
- * on refusal the backend's reason key and sentence are passed through
- * UNCHANGED, because "no node is waiting" is a fixable problem and a generic
- * failure message hides the fix.
+ * Deliver ONE confirmed attribute to the paired Target Field.
+ *
+ * §21: «the system sends exactly ONE Radio-selected value», so the payload
+ * carries `sendAttribute` (the radio) and `displayAttributes` (the checkboxes,
+ * which affect display only). The server recomputes the value from the element
+ * it receives, so the `value` here is advisory.
+ *
+ * Refusals pass the backend's §27 code and sentence through UNCHANGED, because
+ * "this Inspector is not authorized for that Field" is a fixable problem and a
+ * generic failure message hides the fix.
  */
 async function submitElement(payload) {
   var ctx = await inspectorContext();
   if (ctx.error) return { ok: false, error: ctx.error };
 
   var element = payload && payload.element;
-  var selected = (payload && payload.selected) || [];
   if (!element) return { ok: false, error: 'no_element' };
-  if (!selected.length) return { ok: false, error: 'empty_selection' };
 
-  // The session comes from the project, not from here. Refuse locally when no
-  // node is open rather than sending a request whose only possible answer is a
-  // 409 — the message the user needs is the same either way, and this one
-  // arrives without a round trip.
-  var claim = await claimedSessionId(ctx);
-  if (claim.error) {
+  // §22.5 — a radio must be selected. Refused here rather than sent, because the
+  // only possible answer is a 409 and the message is the same either way.
+  var send = (payload && payload.sendAttribute) || null;
+  var attrName = send && String(send.name || '').trim();
+  if (!attrName) {
     return {
       ok: false,
-      reason: claim.error,
-      error: claim.error === 'no_active_node'
-        ? 'No node is waiting. Open a node in the project, then confirm again.'
-        : 'Could not reach the project (' + claim.error + ').'
+      reason: 'ATTRIBUTE_SEND_FAILED',
+      error: 'Select one attribute to send.'
+    };
+  }
+
+  // The destination must have been paired. Refusing locally saves a round trip
+  // and names the actual fix.
+  var targetFieldId = await getTargetFieldId();
+  if (!targetFieldId) {
+    return {
+      ok: false,
+      reason: 'TARGET_NOT_AUTHORIZED',
+      error: 'This Inspector is not connected to a Field. Enter an Authorization Code first.'
     };
   }
 
@@ -452,9 +492,10 @@ async function submitElement(payload) {
     {
       method: 'POST',
       body: JSON.stringify({
-        sessionId: claim.sessionId,
+        targetFieldId: targetFieldId,
         element: element,
-        selected: selected
+        displayAttributes: (payload && payload.displayAttributes) || [],
+        sendAttribute: { name: attrName, value: send.value }
       })
     },
     ctx.apiKey
@@ -466,15 +507,21 @@ async function submitElement(payload) {
       ok: false,
       reason: data.reason || res.error,
       error: data.error || res.message || 'The element could not be delivered.',
-      activeNode: data.activeNode || null
+      targets: data.targets || []
     };
   }
 
-  var node = data.activeNode || {};
-  // A confirmation that NAMES the destination ("Click #buy") is what proves the
-  // pick did not silently go somewhere else.
-  var where = node.label || [node.action, node.nodeId].filter(Boolean).join(' ') || '';
-  return { ok: true, node: where, delivery: data.delivery || null, activeNode: node };
+  // §24: the confirmation NAMES the field, the attribute and the value — that is
+  // what proves the value did not silently go somewhere else.
+  return {
+    ok: true,
+    node: data.nodeName || '',
+    field: data.fieldName || '',
+    targetFieldId: data.targetFieldId || targetFieldId,
+    attribute: data.attribute || attrName,
+    value: data.value || '',
+    delivery: data.delivery || null
+  };
 }
 
 /** Read the current browser mode (Remote / Local) for the popup's indicator. */
@@ -660,6 +707,15 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
       return true; // async
     case 'AB_INSPECTOR_SESSION':
       inspectorSession().then(sendResponse);
+      return true; // async
+    // One-time pairing. Distinct from AB_HANDOFF_PAIR below: that code binds a
+    // BROWSER SESSION, this one binds a TARGET FIELD. Two subsystems, two codes,
+    // and unpairing either must leave the other alone.
+    case 'AB_INSPECTOR_PAIR':
+      inspectorPair(msg.payload).then(sendResponse);
+      return true; // async
+    case 'AB_INSPECTOR_UNPAIR':
+      inspectorUnpair().then(sendResponse);
       return true; // async
     case 'AB_INSPECTOR_TOGGLE':
       toggleInspector(msg.desired).then(sendResponse);

@@ -11,18 +11,29 @@
  *
  * THE THREE THINGS IT OWNS
  * ------------------------
- *   1. A SESSION ID, so a pick cannot land in the wrong node.
+ *   1. The REGISTERED TARGET FIELDS — which fields are open to receive a value.
  *   2. A LISTENER (WebSocket, with an HTTP poll as the fallback) for deliveries.
  *   3. The MODE state (remote / local) that the toolbar switch renders.
  *
- * WHY THE SESSION ID LIVES IN sessionStorage AND NOT localStorage
- * --------------------------------------------------------------
- * sessionStorage is per-TAB. Two tabs open on the editor are two different
- * editing sessions, and a user who picks an element while tab B is focused
- * means tab B's node — not whichever tab claimed most recently. localStorage
- * is shared across tabs and would make the two indistinguishable, which is
- * exactly the mis-delivery the hub's session handshake exists to prevent.
- * A reload keeps the same tab's id, so the claim survives an F5.
+ * WHY THERE IS NO LONGER A SESSION ID
+ * -----------------------------------
+ * This file used to mint a per-tab `ui-…` id and claim a node under it, while
+ * the extension minted its own `ext-…` id and submitted under THAT. The server
+ * compared the two for equality, so every pick was refused — two independently
+ * generated strings are never equal. The id was then read back from the server
+ * purely to satisfy the comparison, a round trip that carried no information.
+ *
+ * The destination is now a TARGET FIELD registered with the server, which mints
+ * the `targetFieldId` (including a random suffix this page never chooses). That
+ * id identifies a FIELD, not a tab, so:
+ *   - two tabs are no longer indistinguishable — they hold different ids
+ *   - several fields can be open at once, which a single-valued "active node"
+ *     could not express
+ *   - switching Remote/Local, or reconnecting, invalidates nothing
+ *
+ * The suffix is what makes a stale delivery impossible: re-opening the same
+ * field mints a NEW id, so a pick queued against the previous one resolves to
+ * nothing rather than landing in a field the user thought they had closed.
  *
  * WHY BOTH A SOCKET AND A POLL
  * ----------------------------
@@ -106,31 +117,6 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Session identity (requirement: the active node must be session-based)
-  // ---------------------------------------------------------------------------
-
-  var SESSION_STORAGE = 'ab_inspector_session';
-
-  function makeSessionId() {
-    var rand = Math.random().toString(36).slice(2, 10);
-    return 'ui-' + Date.now().toString(36) + '-' + rand;
-  }
-
-  var sessionId = (function () {
-    try {
-      var existing = sessionStorage.getItem(SESSION_STORAGE);
-      if (existing) return existing;
-      var fresh = makeSessionId();
-      sessionStorage.setItem(SESSION_STORAGE, fresh);
-      return fresh;
-    } catch (e) {
-      // Private-mode storage refusal must not disable the feature; an in-memory
-      // id still identifies this page for as long as it lives.
-      return makeSessionId();
-    }
-  })();
-
-  // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
 
@@ -147,8 +133,21 @@
     /** 'default' | 'user' | 'fallback' — why the mode is what it is. */
     reason: 'default',
     bridge: null,
-    /** The node this tab has claimed, as the SERVER sees it. */
-    activeNode: null,
+    /**
+     * Every Target Field currently open, as the SERVER sees it.
+     *
+     * A LIST, not a single "active node": several fields must be able to wait
+     * for a value at once, and a single-valued shape would have to silently
+     * drop all but one of them.
+     */
+    targets: [],
+    /**
+     * targetFieldId -> { nodeId, fieldKey } for fields THIS page registered.
+     *
+     * Kept so closing a node can release exactly its own fields without
+     * touching a field some other tab opened.
+     */
+    mine: {},
     connected: false,
     retryMs: 1000,
     pollTimer: null,
@@ -165,9 +164,8 @@
       localAvailable: state.localAvailable,
       reason: state.reason,
       bridge: state.bridge,
-      activeNode: state.activeNode,
+      targets: state.targets.slice(),
       connected: state.connected,
-      sessionId: sessionId,
     };
   }
 
@@ -210,63 +208,115 @@
     if (typeof msg.localAvailable === 'boolean') state.localAvailable = msg.localAvailable;
     if (typeof msg.reason === 'string') state.reason = msg.reason;
     if (msg.bridge !== undefined) state.bridge = msg.bridge;
-    if (msg.activeNode !== undefined) state.activeNode = msg.activeNode;
+    if (Array.isArray(msg.targets)) state.targets = msg.targets;
     emit();
   }
 
   // ---------------------------------------------------------------------------
-  // Claim / release — "this session is editing this node"
+  // Target Fields — "this FIELD is waiting for a value"
   // ---------------------------------------------------------------------------
 
   /**
-   * Tell the server which node is waiting for an element.
+   * Open one field to receive a picked value.
    *
-   * Fire-and-forget on purpose: the caller is a UI action (opening a node), and
-   * a failed claim must not block the editor from opening. The consequence of a
-   * lost claim is a refusal the user can see and retry, which is strictly better
-   * than an editor that will not open because a background POST failed.
+   * `fieldKey` is REQUIRED and must be a key the action really declares. The
+   * server checks it against the action catalogue and refuses anything else,
+   * because coerceParams() drops undeclared keys on save — a value written to
+   * one would vanish silently and leave a node that looks configured in the
+   * editor and runs unconfigured.
+   *
+   * The id is minted by the SERVER. If this page chose it, it could re-use a
+   * suffix it had seen before and revive a destination the user had closed,
+   * which is the stale delivery the suffix exists to prevent.
+   *
+   * Resolves to null rather than rejecting: the caller is a UI action, and a
+   * failed registration must not stop a field from rendering. The user sees a
+   * refusal they can retry instead of an editor that will not open.
    */
-  function claim(nodeId, opts) {
-    if (!nodeId) return Promise.resolve(null);
+  function registerTarget(nodeId, fieldKey, opts) {
+    if (!nodeId || !fieldKey) return Promise.resolve(null);
     var o = opts || {};
-    return post('/inspector/claim', {
-      sessionId: sessionId,
+    return post('/inspector/target', {
       nodeId: nodeId,
+      fieldKey: fieldKey,
       action: o.action,
       workflowId: o.workflowId,
-      field: o.field,
       label: o.label,
     }).then(function (res) {
-      if (res && res.activeNode) {
-        state.activeNode = res.activeNode;
-        if (typeof res.mode === 'string') state.mode = res.mode;
-        emit();
-      }
-      return res && res.activeNode ? res.activeNode : null;
+      var target = res && res.target;
+      if (!target || !target.targetFieldId) return null;
+      state.mine[target.targetFieldId] = { nodeId: nodeId, fieldKey: fieldKey };
+      if (Array.isArray(res.targets)) state.targets = res.targets;
+      else state.targets = state.targets.concat([target]);
+      emit();
+      return target;
     }).catch(function () { return null; });
   }
 
   /**
-   * Stop waiting for an element.
+   * Ask the server for a one-time Authorization Code for ONE of this page's
+   * fields — the other half of pairing.
    *
-   * The local state is cleared whether or not the request succeeds: this runs
-   * when a node closes, and a UI that keeps showing "node X is waiting" after
-   * X is gone is worse than one that is briefly out of step with the server
-   * (the next hello/refresh corrects it).
+   * This is the only way an extension can ever be pointed at a field: the code
+   * is scoped to `targetFieldId` server-side, so the extension redeems it
+   * without ever naming a destination itself (§8). Which is why the code is
+   * issued HERE, in the project, by the person who can see the field — and is
+   * never requested by the extension.
+   *
+   * Resolves to null on refusal rather than rejecting: the caller is a button,
+   * and a failed request must leave the editor usable.
    */
-  function release() {
-    var had = state.activeNode;
-    state.activeNode = null;
-    if (had) emit();
-    return post('/inspector/release', { sessionId: sessionId })
+  function authorizeTarget(targetFieldId) {
+    if (!targetFieldId) return Promise.resolve(null);
+    return post('/inspector/authorize', { targetFieldId: targetFieldId })
       .then(function (res) {
-        if (res && res.activeNode !== undefined) {
-          state.activeNode = res.activeNode;
-          emit();
-        }
-        return true;
+        if (!res || !res.code) return null;
+        return {
+          code: res.code,
+          // Grouped for reading aloud and typing; `code` is what redeem compares.
+          display: res.display || res.code,
+          target: res.target || null,
+          expiresAt: res.expiresAt || 0,
+          expiresInMs: res.expiresInMs || 0,
+        };
+      })
+      .catch(function () { return null; });
+  }
+
+  /** Close one field. Other fields — this node's or another node's — are untouched. */
+  function releaseTarget(targetFieldId) {
+    if (!targetFieldId) return Promise.resolve(false);
+    // Dropped locally first: a UI that still lists a field the user just closed
+    // is worse than one briefly out of step with the server, which the next
+    // hello corrects anyway.
+    delete state.mine[targetFieldId];
+    state.targets = state.targets.filter(function (t) {
+      return t && t.targetFieldId !== targetFieldId;
+    });
+    emit();
+    return post('/inspector/target/release', { targetFieldId: targetFieldId })
+      .then(function (res) {
+        if (res && Array.isArray(res.targets)) { state.targets = res.targets; emit(); }
+        return !!(res && res.released);
       })
       .catch(function () { return false; });
+  }
+
+  /**
+   * Close every field this page opened for one node.
+   *
+   * Scoped to `nodeId` on purpose: closing a node must not disconnect fields
+   * another node — or another tab — still has open.
+   */
+  function releaseNode(nodeId) {
+    if (!nodeId) return Promise.resolve(0);
+    var ids = [];
+    for (var id in state.mine) {
+      if (!Object.prototype.hasOwnProperty.call(state.mine, id)) continue;
+      if (state.mine[id].nodeId === nodeId) ids.push(id);
+    }
+    if (!ids.length) return Promise.resolve(0);
+    return Promise.all(ids.map(releaseTarget)).then(function () { return ids.length; });
   }
 
   // ---------------------------------------------------------------------------
@@ -310,36 +360,20 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Which of the hub's field keys this node action can actually accept.
+   * Land one delivery in the FIELD that asked for it, then acknowledge it.
    *
-   * The hub maps a selection to a generous set of fields (selector, xpath,
-   * text, value, name, attribute...). Writing all of them into every node
-   * would invent parameters a node does not declare — and GraphSerialize only
-   * persists declared keys, so those would be silently dropped on save,
-   * producing a node that looks configured in the editor and runs unconfigured.
-   * Filtering here keeps the editor honest about what was applied.
-   */
-  function acceptedFields(action) {
-    var act = String(action || '');
-    // Navigation takes a URL, not a selector: an element's selector in the
-    // `value` slot is the closest honest mapping (a picked <a> carries href).
-    if (act === 'goto' || act === 'navigate') return ['value'];
-    return ['selector', 'selectorType', 'xpath', 'text', 'value', 'name', 'attribute'];
-  }
-
-  /**
-   * Land one delivery in the node that asked for it, then acknowledge it.
+   * The destination is `delivery.target`, which the server resolved from its own
+   * registry — this page does not re-derive it, and there is no session id left
+   * to compare. The delivery carries exactly one field (§21: one radio, one
+   * outbound value), so there is nothing to filter: the server already refused
+   * anything that could not be placed, rather than redirecting it somewhere it
+   * would fit.
    */
   function applyDelivery(delivery) {
-    if (!delivery || !delivery.session || !delivery.fields) return false;
+    if (!delivery || !delivery.target || !delivery.fields) return false;
 
-    var target = delivery.session;
-
-    // Belt and braces. The server already refuses a stale session, but this
-    // page may have re-claimed since the pick was queued, and applying a
-    // delivery addressed to an older claim is precisely the mis-delivery the
-    // whole handshake exists to stop.
-    if (target.sessionId && target.sessionId !== sessionId) return false;
+    var target = delivery.target;
+    if (!target.nodeId) return false;
 
     var editor = window.FlowEditor;
     if (!editor || typeof editor.applyInspectorFields !== 'function') {
@@ -347,12 +381,11 @@
       return false;
     }
 
-    var allowed = acceptedFields(target.action);
     var fields = {};
     var count = 0;
     for (var k in delivery.fields) {
       if (!Object.prototype.hasOwnProperty.call(delivery.fields, k)) continue;
-      if (allowed.indexOf(k) === -1) continue;
+      if (delivery.fields[k] == null || delivery.fields[k] === '') continue;
       fields[k] = delivery.fields[k];
       count++;
     }
@@ -410,7 +443,8 @@
     var qs = 'api_key=' + encodeURIComponent(apiKey());
     var uid = userId();
     if (uid) qs += '&userId=' + encodeURIComponent(uid);
-    qs += '&sessionId=' + encodeURIComponent(sessionId);
+    // No session id: the socket is a per-USER delivery channel now, and which
+    // FIELD a pick belongs to travels with the delivery itself.
     return proto + '//' + location.host + '/inspector/ws?' + qs;
   }
 
@@ -530,38 +564,57 @@
   }
 
   /**
-   * Release the claim as the tab goes away.
+   * Release this tab's Target Fields as it goes away.
    *
    * sendBeacon, not fetch: a fetch started in `beforeunload` is routinely
    * cancelled when the document is torn down, whereas a beacon is handed to the
    * browser to deliver after the page is gone. The key rides in the query
-   * string because a beacon cannot set headers. Leaving the claim behind would
-   * make the NEXT pick land in a node from a closed tab, which is the exact
-   * failure the session handshake exists to prevent.
+   * string because a beacon cannot set headers.
+   *
+   * One beacon PER FIELD, because release takes one id: closing this tab must
+   * not release a field another tab still has open, and the server has no way
+   * to tell "all of this tab's fields" apart from "all of this user's fields".
+   * Whatever a missed beacon leaves behind, the target TTL collects.
    */
   window.addEventListener('beforeunload', function () {
-    if (!state.activeNode) return;
     var key = apiKey();
     if (!key) return;
     try {
-      var url = '/inspector/release?api_key=' + encodeURIComponent(key);
-      var blob = new Blob([JSON.stringify({ sessionId: sessionId })], { type: 'application/json' });
-      if (navigator.sendBeacon) navigator.sendBeacon(url, blob);
-    } catch (e) { /* the claim TTL cleans up whatever this misses */ }
+      if (!navigator.sendBeacon) return;
+      var url = '/inspector/target/release?api_key=' + encodeURIComponent(key);
+      for (var id in state.mine) {
+        if (!Object.prototype.hasOwnProperty.call(state.mine, id)) continue;
+        var blob = new Blob([JSON.stringify({ targetFieldId: id })], { type: 'application/json' });
+        navigator.sendBeacon(url, blob);
+      }
+    } catch (e) { /* the target TTL cleans up whatever this misses */ }
   });
 
   window.InspectorClient = {
     start: start,
     stop: stop,
-    claim: claim,
-    release: release,
+    registerTarget: registerTarget,
+    authorizeTarget: authorizeTarget,
+    releaseTarget: releaseTarget,
+    releaseNode: releaseNode,
     refreshMode: refreshMode,
     setMode: setMode,
     onChange: onChange,
     state: snapshot,
-    sessionId: function () { return sessionId; },
     drainInbox: drainInbox,
     applyDelivery: applyDelivery,
-    acceptedFields: acceptedFields,
+    /** Which fields this page has open, for the picker UI. */
+    myTargets: function () {
+      var out = [];
+      for (var id in state.mine) {
+        if (!Object.prototype.hasOwnProperty.call(state.mine, id)) continue;
+        out.push({
+          targetFieldId: id,
+          nodeId: state.mine[id].nodeId,
+          fieldKey: state.mine[id].fieldKey,
+        });
+      }
+      return out;
+    },
   };
 })();

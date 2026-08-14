@@ -1310,6 +1310,31 @@
       'inspector.applyFailed': 'آن نود دیگر باز نیست — دوباره انتخاب کنید.',
       'inspector.nothingToApply': 'ویژگی‌های انتخاب‌شده با این نود سازگار نیستند.',
       'inspector.noEditor': 'برای دریافت المان‌های انتخاب‌شده، ویرایشگر گردش‌کار را باز کنید.',
+
+      // §27 — the nine refusal codes. The wire carries the CODE, never a
+      // sentence, so the same backend can answer a fa and an en client without
+      // knowing which is asking. Each message names the fix, because a refusal
+      // the user cannot act on is only marginally better than silence.
+      'insp.err.BACKEND_UNREACHABLE': 'سرور در دسترس نیست. آدرس Base URL را بررسی کنید و دوباره تلاش کنید.',
+      'insp.err.INVALID_API_KEY': 'کلید API نامعتبر است. کلید را در تنظیمات افزونه دوباره وارد کنید.',
+      'insp.err.INVALID_AUTHORIZATION_CODE': 'کد مجوز نامعتبر است. کد جدیدی درخواست کنید.',
+      'insp.err.AUTHORIZATION_EXPIRED': 'کد مجوز منقضی شده است. مجوز جدیدی برای بازرس شروع کنید.',
+      'insp.err.TARGET_FIELD_NOT_FOUND': 'فیلد مقصد در دسترس نیست. نود را دوباره باز کنید و دکمهٔ انتخاب آن را بزنید.',
+      'insp.err.TARGET_NOT_AUTHORIZED': 'این بازرس برای فیلد درخواستی مجاز نیست. کد مجوز جدیدی درخواست کنید.',
+      'insp.err.INSPECTOR_DISCONNECTED': 'ارتباط بازرس قطع شده است. افزونه را دوباره متصل کنید.',
+      'insp.err.ELEMENT_INSPECTION_FAILED': 'بررسی المان ممکن نشد. دوباره المان را انتخاب کنید.',
+      'insp.err.ATTRIBUTE_SEND_FAILED': 'ارسال ویژگی ممکن نشد. یک ویژگی دارای مقدار انتخاب کنید و دوباره بفرستید.',
+
+      // صدور کد — سمت پروژه از فرآیند اتصال. کد فقط به همین یک فیلد تعلق دارد،
+      // و همین است که مانع می‌شود افزونه مقصد را خودش انتخاب کند.
+      'insp.connect': 'اتصال بازرس',
+      'insp.connectHint': 'یک کد یک‌بارمصرف بگیرید و آن را در افزونه وارد کنید تا این فیلد پر شود.',
+      'insp.codeReady': 'این کد را در افزونه وارد کنید',
+      'insp.codeExpires': 'تا ۵ دقیقه اعتبار دارد',
+      'insp.codeFailed': 'صدور کد ممکن نشد. نود را دوباره باز کنید و تلاش کنید.',
+      'insp.codeCopied': 'کد کپی شد.',
+      'insp.copy': 'کپی',
+
       'mode.title': 'حالت مرورگر',
       'mode.remote': 'مرورگر ریموت',
       'mode.local': 'مرورگر محلی',
@@ -2570,6 +2595,30 @@
       'inspector.applyFailed': 'That node is no longer open — pick again.',
       'inspector.nothingToApply': 'The picked attributes do not fit this node.',
       'inspector.noEditor': 'Open the workflow editor to receive picked elements.',
+
+      // §27 — the nine refusal codes. Kept in lockstep with the fa block above;
+      // a code present in one language and missing in the other renders as a
+      // raw key to exactly the users who cannot read the other one.
+      'insp.err.BACKEND_UNREACHABLE': 'Backend unreachable. Check the Base URL and try again.',
+      'insp.err.INVALID_API_KEY': 'Invalid API key. Re-enter the key in the extension settings.',
+      'insp.err.INVALID_AUTHORIZATION_CODE': 'Authorization code invalid. Request a new Authorization Code.',
+      'insp.err.AUTHORIZATION_EXPIRED': 'Authorization code expired. Start a new Inspector authorization.',
+      'insp.err.TARGET_FIELD_NOT_FOUND': 'Target Field unavailable. Re-open the node and press its picker button again.',
+      'insp.err.TARGET_NOT_AUTHORIZED': 'This Inspector is not authorized for the requested Field — request a new Authorization Code.',
+      'insp.err.INSPECTOR_DISCONNECTED': 'Inspector disconnected. Reconnect the extension.',
+      'insp.err.ELEMENT_INSPECTION_FAILED': 'Unable to inspect element. Try selecting the element again.',
+      'insp.err.ATTRIBUTE_SEND_FAILED': 'Unable to send attribute. Select one attribute with a value, then retry the send.',
+
+      // Issuing a code — the project side of pairing. The code is scoped to THIS
+      // one field, which is what stops the extension choosing its own target.
+      'insp.connect': 'Connect Inspector',
+      'insp.connectHint': 'Get a one-time code and enter it in the extension to fill this field.',
+      'insp.codeReady': 'Enter this code in the extension',
+      'insp.codeExpires': 'Valid for 5 minutes',
+      'insp.codeFailed': 'The code could not be issued. Re-open the node and try again.',
+      'insp.codeCopied': 'Code copied.',
+      'insp.copy': 'Copy',
+
       'mode.title': 'Browser mode',
       'mode.remote': 'Remote Browser',
       'mode.local': 'Local Browser',

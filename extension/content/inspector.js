@@ -55,7 +55,20 @@
     frozen: null,      // element the user clicked; the panel describes this one
     described: null,   // ab-inspect.describeElement result for `frozen`
     rows: [],          // attributeRows result, in panel order
-    selected: {},      // key -> true for ticked rows
+    // §16/§23 — TWO INDEPENDENT STATES, deliberately not one.
+    //
+    // `display` is the set of ticked CHECKBOXES: which attributes the user wants
+    // to look at. `sendKey` is the single selected RADIO: the one attribute whose
+    // value is actually sent to the Target Field.
+    //
+    // Collapsing these into one collection is the obvious simplification and it
+    // is wrong: the user needs to compare several candidates on screen before
+    // committing to one, and "what I am reading" is not "what I am sending".
+    // Keeping them apart is also what makes the outbound value unambiguous —
+    // with a single set, sending would have to pick a winner by position, which
+    // is a rule nobody can see.
+    display: {},       // key -> true for ticked rows (VIEW ONLY)
+    sendKey: '',       // the ONE key whose value is sent (§21)
     host: null,        // panel shadow host
     shadow: null,      // panel shadow root
     ui: null,          // cached panel element refs
@@ -282,10 +295,18 @@
     if (!state.described) return;
 
     state.rows = api.attributeRows(state.described);
-    state.selected = {};
-    api.defaultSelection(state.described).forEach(function (k) {
-      state.selected[k] = true;
-    });
+    state.display = {};
+    var defaults = api.defaultSelection(state.described);
+    defaults.forEach(function (k) { state.display[k] = true; });
+
+    // Pre-arm the radio on the first default that actually HAS a value, so the
+    // common case is one click on "Confirm". A row with no value would be
+    // refused on send, so pre-selecting one would arm a guaranteed failure.
+    state.sendKey = '';
+    for (var i = 0; i < state.rows.length; i++) {
+      var r = state.rows[i];
+      if (defaults.indexOf(r.key) !== -1 && r.value) { state.sendKey = r.key; break; }
+    }
 
     moveOverlay(el);
     renderPanel();
@@ -328,6 +349,11 @@
       '.row{display:flex;gap:8px;align-items:flex-start;padding:5px 12px}',
       '.row:hover{background:#14203a}',
       '.row input{margin-top:3px;accent-color:#2563eb;cursor:pointer;flex:0 0 auto}',
+      // The radio is tinted differently from the checkbox on purpose: the two
+      // controls do different things, and identical styling would invite the
+      // reading that ticking more boxes sends more values.
+      '.row input.send{accent-color:#f59e0b}',
+      '.row input.send[disabled]{cursor:default;opacity:.35}',
       '.row label{display:flex;gap:8px;flex:1;min-width:0;cursor:pointer}',
       '.k{flex:0 0 116px;color:#a9b6d0;font-size:11px;overflow:hidden;',
       'text-overflow:ellipsis;white-space:nowrap}',
@@ -386,7 +412,9 @@
 
     var hint = document.createElement('div');
     hint.className = 'hint';
-    hint.textContent = '\u2191 / \u2193 select the parent or first child \u00b7 Esc closes';
+    // Spells out the distinction the two controls encode, because a checkbox
+    // next to a radio is otherwise ambiguous on first sight.
+    hint.textContent = '\u2611 show \u00b7 \u25c9 send (one only) \u00b7 \u2191/\u2193 parent or child \u00b7 Esc closes';
 
     var ft = document.createElement('div');
     ft.className = 'ft';
@@ -437,12 +465,41 @@
       var row = document.createElement('div');
       row.className = 'row';
 
+      // ---- The checkbox: DISPLAY only. Ticking it sends nothing. -----------
       var cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = !!state.selected[r.key];
+      cb.checked = !!state.display[r.key];
+      cb.title = 'Show this attribute';
       cb.addEventListener('change', function () {
-        if (cb.checked) state.selected[r.key] = true;
-        else delete state.selected[r.key];
+        if (cb.checked) state.display[r.key] = true;
+        else delete state.display[r.key];
+        // Deliberately does NOT touch state.sendKey: un-ticking the row you are
+        // sending would silently disarm the send, and the button would refuse
+        // for a reason the user could not see.
+      });
+
+      // ---- The radio: the ONE value that will be sent. ---------------------
+      var rd = document.createElement('input');
+      rd.type = 'radio';
+      // A shared name is what makes the browser enforce "exactly one" for us,
+      // rather than us having to un-check siblings by hand.
+      rd.name = 'ab-send';
+      rd.className = 'send';
+      rd.checked = state.sendKey === r.key;
+      // A row with no value cannot be sent, so it cannot be armed either. §14
+      // keeps genuinely absent attributes out of the list entirely; what reaches
+      // here empty is a boolean attribute like `reversed`, which is worth SEEING
+      // but has no value to deliver.
+      rd.disabled = !r.value;
+      rd.title = r.value ? 'Send this attribute' : 'This attribute has no value to send';
+      rd.addEventListener('change', function () {
+        if (rd.checked) {
+          state.sendKey = r.key;
+          // Choosing to send something implies wanting to see it, but the
+          // reverse is not true — which is exactly why the two states differ.
+          state.display[r.key] = true;
+          cb.checked = true;
+        }
       });
 
       var label = document.createElement('label');
@@ -461,15 +518,19 @@
       }
       label.appendChild(k);
       label.appendChild(v);
-      // Clicking the text toggles the box — a 12px checkbox is a poor target.
+      // Clicking the text toggles DISPLAY — a 12px checkbox is a poor target.
+      // It does not arm the radio: making the whole row select the outbound
+      // value would make it far too easy to change what is sent while merely
+      // trying to read the list.
       label.addEventListener('click', function (e) {
         e.preventDefault();
         cb.checked = !cb.checked;
-        if (cb.checked) state.selected[r.key] = true;
-        else delete state.selected[r.key];
+        if (cb.checked) state.display[r.key] = true;
+        else delete state.display[r.key];
       });
 
       row.appendChild(cb);
+      row.appendChild(rd);
       row.appendChild(label);
       ui.rows.appendChild(row);
     });
@@ -498,15 +559,25 @@
   function submit(button) {
     if (!state.described) return;
 
-    // Preserve PANEL ORDER rather than object key order: the backend maps the
-    // first non-identity pick to the node's attribute field, so "which one is
-    // first" is meaningful and must match what the user saw.
+    // Preserve PANEL ORDER rather than object key order, so what travels matches
+    // what the user saw.
     var ordered = state.rows
-      .filter(function (r) { return !!state.selected[r.key]; })
+      .filter(function (r) { return !!state.display[r.key]; })
       .map(function (r) { return r.key; });
 
-    if (!ordered.length) {
-      setStatus('Tick at least one attribute first.', 'err');
+    // §21: exactly ONE value goes out, and it is the radio's. Refused here
+    // rather than sent, because the answer would be the same and the round trip
+    // buys nothing.
+    var sendRow = null;
+    for (var i = 0; i < state.rows.length; i++) {
+      if (state.rows[i].key === state.sendKey) { sendRow = state.rows[i]; break; }
+    }
+    if (!sendRow) {
+      setStatus('Choose the ONE attribute to send (the round button).', 'err');
+      return;
+    }
+    if (!sendRow.value) {
+      setStatus('That attribute has no value to send — choose another.', 'err');
       return;
     }
     if (!(window.chrome && chrome.runtime && chrome.runtime.sendMessage)) {
@@ -521,20 +592,30 @@
       chrome.runtime.sendMessage({
         type: 'ab-inspector-submit',
         element: state.described,
-        selected: ordered
+        // The ticked boxes: what the user is looking at. Carried so the project
+        // can show the same view, but none of these becomes a value.
+        displayAttributes: ordered,
+        // The radio: the single value that lands in the Target Field. The server
+        // re-derives it from the element, so this is advisory.
+        sendAttribute: { name: sendRow.key, value: sendRow.value }
       }, function (res) {
         button.disabled = false;
         var err = chrome.runtime.lastError;
         if (err) { setStatus(err.message || 'Send failed.', 'err'); return; }
         if (!res || !res.ok) {
-          // The backend refuses with an actionable reason ("no active node",
-          // "stale session"). Showing it verbatim is the difference between the
-          // user knowing to open a node and the user thinking it is broken.
+          // The backend refuses with an actionable §27 reason ("this Inspector
+          // is not authorized for that Field"). Showing it verbatim is the
+          // difference between the user knowing to enter an Authorization Code
+          // and the user thinking it is broken.
           setStatus((res && (res.error || res.reason)) || 'Send failed.', 'err');
           return;
         }
+        // §24: name the FIELD and the value, not just "done" — that is what
+        // proves the value did not quietly go somewhere else.
         var where = res.node || res.where || '';
-        setStatus('Added' + (where ? ' to ' + where : ''), 'ok');
+        if (res.field) where = where ? where + ' → ' + res.field : res.field;
+        setStatus('Added' + (where ? ' to ' + where : '') +
+          (res.attribute ? ' (' + res.attribute + ')' : ''), 'ok');
         // Leave the confirmation visible briefly, then get out of the user's way.
         setTimeout(stop, 900);
       });
@@ -567,7 +648,10 @@
     state.frozen = null;
     state.described = null;
     state.rows = [];
-    state.selected = {};
+    state.display = {};
+    // Cleared too, or the next pick would arrive with a radio armed on an
+    // attribute the newly picked element may not even have.
+    state.sendKey = '';
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('mouseover', onMove, true);
     document.removeEventListener('click', onClick, true);

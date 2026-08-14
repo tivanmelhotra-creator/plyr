@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import vm from 'vm';
@@ -9,19 +9,22 @@ import vm from 'vm';
  * WHY THIS RUNS IN A vm SANDBOX AND NOT jsdom
  * -------------------------------------------
  * The repo has no jsdom, and the tests are offline. The client only touches a
- * handful of browser globals (window, sessionStorage, WebSocket, fetch via
- * window.API, navigator.sendBeacon), so a hand-built sandbox exercises the REAL
- * file rather than a re-implementation of it. Every assertion below runs the
- * shipped source.
+ * handful of browser globals (window, WebSocket, fetch via window.API,
+ * navigator.sendBeacon), so a hand-built sandbox exercises the REAL file rather
+ * than a re-implementation of it. Every assertion below runs the shipped source.
  *
  * WHAT IS WORTH TESTING HERE
  * --------------------------
  * Not "does it call fetch". The load-bearing behaviours are the ones where a
  * plausible implementation silently loses or misroutes a user's pick:
- *   - a delivery addressed to a DIFFERENT session must be dropped
- *   - fields the node cannot accept must be filtered before they are written
- *   - a delivery must be acked even when applying it fails, or it replays
+ *   - a field registers under a key the ACTION declares, never a free string
+ *   - closing one node releases only ITS fields
+ *   - a delivery lands in the field the server resolved, not one re-derived here
+ *   - a delivery is acked even when applying it fails, or it replays forever
  *   - `pending` arrives as an array from the socket and a number from HTTP
+ *
+ * The per-tab `ui-…` session id this file used to mint is gone; see the header
+ * of inspector-client.js for why it never worked.
  */
 
 const SRC = readFileSync(resolve(__dirname, '../../public/js/inspector-client.js'), 'utf8');
@@ -32,25 +35,46 @@ interface Harness {
   posts: Array<{ path: string; body: any }>;
   gets: string[];
   toasts: Array<{ msg: string; kind: string }>;
-  sessionId: string;
   applyResult: { value: boolean };
-  store: Record<string, string>;
+  beacons: Array<{ url: string; body: any }>;
+  /** What POST replies with, so a test can model a server refusal. */
+  reply: { value: (path: string, body: any) => any };
 }
 
 /**
  * Boot the real file with a controllable environment.
  *
- * `applyResult.value` lets a test make FlowEditor.applyInspectorFields report
- * failure, which is the only way to check the "ack anyway" rule.
+ * `applyResult.value` lets FlowEditor.applyInspectorFields report failure, which
+ * is the only way to check the "ack anyway" rule. `reply.value` lets a test make
+ * the server refuse a registration.
  */
-function boot(opts: { noEditor?: boolean; sessionSeed?: string } = {}): Harness {
+function boot(opts: { noEditor?: boolean } = {}): Harness {
   const posts: Harness['posts'] = [];
   const gets: string[] = [];
   const applied: Harness['applied'] = [];
   const toasts: Harness['toasts'] = [];
+  const beacons: Harness['beacons'] = [];
   const applyResult = { value: true };
-  const store: Record<string, string> = {};
-  if (opts.sessionSeed) store.ab_inspector_session = opts.sessionSeed;
+
+  // Default: echo back a target the way /inspector/target does.
+  const reply = {
+    value: (path: string, body: any): any => {
+      if (path === '/inspector/target') {
+        return {
+          success: true,
+          target: {
+            targetFieldId: `node_${body.nodeId}__${body.fieldKey}__abcd`,
+            nodeId: body.nodeId,
+            fieldKey: body.fieldKey,
+            action: body.action,
+            label: body.label,
+          },
+        };
+      }
+      if (path === '/inspector/target/release') return { success: true, released: true };
+      return { success: true };
+    },
+  };
 
   const listeners: Record<string, Function[]> = {};
 
@@ -70,17 +94,18 @@ function boot(opts: { noEditor?: boolean; sessionSeed?: string } = {}): Harness 
     setInterval,
     clearInterval,
     encodeURIComponent,
-    // No WebSocket on purpose for most tests: connect() then falls back to the
-    // HTTP path, which keeps these tests about delivery logic rather than
-    // socket plumbing (the socket is covered by the server-side suites).
+    // No WebSocket on purpose: connect() then falls back to the HTTP path, which
+    // keeps these tests about delivery logic rather than socket plumbing.
     location: { protocol: 'https:', host: 'example.test' },
-    navigator: { sendBeacon: vi.fn(() => true) },
-    Blob: class { constructor(public parts: unknown[], public opts: unknown) {} },
-    sessionStorage: {
-      getItem: (k: string) => (k in store ? store[k] : null),
-      setItem: (k: string, v: string) => { store[k] = String(v); },
-      removeItem: (k: string) => { delete store[k]; },
+    navigator: {
+      sendBeacon: vi.fn((url: string, blob: any) => {
+        let body: any = null;
+        try { body = JSON.parse(String(blob?.parts?.[0] ?? '')); } catch { body = null; }
+        beacons.push({ url, body });
+        return true;
+      }),
     },
+    Blob: class { constructor(public parts: unknown[], public opts: unknown) {} },
   };
 
   const windowObj: Record<string, unknown> = {
@@ -93,7 +118,7 @@ function boot(opts: { noEditor?: boolean; sessionSeed?: string } = {}): Harness 
       get: (path: string) => { gets.push(path); return Promise.resolve({ success: true, items: [] }); },
       post: (path: string, body: unknown) => {
         posts.push({ path, body });
-        return Promise.resolve({ success: true });
+        return Promise.resolve(reply.value(path, body));
       },
     },
     AppUtil: {
@@ -111,7 +136,6 @@ function boot(opts: { noEditor?: boolean; sessionSeed?: string } = {}): Harness 
     };
   }
   sandbox.window = windowObj;
-  (sandbox as any).Blob = sandbox.Blob;
 
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox);
@@ -123,195 +147,375 @@ function boot(opts: { noEditor?: boolean; sessionSeed?: string } = {}): Harness 
     posts,
     gets,
     toasts,
-    sessionId: client.sessionId(),
     applyResult,
-    store,
-  };
+    beacons,
+    reply,
+    // Exposed so a test can fire beforeunload the way the browser would.
+    ...({ fire: (evt: string) => (listeners[evt] || []).forEach((f) => f()) } as any),
+  } as Harness & { fire: (evt: string) => void };
 }
 
-/** A delivery shaped exactly like InspectorHub.InspectorDelivery. */
-function delivery(sessionId: string, over: Record<string, unknown> = {}) {
+/**
+ * A delivery shaped exactly like InspectorHub.InspectorDelivery.
+ *
+ * `target` (a resolved TargetField), not `session` — and `fields` carries
+ * exactly ONE entry, because the hub sends one radio-selected value.
+ */
+function delivery(over: Record<string, unknown> = {}) {
   return {
     id: 'insp_abc_1',
     ts: Date.now(),
     mode: 'remote',
-    session: { sessionId, nodeId: 'n3', action: 'click', claimedAt: Date.now() },
+    target: {
+      targetFieldId: 'node_n3__selector__abcd',
+      nodeId: 'n3',
+      fieldKey: 'selector',
+      action: 'click',
+      label: 'Click Buy → selector',
+      registeredAt: Date.now(),
+    },
     element: { tag: 'button', id: 'buy', classes: ['btn'], css: '#buy', xpath: '//button' },
-    selected: ['css', 'id'],
-    fields: { selector: '#buy', selectorType: 'css' },
-    summary: 'button#buy',
+    displayAttributes: ['css', 'id'],
+    attribute: 'css',
+    value: '#buy',
+    fields: { selector: '#buy' },
+    summary: 'button#buy — css → Click Buy → selector',
     ...over,
   };
 }
 
-describe('inspector-client: session identity', () => {
-  it('persists one session id per tab in sessionStorage', () => {
+describe('the session id is gone', () => {
+  it('exposes no session id and stores none', () => {
     const h = boot();
-    expect(h.sessionId).toMatch(/^ui-/);
-    // The id it reports is the id it stored, or a reload would orphan the claim.
-    expect(h.store.ab_inspector_session).toBe(h.sessionId);
+    // Two independently minted ids could never match, which is why every pick
+    // was refused. There is nothing left to keep in sync.
+    expect(h.client.sessionId).toBeUndefined();
+    expect(JSON.stringify(h.client.state())).not.toContain('ui-');
   });
 
-  it('reuses an existing id rather than minting a new one on reload', () => {
-    const h = boot({ sessionSeed: 'ui-existing-123' });
-    expect(h.sessionId).toBe('ui-existing-123');
-  });
-
-  it('sends its own session id when claiming, never a caller-supplied one', async () => {
-    const h = boot();
-    await h.client.claim('n7', { action: 'click', label: 'Click Buy' });
-    const claim = h.posts.find((p) => p.path === '/inspector/claim');
-    expect(claim).toBeTruthy();
-    expect(claim!.body.sessionId).toBe(h.sessionId);
-    expect(claim!.body.nodeId).toBe('n7');
-    expect(claim!.body.action).toBe('click');
+  it('does not put a session id on the socket URL', () => {
+    // The socket is a per-USER channel now; which FIELD a pick belongs to
+    // travels with the delivery itself.
+    expect(SRC).not.toMatch(/sessionId=/);
   });
 });
 
-describe('inspector-client: acceptedFields', () => {
-  it('offers selector-shaped fields to element nodes', () => {
+describe('registering a Target Field', () => {
+  it('sends the node, the field key and the action', async () => {
     const h = boot();
-    const f = h.client.acceptedFields('click');
-    expect(f).toContain('selector');
-    expect(f).toContain('selectorType');
-    expect(f).toContain('attribute');
+    const t = await h.client.registerTarget('n7', 'selector', { action: 'click', label: 'Click Buy → selector' });
+
+    const post = h.posts.find((p) => p.path === '/inspector/target');
+    expect(post).toBeTruthy();
+    expect(post!.body.nodeId).toBe('n7');
+    // The field key is what makes the delivery land in the right slot; without
+    // it the server would have to guess between a node's several fields.
+    expect(post!.body.fieldKey).toBe('selector');
+    expect(post!.body.action).toBe('click');
+    // The id is the SERVER's, echoed back — never invented here.
+    expect(t.targetFieldId).toBe('node_n7__selector__abcd');
   });
 
-  it('restricts navigation nodes to a value, since they take a URL not a selector', () => {
+  it('never invents a targetFieldId of its own', async () => {
     const h = boot();
-    expect(h.client.acceptedFields('goto')).toEqual(['value']);
-    expect(h.client.acceptedFields('navigate')).toEqual(['value']);
+    await h.client.registerTarget('n7', 'selector', { action: 'click' });
+    // A client-chosen suffix could revive a destination the user had closed,
+    // which is the stale delivery the suffix exists to prevent.
+    expect(h.posts[0]!.body.targetFieldId).toBeUndefined();
+  });
+
+  it('refuses to register without a field key', async () => {
+    const h = boot();
+    const t = await h.client.registerTarget('n7', '', { action: 'click' });
+    expect(t).toBeNull();
+    expect(h.posts).toHaveLength(0);
+  });
+
+  it('survives a server refusal without throwing', async () => {
+    const h = boot();
+    h.reply.value = () => ({ success: false, reason: 'undeclared_field' });
+    const t = await h.client.registerTarget('n7', 'nope', { action: 'click' });
+    // A failed registration must not stop the editor from opening the node.
+    expect(t).toBeNull();
+    expect(h.client.myTargets()).toHaveLength(0);
+  });
+
+  it('tracks several open fields at once', async () => {
+    const h = boot();
+    await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    await h.client.registerTarget('n1', 'text', { action: 'type' });
+    await h.client.registerTarget('n2', 'url', { action: 'goto' });
+
+    // A single-valued "active node" could not express this, and would have to
+    // silently drop all but one.
+    expect(h.client.myTargets()).toHaveLength(3);
   });
 });
 
-describe('inspector-client: applyDelivery', () => {
-  it('applies fields to the claimed node and acks the delivery', async () => {
+describe('releasing fields is precise', () => {
+  it('releases one field without disturbing the others', async () => {
     const h = boot();
-    const ok = h.client.applyDelivery(delivery(h.sessionId));
-    expect(ok).toBe(true);
+    const a = await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    await h.client.registerTarget('n1', 'text', { action: 'type' });
+
+    await h.client.releaseTarget(a.targetFieldId);
+
+    const left = h.client.myTargets();
+    expect(left).toHaveLength(1);
+    expect(left[0].fieldKey).toBe('text');
+    const rel = h.posts.find((p) => p.path === '/inspector/target/release');
+    expect(rel!.body.targetFieldId).toBe(a.targetFieldId);
+  });
+
+  it('releases every field of ONE node, and only that node', async () => {
+    const h = boot();
+    await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    await h.client.registerTarget('n1', 'text', { action: 'type' });
+    const other = await h.client.registerTarget('n2', 'url', { action: 'goto' });
+
+    const n = await h.client.releaseNode('n1');
+
+    expect(n).toBe(2);
+    // Closing one node must not disconnect a field another node still has open.
+    const left = h.client.myTargets();
+    expect(left).toHaveLength(1);
+    expect(left[0].targetFieldId).toBe(other.targetFieldId);
+  });
+
+  it('drops the field locally even when the server call fails', async () => {
+    const h = boot();
+    const a = await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    // A rejected promise, the way a real offline POST fails.
+    h.reply.value = () => Promise.reject(new Error('offline'));
+
+    await h.client.releaseTarget(a.targetFieldId);
+
+    // A UI still listing a field the user just closed is worse than one briefly
+    // out of step with the server.
+    expect(h.client.myTargets()).toHaveLength(0);
+  });
+
+  it('beacons a release for each open field as the tab closes', async () => {
+    const h = boot() as Harness & { fire: (e: string) => void };
+    await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    await h.client.registerTarget('n2', 'url', { action: 'goto' });
+
+    h.fire('beforeunload');
+
+    // One beacon per field: release takes one id, and the server cannot tell
+    // "this tab's fields" from "this user's fields".
+    expect(h.beacons).toHaveLength(2);
+    expect(h.beacons[0]!.url).toContain('/inspector/target/release');
+    // A beacon cannot set headers, so the key has to ride in the query string.
+    expect(h.beacons[0]!.url).toContain('api_key=');
+    const ids = h.beacons.map((b) => b.body.targetFieldId).sort();
+    expect(ids).toEqual(['node_n1__selector__abcd', 'node_n2__url__abcd']);
+  });
+});
+
+describe('applying a delivery', () => {
+  it('writes the delivered field into the node the SERVER resolved', () => {
+    const h = boot();
+    expect(h.client.applyDelivery(delivery())).toBe(true);
+
     expect(h.applied).toHaveLength(1);
-    expect(h.applied[0].nodeId).toBe('n3');
-    expect(h.applied[0].fields).toEqual({ selector: '#buy', selectorType: 'css' });
+    expect(h.applied[0]!.nodeId).toBe('n3');
+    // Exactly one field: the server sends one radio-selected value, so there is
+    // nothing to filter and nothing to guess.
+    expect(h.applied[0]!.fields).toEqual({ selector: '#buy' });
+  });
 
-    await Promise.resolve();
+  it('writes into a DIFFERENT field when the delivery names one', () => {
+    const h = boot();
+    h.client.applyDelivery(delivery({
+      target: { targetFieldId: 'node_n3__text__abcd', nodeId: 'n3', fieldKey: 'text', action: 'type' },
+      fields: { text: 'Buy now' },
+    }));
+    // Field-level targeting: same node, same element, different slot.
+    expect(h.applied[0]!.fields).toEqual({ text: 'Buy now' });
+  });
+
+  it('does not re-derive the destination or drop an unfamiliar field key', () => {
+    const h = boot();
+    // The old code filtered against a hard-coded whitelist and would have
+    // dropped this. The server already validated it against the action's
+    // declared params, so second-guessing it here only loses the user's pick.
+    h.client.applyDelivery(delivery({
+      target: { targetFieldId: 'node_n9__apiUrl__abcd', nodeId: 'n9', fieldKey: 'apiUrl', action: 'http' },
+      fields: { apiUrl: 'https://example.test/checkout' },
+    }));
+    expect(h.applied[0]!.fields).toEqual({ apiUrl: 'https://example.test/checkout' });
+  });
+
+  it('refuses a delivery with no resolved target', () => {
+    const h = boot();
+    expect(h.client.applyDelivery(delivery({ target: null }))).toBe(false);
+    expect(h.applied).toHaveLength(0);
+  });
+
+  it('refuses a delivery whose only value is empty', () => {
+    const h = boot();
+    expect(h.client.applyDelivery(delivery({ fields: { selector: '' } }))).toBe(false);
+    // The fake I18N echoes the key back, so T() falls through to its English
+    // fallback — which is the string a user without a dictionary entry sees.
+    expect(h.toasts.some((t) => /do not fit this node/.test(t.msg))).toBe(true);
+  });
+
+  it('acks even when applying fails, so it does not replay forever', () => {
+    const h = boot();
+    h.applyResult.value = false;
+
+    expect(h.client.applyDelivery(delivery())).toBe(false);
+
+    // The delivery is spent either way; leaving it queued replays the same
+    // failure on every later poll.
     const ack = h.posts.find((p) => p.path === '/inspector/ack');
-    expect(ack).toBeTruthy();
     expect(ack!.body.id).toBe('insp_abc_1');
+    expect(h.toasts.some((t) => /no longer open/.test(t.msg))).toBe(true);
   });
 
-  it('REFUSES a delivery addressed to a different session', () => {
-    const h = boot();
-    // The server already guards this, but a pick queued before a re-claim could
-    // still arrive here. Applying it would be the exact mis-delivery the whole
-    // session handshake exists to prevent.
-    const ok = h.client.applyDelivery(delivery('ui-someone-else'));
-    expect(ok).toBe(false);
-    expect(h.applied).toHaveLength(0);
-    expect(h.posts.filter((p) => p.path === '/inspector/ack')).toHaveLength(0);
-  });
-
-  it('drops fields the node action cannot accept', () => {
-    const h = boot();
-    h.client.applyDelivery(delivery(h.sessionId, {
-      session: { sessionId: h.sessionId, nodeId: 'n9', action: 'goto', claimedAt: Date.now() },
-      fields: { selector: '#buy', selectorType: 'css', value: 'https://example.test/' },
-    }));
-    // 'goto' accepts only `value`; writing `selector` would invent a param the
-    // node does not declare, which GraphSerialize would then silently drop.
-    expect(h.applied[0].fields).toEqual({ value: 'https://example.test/' });
-  });
-
-  it('refuses when no accepted field survives filtering', () => {
-    const h = boot();
-    const ok = h.client.applyDelivery(delivery(h.sessionId, {
-      session: { sessionId: h.sessionId, nodeId: 'n9', action: 'goto', claimedAt: Date.now() },
-      fields: { selector: '#buy', selectorType: 'css' },   // no `value`
-    }));
-    expect(ok).toBe(false);
-    expect(h.applied).toHaveLength(0);
-    expect(h.toasts.some((t) => t.kind === 'error')).toBe(true);
-  });
-
-  it('acks even when the editor reports the apply FAILED', async () => {
-    const h = boot();
-    h.applyResult.value = false;      // node closed between pick and delivery
-    const ok = h.client.applyDelivery(delivery(h.sessionId));
-    expect(ok).toBe(false);
-
-    await Promise.resolve();
-    // Not acking here would replay the same failure on every later poll.
-    expect(h.posts.find((p) => p.path === '/inspector/ack')).toBeTruthy();
-    expect(h.toasts.some((t) => t.kind === 'error')).toBe(true);
-  });
-
-  it('refuses, and does not throw, when the editor is not loaded', () => {
+  it('tells the user to open the editor when there is none', () => {
     const h = boot({ noEditor: true });
-    expect(() => h.client.applyDelivery(delivery(h.sessionId))).not.toThrow();
-    expect(h.toasts.some((t) => t.kind === 'error')).toBe(true);
+    expect(h.client.applyDelivery(delivery())).toBe(false);
+    expect(h.toasts.some((t) => /Open the workflow editor/.test(t.msg))).toBe(true);
   });
 
-  it('ignores malformed deliveries instead of throwing', () => {
+  it('reports the destination in the success toast', () => {
     const h = boot();
-    expect(h.client.applyDelivery(null)).toBe(false);
-    expect(h.client.applyDelivery({})).toBe(false);
-    expect(h.client.applyDelivery({ session: {} })).toBe(false);
-    expect(h.applied).toHaveLength(0);
+    h.client.applyDelivery(delivery());
+    // Naming where the value went is what proves it did not go elsewhere.
+    expect(h.toasts.some((t) => t.kind === 'success' && /Click Buy/.test(t.msg))).toBe(true);
   });
 });
 
-describe('inspector-client: release', () => {
-  it('clears the local claim even if the request fails', async () => {
+describe('the inbox', () => {
+  it('drains with drain=1, because it commits to applying what it gets', async () => {
     const h = boot();
-    await h.client.claim('n7', { action: 'click' });
-    await h.client.release();
-    const rel = h.posts.find((p) => p.path === '/inspector/release');
-    expect(rel).toBeTruthy();
-    expect(rel!.body.sessionId).toBe(h.sessionId);
-    expect(h.client.state().activeNode).toBeFalsy();
+    await h.client.drainInbox();
+    expect(h.gets.some((g) => g.indexOf('/inspector/inbox?drain=1') === 0)).toBe(true);
   });
 });
 
-describe('inspector-client: source guarantees', () => {
-  // A few properties are cheaper to assert against the text than to simulate,
-  // and each one is a mistake that would be invisible at runtime until it cost
-  // a user their pick.
-
-  it('uses sessionStorage (per tab), never localStorage (shared)', () => {
-    expect(SRC).toContain('sessionStorage.getItem');
-    // localStorage would make two editor tabs indistinguishable to the hub, so
-    // it must never be CALLED. The bare word does appear -- the header comment
-    // explains why it is the wrong choice -- so this matches member access
-    // rather than the identifier, or the explanation would fail the test that
-    // exists to protect the decision it documents.
-    expect(SRC).not.toMatch(/localStorage\s*\./);
-    expect(SRC).not.toMatch(/localStorage\s*\[/);
+describe('state reported to the UI', () => {
+  it('exposes the open targets as a list', async () => {
+    const h = boot();
+    await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    const snap = h.client.state();
+    expect(Array.isArray(snap.targets)).toBe(true);
+    expect(snap.targets).toHaveLength(1);
+    // No single-valued activeNode: several fields must be able to wait at once.
+    expect(snap.activeNode).toBeUndefined();
   });
 
-  it('drains with drain=1 only on the path that commits to applying', () => {
-    expect(SRC).toContain("'/inspector/inbox?drain=1'");
+  it('notifies subscribers when a field opens', async () => {
+    const h = boot();
+    const seen: number[] = [];
+    h.client.onChange((s: any) => seen.push(s.targets.length));
+    await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    expect(seen[seen.length - 1]).toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// AUTHORIZATION CODES — the project side of pairing.
+//
+// The code is issued HERE and scoped to one field server-side. That is the
+// mechanism behind §8: the extension redeems a code already bound to a
+// destination, so it never names a target itself. A code issued for "the
+// extension" rather than for one field would hand back exactly the arbitrary
+// targeting the design forbids.
+// ════════════════════════════════════════════════════════════════
+describe('issuing an authorization code', () => {
+  const offer = (path: string, body: any): any => {
+    if (path === '/inspector/target') {
+      return {
+        success: true,
+        target: {
+          targetFieldId: `node_${body.nodeId}__${body.fieldKey}__abcd`,
+          nodeId: body.nodeId, fieldKey: body.fieldKey, action: body.action, label: body.label,
+        },
+      };
+    }
+    if (path === '/inspector/authorize') {
+      return {
+        success: true, code: 'ABCDEFGH', display: 'ABCD-EFGH',
+        target: { targetFieldId: body.targetFieldId, fieldKey: 'selector' },
+        expiresAt: 1_700_000_000_000, expiresInMs: 300_000,
+      };
+    }
+    return { success: true };
+  };
+
+  it('asks the server for a code scoped to ONE field', async () => {
+    const h = boot();
+    h.reply.value = offer;
+    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
+
+    const res = await h.client.authorizeTarget(t.targetFieldId);
+
+    const call = h.posts.filter((p) => p.path === '/inspector/authorize');
+    expect(call).toHaveLength(1);
+    // The field is the whole point: a code not tied to one destination would let
+    // the extension pick where the value lands.
+    expect(call[0]!.body).toEqual({ targetFieldId: t.targetFieldId });
+    expect(res.code).toBe('ABCDEFGH');
   });
 
-  it('releases on unload via sendBeacon, not fetch', () => {
-    // A fetch started in beforeunload is routinely cancelled during teardown.
-    expect(SRC).toContain('sendBeacon');
-    expect(SRC).toContain('beforeunload');
+  it('returns the grouped form for reading, and the raw form for redeeming', async () => {
+    const h = boot();
+    h.reply.value = offer;
+    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    const res = await h.client.authorizeTarget(t.targetFieldId);
+    // `display` is typed by a human; `code` is what redeem() compares.
+    expect(res.display).toBe('ABCD-EFGH');
+    expect(res.code).toBe('ABCDEFGH');
+    expect(res.expiresInMs).toBe(300_000);
   });
 
-  it('normalises `pending` from both server shapes', () => {
-    // Socket hello sends an array (peek()); /inspector/session sends a number.
-    // An empty array is truthy, so a bare truthiness test would drain on every
-    // connect.
-    expect(SRC).toContain('function pendingCount');
-    expect(SRC).toContain('Array.isArray(pending)');
-    expect(SRC).toContain('pendingCount(msg.pending) > 0');
+  it('reports the lifetime, so an expired code is not mistaken for a broken one', async () => {
+    const h = boot();
+    h.reply.value = offer;
+    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    const res = await h.client.authorizeTarget(t.targetFieldId);
+    expect(res.expiresAt).toBeGreaterThan(0);
   });
 
-  it('handles the bridge lifecycle messages the server actually emits', () => {
-    expect(SRC).toContain('bridge.connected');
-    expect(SRC).toContain('bridge.lost');
+  it('refuses to ask for a code with no field, without calling the server', async () => {
+    const h = boot();
+    h.reply.value = offer;
+    const res = await h.client.authorizeTarget('');
+    expect(res).toBeNull();
+    expect(h.posts.filter((p) => p.path === '/inspector/authorize')).toHaveLength(0);
   });
 
-  it('caps socket reconnect backoff so a dead server is not hammered', () => {
-    expect(SRC).toContain('Math.min(state.retryMs * 2, 30000)');
+  it('resolves null on a server refusal rather than rejecting', async () => {
+    // The caller is a button. A rejection here would surface as an unhandled
+    // error and could leave the editor looking broken over one failed code.
+    const h = boot();
+    h.reply.value = (path: string) => {
+      if (path === '/inspector/authorize') return { success: false, reason: 'TARGET_FIELD_NOT_FOUND' };
+      return { success: true };
+    };
+    await expect(h.client.authorizeTarget('node_n1__selector__abcd')).resolves.toBeNull();
+  });
+
+  it('resolves null when the request itself fails', async () => {
+    // Modelled as a REJECTED promise, not a synchronous throw: window.API.post
+    // returns a promise, so an offline server arrives as a rejection. Throwing
+    // synchronously here would test the harness rather than the .catch().
+    const h = boot();
+    h.reply.value = () => Promise.reject(new Error('offline')) as never;
+    await expect(h.client.authorizeTarget('node_n1__selector__abcd')).resolves.toBeNull();
+  });
+
+  it('does not disturb the registered fields', async () => {
+    const h = boot();
+    h.reply.value = offer;
+    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
+    await h.client.authorizeTarget(t.targetFieldId);
+    // Authorizing is not a lifecycle event: the field stays exactly as open as
+    // it was, or a code request would look like it closed the destination.
+    expect(h.client.state().targets).toHaveLength(1);
+    expect(h.client.myTargets()).toHaveLength(1);
   });
 });

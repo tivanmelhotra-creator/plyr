@@ -1,39 +1,66 @@
 'use strict';
 
 /**
- * InspectorHub — where a picked element becomes a filled-in node.
+ * InspectorHub — where a picked element becomes a filled-in FIELD.
  *
- * THE PROBLEM THIS SOLVES
- * -----------------------
- * The Element Inspector is a Chrome extension. It runs in the user's browser,
- * in a page this server does not control, and it has no idea which node the
- * user was editing when they hit Ctrl+Shift+C. Something has to answer: "this
- * element data just arrived — WHERE does it go?"
+ * WHAT CHANGED, AND WHY IT HAD TO
+ * -------------------------------
+ * This file used to route by `sessionId + nodeId`. Two defects made that
+ * untenable:
  *
- * The wrong answer is "the most recently opened node" or "whatever the client
- * says". Both put a selector into the wrong step of someone's workflow, and a
- * workflow that silently clicks the wrong element is worse than one that
- * plainly failed. Debugging it means re-reading every node.
+ *   1. THE DESTINATION WAS A NODE, not a field. So `mapSelectionToFields` had to
+ *      GUESS which param the user meant by inspecting which attributes were
+ *      ticked — css became `selector`, the first non-identity key became
+ *      `attribute`, and a node with two selector-shaped params could not be
+ *      addressed at all. A guess that lands in the wrong param of the right node
+ *      is exactly the silent mis-delivery this subsystem exists to prevent.
  *
- * So delivery is a two-step handshake around an explicit SESSION:
+ *   2. `sessionId` WAS THE WRONG IDENTITY. It was a browser-tab id (`ui-…`) the
+ *      extension could not know, so the extension fetched the server's current
+ *      claim and echoed it back purely to pass an equality check. That round trip
+ *      carried no information — the value it sent was the value the server had
+ *      handed it moments earlier — while making a Session change look like a
+ *      reason to invalidate a destination. It is not one.
  *
- *   1. CLAIM  — the UI, when it opens a node, says "session S is editing node N".
- *   2. SUBMIT — the extension sends the element together with session S.
+ * So routing is now by `targetFieldId`, resolved SERVER-SIDE through
+ * TargetFieldRegistry, and Session is out of this file entirely. SessionHandoff
+ * keeps its own `as_…` id for Remote⇄Local transfer; nothing here reads it, which
+ * is what makes "a mode switch must not invalidate a Target Field" true by
+ * construction rather than by convention.
  *
- * If S is not the current session, the submission is REFUSED (`stale_session`)
- * rather than delivered somewhere plausible. A refusal the user can see and
- * retry is strictly better than a silent mis-delivery they cannot.
+ * EXACTLY ONE VALUE IS WRITTEN
+ * ----------------------------
+ * The requirement splits the two controls the UI shows per attribute:
+ *
+ *   CHECKBOX (`displayAttributes`) — what the user wants to SEE. Display only.
+ *   RADIO    (`sendAttribute`)     — the single value that is SENT.
+ *
+ * `fields` therefore always has exactly one key: the resolved target's
+ * `fieldKey`. It deliberately does NOT also set a companion like `selectorType`,
+ * even though the old node-level code did: the button the user pressed was next
+ * to one field, and writing a second one would be this layer deciding something
+ * it was not asked to decide.
+ *
+ * THE VALUE IS RECOMPUTED, NOT TRUSTED
+ * ------------------------------------
+ * `sendAttribute` arrives as `{name, value}`, but the value written is the one
+ * this server derives from the submitted element via `valueForKey`. A client that
+ * says `{name: 'cssSelector', value: '<something else>'}` gets the CSS selector
+ * of the element it actually sent, or a refusal — never its own substitute. The
+ * name selects; it does not supply.
  *
  * GENERIC ATTRIBUTES, NOT A HARDCODED LIST
  * ----------------------------------------
- * The requirement is explicit that `data-*` must work in full generality —
- * `data-id`, `data-product`, `data-category` and anything else a site invented
- * this morning. So `valueForKey` handles the computed keys (css, xpath, text …)
- * by name and then falls through to a LOOKUP in the element's own attribute
- * list. That one default branch is what makes href, src, colspan, placeholder,
- * aria-*, data-* and every future attribute work without this file ever being
- * edited again. A hardcoded enum would need a release per attribute.
+ * `data-*` must work in full generality — `data-id`, `data-product` and anything
+ * a site invented this morning. `valueForKey` handles the COMPUTED keys (css,
+ * xpath, text …) by name and then falls through to a LOOKUP in the element's own
+ * attribute list. That one default branch is what makes href, src, colspan,
+ * placeholder, aria-* and every future attribute work without this file ever
+ * being edited again. A hardcoded enum would need a release per attribute.
  */
+
+import { targetFields, type TargetField, type TargetFieldRegistry } from './TargetFieldRegistry';
+import { inspectorAuth, type InspectorAuthorizationRegistry } from './InspectorAuthorization';
 
 /** One attribute exactly as the DOM had it. */
 export interface InspectorAttr {
@@ -65,50 +92,58 @@ export interface InspectorElement {
   title?: string;
 }
 
-/** The attribute keys the user ticked, in the order they ticked them. */
-export type InspectorPick = string[];
+/** The single radio choice: which property to send. */
+export interface SendAttribute {
+  name: string;
+  /** What the extension displayed. Advisory — the server recomputes. */
+  value?: string;
+}
 
 export interface InspectorSubmission {
-  sessionId: string;
+  /** The destination. A lookup key only; never a source of facts. */
+  targetFieldId: string;
+  /** Proves this client was paired with that destination. */
+  apiKey?: string;
   element: InspectorElement;
-  selected: InspectorPick;
+  /** CHECKBOX state — what to show in SELECTED ELEMENT. Display only. */
+  displayAttributes?: string[];
+  /** RADIO state — the one property that is sent. */
+  sendAttribute: SendAttribute;
   mode?: string;
 }
 
-/** "Session S is editing node N." */
-export interface ActiveNodeClaim {
-  sessionId: string;
-  nodeId: string;
-  action?: string;
-  workflowId?: string;
-  /** A specific field, when the user pressed the picker next to one. */
-  field?: string;
-  label?: string;
-}
-
-export interface ActiveNodeSession extends ActiveNodeClaim {
-  claimedAt: number;
-}
-
-/** What the UI receives and applies to the node. */
+/** What the UI receives and applies to exactly one field. */
 export interface InspectorDelivery {
   id: string;
   ts: number;
   mode: string;
-  session: ActiveNodeSession;
+  /** The resolved destination, from the registry — not from the client. */
+  target: TargetField;
   element: InspectorElement;
-  selected: InspectorPick;
-  /** Ready-to-apply node field values (keys match public/js/actions.js). */
+  /** Echoed for the UI's SELECTED ELEMENT panel. Never affects `fields`. */
+  displayAttributes: string[];
+  /** The property that was sent, and the value the server derived. */
+  attribute: string;
+  value: string;
+  /** Exactly one entry: `{ [target.fieldKey]: value }`. */
   fields: Record<string, string>;
   /** One line for the toast / log. */
   summary: string;
 }
 
+/**
+ * Refusal codes, taken verbatim from spec §27.
+ *
+ * They are the spec's strings rather than internal names so a message table and
+ * an extension `switch` can key off the same value with no translation layer to
+ * drift. `AUTHORIZATION_EXPIRED` / `INVALID_AUTHORIZATION_CODE` belong to the
+ * pairing step and are produced by InspectorAuthorization, not here.
+ */
 export type InspectorRefusal =
-  | 'no_active_node'
-  | 'stale_session'
-  | 'empty_selection'
-  | 'invalid_element';
+  | 'TARGET_FIELD_NOT_FOUND'
+  | 'TARGET_NOT_AUTHORIZED'
+  | 'ELEMENT_INSPECTION_FAILED'
+  | 'ATTRIBUTE_SEND_FAILED';
 
 export interface InspectorResult {
   ok: boolean;
@@ -122,13 +157,6 @@ export interface InspectorResult {
  * unbounded inbox would grow forever for a user who closed the tab.
  */
 export const INBOX_MAX = 20;
-
-/**
- * How long a claim stays valid. Long enough for a real session of hunting for
- * an element on a slow page; short enough that a node abandoned yesterday
- * cannot receive today's pick.
- */
-export const CLAIM_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Per-value cap. An `<img src="data:...">` or a minified inline `style` can be
@@ -200,16 +228,21 @@ export function normalizeElement(raw: unknown): InspectorElement | null {
 }
 
 /**
- * The value for one ticked key.
+ * The value for one property name.
  *
  * The switch covers the COMPUTED keys — things that are not attributes at all
  * (a CSS path, an XPath, innerText) or that need a canonical form. Everything
- * else falls to the default, which looks the key up in the element's own
+ * else falls to the default, which looks the name up in the element's own
  * attribute list.
  *
  * That default is the whole generic-attribute requirement in three lines:
  * `data-product`, `href`, `colspan`, `placeholder`, `autoplay`, `aria-label`
  * and anything a site invents next year all resolve without a list to maintain.
+ *
+ * Both the extension's key names and the spec §23 names are accepted (`tag` and
+ * `tagName`, `css` and `cssSelector`) because the payload example in the spec and
+ * the rows the extension builds use different spellings for the same thing, and
+ * a client should not have to know which one this server happens to prefer.
  */
 export function valueForKey(el: InspectorElement, key: string): string {
   const k = String(key || '').trim().toLowerCase();
@@ -249,201 +282,103 @@ export function valueForKey(el: InspectorElement, key: string): string {
   }
 }
 
-/**
- * Keys that describe the element's IDENTITY rather than a piece of data on it.
- * Ticking `css` means "use this to find the element"; ticking `data-sku` means
- * "read this off the element". They must not be confused, or a pick of `href`
- * would end up as the selector.
- */
-const RESERVED_KEYS = new Set([
-  'tag', 'tagname', 'id', 'class', 'classname', 'classes',
-  'css', 'selector', 'cssselector', 'xpath', 'text', 'innertext', 'textcontent',
-]);
-
-/**
- * Turn the ticked keys into node field values.
- *
- * SELECTOR PRECEDENCE: css → xpath → #id → .firstClass. CSS first because it is
- * what every node's `selector` field expects and what the existing picker
- * produces; XPath next because it is the only thing that can address some
- * elements; the id/class fallbacks exist so a pick that ticked ONLY `id` still
- * produces a usable selector instead of an empty field the user must fix by hand.
- */
-export function mapSelectionToFields(
+/** A short human line: "a#buy → Selector = a#buy". */
+export function summarizeSelection(
   el: InspectorElement,
-  selected: InspectorPick,
-  action?: string,
-): Record<string, string> {
-  const fields: Record<string, string> = {};
-  const ticked = new Set(selected.map((s) => String(s || '').trim().toLowerCase()));
-
-  // ── selector + selectorType ─────────────────────────────────────────────
-  if (ticked.has('css') || ticked.has('selector') || ticked.has('cssselector')) {
-    if (el.css) { fields.selector = el.css; fields.selectorType = 'css'; }
-  }
-  if (!fields.selector && ticked.has('xpath') && el.xpath) {
-    fields.selector = el.xpath;
-    fields.selectorType = 'xpath';
-  }
-  if (!fields.selector && ticked.has('id') && el.id) {
-    fields.selector = `#${el.id}`;
-    fields.selectorType = 'css';
-  }
-  if (!fields.selector
-      && (ticked.has('class') || ticked.has('classes') || ticked.has('classname'))
-      && el.classes && el.classes.length) {
-    fields.selector = `.${el.classes[0]}`;
-    fields.selectorType = 'css';
-  }
-  // A pick with no identity key at all still needs to be actionable: fall back
-  // to the CSS path the extension computed, which is always present.
-  if (!fields.selector && el.css) {
-    fields.selector = el.css;
-    fields.selectorType = 'css';
-  }
-
-  // XPath stays available separately even when CSS won the selector slot — some
-  // nodes offer both, and discarding it would lose information the user ticked.
-  if (ticked.has('xpath') && el.xpath) fields.xpath = el.xpath;
-
-  // ── text ────────────────────────────────────────────────────────────────
-  if ((ticked.has('text') || ticked.has('innertext') || ticked.has('textcontent')) && el.text) {
-    fields.text = el.text;
-  }
-
-  // ── attribute + value ───────────────────────────────────────────────────
-  // The first non-identity key ticked becomes the attribute to read. This is
-  // what makes `data-*` land in a node: the NAME goes in `attribute` (so the
-  // node reads it live at run time) and the value the user saw goes in `value`
-  // (so they can see they picked the right thing).
-  for (const key of selected) {
-    const k = String(key || '').trim().toLowerCase();
-    if (!k || RESERVED_KEYS.has(k)) continue;
-    const v = valueForKey(el, k);
-    if (k === 'value') { fields.value = v; continue; }
-    if (k === 'name' && !fields.name) { fields.name = v; continue; }
-    if (!fields.attribute) {
-      fields.attribute = k;
-      if (v && !fields.value) fields.value = v;
-    }
-    break;
-  }
-
-  // Extract nodes save into a variable, and an empty name means the run has
-  // nowhere to put the result. Derive a safe identifier so the node is usable
-  // the moment it is filled.
-  const act = String(action || '').toLowerCase();
-  if ((act === 'extract' || act === 'extract-data') && !fields.name) {
-    const base = fields.attribute || el.id || el.name || el.tag || 'value';
-    const safe = base.replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
-    fields.name = safe || 'value';
-  }
-
-  return fields;
-}
-
-/** A short human line: "a#buy — href, data-sku". */
-export function summarizeSelection(el: InspectorElement, selected: InspectorPick): string {
+  target: TargetField,
+  attribute: string,
+): string {
   let what = el.tag || 'element';
   if (el.id) what += `#${el.id}`;
   else if (el.classes && el.classes.length) what += `.${el.classes[0]}`;
-  const keys = selected.map((s) => String(s || '').trim()).filter(Boolean);
-  return keys.length ? `${what} — ${keys.join(', ')}` : what;
+  const where = target.label || `${target.action} → ${target.fieldKey}`;
+  return `${what} — ${attribute} → ${where}`;
 }
 
 type InboxListener = (userId: string, delivery: InspectorDelivery) => void;
 
 /**
- * The hub: who is editing what, and what has been picked for them.
+ * The hub: what has been picked, and for which field.
  *
- * In memory for the same reason as BrowserMode: a claim describes a node open in
- * a browser tab talking to THIS process. Persisting it would outlive the tab and
- * let a pick land in a node nobody is looking at.
+ * In memory for the same reason as BrowserMode: a delivery is meant for a node
+ * open in a browser tab talking to THIS process. Persisting it would outlive the
+ * tab and let a value land in a field nobody is looking at.
+ *
+ * The two registries are constructor-injected so a test can drive one hub with
+ * its own isolated state instead of reaching for process-wide singletons — which
+ * is what let the cross-user cases be written honestly, given that
+ * `resolveUserId()` returns a fixed `'local'` in single-user mode.
  */
 export class InspectorHub {
-  private active = new Map<string, ActiveNodeSession>();
   private inbox = new Map<string, InspectorDelivery[]>();
   private listeners = new Set<InboxListener>();
   private seq = 0;
 
-  /** "Session S is now editing node N." Replaces any previous claim. */
-  claim(userId: string, claim: ActiveNodeClaim): ActiveNodeSession | null {
-    const sessionId = clean(claim?.sessionId, 200);
-    const nodeId = clean(claim?.nodeId, 200);
-    if (!sessionId || !nodeId) return null;
-
-    const session: ActiveNodeSession = {
-      sessionId,
-      nodeId,
-      action: clean(claim.action, 80),
-      workflowId: clean(claim.workflowId, 200),
-      field: clean(claim.field, 80),
-      label: clean(claim.label, 200),
-      claimedAt: Date.now(),
-    };
-    this.active.set(userId, session);
-    return session;
-  }
-
-  /** The current claim, or null when there is none or it has expired. */
-  activeNode(userId: string): ActiveNodeSession | null {
-    const s = this.active.get(userId);
-    if (!s) return null;
-    if (Date.now() - s.claimedAt > CLAIM_TTL_MS) {
-      this.active.delete(userId);
-      return null;
-    }
-    return { ...s };
-  }
-
-  /**
-   * Give up the claim. `sessionId` is checked so a stale tab closing cannot
-   * release the claim a newer tab has since made.
-   */
-  release(userId: string, sessionId?: string): boolean {
-    const s = this.active.get(userId);
-    if (!s) return false;
-    if (sessionId && clean(sessionId, 200) !== s.sessionId) return false;
-    this.active.delete(userId);
-    return true;
-  }
+  constructor(
+    private readonly registry: TargetFieldRegistry = targetFields,
+    private readonly auth: InspectorAuthorizationRegistry = inspectorAuth,
+  ) {}
 
   /**
    * The extension's submission.
    *
-   * Every failure path REFUSES with a reason instead of guessing a destination.
-   * That is the entire point of the session: a pick that cannot be placed
-   * correctly must not be placed at all.
+   * Every failure path REFUSES with a §27 code instead of guessing a
+   * destination. «Never silently redirect the data to another Node Field» is the
+   * spec's wording; a refusal the user can see and retry is strictly better than
+   * a mis-delivery they cannot.
+   *
+   * ORDER MATTERS. Existence is checked before authorization so a target that has
+   * expired reads as NOT_FOUND rather than NOT_AUTHORIZED — one tells the user to
+   * reopen the field, the other to pair again, and they are not
+   * interchangeable advice.
    */
   submit(userId: string, submission: InspectorSubmission): InspectorResult {
-    const session = this.activeNode(userId);
-    if (!session) return { ok: false, reason: 'no_active_node' };
+    const owner = clean(userId, 200);
+    const targetFieldId = clean(submission?.targetFieldId, 400);
 
-    const sessionId = clean(submission?.sessionId, 200);
-    if (!sessionId || sessionId !== session.sessionId) {
-      return { ok: false, reason: 'stale_session' };
+    // Resolved from the registry — never parsed out of the id. A forged
+    // `node_<victim>__password__<suffix>` has nowhere to land.
+    const target = this.registry.resolve(owner, targetFieldId);
+    if (!target) return { ok: false, reason: 'TARGET_FIELD_NOT_FOUND' };
+
+    if (!this.auth.isAuthorized(clean(submission?.apiKey, 400), owner, target.targetFieldId)) {
+      return { ok: false, reason: 'TARGET_NOT_AUTHORIZED' };
     }
 
     const element = normalizeElement(submission?.element);
-    if (!element) return { ok: false, reason: 'invalid_element' };
+    if (!element) return { ok: false, reason: 'ELEMENT_INSPECTION_FAILED' };
 
-    const selected = Array.isArray(submission?.selected)
-      ? submission.selected.map((s) => clean(s, 120)).filter(Boolean).slice(0, 60)
+    // §22.5 — "A Radio option is selected". No radio, nothing to send.
+    const attribute = clean(submission?.sendAttribute?.name, 120);
+    if (!attribute) return { ok: false, reason: 'ATTRIBUTE_SEND_FAILED' };
+
+    // §22.6 — "The Radio-selected property has a valid value". Derived from the
+    // element, so a client cannot name one property and supply another's value.
+    const value = clean(valueForKey(element, attribute));
+    if (!value) return { ok: false, reason: 'ATTRIBUTE_SEND_FAILED' };
+
+    // Checkbox state. Kept for the UI panel and pointedly NOT consulted below:
+    // display and send are independent, so a value can be sent without being
+    // ticked for display and vice versa.
+    const displayAttributes = Array.isArray(submission?.displayAttributes)
+      ? submission.displayAttributes.map((s) => clean(s, 120)).filter(Boolean).slice(0, 60)
       : [];
-    if (!selected.length) return { ok: false, reason: 'empty_selection' };
 
     const delivery: InspectorDelivery = {
       id: `insp_${Date.now().toString(36)}_${(++this.seq).toString(36)}`,
       ts: Date.now(),
       mode: clean(submission.mode, 20) || 'remote',
-      session,
+      target,
       element,
-      selected,
-      fields: mapSelectionToFields(element, selected, session.action),
-      summary: summarizeSelection(element, selected),
+      displayAttributes,
+      attribute,
+      value,
+      // Exactly one field, and it is the one the registry named.
+      fields: { [target.fieldKey]: value },
+      summary: summarizeSelection(element, target, attribute),
     };
 
-    this.push(userId, delivery);
+    this.push(owner, delivery);
     return { ok: true, delivery };
   }
 
@@ -495,8 +430,14 @@ export class InspectorHub {
     return this.listeners.size;
   }
 
+  /**
+   * Clear only THIS hub's queues.
+   *
+   * Deliberately does not touch the target or authorization registries: a test
+   * (and a support script) must be able to empty the inbox without silently
+   * revoking every pairing, and Handoff must keep working regardless.
+   */
   clear(): void {
-    this.active.clear();
     this.inbox.clear();
     this.listeners.clear();
   }

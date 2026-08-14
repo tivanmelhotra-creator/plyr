@@ -61,3 +61,4 @@ downloads/
 # third-party binaries: a build artefact, never a deliverable. It is rebuilt on
 # demand and adopted instantly when already present, so losing it costs nothing.
 .desktop-stack/
+.scratch/
