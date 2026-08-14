@@ -806,6 +806,31 @@ export const createBrowserRoutes = (): Router => {
     } catch (e) { sendError(res, e); }
   });
 
+  /**
+   * Delete one downloaded file.
+   *
+   * The operator asked for «کنترل بیشتر» over the file panel. A Remove button
+   * that only hid a row would be exactly the kind of control this codebase does
+   * not ship: the bytes would still be on the server's disk, reachable by anyone
+   * holding the token, with no way left to remove them. So the row and the
+   * directory go together — see RealChromeShelf.forget.
+   *
+   * 404 rather than a cheerful 200 when the token is not on the shelf: the
+   * browser may have been restarted since the panel was rendered, and telling
+   * the operator a stale row was deleted teaches them to trust a message that
+   * means nothing.
+   */
+  router.delete('/browser/real/downloads/:token', async (req, res) => {
+    try {
+      const forgotten = await RealChrome.forgetDownload(String(req.params.token || ''));
+      if (!forgotten) {
+        return fail(res, 404, 'No such download.',
+          'The shelf is rebuilt when the browser restarts. Reopen the panel to see what is there now.');
+      }
+      res.json({ success: true, downloads: RealChrome.downloads() });
+    } catch (e) { sendError(res, e); }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // The file dialog handshake — «Windows کاربر → Backend/Server → Website»
   //

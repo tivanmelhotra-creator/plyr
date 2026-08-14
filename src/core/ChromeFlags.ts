@@ -252,16 +252,27 @@ export const FLAG_CATALOGUE: readonly FlagDef[] = [
     whyFa: 'روی سرور پنهان، GPU وجود ندارد و تلاش برای آن وقت هدر می‌دهد و خطا لاگ می‌کند. روی نمایشگر واقعی، اسکرول و ویدیو را محسوس بدتر می‌کند.',
     risk: 'caution',
   },
-  {
-    id: 'disable-extensions',
-    flag: '--disable-extensions',
-    group: 'performance',
-    label: 'Load no extensions',
-    labelFa: 'بارگذاری نکردن افزونه‌ها',
-    why: 'Fastest and leanest startup — and it silently defeats this product\'s extension support, so it is never part of a preset that loads extensions.',
-    whyFa: 'سریع‌ترین و سبک‌ترین اجرا — و در سکوت پشتیبانی افزونهٔ همین محصول را از کار می‌اندازد، پس هرگز بخشی از پریست‌های افزونه‌دار نیست.',
-    risk: 'caution',
-  },
+  // ── WHY THERE IS NO `disable-extensions` CHECKBOX ANYMORE ─────────────────
+  //
+  // It used to be offered here as "Load no extensions", risk: 'caution'. It has
+  // been REMOVED rather than re-described, because ticking it did far more than
+  // its label admitted:
+  //
+  //   extension_util.cc:71-74     --disable-extensions makes
+  //                               ExtensionsDisabledViaCommandLine() true
+  //   extension_registrar.cc:112  → extensions_enabled = false
+  //   crx_installer.cc:404-408    → every install is DECLINED with
+  //                               INSTALL_NOT_ENABLED, i.e. the user gets
+  //                               "Installation is not enabled" and no
+  //                               explanation of what caused it.
+  //
+  // So the real consequence was not "start leaner"; it was "this browser can
+  // never install an extension again, and the error will blame Chrome". That is
+  // exactly the trap this file's own header promises not to set: «Offering a
+  // checkbox that bricks the app is not freedom, it is a trap.» An operator who
+  // genuinely wants no extensions can simply install none — the flag is not
+  // needed to achieve it, and `--load-extension` is only emitted when something
+  // is actually installed (see extensionLaunchArgs).
   {
     id: 'disable-background-timer-throttling',
     flag: '--disable-background-timer-throttling',

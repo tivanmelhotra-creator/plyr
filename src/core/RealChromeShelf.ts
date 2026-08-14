@@ -192,6 +192,27 @@ export class RealChromeShelf {
   }
 
   /**
+   * Drop one row AND its bytes.
+   *
+   * The operator asked for «کنترل بیشتر» over this panel, and the only honest
+   * answer is a control that changes the server: hiding a row while the file
+   * stayed on disk would be a button that lies. So this deletes the directory
+   * `discardDownload` owns and then forgets the row, in that order — a row that
+   * is still listed after a failed delete is recoverable, whereas a forgotten
+   * row whose bytes survived is a file nobody can reach or remove.
+   *
+   * Returns whether a row was actually removed, so the route can answer 404
+   * instead of pretending it deleted something that was never here.
+   */
+  async forget(token: string): Promise<boolean> {
+    const at = this.rows.findIndex((r) => r.token === token);
+    if (at < 0) return false;
+    await discardDownload(this.userId, token);
+    this.rows.splice(at, 1);
+    return true;
+  }
+
+  /**
    * Start watching a context for downloads.
    *
    * Per-PAGE, not per-context, and that is measured rather than stylistic:

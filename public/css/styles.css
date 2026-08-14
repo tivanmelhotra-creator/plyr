@@ -5465,6 +5465,47 @@ body.route-fullbleed .fe-mm-restore {
 .bvp-tabkill:hover { opacity: 1; color: var(--danger, #e5484d); }
 .bvp-tabadd { flex: 0 0 auto; }
 
+/* ── The Chrome Web Store assist bar ──────────────────────────────────────
+ * Only rendered while the streamed tab is a Web Store DETAIL page; `.is-off`
+ * hides it everywhere else, which is the overwhelming majority of the time.
+ *
+ * It exists because installing now WORKS but its confirmation does not SHOW:
+ * Chrome asks "Add extension?" in a native window, and the canvas below is a
+ * screencast of the page, so a native window is never in it. The bar says that
+ * out loud and offers the server-side install, which needs no native prompt.
+ *
+ * `flex: 0 0 auto` for the same reason as the tab strip: this is chrome, and it
+ * must never take height from the page image inside a fixed-height flex column.
+ * The accent left border marks it as an offer rather than an error — errors in
+ * this product are red, and nothing here has gone wrong. */
+.bvp-store {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  border-inline-start: 3px solid var(--info);
+  background: var(--bg-elev-2);
+  font-size: 0.8rem;
+}
+.bvp-store.is-off { display: none; }
+.bvp-store-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--info);
+}
+/* The sentence takes the slack and the button never shrinks: a wrapped or
+ * clipped ACTION is worse than a wrapped explanation. */
+.bvp-store-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+.bvp-store-go { flex: 0 0 auto; }
+
 /* The page image. `cell` cursor = picker armed (same signal as the
    standalone Live Browser view). */
 /* `min-height: 0` is what lets the stage shrink inside the flex column; with a

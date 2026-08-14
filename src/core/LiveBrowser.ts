@@ -3,6 +3,7 @@
 import { promises as fsp } from 'fs';
 import path from 'path';
 import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
+import { config } from '../config';
 import { GlobalBrowser } from './GlobalBrowser';
 import {
   installConsentAutoDismiss,
@@ -279,6 +280,39 @@ function normalizeTarget(url: string): string {
  */
 function originOf(url: string): string {
   try { return new URL(String(url || '')).origin; } catch { return String(url || ''); }
+}
+
+/**
+ * Do these two URLs name the same DOCUMENT?
+ *
+ * Used by "Save page as" to decide whether the thing being saved is the page on
+ * screen (serialise the live DOM) or some other target (fetch it). The fragment
+ * is ignored because `#section` selects a place INSIDE a document rather than a
+ * different one — a user who saves while scrolled to an anchor still means "this
+ * page". Everything else, including the query string, is compared verbatim: a
+ * different `?id=` really is a different document.
+ */
+function sameDocument(a: string, b: string): boolean {
+  const strip = (u: string): string => {
+    try {
+      const parsed = new URL(String(u || ''));
+      parsed.hash = '';
+      return parsed.href;
+    } catch { return String(u || ''); }
+  };
+  const left = strip(a);
+  return !!left && left === strip(b);
+}
+
+/**
+ * `report.php` → `report`, `The Quarterly Report` → `The Quarterly Report`.
+ *
+ * Only strips something that is plausibly an EXTENSION (1-8 characters, no
+ * spaces). Without that guard a page titled «گزارش سه‌ماهه ۱۴۰۴.۰۳» would lose
+ * its last segment, and a saved page would be named after a truncated title.
+ */
+function stripExtension(name: string): string {
+  return String(name || '').replace(/\.[A-Za-z0-9]{1,8}$/, '');
 }
 
 /**
@@ -3217,6 +3251,55 @@ export class LiveBrowserSession {
     try {
       const ctx = this.context;
       if (!ctx) throw new Error('no browser context');
+
+      // ── "Save page as" is saved from the OPEN PAGE, not re-fetched ────────
+      // THE REPORTED BUG, verbatim: «وقتی با راست کلیک میخام سیو از رو میزنم تا
+      // کل صفحه html ذخیره بشه هیچ اتفاقی نمیوفته» — right-click, Save page as,
+      // and no file ever arrives.
+      //
+      // The cause is that a second GET is not the same thing as the page on
+      // screen. Re-asking the server for the URL:
+      //   * fails outright on anything behind a POST, a one-time token or a
+      //     bot check (403/401 -> the row fails and nothing is saved),
+      //   * returns the pre-JavaScript shell for an app that renders client
+      //     side, so what lands is not the page the user is looking at.
+      // Both were silent, because a failed shelf row is easy to miss.
+      //
+      // `page.content()` is the honest answer for the ACTIVE page: it is the
+      // live, rendered DOM serialised as HTML — exactly what Chrome's own "Save
+      // page as (HTML only)" writes. It cannot 403, needs no cookie replay, and
+      // is what the user actually asked to keep. Anything that is NOT the page
+      // on screen (a link, an image, a media URL) still goes through the fetch
+      // path below, which is correct for those.
+      const active = this.page;
+      const activeUrl = (() => { try { return String(active?.url() || ''); } catch { return ''; } })();
+      if (active && activeUrl && sameDocument(activeUrl, url.href)) {
+        const html = await active.content();
+        const bytes = Buffer.from(html, 'utf8');
+        if (bytes.length > MAX_DOWNLOAD_BYTES) {
+          entry.state = 'failed';
+          entry.error = 'download_too_large';
+          this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+          return;
+        }
+        // Named after the tab title when there is one, and always `.html`: the
+        // bytes ARE html, whatever the URL's path happens to end in. A page at
+        // `/report.php` saved as `report.php` is a file the user's OS opens in
+        // an editor instead of a browser.
+        const base = safeFileName(stripExtension(entry.name)) || 'page';
+        const named = /\.html?$/i.test(base) ? base : `${base}.html`;
+        const target = await downloadPathFor(this.userId, entry.token, named);
+        await fsp.writeFile(target, bytes);
+        entry.name = named;
+        entry.path = target;
+        entry.received = bytes.length;
+        entry.total = bytes.length;
+        entry.state = 'completed';
+        void sweepDownloads(this.userId).catch(() => { /* best-effort */ });
+        this.emit('download', this.downloadInfo(entry) as unknown as Record<string, unknown>);
+        return;
+      }
+
       const res = await ctx.request.get(url.href, { timeout: 60_000 });
       if (!res.ok()) throw new Error(`http_${res.status()}`);
       const body = await res.body();
@@ -3606,6 +3689,24 @@ export class LiveBrowserSession {
     if (this.consumedUploads.length) {
       const tokens = this.consumedUploads.splice(0);
       await discardUploads(this.userId, tokens).catch(() => {});
+    }
+    // ── Downloads are TEMPORARY, and this is where that becomes true ────────
+    // The owner asked for tmp rather than permanent storage («وقت باشن یعنی tmp
+    // باشند خوبه تا دائمی»). The TTL sweep alone would not deliver it: it is a
+    // ceiling, not a policy, so a file fetched once would still sit on the
+    // server until it expired. Deleting the session's own downloads on the way
+    // out makes the normal retention "as long as the window is open", which is
+    // exactly as long as the feature is useful.
+    //
+    // Skipped when an operator has explicitly asked for durable storage — that
+    // is the whole meaning of DOWNLOADS_EPHEMERAL=false, and silently deleting
+    // an audit trail they configured would be worse than keeping bytes.
+    if (config.DOWNLOADS_EPHEMERAL !== false && this.downloads.length) {
+      const tokens = this.downloads.map((d) => d.token);
+      this.downloads = [];
+      for (const tok of tokens) {
+        await discardDownload(this.userId, tok).catch(() => { /* already gone */ });
+      }
     }
     this.pendingChooser = null;
     this.pendingChooserPage = null;

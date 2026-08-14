@@ -43,13 +43,34 @@ import { safeSegment, safeFileName, extensionOf } from './RemoteUploads';
 export const DOWNLOAD_TOKEN_RE = /^dl_[a-f0-9]{24}$/;
 
 /**
- * Downloads older than this are swept.
+ * How long a stored download stays fetchable, in milliseconds.
  *
- * Longer than the upload TTL on purpose: an upload is consumed within seconds
- * of being made, while a download is something the user may want to fetch after
- * reading the rest of the page. An hour was too short to be honest about the
- * shelf still working; a day is long enough to not be a lie and short enough to
- * not be a disk leak.
+ * A FUNCTION, not a constant, and that matters: the value is now operator
+ * configurable (`DOWNLOAD_TTL_MINUTES`), and a module-level constant would
+ * freeze whatever the environment happened to say at import time — which is
+ * precisely the bug the tests below would not catch, because they set config
+ * after importing.
+ *
+ * WHY IT SHRANK FROM A DAY TO HALF AN HOUR
+ * ----------------------------------------
+ * The owner's own answer to "are these files temporary or stored?": «وقت باشن
+ * یعنی tmp باشند خوبه تا دائمی چون کاربردش فقط همون لحظه هستند» — the file is
+ * wanted at the moment it is fetched and never again. A 24-hour retention was
+ * therefore storing personal data for 23 hours and 59 minutes longer than the
+ * feature needs, on a disk the user does not control.
+ */
+export function downloadTtlMs(): number {
+  const minutes = Number(config.DOWNLOAD_TTL_MINUTES);
+  const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
+  return safe * 60 * 1000;
+}
+
+/**
+ * Back-compat alias for the old constant.
+ *
+ * Kept because it is exported API and because a default argument still needs a
+ * value; every call site that can read the live setting calls `downloadTtlMs()`
+ * instead.
  */
 export const DOWNLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -74,9 +95,28 @@ export function mintDownloadToken(): string {
   return `dl_${randomBytes(12).toString('hex')}`;
 }
 
-/** Where one user's downloads live. */
+/**
+ * Where one user's downloads live.
+ *
+ * TEMPORARY BY DEFAULT. `DOWNLOADS_EPHEMERAL` (on unless an operator turns it
+ * off) puts the bytes under the OS temp directory instead of the durable
+ * `./downloads` tree, because a file pulled through the remote browser is
+ * wanted for the moment it is fetched and not afterwards. Two consequences that
+ * are the whole point:
+ *
+ *   * the OS clears the directory even if this process never gets to sweep it,
+ *     so a crash cannot turn "temporary" into "forever";
+ *   * `LiveBrowserSession.close()` deletes the session's files outright, so the
+ *     retention window is normally seconds, not the TTL.
+ *
+ * The layout below the root is unchanged (`live/<userId>/<token>/<name>`), so
+ * every token, containment check and sweep rule keeps working verbatim.
+ */
 export function downloadDirFor(userId: string): string {
-  return path.join(config.DOWNLOADS_DIR, 'live', safeSegment(userId));
+  const root = config.DOWNLOADS_EPHEMERAL === false
+    ? config.DOWNLOADS_DIR
+    : (config.DOWNLOADS_TMP_DIR || config.DOWNLOADS_DIR);
+  return path.join(root, 'live', safeSegment(userId));
 }
 
 /**
@@ -503,7 +543,7 @@ export async function resolveDownload(
 /** Delete this user's stored downloads older than `maxAgeMs`. */
 export async function sweepDownloads(
   userId: string,
-  maxAgeMs = DOWNLOAD_TTL_MS,
+  maxAgeMs = downloadTtlMs(),
 ): Promise<number> {
   const dir = downloadDirFor(userId);
   let names: string[];

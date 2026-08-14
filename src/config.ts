@@ -199,6 +199,39 @@ export const config = {
   UPLOADS_DIR: path.resolve(cleanEnv(process.env.UPLOADS_DIR) || './uploads'),
   DOWNLOADS_DIR: path.resolve(cleanEnv(process.env.DOWNLOADS_DIR) || './downloads'),
 
+  // ── Remote downloads: TEMPORARY by default ────────────────────────────
+  // The owner's requirement, verbatim: «ایا این فایل ها توی سرور موقت هستند یا
+  // ذخیره میشن؟ … وقت باشن یعنی tmp باشند خوبه تا دائمی چون کاربردش فقط همون
+  // لحظه هستند» — a file pulled through the remote browser is wanted for the
+  // moment it is fetched and never again, so keeping it for a day (the old
+  // behaviour, under ./downloads) stored the user's data long after it stopped
+  // being useful. That is both a privacy cost and a disk leak.
+  //
+  // So the default is now EPHEMERAL: the bytes live in the OS temp directory,
+  // are swept after DOWNLOAD_TTL_MINUTES, and are deleted outright when the
+  // session that produced them closes. Set DOWNLOADS_EPHEMERAL=false to get the
+  // old durable ./downloads behaviour back (an operator who wants an audit
+  // trail of every exported file needs it, and nothing else in the product
+  // does).
+  DOWNLOADS_EPHEMERAL: (cleanEnv(process.env.DOWNLOADS_EPHEMERAL)?.toLowerCase() ?? 'true') !== 'false',
+
+  // Where the ephemeral copies live. os.tmpdir() is the honest place for them:
+  // it is what the OS itself clears, so even a server that is killed before its
+  // own sweep runs does not leave the files behind forever.
+  DOWNLOADS_TMP_DIR: path.resolve(
+    cleanEnv(process.env.DOWNLOADS_TMP_DIR)
+    || path.join(os.tmpdir(), 'automation-backend-downloads')
+  ),
+
+  // How long a fetched file stays fetchable. Minutes, not hours: the shelf is
+  // read within seconds of the download appearing, and 30 minutes is long
+  // enough to survive a user who walked away mid-task without turning the temp
+  // directory into permanent storage by another name.
+  DOWNLOAD_TTL_MINUTES: Math.max(
+    1,
+    parseInt(cleanEnv(process.env.DOWNLOAD_TTL_MINUTES) || '30', 10) || 30,
+  ),
+
   
   // ============================================
   // Chrome
