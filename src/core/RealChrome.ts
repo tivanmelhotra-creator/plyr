@@ -298,6 +298,68 @@ export async function enableSessionRestore(userDataDir: string): Promise<string>
   }
 }
 
+/**
+ * Clear the profile pref that ALSO answers "Installation is not enabled".
+ *
+ * Dropping `--disable-extensions-except` from the command line (see
+ * `extensionLaunchArgs`) fixes the flag half of the bug. There is a second,
+ * independent half, from the same Chromium function:
+ *
+ *   extension_util.cc:362-367
+ *     bool AreExtensionsDisabled(command_line, context) {
+ *       return ExtensionsDisabledViaCommandLine(command_line) ||
+ *              profile->GetPrefs()->GetBoolean(prefs::kDisableExtensions);
+ *     }
+ *
+ * `prefs::kDisableExtensions` is the string `"extensions.disabled"`
+ * (chrome/common/pref_names.h:1618) and it lives in the PROFILE, not the command
+ * line. Either source being true forces `extensions_enabled = false`, and then
+ * `crx_installer.cc:404` declines every install with INSTALL_NOT_ENABLED.
+ *
+ * This matters here for a concrete reason rather than a theoretical one: a
+ * profile that was ever launched WITH the old flag set can have the disabled
+ * state persisted into it. Fixing only the command line would then leave the
+ * user with the identical error message and no way to tell that anything had
+ * changed — the worst possible outcome of a bug fix.
+ *
+ * Same discipline as `enableSessionRestore` and `clearCrashedExitState`: touch
+ * only this one key, leave the rest of the user's profile byte for byte alone,
+ * write via a same-directory temp + rename so an interrupted write cannot
+ * truncate the profile, and NEVER block a launch on failure — a browser that
+ * might refuse an install is still far better than no browser.
+ *
+ * Returns a short description of what it did, for the log and for tests.
+ */
+export async function enableExtensionInstalls(userDataDir: string): Promise<string> {
+  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+  try {
+    let prefs: { extensions?: Record<string, unknown> } = {};
+    try {
+      prefs = JSON.parse(await fs.readFile(prefsPath, 'utf8'));
+    } catch {
+      // No Preferences file at all is the normal state of a fresh profile, and
+      // it means nothing has disabled extensions. Creating the file just to
+      // write `false` would be inventing state we do not need.
+      return 'no profile yet';
+    }
+    if (!prefs || typeof prefs !== 'object') return 'unreadable';
+
+    const extensions = (prefs.extensions || {}) as Record<string, unknown>;
+    if (extensions.disabled !== true) return 'already allowed';
+
+    extensions.disabled = false;
+    prefs.extensions = extensions;
+
+    await fs.mkdir(path.dirname(prefsPath), { recursive: true });
+    const tmp = `${prefsPath}.abtmp`;
+    await fs.writeFile(tmp, JSON.stringify(prefs), 'utf8');
+    await fs.rename(tmp, prefsPath);
+    return 'extensions.disabled true -> false';
+  } catch (e) {
+    return `could not clear (${(e as Error).message})`;
+  }
+}
+
 /** Ask a DevTools port who it is. Used purely to prove the port is live. */
 function fetchDebugVersion(
   host: string,
@@ -396,6 +458,17 @@ export class RealChrome {
   /** The identity the shelf's files are stored under — the fetch route needs it. */
   static downloadOwner(): string {
     return REAL_CHROME_SHELF_USER;
+  }
+
+  /**
+   * Delete one downloaded file and drop it from the shelf.
+   *
+   * `false` when there is no shelf (the browser is not up) or the token is not
+   * on it, so the route can answer 404 rather than report a success it did not
+   * perform.
+   */
+  static async forgetDownload(token: string): Promise<boolean> {
+    return this.shelf ? this.shelf.forget(token) : false;
   }
 
   static isRunning(): boolean {
@@ -562,6 +635,13 @@ export class RealChrome {
     await fs.mkdir(userDataDir, { recursive: true });
     await fs.mkdir(extensionsDir, { recursive: true });
     await clearCrashedExitState(userDataDir);
+    // The second half of the "Installation is not enabled" fix. The first half
+    // is NOT emitting --disable-extensions-except (see extensionLaunchArgs); this
+    // clears the same condition's other source, the profile's own
+    // `extensions.disabled` pref, which a profile launched under the old flag can
+    // have persisted. Both, or the user sees the identical error and cannot tell
+    // that anything was fixed.
+    const installsSaid = await enableExtensionInstalls(userDataDir);
     // Both of these, or neither: MEASURED, the pref alone and the flag alone
     // each restore ZERO tabs. See enableSessionRestore for the table.
     const restoreTabs = config.REAL_CHROME_RESTORE_TABS === true;
@@ -722,7 +802,7 @@ export class RealChrome {
 
       console.log(
         `[RealChrome] ✓ persistent Chrome up — ${extensions.length} extension(s), ` +
-        `profile=${userDataDir}, tab-restore=${restoreSaid}` +
+        `profile=${userDataDir}, tab-restore=${restoreSaid}, installs=${installsSaid}` +
         (config.REAL_CHROME_DEBUG_PORT > 0
           ? `, devtools=${config.REAL_CHROME_DEBUG_BIND}:${config.REAL_CHROME_DEBUG_PORT}`
           : ''),

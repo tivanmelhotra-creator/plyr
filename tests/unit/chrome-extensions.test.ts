@@ -1,12 +1,14 @@
 /**
  * Chrome extension discovery / packaging.
  *
- * The two things that silently break the whole "use my cookie extension"
- * feature are covered here:
+ * The things that silently break the whole "use my cookie extension" feature
+ * are covered here:
  *
- *   1. `--load-extension` without `--disable-extensions-except` loads NOTHING,
- *      because Playwright's own default args disable extensions. There is no
- *      error anywhere — the extension is simply absent.
+ *   1. `--disable-extensions-except` must NEVER be emitted. Chromium treats it
+ *      as "extensions are disabled" for the whole profile, which makes every
+ *      install fail with "Installation is not enabled". This file's assertions
+ *      are the regression guard for that reported bug — see the block comment
+ *      on the `extensionLaunchArgs` suite below for the traced call chain.
  *   2. A .crx is not a .zip. Unzipping one without stripping the CRX header
  *      fails, and telling the user "corrupt archive" sends them the wrong way.
  */
@@ -129,23 +131,60 @@ describe('listExtensions', () => {
   });
 });
 
+/**
+ * THE "Installation is not enabled" REGRESSION GUARD.
+ *
+ * The operator reported that clicking "Add to Chrome" on a Chrome Web Store page
+ * inside the remote browser answered "Installation is not enabled". That string
+ * is Chromium's, but the CAUSE was ours: this function used to emit
+ * `--disable-extensions-except`. Traced in Chromium's source (main, 2026-08-13):
+ *
+ *   extension_util.cc:71-74     ExtensionsDisabledViaCommandLine() is true for
+ *                               --disable-extensions OR --disable-extensions-except
+ *   extension_util.cc:362-367   AreExtensionsDisabled() returns that
+ *   extension_registrar.cc:112  Init() forces extensions_enabled = false
+ *   crx_installer.cc:404-408    !extensions_enabled_ → CrxInstallError(
+ *                               DECLINED, INSTALL_NOT_ENABLED, ...)
+ *
+ * These tests assert the ABSENCE of that flag. An absence is easy to reintroduce
+ * by accident — the flag reads like a safety measure and its old comment claimed
+ * it was mandatory — so it is pinned explicitly rather than left implied.
+ */
 describe('extensionLaunchArgs', () => {
+  const two = [
+    { id: 'a', dir: '/x/a', name: 'A', version: '1', manifestVersion: 3, description: '', popup: '', optionsPage: '', extensionId: '', storeId: '' },
+    { id: 'b', dir: '/x/b', name: 'B', version: '1', manifestVersion: 3, description: '', popup: '', optionsPage: '', extensionId: '', storeId: '' },
+  ];
+
   it('emits nothing when there are no extensions', () => {
     expect(extensionLaunchArgs([])).toEqual([]);
   });
 
-  it('always pairs --load-extension with --disable-extensions-except', () => {
-    // Without the "except" flag Playwright's default --disable-extensions wins
-    // and Chrome loads nothing, silently. This assertion is the regression
-    // guard for that exact failure.
-    const args = extensionLaunchArgs([
-      { id: 'a', dir: '/x/a', name: 'A', version: '1', manifestVersion: 3, description: '', popup: '', optionsPage: '' },
-      { id: 'b', dir: '/x/b', name: 'B', version: '1', manifestVersion: 3, description: '', popup: '', optionsPage: '' },
-    ]);
-    expect(args).toEqual([
-      '--disable-extensions-except=/x/a,/x/b',
-      '--load-extension=/x/a,/x/b',
-    ]);
+  it('side-loads with --load-extension alone', () => {
+    expect(extensionLaunchArgs(two)).toEqual(['--load-extension=/x/a,/x/b']);
+  });
+
+  it('NEVER emits --disable-extensions-except, which blocks every install', () => {
+    // The whole bug in one assertion. Chromium reads this switch as "extensions
+    // are disabled" for the entire profile and then declines every install with
+    // INSTALL_NOT_ENABLED, so a webstore "Add to Chrome" could never succeed.
+    const args = extensionLaunchArgs(two);
+    expect(args.some((a) => a.startsWith('--disable-extensions-except'))).toBe(false);
+  });
+
+  it('NEVER emits --disable-extensions either, for the same reason', () => {
+    // Same Chromium predicate, other half of the OR. Playwright adds this one by
+    // default, which is why IGNORED_DEFAULT_ARGS deletes it; we must not put it
+    // back.
+    const args = extensionLaunchArgs(two);
+    expect(args.some((a) => a === '--disable-extensions' || a.startsWith('--disable-extensions='))).toBe(false);
+  });
+
+  it('passes directories verbatim, so Chrome derives the ids we predict', () => {
+    // The unpacked id is the hash of the absolute path, so a rewritten or
+    // reordered path list would silently change every chrome-extension:// URL
+    // the picker builds.
+    expect(extensionLaunchArgs(two)[0]).toBe('--load-extension=/x/a,/x/b');
   });
 });
 

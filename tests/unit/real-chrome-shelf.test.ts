@@ -187,10 +187,18 @@ interface Harness {
   ticks: (n?: number) => Promise<void>;
   /** Press "Try again" on the status overlay. */
   retry: () => void;
-  /** What /browser/real/downloads will answer with. */
-  setDownloads: (rows: unknown[]) => void;
+  /**
+   * What /browser/real/downloads will answer with.
+   *
+   * Typed by its `token` rather than as `unknown[]`, because the fake DELETE
+   * branch has to find a row by token to remove it — which is what makes a
+   * Remove button that deletes nothing fail here.
+   */
+  setDownloads: (rows: Array<{ token?: string }>) => void;
   /** Make the downloads fetch reject outright. */
   failDownloadsFetch: boolean;
+  /** Make DELETE /browser/real/downloads/:token answer 404. */
+  failDelete: boolean;
   /** Make upload POSTs answer !ok. */
   failUploads: boolean;
   /** What the list endpoint reports its files are stored under. */
@@ -245,6 +253,15 @@ interface FakeEl {
   accept: string;
   multiple: boolean;
   type: string;
+  /**
+   * Whether the control refuses input.
+   *
+   * Needed because the Remove button disables ITSELF while its DELETE is in
+   * flight and re-enables on failure. Without this on the fake, a double-click
+   * that deletes twice — or a button left permanently dead after one failed
+   * delete — would both pass unnoticed.
+   */
+  disabled: boolean;
   addEventListener: (type: string, fn: (ev: unknown) => void) => void;
   setAttribute: (k: string, v: string) => void;
   appendChild: (c: FakeEl) => void;
@@ -319,6 +336,7 @@ function makeEl(tag: string, hidden = false): FakeEl {
     accept: '',
     multiple: false,
     type: '',
+    disabled: false,
     addEventListener(type, fn) {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type)!.push(fn);
@@ -363,6 +381,11 @@ function makeEl(tag: string, hidden = false): FakeEl {
     clickedWhileInDocument: false,
     clicks: 0,
     click() {
+      // A real browser fires NOTHING on a disabled control. Modelled, because
+      // the Remove button disables itself for the duration of its DELETE: a fake
+      // that dispatched anyway would let a double-click send two deletes and
+      // still pass.
+      if (el.disabled) return;
       el.clicks += 1;
       el.clickedWhileInDocument = !!el.parent;
       el.emit('click');
@@ -403,7 +426,11 @@ async function runView(
     rejectWriteText: !!opts.rejectWriteText,
     failDownloadsFetch: false,
     failUploads: false,
-    downloads: [] as unknown[],
+    // Make the Remove endpoint answer 404, the way the real route does when the
+    // token is not on the shelf (e.g. the browser restarted since the panel was
+    // rendered).
+    failDelete: false,
+    downloads: [] as Array<{ token?: string }>,
     // The identity the list endpoint reports its files are stored under.
     owner: 'local',
     // What /browser/downloads/<token> answers with.
@@ -523,6 +550,23 @@ async function runView(
     }
     if (url.indexOf('/browser/real/downloads') >= 0) {
       if (state.failDownloadsFetch) return Promise.reject(new Error('browser not up'));
+      // DELETE /browser/real/downloads/:token — the Remove control. Modelled
+      // like the real route: the row is dropped from the SERVER's list and the
+      // remaining list is returned, because the view re-renders from that answer
+      // rather than patching its own DOM. A fake that ignored the method and
+      // kept answering with every row would let a Remove button that deletes
+      // nothing pass.
+      if (String(init.method || 'GET').toUpperCase() === 'DELETE') {
+        if (state.failDelete) {
+          return Promise.resolve(reply({
+            status: 404,
+            body: { success: false, error: 'No such download.' },
+          }));
+        }
+        const token = decodeURIComponent(url.split('/browser/real/downloads/')[1] || '');
+        state.downloads = state.downloads.filter((d) => d.token !== token);
+        return Promise.resolve(reply({ body: { success: true, downloads: state.downloads } }));
+      }
       return Promise.resolve(reply({
         body: { success: true, owner: state.owner, downloads: state.downloads },
       }));
@@ -744,6 +788,8 @@ async function runView(
     setDownloads: (rows) => { state.downloads = rows; },
     get failDownloadsFetch() { return state.failDownloadsFetch; },
     set failDownloadsFetch(v: boolean) { state.failDownloadsFetch = v; },
+    get failDelete() { return state.failDelete; },
+    set failDelete(v: boolean) { state.failDelete = v; },
     get failUploads() { return state.failUploads; },
     set failUploads(v: boolean) { state.failUploads = v; },
     setOwner: (o: string) => { state.owner = o; },
@@ -948,6 +994,25 @@ describe('remote clipboard: the operator copies locally, then pastes into the de
 
 const KEY_SEARCH = '?api_key=k3y%2Fneeds%2Fescaping';
 
+/**
+ * The Send button's resting label, READ OUT OF THE MARKUP.
+ *
+ * Not hardcoded, and that is the point. The button rewrites its own textContent
+ * to report progress and then restores this string, so the label in the HTML and
+ * the label the script resets to must be the same text. Hardcoding the expected
+ * value here would let those two drift: renaming the button in the markup would
+ * still pass while the real button silently renamed itself back on first use.
+ */
+function upIdleLabel(): string {
+  const html = chromeViewHtml();
+  const tag = /<button[^>]*id="upbtn"[^>]*>([\s\S]*?)<\/button>/.exec(html);
+  expect(tag, 'the view must still ship an #upbtn').not.toBeNull();
+  return (tag as RegExpExecArray)[1]
+    .replace(/&#8593;/g, '\u2191')
+    .replace(/&uarr;/g, '\u2191')
+    .trim();
+}
+
 describe('the file bar appears only when there is a desktop to exchange files with', () => {
   it('is hidden while Chromium is still starting', async () => {
     const h = await runView();
@@ -1122,7 +1187,12 @@ describe('listing what the remote browser downloaded', () => {
     await settle();
 
     const row = h.rows()[0];
-    expect(row.children).toHaveLength(0);   // a dead link is worse than no link
+    // A dead link is worse than no link. Asserted as "no anchor" rather than
+    // "no children": a failed row DOES carry a Remove button, because a download
+    // that failed is a row the operator wants gone — arguably more than a
+    // successful one. What must not be there is something that looks fetchable.
+    expect(row.children.filter((c) => c.tag === 'a')).toHaveLength(0);
+    expect(row.children.map((c) => c.className)).toEqual(['del']);
     expect(row.textContent).toContain('huge.iso');
     expect(row.textContent).toContain('too large');
   });
@@ -1138,6 +1208,10 @@ describe('listing what the remote browser downloaded', () => {
     await settle();
 
     const row = h.rows()[0];
+    // Nothing at all on this row: no link, and no Remove either. Deleting the
+    // bytes of a download that is still being written would leave the shelf
+    // describing a file that is mid-write, so in-flight is the one state with no
+    // destructive control.
     expect(row.children).toHaveLength(0);
     expect(row.textContent).toContain('movie.mp4');
   });
@@ -1279,9 +1353,10 @@ describe('uploading a local file so the remote browser can pick it up', () => {
     await new Promise((r) => setTimeout(r, 120));
     expect(h.el('upbtn').textContent).toBe('Uploaded');
 
-    // ...and it must not stay stuck on the outcome forever.
+    // ...and it must not stay stuck on the outcome forever. It must come back to
+    // the SAME label the markup ships, or the button renames itself on first use.
     await new Promise((r) => setTimeout(r, 2600));
-    expect(h.el('upbtn').textContent).toBe('Upload');
+    expect(h.el('upbtn').textContent).toBe(upIdleLabel());
   }, 8000);
 
   it('tells the operator when an upload was rejected, then recovers', async () => {
@@ -1303,7 +1378,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
     expect(seen).toEqual([]);
 
     await new Promise((r) => setTimeout(r, 2600));
-    expect(h.el('upbtn').textContent).toBe('Upload');
+    expect(h.el('upbtn').textContent).toBe(upIdleLabel());
   }, 8000);
 
   it('stops the chain when one file of several fails', async () => {
@@ -2001,5 +2076,334 @@ describe('a finished download arrives on the operator machine by itself', () => 
     const shelfWatch = h.watch.filter((f) => f.url.indexOf('/browser/real/downloads') >= 0);
     expect(shelfWatch.length).toBeGreaterThan(0);
     shelfWatch.forEach((f) => expect(f.url).toContain('watch=1'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The per-row Remove control and the count badge — the «کنترل بیشتر» half of the
+// file-bar rework.
+//
+// Remove DELETES BYTES. That is what separates these tests from a hide button:
+// each one pins a consequence of the control being destructive rather than
+// cosmetic — it must reach the server, it must not report success before the
+// server gave it, it must not fire twice, and it must say why when it fails
+// instead of removing the row anyway.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Every DELETE the file bar sent, in order. */
+function deletesOf(h: Harness) {
+  return h.fetches.filter((f) => String(f.init.method || 'GET').toUpperCase() === 'DELETE');
+}
+
+/** Open the panel on a rendered shelf. */
+async function openPanel(h: Harness) {
+  h.connected();
+  h.click('dlbtn');
+  await settle();
+  await settle();
+}
+
+/** The Remove button of a row, found by class rather than by position. */
+function removeBtn(row: FakeEl): FakeEl {
+  const del = row.querySelector('.del');
+  expect(del, 'the row must carry a Remove control').not.toBeNull();
+  return del as FakeEl;
+}
+
+describe('removing a downloaded file from the server', () => {
+  const TOKEN = 'dl_9f2c8a1b4e7d0c3f5a6b2e91';
+  const OTHER = 'dl_1111111111111111111111ff';
+  const twoRows = () => [
+    { token: TOKEN, name: 'report.pdf', state: 'completed', size: 2048 },
+    { token: OTHER, name: 'keep-me.csv', state: 'completed', size: 512 },
+  ];
+
+  it('asks the SERVER to delete the file, by token', async () => {
+    // The whole difference between this and a hide button. If nothing leaves the
+    // page, the file is still on disk and the operator has been lied to.
+    const h = await runView({ search: KEY_SEARCH });
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    removeBtn(h.rows()[0]).click();
+    await settle();
+    await settle();
+
+    const deletes = deletesOf(h);
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].url).toBe('/browser/real/downloads/' + TOKEN);
+  });
+
+  it('sends the api_key in a header, as every other call on this bar does', async () => {
+    // Same reason as the list call: the desktop cookie is scoped to /desktop and
+    // does not cover /browser/*, and a key in the query string is copied into
+    // every proxy log between here and the server.
+    const h = await runView({ search: KEY_SEARCH });
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    removeBtn(h.rows()[0]).click();
+    await settle();
+    await settle();
+
+    const del = deletesOf(h)[0];
+    expect((del.init.headers as Record<string, string>)['x-api-key']).toBe('k3y/needs/escaping');
+    expect(del.url).not.toContain('api_key=');
+    expect(del.init.credentials).toBe('same-origin');
+  });
+
+  it('keeps the row on screen until the server has actually answered', async () => {
+    // No optimistic removal. A row that vanished the moment it was pressed would
+    // tell the operator the file was gone before anything had deleted it — and
+    // if the delete then failed, they would believe they had cleaned up
+    // something they had not.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    removeBtn(h.rows()[0]).click();
+    // Deliberately NOT awaited: this is the instant after the press.
+    expect(h.rows()).toHaveLength(2);
+    expect(h.el('dls').textContent).toContain('report.pdf');
+
+    await settle();
+    await settle();
+    expect(h.rows()).toHaveLength(1);
+  });
+
+  it('re-renders from the list the SERVER returned, not from a local splice', async () => {
+    // The rows on screen are the files on disk. Proven by what SURVIVES: the row
+    // that is still there is the one the server's answer still names.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    removeBtn(h.rows()[0]).click();
+    await settle();
+    await settle();
+
+    const rows = h.rows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].children[0].textContent).toBe('keep-me.csv');
+    expect(h.el('dls').textContent).not.toContain('report.pdf');
+  });
+
+  it('sends exactly one delete however fast the button is pressed twice', async () => {
+    // The button disables itself for the duration of its DELETE. Without that, a
+    // double-click on a slow link sends two deletes: the second finds nothing on
+    // the shelf and answers 404, so a file the operator DID delete successfully
+    // would end its life with a red error under it.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    const del = removeBtn(h.rows()[0]);
+    del.click();
+    del.click();
+    del.click();
+    await settle();
+    await settle();
+
+    expect(deletesOf(h)).toHaveLength(1);
+  });
+
+  it('says why when the delete is refused, and leaves the file listed', async () => {
+    // The server's own words: 'No such download.' happens when the browser
+    // restarted since the panel was drawn, and the operator can only act on that
+    // if they are told. The row must stay, because the file may well still exist.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    h.failDelete = true;
+    await openPanel(h);
+
+    const row = h.rows()[0];
+    removeBtn(row).click();
+    await settle();
+    await settle();
+
+    expect(h.rows()).toHaveLength(2);
+    expect(row.textContent).toContain('report.pdf');
+    const note = row.querySelector('.rowerr');
+    expect(note, 'a refused delete must be reported on the row').not.toBeNull();
+    expect((note as FakeEl).textContent).toContain('No such download.');
+  });
+
+  it('can be tried again after a refusal instead of dying on the first one', async () => {
+    // The refusal may be transient (the browser was restarting). A button left
+    // permanently dead would need a page reload to clear.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    h.failDelete = true;
+    await openPanel(h);
+
+    const del = removeBtn(h.rows()[0]);
+    del.click();
+    await settle();
+    await settle();
+    expect(del.disabled).toBe(false);
+
+    h.failDelete = false;
+    del.click();
+    await settle();
+    await settle();
+
+    expect(deletesOf(h)).toHaveLength(2);
+    expect(h.rows()).toHaveLength(1);
+  });
+
+  it('does not stack up one error message per attempt', async () => {
+    // Each retry clears the previous note first. Three failures leaving three
+    // identical red lines under one row is how a small panel becomes unreadable.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    h.failDelete = true;
+    await openPanel(h);
+
+    const row = h.rows()[0];
+    const del = removeBtn(row);
+    del.click();
+    await settle();
+    await settle();
+    del.click();
+    await settle();
+    await settle();
+
+    expect(row.children.filter((c) => c.className === 'rowerr')).toHaveLength(1);
+  });
+
+  it('names the file it will delete, because a bare cross names nothing', async () => {
+    // The visible control is a '×' — no use to a screen reader, and ambiguous on
+    // a list of several files. The meaning lives in the title and the aria-label.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    const del = removeBtn(h.rows()[0]);
+    expect(del.tag).toBe('button');
+    // A button inside no form, but type is still set: a default-typed button
+    // submits, and this one only ever deletes.
+    expect(del.type).toBe('button');
+    expect(del.title).toMatch(/delete/i);
+    expect(del.attrs['aria-label']).toContain('report.pdf');
+  });
+
+  it('removes a FAILED download too, which is the row most worth removing', async () => {
+    // A failed row has no link and can never gain one, so Remove is the only
+    // thing that can be done with it.
+    const h = await runView();
+    h.setDownloads([
+      { token: TOKEN, name: 'huge.iso', state: 'failed', error: 'too large' },
+      { token: OTHER, name: 'keep-me.csv', state: 'completed', size: 512 },
+    ]);
+    await openPanel(h);
+
+    removeBtn(h.rows()[0]).click();
+    await settle();
+    await settle();
+
+    expect(deletesOf(h)[0].url).toContain(TOKEN);
+    expect(h.rows()).toHaveLength(1);
+    expect(h.el('dls').textContent).not.toContain('huge.iso');
+  });
+
+  it('offers nothing to press on a row that is still being written', async () => {
+    // Deleting the bytes of a download mid-write would leave the shelf
+    // describing a file that is still arriving. In-flight is the one state with
+    // no destructive control at all.
+    const h = await runView();
+    h.setDownloads([{ token: TOKEN, name: 'movie.mp4', state: 'inProgress' }]);
+    await openPanel(h);
+
+    expect(h.rows()[0].querySelector('.del')).toBeNull();
+  });
+
+  it('keeps the name clickable: Remove is added AFTER the link, never over it', async () => {
+    // The anchor has to stay the row's first child — that is the element a click
+    // on the file name hits, and the transfer pipeline hangs off it. Appending
+    // Remove before it would put a destructive control where the name was.
+    const h = await runView();
+    h.setDownloads(twoRows());
+    await openPanel(h);
+
+    const row = h.rows()[0];
+    expect(row.children[0].tag).toBe('a');
+    expect(row.children[row.children.length - 1].className).toBe('del');
+  });
+});
+
+describe('the count badge on the Files button', () => {
+  const done = (token: string, name: string) =>
+    ({ token, name, state: 'completed', size: 1024 });
+
+  it('shows nothing at all when the shelf is empty', async () => {
+    // A badge reading '0' looks like a broken counter. The badge exists to
+    // answer "did my download arrive?", and the answer "no" is silence.
+    const h = await runView();
+    h.setDownloads([]);
+    h.connected();
+    await h.ticks(2);
+
+    expect(h.el('dlcount').hidden).toBe(true);
+    expect(h.el('dlcount').textContent).toBe('');
+  });
+
+  it('counts the shelf while the panel is still SHUT', async () => {
+    // The whole value of the badge. The watcher already polls the shelf, so the
+    // count can appear without the operator opening anything — otherwise they
+    // have to keep opening the panel to find out whether a file landed.
+    const h = await runView();
+    h.setDownloads([done('dl_aaaaaaaaaaaaaaaaaaaaaaaa', 'one.pdf')]);
+    h.connected();
+    await h.ticks(2);
+
+    expect(h.el('panel').hidden).toBe(true);
+    expect(h.el('dlcount').hidden).toBe(false);
+    expect(h.el('dlcount').textContent).toBe('1');
+  });
+
+  it('follows the shelf as files arrive', async () => {
+    const h = await runView();
+    h.setDownloads([done('dl_aaaaaaaaaaaaaaaaaaaaaaaa', 'one.pdf')]);
+    h.connected();
+    await h.ticks(2);
+    expect(h.el('dlcount').textContent).toBe('1');
+
+    h.setDownloads([
+      done('dl_aaaaaaaaaaaaaaaaaaaaaaaa', 'one.pdf'),
+      done('dl_bbbbbbbbbbbbbbbbbbbbbbbb', 'two.pdf'),
+      done('dl_cccccccccccccccccccccccc', 'three.pdf'),
+    ]);
+    await h.ticks(3);
+
+    expect(h.el('dlcount').textContent).toBe('3');
+  });
+
+  it('drops back to silence when the last file is removed', async () => {
+    // Counted from the SERVER's answer to the delete, so the badge cannot
+    // disagree with the list beside it.
+    const h = await runView();
+    h.setDownloads([done('dl_aaaaaaaaaaaaaaaaaaaaaaaa', 'one.pdf')]);
+    await openPanel(h);
+    expect(h.el('dlcount').textContent).toBe('1');
+
+    removeBtn(h.rows()[0]).click();
+    await settle();
+    await settle();
+
+    expect(h.el('dlcount').textContent).toBe('');
+    expect(h.el('dlcount').hidden).toBe(true);
+  });
+
+  it('does not open the panel just because the count changed', async () => {
+    // The badge is an ambient signal. A panel that opened itself would cover the
+    // remote screen the operator is working in.
+    const h = await runView();
+    h.connected();
+    await h.ticks(2);
+    h.setDownloads([done('dl_aaaaaaaaaaaaaaaaaaaaaaaa', 'one.pdf')]);
+    await h.ticks(3);
+
+    expect(h.el('dlcount').textContent).toBe('1');
+    expect(h.el('panel').hidden).toBe(true);
   });
 });

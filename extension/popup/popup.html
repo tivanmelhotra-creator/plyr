@@ -6,144 +6,259 @@
   <title>Automation Backend Helper</title>
   <link rel="stylesheet" href="popup.css">
 </head>
+<!--
+  THE REPORT, VERBATIM
+  ────────────────────
+    «UI/UX پاپ‌آپ افزونه Automation Helper هم بهتر کن گیج شدم و نتونستم لوکال
+     رو تست کنم»
+
+  WHAT WAS WRONG
+  ──────────────
+  Seven cards, every one expanded, stacked in a 340px column: Backend, Move
+  session here, Element Inspector, Workflows, Capture, Steps, Live run. Nothing
+  was grouped, nothing was primary, and the whole thing was taller than the
+  popup, so it scrolled. Two separate features were also both called "local" —
+  the Inspector's Local/Remote target and the Remote→Local session handoff — and
+  they sat in different cards with no word about how they relate. That is why
+  Local mode went untested: there was no obvious path through it.
+
+  WHAT THIS IS
+  ────────────
+  Four tabs, one job each, with the daily action first:
+    Inspect  — what am I attached to, and pick/record from the page
+    Run      — saved workflows, the steps I am building, and the live run
+    Local    — move a remote session onto this machine, in numbered steps
+    Setup    — backend URL, key, user
+
+  THE TABS USE NO JAVASCRIPT. They are radio inputs plus <label>s, switched by
+  CSS `:checked ~` rules. Two reasons: an MV3 popup runs under a strict CSP
+  where inline handlers are refused outright, and popup.js resolves EVERY id in
+  one eager `els` map at load with no null guards — so a tab strip that built
+  panels lazily, or that lived in JS, would hand it nulls and break the whole
+  popup. Every id the controller expects is therefore still present in this
+  document, at load, exactly once. Only the arrangement changed.
+
+  A <label for> is a switch from anywhere in the document, which is why the
+  "Not connected?" hint below can move the user to Setup without a line of JS.
+-->
 <body>
+  <!-- Tab state. These must precede .tabs and .panels: the CSS selects forward
+       with `~`, so a radio placed after them could not reach them. -->
+  <input type="radio" name="abtab" id="tab-inspect" class="tabin" checked>
+  <input type="radio" name="abtab" id="tab-run" class="tabin">
+  <input type="radio" name="abtab" id="tab-local" class="tabin">
+  <input type="radio" name="abtab" id="tab-setup" class="tabin">
+
   <header class="hdr">
     <span class="logo">🤖</span>
     <h1>Automation Helper</h1>
+    <!-- Owned by popup.js (textContent + className). Left as a bare span. -->
     <span class="conn" id="conn" title="connection">—</span>
   </header>
 
-  <section class="card">
-    <h2>Backend</h2>
-    <label class="field">
-      <span>Base URL</span>
-      <input id="baseUrl" type="text" placeholder="http://localhost:3000" autocomplete="off">
-    </label>
-    <label class="field">
-      <span>API Key</span>
-      <input id="apiKey" type="password" placeholder="your-api-key" autocomplete="off">
-    </label>
-    <label class="field">
-      <span>User ID</span>
-      <input id="userId" type="text" placeholder="0" autocomplete="off">
-    </label>
-    <div class="row">
-      <button class="btn" id="saveCfg">Save</button>
-      <button class="btn ghost" id="checkCfg">Test connection</button>
-      <button class="btn ghost" id="openPanel">Open panel</button>
-    </div>
-  </section>
+  <nav class="tabs">
+    <label for="tab-inspect">Inspect</label>
+    <label for="tab-run">Run</label>
+    <label for="tab-local">Local</label>
+    <label for="tab-setup">Setup</label>
+  </nav>
 
-  <!-- Move a remote session onto this machine.
-       Placed directly under Backend and ABOVE the Inspector because a user who
-       just clicked "Switch to Local" in the app arrives here holding a code that
-       expires in five minutes; making them scroll past three cards to find the
-       box for it is the one thing this card must not do. -->
-  <section class="card">
-    <h2>Move session here</h2>
-    <div class="insp">
-      <div class="inspline">
-        <span class="ilabel">Paired</span>
-        <span class="ivalue" id="hoState">—</span>
-        <button class="btn ghost xs" id="hoUnpair" hidden>Unpair</button>
-      </div>
-      <div class="inspline">
-        <span class="ilabel">Session</span>
-        <span class="ivalue mono" id="hoSession">—</span>
-      </div>
-    </div>
-    <label class="field">
-      <span>Pairing code from the app</span>
-      <!-- maxlength 9 fits ABCD-EFGH: the code is 8 characters plus the dash we
-           show it with, so a user can paste exactly what is on their screen. -->
-      <input id="hoCode" type="text" placeholder="ABCD-EFGH" autocomplete="off"
-             spellcheck="false" maxlength="9">
-    </label>
-    <div class="row">
-      <button class="btn primary" id="hoPair">Pair &amp; move my tabs</button>
-      <button class="btn ghost sm" id="hoApply" hidden>Restore my tabs</button>
-    </div>
-    <div class="hintline">In the app, click <b>Switch to Local</b> on the node you are running. It shows a code — type it above and your open tabs move here, in the same order.</div>
-    <div class="status" id="hoStatus"></div>
-  </section>
+  <div class="panels">
 
-  <!-- Element Inspector: what the extension is attached to, and where a pick
-       will land. Shown ABOVE the workflow list because a pick that cannot be
-       delivered is the first thing a user needs to know about. -->
-  <section class="card">
-    <h2>Element Inspector</h2>
-    <div class="insp">
-      <div class="inspline">
-        <span class="ilabel">Browser</span>
-        <span class="ivalue" id="inspMode">—</span>
-        <button class="btn ghost xs" id="modeSwitch" hidden>Switch</button>
-      </div>
-      <div class="inspline">
-        <span class="ilabel">Active node</span>
-        <span class="ivalue" id="inspNode">—</span>
-      </div>
-      <div class="inspline">
-        <span class="ilabel">Session</span>
-        <span class="ivalue mono" id="inspSession">—</span>
-      </div>
-    </div>
-    <div class="row">
-      <button class="btn primary" id="inspect">🔍 Inspect element</button>
-      <button class="btn ghost sm" id="inspRefresh">↻</button>
-    </div>
-    <div class="hintline">Or press <b>Ctrl + Shift + C</b> on the page. Hover, click, tick the attributes you want, then Confirm &amp; Add to Node.</div>
-    <div class="status" id="inspStatus"></div>
-  </section>
+    <!-- ── INSPECT ───────────────────────────────────────────────────────
+         First, and default, because it is the reason the extension is
+         installed. The three read-only lines come before the button on
+         purpose: a pick that cannot be delivered is the first thing a user
+         needs to know about, not something to discover after clicking. -->
+    <section class="panel" id="p-inspect">
+      <p class="lede">Point at any element on the page and send it to the node that is waiting for it.</p>
 
-  <section class="card">
-    <h2>Workflows <span class="count" id="wfCount">0</span></h2>
-    <ul class="wflist" id="wflist">
-      <li class="empty">Test the connection, then Refresh to load your saved workflows.</li>
-    </ul>
-    <div class="row">
-      <button class="btn ghost sm" id="refreshWf">↻ Refresh</button>
-      <label class="chk"><input type="checkbox" id="runHeadful"> show browser</label>
-    </div>
-  </section>
+      <div class="insp">
+        <div class="inspline">
+          <span class="ilabel">Browser</span>
+          <span class="ivalue" id="inspMode">—</span>
+          <button class="btn ghost xs" id="modeSwitch" hidden>Switch</button>
+        </div>
+        <div class="inspline">
+          <span class="ilabel">Active node</span>
+          <span class="ivalue" id="inspNode">—</span>
+        </div>
+        <div class="inspline">
+          <span class="ilabel">Session</span>
+          <span class="ivalue mono" id="inspSession">—</span>
+        </div>
+      </div>
 
-  <section class="card">
-    <h2>Capture</h2>
-    <div class="row">
-      <button class="btn" id="pick">🎯 Pick element</button>
-      <button class="btn" id="record">⏺ Record</button>
-    </div>
-    <div class="picked" id="pickedBox" hidden>
+      <div class="row">
+        <button class="btn primary" id="inspect">🔍 Inspect element</button>
+        <button class="btn ghost sm" id="inspRefresh" title="Re-read status">↻</button>
+      </div>
+      <div class="hintline">
+        Or press <b>Ctrl + Shift + C</b> on the page. Hover, click, tick the attributes you
+        want, then Confirm &amp; Add to Node.
+      </div>
+      <div class="status" id="inspStatus"></div>
+
+      <!-- Capture was its own card, which split "get a selector" across two
+           places that looked unrelated. It is the same job, so it is the same
+           panel — behind a divider rather than a second heading. -->
+      <div class="sub">
+        <h3>Capture by hand</h3>
+        <div class="row">
+          <button class="btn" id="pick">🎯 Pick element</button>
+          <button class="btn" id="record">⏺ Record</button>
+        </div>
+        <div class="picked" id="pickedBox" hidden>
+          <label class="field">
+            <span>CSS</span>
+            <input id="pickedCss" type="text" readonly>
+          </label>
+          <label class="field">
+            <span>XPath</span>
+            <input id="pickedXpath" type="text" readonly>
+          </label>
+          <div class="row">
+            <button class="btn sm" id="addClick">+ click step</button>
+            <button class="btn sm" id="addExtract">+ extract step</button>
+            <button class="btn sm ghost" id="copyCss">Copy CSS</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="jump">
+        Nothing showing above? <label for="tab-setup" class="link">Check Setup</label>.
+      </p>
+    </section>
+
+    <!-- ── RUN ───────────────────────────────────────────────────────────
+         Saved workflows, the steps being assembled, and the live result: one
+         story, read top to bottom, so the outcome appears under the thing that
+         caused it instead of three cards away. -->
+    <section class="panel" id="p-run">
+      <p class="lede">Run something you saved, or send the steps you just captured.</p>
+
+      <div class="sub first">
+        <h3>Saved workflows <span class="count" id="wfCount">0</span></h3>
+        <ul class="wflist" id="wflist">
+          <li class="empty">Test the connection, then Refresh to load your saved workflows.</li>
+        </ul>
+        <div class="row">
+          <button class="btn ghost sm" id="refreshWf">↻ Refresh</button>
+          <label class="chk"><input type="checkbox" id="runHeadful"> show browser</label>
+        </div>
+      </div>
+
+      <div class="sub">
+        <h3>Steps you captured <span class="count" id="stepCount">0</span></h3>
+        <ol class="steps" id="steps"></ol>
+        <div class="row">
+          <button class="btn ghost sm" id="clearSteps">Clear</button>
+          <button class="btn primary" id="sendFlow">▶ Send to backend</button>
+        </div>
+      </div>
+
+      <!-- popup.js reveals this with `hidden = false` when a run starts, so it
+           must stay a plain hidden element and must NOT be given a `display`
+           rule of its own. -->
+      <section class="card live" id="liveCard" hidden>
+        <h3>Live run <span class="count" id="liveJob">—</span></h3>
+        <ol class="livesteps" id="livesteps"></ol>
+        <div class="status" id="liveStatus"></div>
+      </section>
+    </section>
+
+    <!-- ── LOCAL ─────────────────────────────────────────────────────────
+         «نتونستم لوکال رو تست کنم». The pairing box existed but the procedure
+         did not: the user had to work out that the code comes from a button in
+         the web app, that it expires, and that this is a different thing from
+         the Inspector's Local/Remote target. All three are now written down, in
+         order, next to the field they apply to. -->
+    <section class="panel" id="p-local">
+      <p class="lede">Move a running remote session onto this machine — same tabs, same order, same active tab.</p>
+
+      <ol class="howto">
+        <li>In the web app, open the node you are running and click <b>Switch to Local</b>.</li>
+        <li>It shows a code like <b>ABCD-EFGH</b>. It is valid for about five minutes.</li>
+        <li>Type or paste it below and press <b>Pair &amp; move my tabs</b>.</li>
+      </ol>
+
       <label class="field">
-        <span>CSS</span>
-        <input id="pickedCss" type="text" readonly>
-      </label>
-      <label class="field">
-        <span>XPath</span>
-        <input id="pickedXpath" type="text" readonly>
+        <span>Pairing code from the app</span>
+        <!-- maxlength 9 fits ABCD-EFGH: the code is 8 characters plus the dash
+             we show it with, so a user can paste exactly what is on screen. -->
+        <input id="hoCode" type="text" placeholder="ABCD-EFGH" autocomplete="off"
+               spellcheck="false" maxlength="9">
       </label>
       <div class="row">
-        <button class="btn sm" id="addClick">+ click step</button>
-        <button class="btn sm" id="addExtract">+ extract step</button>
-        <button class="btn sm ghost" id="copyCss">Copy CSS</button>
+        <button class="btn primary" id="hoPair">Pair &amp; move my tabs</button>
+        <button class="btn ghost sm" id="hoApply" hidden>Restore my tabs</button>
       </div>
-    </div>
-  </section>
+      <div class="status" id="hoStatus"></div>
 
-  <section class="card">
-    <h2>Steps <span class="count" id="stepCount">0</span></h2>
-    <ol class="steps" id="steps"></ol>
-    <div class="row">
-      <button class="btn ghost sm" id="clearSteps">Clear</button>
-      <button class="btn primary" id="sendFlow">▶ Send to backend</button>
-    </div>
+      <div class="insp">
+        <div class="inspline">
+          <span class="ilabel">Paired</span>
+          <span class="ivalue" id="hoState">—</span>
+          <button class="btn ghost xs" id="hoUnpair" hidden>Unpair</button>
+        </div>
+        <div class="inspline">
+          <span class="ilabel">Session</span>
+          <span class="ivalue mono" id="hoSession">—</span>
+        </div>
+      </div>
+
+      <div class="hintline note">
+        This is not the same as the Inspector's <b>Browser</b> setting. Pairing moves a whole
+        session here; <label for="tab-inspect" class="link">Inspect</label> only chooses which
+        browser your next pick is read from.
+      </div>
+    </section>
+
+    <!-- ── SETUP ─────────────────────────────────────────────────────────
+         Last, not first: it is filled in once and then never touched, so it was
+         costing every later visit a scroll past it. -->
+    <section class="panel" id="p-setup">
+      <p class="lede">Where this extension sends everything. Fill in once.</p>
+
+      <label class="field">
+        <span>Base URL</span>
+        <input id="baseUrl" type="text" placeholder="http://localhost:3000" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>API Key</span>
+        <input id="apiKey" type="password" placeholder="your-api-key" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>User ID</span>
+        <input id="userId" type="text" placeholder="local" autocomplete="off">
+      </label>
+      <div class="row">
+        <button class="btn primary" id="saveCfg">Save</button>
+        <button class="btn ghost" id="checkCfg">Test connection</button>
+      </div>
+      <div class="row spaced">
+        <button class="btn ghost sm" id="openPanel">Open panel in a tab</button>
+      </div>
+      <div class="hintline">
+        <b>Test connection</b> also fills in the real User ID your key belongs to, and loads
+        your workflows into <label for="tab-run" class="link">Run</label>.
+      </div>
+    </section>
+
+  </div>
+
+  <!-- The shared status line, deliberately OUTSIDE the panels.
+       popup.js has one setStatus() writing to #status, and it is called from
+       three different tabs: Setup ("Saved.", "Connected as …", "Connection
+       failed: …"), Inspect ("Picked <a>", "Copied.", "Open a normal web page")
+       and Run ("Queued ✓", "Send failed: …"). While every card was on screen at
+       once that was fine. In a tabbed layout, leaving it inside Run would send
+       the answer to "did my key work?" into a panel the user is not looking at —
+       a silent failure, which is the same class of bug as the dead Save button.
+       Kept as one element with one id so no controller change is needed. -->
+  <footer class="foot">
     <div class="status" id="status"></div>
-  </section>
-
-  <section class="card live" id="liveCard" hidden>
-    <h2>Live run <span class="count" id="liveJob">—</span></h2>
-    <ol class="livesteps" id="livesteps"></ol>
-    <div class="status" id="liveStatus"></div>
-  </section>
+  </footer>
 
   <script src="../lib/ab-core.js"></script>
   <script src="popup.js"></script>

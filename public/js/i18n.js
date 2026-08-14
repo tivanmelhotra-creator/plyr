@@ -381,7 +381,8 @@
       'bv.error': 'خطا در اتصال',
       'bv.noWs': 'مرورگر شما از WebSocket پشتیبانی نمی‌کند.',
       'bv.placeholder': 'برای دیدن مرورگر زنده، «اتصال» را بزنید.',
-      'bv.typingHint': 'برای تایپ، ابتدا روی صفحه کلیک کنید سپس تایپ کنید. اسکرول با چرخ موس کار می‌کند.',
+      'bv.typingHint': 'برای تایپ، ابتدا روی صفحه کلیک کنید سپس تایپ کنید. اسکرول با چرخ موس کار می‌کند. کلیدهای میانبر هم کار می‌کنند: Ctrl+A انتخاب همه، Ctrl+C کپی از صفحهٔ راه دور، Ctrl+V چسباندن از کلیپ‌بورد خودتان، Ctrl+X، Ctrl+Z، Ctrl+F، F5 و Alt+←/→.',
+      'bv.pasteDenied': 'دسترسی به کلیپ‌بورد داده نشد. یک بار Ctrl+V را دوباره بزنید و اجازه را تأیید کنید.',
       'bv.picked': 'عنصر انتخاب‌شده',
       'bv.pickedToast': 'عنصر انتخاب شد:',
       'bv.copyCss': 'کپی CSS',
@@ -510,6 +511,26 @@
       'bvp.dlUnknownSize': 'حجم نامعلوم',
       'bvp.dlTooLarge': 'فایل بزرگ‌تر از حد مجاز بود و ذخیره نشد.',
       'bvp.dlEmpty': 'هنوز چیزی دانلود نشده.',
+      // چرا این پیام‌ها: سرور خطا را با کد کوتاه می‌گوید (http_403، timeout و…)
+      // و نشان دادن همان کد تقریباً به‌اندازهٔ سکوت بی‌فایده است. هر کد باید
+      // بگوید چه شد و چه کاری می‌شود کرد.
+      'bvp.dlBadTarget': 'این نشانی قابل ذخیره نیست (فقط http/https). نشانی را در نوار آدرس باز کنید و دوباره ذخیره بزنید.',
+      'bvp.dlNeedsLogin': 'سایت اجازهٔ گرفتن این فایل را نداد (ورود لازم است یا لینک یک‌بارمصرف بود). ابتدا در همین مرورگر ریموت وارد سایت شوید، بعد ذخیره بزنید.',
+      'bvp.dlNotFound': 'این نشانی روی سایت پیدا نشد (۴۰۴).',
+      'bvp.dlSiteError': 'خودِ سایت هنگام فرستادن فایل خطا داد. کمی بعد دوباره تلاش کنید.',
+      'bvp.dlTimeout': 'گرفتن فایل طول کشید و لغو شد. برای فایل‌های بزرگ، لینک را در یک تب باز کنید تا مثل دانلود معمولی روی قفسه بیاید.',
+      // پاسخ صریح به پرسش «این فایل‌ها موقت‌اند یا ذخیره می‌شوند؟»
+      'bvp.dlTempNote': 'فایل‌های دانلودشده موقت‌اند: در پوشهٔ موقتِ سرور می‌مانند، با بستن این پنجره پاک می‌شوند و در هر حال بعد از مدت کوتاهی خودکار حذف می‌شوند.',
+      // نصب افزونه از فروشگاه، داخل همین مرورگر ریموت.
+      // «Add to Chrome» حالا واقعاً کار می‌کند (پرچمی که نصب را می‌بست حذف شد)،
+      // ولی پنجرهٔ تأییدِ خود کروم یک پنجرهٔ بومیِ سیستم است و در تصویر
+      // استریم‌شده دیده نمی‌شود. پس همان‌جا می‌گوییم چه شد و چه گزینه‌ای هست.
+      'bvp.storeReady': 'نصب افزونه در همین مرورگر فعال است. «Add to Chrome» را بزنید؛ اگر پنجرهٔ تأیید کروم را ندیدید، از دکمهٔ «نصب از سرور» استفاده کنید.',
+      'bvp.storeInstall': 'نصب از سرور',
+      'bvp.storeInstallHint': 'همین افزونه را سمت سرور دانلود و نصب می‌کند — بدون نیاز به پنجرهٔ تأیید کروم. شناسهٔ رسمی افزونه حفظ می‌شود.',
+      'bvp.storeInstalling': 'در حال نصب افزونه…',
+      'bvp.storeInstalled': 'افزونه نصب شد و مرورگر آن را بارگذاری کرد.',
+      'bvp.storeFailed': 'نصب افزونه انجام نشد',
       // ناکامی گرفتن فایل از سرور. اینها جای پیام کلیِ خود کروم
       // («Failed - Unknown server error») را می‌گیرند که هیچ علتی نمی‌گوید.
       'bvp.dlNoAuth': 'برای گرفتن فایل باید وارد شده باشید؛ کلید API پیدا نشد. یک بار از تنظیمات کلید را دوباره وارد کنید.',
@@ -670,7 +691,7 @@
       'rc.readFail': 'خواندن فایل ممکن نشد.',
       'rc.export': 'خروجی',
       'rc.extensions': 'افزونه‌ها',
-      'rc.noExtensions': 'هیچ افزونه‌ای بارگذاری نشده. از بالا یکی را از فروشگاه نصب کنید یا فایل ‎.crx / ‎.zip بفرستید، بعد مرورگر را دوباره اجرا کنید — کروم افزونه‌ها را فقط هنگام شروع می‌خواند.',
+      'rc.noExtensions': 'هیچ افزونه‌ای بارگذاری نشده. از بالا یکی را از فروشگاه نصب کنید یا فایل ‎.crx / ‎.zip بفرستید — مرورگر خودش دوباره اجرا می‌شود و کار دیگری لازم نیست. می‌توانید داخل خود مرورگر هم در صفحهٔ فروشگاه «Add to Chrome» را بزنید.',
       'rc.storeHint': 'نشانی افزونه در فروشگاه کروم را بچسبانید؛ سرور خودش آن را دانلود، باز و نصب می‌کند. نه دنبال فایل ‎.crx بگردید، نه دسکتاپ از راه دور لازم است.',
       'rc.tabs': 'تب‌های فعال',
       'rc.tabsHint': 'تب‌های باز در کروم واقعی. برای دیدن آنچه زنده مانده، Refresh را بزنید؛ برای بستن یک تب هنگ‌کرده بدون راه‌اندازی مجدد مرورگر، Kill را بزنید.',
@@ -1827,7 +1848,8 @@
       'bv.error': 'Connection error',
       'bv.noWs': 'Your browser does not support WebSocket.',
       'bv.placeholder': 'Click “Connect” to view the live browser.',
-      'bv.typingHint': 'To type, click on the page first, then type. Scroll works with the mouse wheel.',
+      'bv.typingHint': 'To type, click on the page first, then type. Scroll works with the mouse wheel. Keyboard shortcuts work too: Ctrl+A select all, Ctrl+C copy out of the remote page, Ctrl+V paste from your own clipboard, plus Ctrl+X, Ctrl+Z, Ctrl+F, F5 and Alt+←/→.',
+      'bv.pasteDenied': 'Clipboard access was not granted. Press Ctrl+V once more and allow it.',
       'bv.picked': 'Picked element',
       'bv.pickedToast': 'Element picked:',
       'bv.copyCss': 'Copy CSS',
@@ -1956,6 +1978,27 @@
       'bvp.dlUnknownSize': 'size unknown',
       'bvp.dlTooLarge': 'That file was over the size limit and was not kept.',
       'bvp.dlEmpty': 'Nothing downloaded yet.',
+      // The server reports a failure as a short code (http_403, timeout, …).
+      // Showing the code is barely better than the silence it replaced, so each
+      // one says what happened and what can be done about it.
+      'bvp.dlBadTarget': 'That address cannot be saved (http/https only). Open it in the address bar first, then save.',
+      'bvp.dlNeedsLogin': 'The site refused to hand over that file (it needs a sign-in, or the link was single-use). Sign in inside this remote browser first, then save again.',
+      'bvp.dlNotFound': 'The site does not have that address any more (404).',
+      'bvp.dlSiteError': 'The site itself errored while sending the file. Try again shortly.',
+      'bvp.dlTimeout': 'Fetching the file took too long and was cancelled. For very large files, open the link in a tab so it arrives on the shelf as a normal download.',
+      // The direct answer to "are these files temporary or stored?"
+      'bvp.dlTempNote': 'Downloaded files are temporary: they live in the server\u2019s temp directory, are deleted when you close this window, and are swept automatically a short while later in any case.',
+      // Installing an extension from the Web Store, inside the remote browser.
+      // "Add to Chrome" now genuinely works (the flag that blocked every install
+      // is gone), but Chrome's confirmation prompt is a NATIVE window that the
+      // streamed picture cannot show. So we say so right there, and offer the
+      // path that needs no native prompt at all.
+      'bvp.storeReady': 'Extension installs are enabled in this browser. Press \u201cAdd to Chrome\u201d \u2014 and if you never see Chrome\u2019s confirmation window, use \u201cInstall on server\u201d instead.',
+      'bvp.storeInstall': 'Install on server',
+      'bvp.storeInstallHint': 'Installs this same extension server-side, with no Chrome confirmation window needed. The official extension id is preserved.',
+      'bvp.storeInstalling': 'Installing the extension\u2026',
+      'bvp.storeInstalled': 'Extension installed, and the browser has loaded it.',
+      'bvp.storeFailed': 'The extension could not be installed',
       // Fetch-to-this-machine failures. These replace Chrome's own generic
       // "Failed - Unknown server error", which names no cause at all.
       'bvp.dlNoAuth': 'Saving the file needs you signed in, and no API key was found. Re-enter your key in Settings and try again.',
@@ -2118,7 +2161,7 @@
       'rc.readFail': 'Could not read the file.',
       'rc.export': 'Export',
       'rc.extensions': 'Extensions',
-      'rc.noExtensions': 'No extensions loaded. Install one from the Web Store above, or upload a .crx / .zip — then restart the browser, because Chrome only reads extensions at launch.',
+      'rc.noExtensions': 'No extensions loaded. Install one from the Web Store above, or upload a .crx / .zip — the browser reloads itself, so there is nothing else to do. You can also press “Add to Chrome” on a store page inside the browser.',
       'rc.storeHint': 'Paste a Chrome Web Store link and the server downloads, unpacks and installs the extension itself. No .crx hunting and no remote desktop.',
       'rc.tabs': 'Live tabs',
       'rc.tabsHint': 'Open tabs in the real Chrome. Refresh to see what is still alive; use Kill to close a wedged tab without restarting the browser.',

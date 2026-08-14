@@ -32,9 +32,16 @@ describe('RemoteDownloads storage', () => {
   beforeEach(async () => {
     dir = await fs.mkdtemp(join(os.tmpdir(), 'abdl-'));
     cfg = await import('../../src/config');
-    // The path helpers read DOWNLOADS_DIR at CALL time, so pointing it at a temp
+    // The path helpers read the config at CALL time, so pointing it at a temp
     // directory here is enough — no module-cache surgery required.
+    //
+    // BOTH roots are set, because downloads are EPHEMERAL by default now
+    // (DOWNLOADS_EPHEMERAL, added for «tmp باشند خوبه تا دائمی»): the live root
+    // is DOWNLOADS_TMP_DIR unless an operator asks for durable storage, and a
+    // test that only redirected DOWNLOADS_DIR would silently write into the real
+    // OS temp directory instead of its own sandbox.
     (cfg.config as { DOWNLOADS_DIR: string }).DOWNLOADS_DIR = dir;
+    (cfg.config as { DOWNLOADS_TMP_DIR: string }).DOWNLOADS_TMP_DIR = dir;
     mod = await import('../../src/core/RemoteDownloads');
   });
 

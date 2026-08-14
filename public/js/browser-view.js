@@ -187,17 +187,97 @@
       var p = toPagePoint(ev);
       send({ t: 'scroll', x: p.x, y: p.y, dy: ev.deltaY });
     }
+    /**
+     * The four modifier flags, in the shape the server's `mods()` normaliser
+     * expects. Always all four: a missing field and `false` have to mean the
+     * same thing on the wire, or Ctrl+Click works and the next plain click
+     * silently inherits the last Ctrl state.
+     */
+    function stageMods(ev) {
+      return {
+        ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey,
+        alt: !!ev.altKey, meta: !!ev.metaKey
+      };
+    }
+
+    /**
+     * Keyboard on the focused stage.
+     *
+     * WHAT THIS REPLACED, AND WHY IT WAS WRONG.
+     * The old handler had a nine-key whitelist (Enter, Backspace, Tab, the four
+     * arrows, Delete, Escape) and, worse, `!ev.ctrlKey && !ev.metaKey` on the
+     * printable branch — so EVERY modified keystroke was thrown away before it
+     * reached the wire. Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+Z and Ctrl+F all
+     * silently did nothing, and so did every function key. The server has
+     * implemented all of them for a long time (BrowserInput maps Ctrl+A/C/V/X/Z/Y
+     * onto CDP `Input.dispatchKeyEvent` edit `commands`), so the fix is entirely
+     * here: stop filtering, and send what actually happened.
+     *
+     * The rule is now the same one the full picker shell uses, so the two views
+     * cannot drift: a bare printable character is INSERTED AS TEXT (which is what
+     * makes accented and non-Latin input work — `Input.insertText` handles a
+     * composed character no keycode describes), and everything else is dispatched
+     * as a real key event carrying its modifiers, so the page's own handlers see
+     * the combination they are testing for.
+     */
     function onStageKey(ev) {
       if (!state) return;
-      var special = { Enter: 'Enter', Backspace: 'Backspace', Tab: 'Tab',
-        ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft',
-        ArrowRight: 'ArrowRight', Delete: 'Delete', Escape: 'Escape' };
-      if (special[ev.key]) {
+
+      // Clipboard keys belong to RemoteIO, which listens in the CAPTURE phase and
+      // has already answered them (Ctrl+C/X -> {t:'copy'}, Ctrl+A -> selectAll,
+      // Ctrl+V -> the native `paste` event, the only way to read the local
+      // clipboard without a permission prompt). Forwarding them again here would
+      // copy twice and, for paste, race two different texts into the page.
+      var kl = String(ev.key || '').toLowerCase();
+      var editMod = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+      if (rio && editMod && (kl === 'c' || kl === 'x' || kl === 'a' || kl === 'v')) return;
+      // No RemoteIO on the page (it is an optional module): do the two directions
+      // that still work without it rather than dropping the keys. Copy and
+      // select-all are pure server-side commands; paste needs the local clipboard,
+      // which only the async API can give us here.
+      if (!rio && editMod && kl === 'v') {
         ev.preventDefault();
-        send({ t: 'key', key: special[ev.key] });
-      } else if (ev.key && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey) {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(function (txt) {
+            if (txt) send({ t: 'paste', text: txt });
+          }).catch(function () { toast(t('bv.pasteDenied'), 'info'); });
+        } else {
+          toast(t('bv.pasteDenied'), 'info');
+        }
+        return;
+      }
+
+      // Reload, both spellings, because both are muscle memory. Shift makes it
+      // Chrome's cache-bypassing reload — a genuinely different action.
+      if (ev.key === 'F5' || (editMod && kl === 'r')) {
         ev.preventDefault();
+        send({ t: 'reload', hard: !!(ev.shiftKey || (ev.ctrlKey && ev.key === 'F5')) });
+        return;
+      }
+      // Alt+Left / Alt+Right: Chrome's keyboard Back and Forward.
+      if (ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+        ev.preventDefault();
+        send({ t: ev.key === 'ArrowLeft' ? 'back' : 'forward' });
+        return;
+      }
+      // Keystrokes the HOST browser keeps for itself and this view has nothing to
+      // put in their place (no tab strip here): let them do their normal thing
+      // rather than eating them and leaving the user with nothing at all.
+      if (editMod && (kl === 't' || kl === 'w' || kl === 'n' || ev.key === 'Tab')) return;
+      if (ev.key === 'F11' || ev.key === 'F12') return;
+
+      var printable = ev.key && ev.key.length === 1
+        && !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+      ev.preventDefault();
+      if (printable) {
         send({ t: 'type', text: ev.key });
+      } else {
+        send({
+          t: 'key',
+          key: ev.key === ' ' ? 'Space' : ev.key,
+          mods: stageMods(ev),
+          autoRepeat: !!ev.repeat
+        });
       }
     }
 
@@ -786,6 +866,33 @@
             'title="' + esc(t('bvp.newTab')) + '" aria-label="' + esc(t('bvp.newTab')) + '">' +
             BIC('plus', 14) + '</button>' +
         '</div>' +
+        // ── The Chrome Web Store assist bar ────────────────────────────────
+        // Shown ONLY while the active tab is a Web Store extension page, and
+        // hidden everywhere else — a permanent bar about extensions would be
+        // noise on the 99% of pages that are not the store.
+        //
+        // WHY IT EXISTS AT ALL, now that "Add to Chrome" genuinely works:
+        // installing is no longer blocked (extensionLaunchArgs no longer emits
+        // --disable-extensions-except, which is what made Chrome answer
+        // "Installation is not enabled"), but Chrome then asks for confirmation
+        // in a NATIVE window. The canvas below is a screencast of the PAGE, so a
+        // native window is not drawn in it at all — the same hard ceiling that
+        // hides the extension toolbar and the file dialog. Without this bar the
+        // user would press "Add to Chrome", see absolutely nothing happen, and
+        // reasonably conclude it was still broken.
+        //
+        // So it says installs ARE enabled, and offers the server-side install as
+        // an alternative that needs no native prompt. Both paths end in the same
+        // place: the extension in the same profile, with its official id.
+        '<div class="bvp-store is-off" id="bvp-store">' +
+          // `layers` is already this product's extension glyph — it is what the
+          // Real Chrome button (which owns the Extensions panel) uses two rows
+          // up. Inventing a second symbol for the same concept is how a UI stops
+          // being learnable.
+          '<span class="bvp-store-icon">' + BIC('layers', 14) + '</span>' +
+          '<span class="bvp-store-text" id="bvp-store-text"></span>' +
+          '<button class="btn btn-primary btn-sm" id="bvp-store-go" type="button"></button>' +
+        '</div>' +
         '<div class="bvp-stage" id="bvp-stage" tabindex="0">' +
           '<canvas class="bvp-canvas" id="bvp-canvas"></canvas>' +
           '<div class="bvp-empty" id="bvp-empty">' + esc(t('bvp.needUrl')) + '</div>' +
@@ -990,7 +1097,12 @@
         // real fetch link, not just a name.
         '<div class="bvp-shelf is-off" id="bvp-shelf" role="region" ' +
           'aria-label="' + esc(t('bvp.dlShelf')) + '">' +
-          '<span class="bvp-shelf-icon">' + BIC('download', 14) + '</span>' +
+          // The icon carries the storage answer as its tooltip. The owner asked
+          // outright whether these files are temporary or stored, and the honest
+          // answer belongs where the files appear rather than in a document —
+          // they are temporary, deleted with the window, and swept anyway.
+          '<span class="bvp-shelf-icon" title="' + esc(t('bvp.dlTempNote')) + '">' +
+            BIC('download', 14) + '</span>' +
           '<div class="bvp-shelf-items" id="bvp-shelf-items"></div>' +
           '<button class="icon-btn bvp-shelf-clear" id="bvp-shelf-clear" type="button" ' +
             'title="' + esc(t('bvp.dlClearAll')) + '" aria-label="' + esc(t('bvp.dlClearAll')) + '">' +
@@ -1060,6 +1172,13 @@
     var elHead = q('bvp-elhead');
     var sessEl = q('bvp-session');
     var anonEl = q('bvp-anon');
+    // The Chrome Web Store assist bar. Resolved up front with everything else,
+    // never built on demand: an element created at the moment it is needed is an
+    // element that can fail to appear, and this one's whole job is to explain a
+    // thing the user cannot otherwise see.
+    var storeBar = q('bvp-store');
+    var storeText = q('bvp-store-text');
+    var storeGo = q('bvp-store-go');
     var ctx = canvas.getContext('2d');
 
     pickState = {
@@ -1997,6 +2116,121 @@
     }
 
     /**
+     * Turn a save/download failure code into a sentence the user can act on.
+     *
+     * WHY THIS EXISTS. The server reports failures as short machine codes
+     * (`http_403`, `bad_url`, `unsupported_scheme`, `download_too_large`, or a
+     * raw Playwright timeout message). Showing those verbatim is barely better
+     * than the silence they replaced — «Timeout 60000ms exceeded» names no cause
+     * and suggests no remedy. Each code below maps to what actually happened and
+     * what to do about it, and anything unrecognised still falls back to the
+     * code itself rather than being swallowed.
+     */
+    function saveFailureMessage(code, subject) {
+      var raw = String(code || '');
+      var name = String(subject || '');
+      var key = '';
+      if (raw === 'bad_url' || raw === 'unsupported_scheme') key = 'bvp.dlBadTarget';
+      else if (raw === 'download_too_large') key = 'bvp.dlTooLarge';
+      else if (/^http_40[13]$/.test(raw)) key = 'bvp.dlNeedsLogin';
+      else if (/^http_404$/.test(raw)) key = 'bvp.dlNotFound';
+      else if (/^http_5\d\d$/.test(raw)) key = 'bvp.dlSiteError';
+      else if (/timeout/i.test(raw)) key = 'bvp.dlTimeout';
+      if (key) return t(key);
+      return tf('bvp.dlFailed', { name: name }) + (raw ? ' (' + raw + ')' : '');
+    }
+
+    /**
+     * The Chrome Web Store id of an extension DETAIL page, or '' for anything
+     * else.
+     *
+     * A store id is exactly 32 letters from a-p, which is what makes this
+     * recognisable without asking the server. Both hosts are accepted because
+     * the store moved and old links are everywhere:
+     *   chromewebstore.google.com/detail/<slug>/<id>
+     *   chrome.google.com/webstore/detail/<slug>/<id>
+     *
+     * Only /detail/ pages match. The store's search and category pages are not
+     * offers to install anything, so showing an install bar on them would be
+     * claiming something untrue about the page the user is looking at.
+     */
+    function storeIdFromUrl(url) {
+      var raw = String(url || '');
+      if (!/^https?:\/\/(chromewebstore\.google\.com|chrome\.google\.com)\//i.test(raw)) return '';
+      if (!/\/detail\//i.test(raw)) return '';
+      // The id is the last 32-letter a-p run that is not glued to a longer word;
+      // a slug can contain letters past 'p', digits or hyphens, so a false
+      // positive is not realistic. Mirrors webStoreIdFromInput() on the server.
+      var found = raw.match(/[a-p]{32}/g);
+      if (!found) return '';
+      for (var i = found.length - 1; i >= 0; i--) {
+        var at = raw.indexOf(found[i]);
+        var before = raw[at - 1];
+        var after = raw[at + found[i].length];
+        if (before && /[A-Za-z0-9]/.test(before)) continue;
+        if (after && /[A-Za-z0-9]/.test(after)) continue;
+        return found[i];
+      }
+      return '';
+    }
+
+    /** The store id the assist bar is currently offering to install. */
+    var storeId = '';
+
+    /**
+     * Show or hide the assist bar for the page we are on.
+     *
+     * Called from every event that can change the address (`navigated`,
+     * `tabOpened`, `recovered`, `ready`) rather than from a timer: a bar that
+     * appears a second late has already been ignored.
+     */
+    function syncStoreBar(url) {
+      if (!storeBar) return;
+      var id = storeIdFromUrl(url);
+      storeId = id;
+      if (!id) {
+        storeBar.classList.add('is-off');
+        return;
+      }
+      storeText.textContent = t('bvp.storeReady');
+      storeGo.textContent = t('bvp.storeInstall');
+      storeGo.title = t('bvp.storeInstallHint');
+      storeGo.disabled = false;
+      storeBar.classList.remove('is-off');
+    }
+
+    /**
+     * Install the extension this store page is for, server-side.
+     *
+     * The same endpoint the Real Chrome panel uses, so there is exactly one
+     * install path in the product: it downloads the signed .crx, pins the
+     * official id, and relaunches Chrome so the extension is actually LOADED
+     * before we claim success. That relaunch is why the button reports
+     * `res.warning` when the install worked but the load did not — telling the
+     * user "installed" while the browser has not got it is the lie that produced
+     * the original «گیج و منگ» report.
+     */
+    function installFromStorePage() {
+      if (!storeId || !window.API || !window.API.post) return;
+      var wanted = storeId;
+      storeGo.disabled = true;
+      storeText.textContent = t('bvp.storeInstalling');
+      window.API.post('/browser/extensions/store', { url: wanted })
+        .then(function (res) {
+          if (res && res.warning) toast(res.warning, 'warn');
+          else toast(t('bvp.storeInstalled'), 'success');
+          // Leave the bar visible but spent: the user is still on the store page
+          // and re-installing the same extension is a no-op worth discouraging.
+          storeText.textContent = t('bvp.storeInstalled');
+        })
+        .catch(function (e) {
+          toast(t('bvp.storeFailed') + ': ' + (e && e.message ? e.message : ''), 'error');
+          storeText.textContent = t('bvp.storeReady');
+          storeGo.disabled = false;
+        });
+    }
+
+    /**
      * The title of the tab being streamed, or '' when there is nothing useful.
      *
      * The strip already carries every tab's title (the server refreshes it on
@@ -2720,6 +2954,10 @@
           // stale address in the bar, so "where am I?" had no answer. Never
           // overwrite what the user is currently typing into the field.
           if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
+          // Offer the server-side install exactly when the page is a store
+          // extension page. Driven off the SERVER's url, not the input field,
+          // because the field is the user's to type in.
+          syncStoreBar(msg.url);
           break;
         // ── Tabs ──────────────────────────────────────────────────────────
         case 'tabs':
@@ -2731,6 +2969,10 @@
           // the user had just started was invisible: the page existed, nothing
           // was streaming it, and the canvas kept showing the tab they left.
           if (msg.url && document.activeElement !== urlIn) urlIn.value = msg.url;
+          // A store link very often arrives in a NEW tab (the store's own
+          // "Add to Chrome" flows and every link out of a blog post), so this
+          // event needs the same treatment as a plain navigation.
+          syncStoreBar(msg.url);
           break;
         // ── Recovery ──────────────────────────────────────────────────────
         // These two are the visible half of issue 1. The old code had no way to
@@ -2751,6 +2993,10 @@
           // The picker script lives in the page, and the page is new. Re-arm the
           // mode the user had, or select mode is silently off after a recovery.
           applySelectMode(pickState.selectMode, true);
+          // A recovery can land on a different URL than we left (it restores the
+          // tab's own address), so the bar has to be re-decided rather than left
+          // showing an offer for a page that is no longer in front of the user.
+          syncStoreBar(msg.url);
           break;
         // How much survived a relaunch. The user's report was not only that
         // tabs were lost — it was that they could not tell WHAT had happened
@@ -2827,8 +3073,18 @@
           if (msg.state === 'completed') {
             toast(tf('bvp.dlDone', { name: String(msg.name || '') }), 'success');
           } else if (msg.state === 'failed') {
-            toast(tf('bvp.dlFailed', { name: String(msg.name || '') }), 'error');
+            toast(saveFailureMessage(msg.error, msg.name), 'error');
           }
+          break;
+        // ── A save that never even became a download ─────────────────────
+        // THE REPORTED BUG: «هیچ اتفاقی نمیوفته» — Save page as did nothing at
+        // all. The server DOES answer a refused save (`downloadError`), but no
+        // client ever listened for it, so a rejected URL produced no row, no
+        // toast and no error: literally nothing. Silence is the worst possible
+        // report, because the user cannot tell a broken feature from a slow one
+        // and simply clicks again.
+        case 'downloadError':
+          toast(saveFailureMessage(msg.error, msg.url), 'error');
           break;
         case 'downloadCleared':
           pickState.downloads = pickState.downloads.filter(function (d) {
@@ -3488,6 +3744,11 @@
       setStatus(t('bvp.recovering'), 'warn');
       send({ t: 'resync' });
     });
+    // Install the extension whose store page is open, server-side. The bar this
+    // belongs to is hidden on every page that is not a store detail page, so
+    // this listener is only reachable when there is genuinely something to
+    // install.
+    storeGo.addEventListener('click', installFromStorePage);
     // Restart the real Chrome. Relaunching it kills every page in it, including
     // the one we are streaming, so the resync afterwards is not optional — it is
     // what stops the canvas being left on a frozen last frame of a page whose

@@ -649,10 +649,16 @@
     var list = el('div', 'rc-list');
     var exts = rc.extensions || [];
     if (!exts.length) {
+      // No "then restart the browser" any more. Every install route reloads
+      // Chrome itself and answers `restartRequired: false`, so telling the user
+      // to do it by hand describes a product that no longer exists — and the
+      // Restart button is right above this note, which made the sentence read
+      // like a required step. When a reload genuinely did not take, the
+      // `rc.restartRequired` note below says so from measured state.
       note(list, t('rc.noExtensions',
         'No extensions loaded. Install one from the Web Store above, or upload a ' +
-        '.crx / .zip — then restart the browser, because Chrome only reads ' +
-        'extensions at launch.'));
+        '.crx / .zip — the browser reloads itself, so there is nothing else to do. ' +
+        'You can also press “Add to Chrome” on a store page inside the browser.'));
     } else {
       exts.forEach(function (ext) {
         var row = el('div', 'rc-ext');

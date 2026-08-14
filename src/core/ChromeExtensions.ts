@@ -680,14 +680,67 @@ export async function removeExtension(extensionsDir: string, id: string): Promis
 }
 
 /**
- * Build the two Chrome flags that side-load extensions.
+ * Build the Chrome flag that side-loads our unpacked extensions.
  *
- * `--disable-extensions-except` is not optional: Playwright's own launch args
- * include `--disable-extensions`, and without the "except" list Chrome honours
- * the disable and loads nothing while reporting no error at all.
+ * ── WHY `--disable-extensions-except` IS NO LONGER EMITTED ──────────────────
+ *
+ * THE OPERATOR'S COMPLAINT (verbatim, ask #6):
+ *
+ *   «کیخام وقتی از پلی استور پلاگین های کروم add extension رو میزنم اونجوری
+ *    نصب بشه و ارور Installation is not enabled نیاد»
+ *
+ * i.e. clicking "Add to Chrome" on a Chrome Web Store page INSIDE the remote
+ * browser must actually install, instead of answering "Installation is not
+ * enabled". That message was ours, caused by this very function.
+ *
+ * TRACED IN CHROMIUM'S OWN SOURCE (main, read 2026-08-13), and this is the
+ * whole bug in five lines:
+ *
+ *   extension_util.cc:71-74    ExtensionsDisabledViaCommandLine() is TRUE when
+ *                              the command line has EITHER --disable-extensions
+ *                              OR --disable-extensions-except.
+ *   extension_util.cc:362-367  AreExtensionsDisabled() returns that.
+ *   extension_registrar.cc:112 Init() then forces `extensions_enabled = false`.
+ *   crx_installer.cc:404-408   `if (!extensions_enabled_)` → CrxInstallError(
+ *                              DECLINED, INSTALL_NOT_ENABLED,
+ *                              IDS_EXTENSION_INSTALL_NOT_ENABLED)
+ *                              — which is the literal string the user saw.
+ *
+ * So the "except" flag does not merely narrow WHICH extensions load: it puts the
+ * whole profile into "extensions are disabled" mode, and in that mode NO install
+ * of any kind can ever succeed. No amount of UI wording could have fixed it,
+ * because the refusal happens inside Chrome before our code sees anything.
+ *
+ * ── WHY DROPPING IT IS SAFE (the fear it was added for is already handled) ───
+ *
+ * The old comment here said the flag was "not optional" because Playwright adds
+ * `--disable-extensions` by default, so `--load-extension` would be a silent
+ * no-op without an "except" list. That reasoning was sound at the time but is
+ * now obsolete: `IGNORED_DEFAULT_ARGS` (BrowserProfile.ts) REMOVES Playwright's
+ * `--disable-extensions` from the command line altogether, so there is no
+ * "disable" left to make an exception to. Countering a flag we already delete is
+ * what cost us webstore installs.
+ *
+ * Chromium confirms the asymmetry is real and in our favour —
+ * extension_service.cc:352-378:
+ *
+ *   bool load_command_line_extensions = extension_registrar_->extensions_enabled();
+ *   LoadExtensionsFromCommandLineFlag(switches::kDisableExtensionsExcept);   // unconditional
+ *   if (load_command_line_extensions)                                        // gated!
+ *     LoadExtensionsFromCommandLineFlag(switches::kLoadExtension);
+ *
+ * `--load-extension` is only honoured while extensions are ENABLED. Passing the
+ * "except" flag therefore disabled the very mechanism it was supposed to
+ * protect's sibling — and it also disabled every extension the user had already
+ * installed into the profile by hand, which is the other half of the report.
+ *
+ * NET EFFECT of returning only `--load-extension`: our own unpacked extensions
+ * still load (extensions are enabled, so the flag is honoured), extensions
+ * already in the profile keep working instead of being silently switched off,
+ * and a Web Store install from inside the browser is permitted.
  */
 export function extensionLaunchArgs(extensions: InstalledExtension[]): string[] {
   if (extensions.length === 0) return [];
   const paths = extensions.map((e) => e.dir).join(',');
-  return [`--disable-extensions-except=${paths}`, `--load-extension=${paths}`];
+  return [`--load-extension=${paths}`];
 }

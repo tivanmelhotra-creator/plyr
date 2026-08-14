@@ -45,6 +45,13 @@ describe('automation infobar suppression', () => {
   });
 
   it('still removes --disable-extensions, or --load-extension is a no-op', () => {
+    // This deletion is now load-bearing for TWO features, not one. Beyond
+    // making --load-extension work, it is what lets a Web Store install
+    // succeed at all: Chromium reads --disable-extensions as "extensions are
+    // disabled" for the whole profile and then declines every install with
+    // INSTALL_NOT_ENABLED — the reported "Installation is not enabled". Since
+    // Playwright adds this flag by default, removing it here is the only reason
+    // the remote browser can install anything.
     expect(IGNORED_DEFAULT_ARGS).toContain('--disable-extensions');
   });
 

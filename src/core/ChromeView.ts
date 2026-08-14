@@ -118,30 +118,73 @@ export function chromeViewHtml(): string {
   }
   #files > * { pointer-events: auto; }
   #files[hidden] { display: none; }
+  /* THE TWO-BUTTON PROBLEM
+     ----------------------
+     The operator's report: «قسمت آپلود و فایل ها هم اصلا خوب نیست ui/ux خوبی
+     نداره باید بهتر بشه و کنترل بیشتری داشته باشیم».
+
+     Two bare buttons labelled "Upload" and "Files" sat side by side with equal
+     weight, and neither said what it would do. "Files" sounds like a file
+     manager but only lists downloads; "Upload" opens a local picker whose
+     result is not a transfer but a file PARKED ready for the page to ask for
+     it — the single most surprising thing about this page, and nothing on
+     screen said it. There was also no count, so "did my download arrive?" could
+     only be answered by opening the panel.
+
+     Now: ONE primary control that carries a live count, with Upload demoted to
+     an icon-and-word secondary, and the explanation moved into the panel where
+     there is room to write it. */
   .fbtn {
     font: inherit; color: #e6e6ee; background: rgba(38,38,46,.92);
     border: 1px solid #4a4a55; border-radius: 6px;
     padding: 6px 11px; cursor: pointer; backdrop-filter: blur(3px);
+    display: inline-flex; align-items: center; gap: 6px;
   }
   .fbtn:hover { background: rgba(58,58,68,.96); }
+  .fbtn:focus-visible { outline: 2px solid #7aa2ff; outline-offset: 1px; }
+  /* The count rides on the Files button so the answer to "did it arrive?" is
+     visible without opening anything. Hidden at zero rather than showing a 0,
+     which reads as a broken badge. */
+  #dlcount {
+    background: #3d6ae0; color: #fff; border-radius: 9px;
+    padding: 0 6px; font-size: 11px; font-weight: 600;
+  }
+  #dlcount[hidden] { display: none; }
   #panel {
-    width: 19rem; max-height: 15rem; overflow-y: auto;
+    width: 22rem; max-height: 17rem; overflow-y: auto;
     background: rgba(30,30,37,.96); border: 1px solid #43434e;
     border-radius: 8px; padding: 9px 10px;
     box-shadow: 0 6px 22px rgba(0,0,0,.45);
   }
   #panel[hidden] { display: none; }
   #panel h4 { margin: 0 0 7px; font-size: 12px; font-weight: 600; color: #b9b9c6; }
+  /* What the Upload button actually does, said once, where it can be read.
+     Docked at the top of the panel because it explains the control above it. */
+  .fhelp {
+    margin: 0 0 8px; padding: 6px 8px; border-radius: 5px;
+    background: rgba(61,106,224,.12); border-left: 2px solid #3d6ae0;
+    color: #b9b9c6;
+  }
   #dls { list-style: none; margin: 0; padding: 0; }
   #dls li {
     display: flex; align-items: center; gap: 7px;
     padding: 4px 0; border-top: 1px solid #38383f;
   }
   #dls li:first-child { border-top: 0; }
-  #dls a { color: #8fb6ff; text-decoration: none; overflow-wrap: anywhere; }
+  #dls a { color: #8fb6ff; text-decoration: none; overflow-wrap: anywhere; flex: 1 1 auto; }
   #dls a:hover { text-decoration: underline; }
   .sz { color: #8b8b98; flex: none; }
   .empty { color: #8b8b98; }
+  /* Remove: the «کنترل بیشتر» the operator asked for. Deliberately quiet until
+     hovered — it deletes the file from the server, so it must not sit at the
+     same visual weight as the link that merely fetches it. It is LAST in the
+     row, after the size, so a mis-aimed click lands on nothing. */
+  .del {
+    font: inherit; color: #8b8b98; background: none; border: 0;
+    padding: 0 2px; cursor: pointer; flex: none; line-height: 1;
+  }
+  .del:hover { color: #ff9d9d; }
+  .del:focus-visible { outline: 1px solid #ff9d9d; outline-offset: 1px; }
   /* A failure has to be readable ON the row it belongs to: this page has no
      toast, and the operator's report was that a click did nothing at all. */
   .rowerr { color: #ff9d9d; flex-basis: 100%; padding: 2px 0 0; }
@@ -155,12 +198,21 @@ export function chromeViewHtml(): string {
 <div id="screen"></div>
 <div id="files" hidden>
   <div id="panel" hidden>
-    <h4>Downloads</h4>
+    <h4>Files on the server</h4>
+    <!-- The one thing about this page that surprises everybody: a file you send
+         is not delivered anywhere, it WAITS for the page to ask for it. Said
+         here, in the panel, because there is no room for it on a button — and
+         not saying it anywhere is why the two buttons read as guesswork. -->
+    <p class="fhelp">Downloads from the remote browser land here. A file you send waits here too, and is handed over automatically the moment a page asks for one &mdash; you never type its name.</p>
     <ul id="dls"><li class="empty">Nothing downloaded yet.</li></ul>
   </div>
   <div style="display:flex; gap:8px">
-    <button class="fbtn" id="upbtn" type="button" title="Send a file to the remote browser">Upload</button>
-    <button class="fbtn" id="dlbtn" type="button">Files</button>
+    <button class="fbtn" id="upbtn" type="button" title="Choose a file on your machine, ready for the page to ask for it">&#8593; Send a file</button>
+    <!-- The count rides on this button so "did my download arrive?" is answered
+         without opening anything. #dlcount is a CHILD span, so writing the
+         button's own textContent would destroy it — nothing does, and
+         popup-style label writing is confined to #upbtn. -->
+    <button class="fbtn" id="dlbtn" type="button" title="Show the files on the server">Files <span id="dlcount" hidden></span></button>
   </div>
   <input id="up" type="file" multiple>
 </div>
@@ -223,6 +275,18 @@ const retry = document.getElementById('retry');
 // uses it, because connect() runs during the module body and would otherwise
 // read it inside its temporal dead zone.
 const filesEl = document.getElementById('files');
+
+/*
+ * The Send button's resting label, in ONE place.
+ *
+ * This button rewrites its own textContent to report progress ('Uploading…',
+ * 'Uploaded', 'Upload failed') and then has to put itself back. That reset
+ * string and the label in the markup above are the same label, so hardcoding it
+ * in both places means renaming the button in the HTML silently renames it again
+ * the first time it is used — the button would read 'Send a file' until the
+ * first upload and 'Upload' forever after.
+ */
+const UP_IDLE = '\u2191 Send a file';
 
 const qs = new URLSearchParams(location.search);
 
@@ -634,14 +698,89 @@ function renderDownloads(rows) {
       sz.className = 'sz';
       sz.textContent = humanSize(r.size);
       li.appendChild(sz);
+      // Remove, LAST in the row and appended after the size on purpose: the
+      // anchor has to stay the row's first child (it is what a click on the name
+      // must hit), and a destructive control sitting next to a fetch link wants
+      // distance from it.
+      li.appendChild(deleteButton(r, li));
     } else {
       // A failed or in-flight row must SAY so rather than offer a dead link.
       li.className = 'empty';
       li.textContent = r.name + ' — ' +
         (r.state === 'failed' ? (r.error || 'failed') : 'downloading…');
+      // A failed row is still a row the operator wants gone — arguably more so.
+      // An in-flight one is not: deleting bytes mid-write would leave the shelf
+      // describing a file that is still being written.
+      if (r.state === 'failed') li.appendChild(deleteButton(r, li));
     }
     dls.appendChild(li);
   });
+}
+
+/**
+ * The per-row Remove control — the «کنترل بیشتر» the operator asked for.
+ *
+ * This DELETES THE FILE from the server (DELETE /browser/real/downloads/:token
+ * removes the bytes and the row together), so it is not a hide button and must
+ * never behave like one. Two consequences, both deliberate:
+ *
+ *   - The row is not removed optimistically. If the delete fails the file is
+ *     still there, and a row that vanished anyway would leave the operator
+ *     believing they had cleaned up something they had not.
+ *   - The whole list is re-rendered from the server's answer rather than patched
+ *     locally, so what is on screen is what is on disk.
+ */
+function deleteButton(row, li) {
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'del';
+  // A cross, not the word "Delete": the row is already crowded with a name that
+  // can be long, and the title carries the meaning for anyone hovering or using
+  // a screen reader.
+  del.textContent = '\u00d7';
+  del.title = 'Delete this file from the server';
+  del.setAttribute('aria-label', 'Delete ' + row.name + ' from the server');
+  del.addEventListener('click', () => {
+    const stale = li.querySelector('.rowerr');
+    if (stale) stale.remove();
+    del.disabled = true;
+    fetch('/browser/real/downloads/' + encodeURIComponent(row.token), {
+      method: 'DELETE',
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    })
+      .then((res) => res.json().catch(() => ({})).then((body) => ({ res: res, body: body })))
+      .then((out) => {
+        if (!out.res.ok || !out.body || out.body.success !== true) {
+          throw new Error((out.body && out.body.error) || 'The file could not be deleted.');
+        }
+        // Server-truth, not a local splice.
+        renderDownloads(out.body.downloads || []);
+        setDownloadCount((out.body.downloads || []).length);
+      })
+      .catch((e) => {
+        del.disabled = false;
+        const err = document.createElement('div');
+        err.className = 'rowerr';
+        err.textContent = (e && e.message) ? e.message : 'The file could not be deleted.';
+        li.appendChild(err);
+      });
+  });
+  return del;
+}
+
+/**
+ * The badge on the Files button.
+ *
+ * Hidden at zero rather than showing '0': a badge reading zero looks like a
+ * broken counter, and the point of the badge is to answer "did my download
+ * arrive?" without opening the panel.
+ */
+function setDownloadCount(n) {
+  const badge = document.getElementById('dlcount');
+  if (!badge) return;
+  badge.textContent = n > 0 ? String(n) : '';
+  badge.hidden = !(n > 0);
 }
 
 /**
@@ -666,6 +805,11 @@ function refreshDownloads(quiet) {
       if (j && j.owner) shelfOwner = String(j.owner);
       const rows = (j && j.downloads) || [];
       if (!quiet) renderDownloads(rows);
+      // The badge updates on the QUIET pass too, and that is the whole point of
+      // it: the watcher already polls the shelf, so the count can appear while
+      // the panel is shut. Only the list is skipped when quiet, because
+      // re-rendering that would scroll a panel the operator is reading.
+      setDownloadCount(rows.length);
       return rows;
     })
     .catch(() => {
@@ -825,7 +969,7 @@ upInput.addEventListener('change', () => {
       }
     })
     // Whatever happened, the button must go back to being a button.
-    .then(() => setTimeout(() => { btn.textContent = 'Upload'; }, 2500));
+    .then(() => setTimeout(() => { btn.textContent = UP_IDLE; }, 2500));
 });
 
 // A picker the operator dismissed. Modern browsers fire this and NOT 'change',
