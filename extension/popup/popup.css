@@ -5,16 +5,16 @@
   --line: #2a3346;
   --text: #e6ecf5;
   --muted: #8a98ad;
-  --accent: #4f8cff;
+  --accent: #ff8a3d;
   --ok: #2ec27e;
   --bad: #ff5c6c;
   --warn: #f2b53c;
 }
 body {
   margin: 0;
-  /* 360, not 340. The tab strip needs four labels to fit on ONE line at a font
-     size that is still readable; at 340 "Inspect" wrapped. Chrome allows up to
-     800, so this costs nothing. */
+  /* 360 rather than the Chrome minimum: the Connection tab stacks two mode
+     cards that each carry a full URL, and a narrower popup wrapped them onto a
+     second line where they stopped reading as one choice. */
   width: 360px;
   font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
@@ -23,12 +23,12 @@ body {
 }
 
 /* ── Tabs, with no JavaScript ─────────────────────────────────────────────
-   Four radios drive four panels through `:checked ~ .panels`. An MV3 popup runs
+   Two radios drive two panels through `:checked ~ .panels`. An MV3 popup runs
    under a CSP that refuses inline handlers, and popup.js resolves every id in
    one eager map with no null guards — so the panels must all EXIST at load and
    only their visibility may change. `display: none` is right here and not
-   `visibility`: a hidden panel must not reserve height, or the popup keeps the
-   scrollbar this redesign removes.
+   `visibility`: a hidden panel must not reserve height, or the popup grows a
+   scrollbar for content nobody is looking at.
 
    The radios are visually hidden but must stay focusable, so they are moved
    off-screen rather than given `display: none` (which would drop them out of
@@ -48,8 +48,10 @@ body {
 .tabs label {
   flex: 1;
   text-align: center;
-  padding: 8px 4px;
-  font-size: 12px;
+  padding: 9px 4px;
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
   color: var(--muted);
   cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -61,35 +63,27 @@ body {
 /* Only one panel is on screen at a time. */
 .panel { display: none; padding: 12px; }
 
-#tab-inspect:checked ~ .panels #p-inspect,
-#tab-run:checked     ~ .panels #p-run,
-#tab-local:checked   ~ .panels #p-local,
-#tab-setup:checked   ~ .panels #p-setup { display: block; }
+#tab-inspect:checked    ~ .panels #p-inspect,
+#tab-connection:checked ~ .panels #p-connection { display: block; }
 
 /* …and its label is the one that looks selected. `nth-of-type` is safe because
-   the four labels are the only children of .tabs, in document order. */
-#tab-inspect:checked ~ .tabs label:nth-of-type(1),
-#tab-run:checked     ~ .tabs label:nth-of-type(2),
-#tab-local:checked   ~ .tabs label:nth-of-type(3),
-#tab-setup:checked   ~ .tabs label:nth-of-type(4) {
+   the two labels are the only children of .tabs, in document order. */
+#tab-inspect:checked    ~ .tabs label:nth-of-type(1),
+#tab-connection:checked ~ .tabs label:nth-of-type(2) {
   color: var(--text);
   border-bottom-color: var(--accent);
 }
 
 /* Keyboard users need to see where they are before they press an arrow key. */
 .tabin:focus-visible ~ .tabs label { outline: none; }
-#tab-inspect:focus-visible ~ .tabs label:nth-of-type(1),
-#tab-run:focus-visible     ~ .tabs label:nth-of-type(2),
-#tab-local:focus-visible   ~ .tabs label:nth-of-type(3),
-#tab-setup:focus-visible   ~ .tabs label:nth-of-type(4) {
+#tab-inspect:focus-visible    ~ .tabs label:nth-of-type(1),
+#tab-connection:focus-visible ~ .tabs label:nth-of-type(2) {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   border-radius: 4px;
 }
 
-/* One sentence at the top of each panel saying what the panel is for. The old
-   layout had seven bare headings and no explanation anywhere, which is what
-   «گیج شدم» describes. */
+/* One sentence at the top of each section saying what it is for. */
 .lede {
   margin: 0 0 10px;
   font-size: 11px;
@@ -111,19 +105,6 @@ body {
   gap: 6px;
 }
 
-/* Numbered procedure for the Local tab. The pairing box was already there; what
-   was missing was the three steps around it — where the code comes from, that it
-   expires, and what to press. That gap is why Local went untested. */
-.howto {
-  margin: 0 0 10px;
-  padding-left: 18px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-.howto li { margin-bottom: 4px; }
-.howto b { color: var(--text); font-weight: 600; }
-
 /* A cross-tab pointer. It is a real <label for>, so it switches tabs from
    anywhere in the document without any script. */
 .link {
@@ -131,9 +112,9 @@ body {
   cursor: pointer;
   text-decoration: underline;
 }
-.jump { margin: 12px 0 0; font-size: 11px; color: var(--muted); }
+.jump { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
 .hintline.note {
-  margin-top: 10px;
+  margin-top: 12px;
   padding: 7px 8px;
   background: var(--card);
   border-left: 2px solid var(--accent);
@@ -142,9 +123,9 @@ body {
 .row.spaced { margin-top: 8px; }
 
 /* The shared status line. It sits below the panels and is written by one
-   setStatus() that three different tabs call, so it must never be inside a
-   panel that could be hidden when the message arrives. min-height keeps the
-   popup from changing height as messages come and go. */
+   setStatus() that both tabs call, so it must never be inside a panel that
+   could be hidden when the message arrives. min-height keeps the popup from
+   changing height as messages come and go. */
 .foot {
   padding: 8px 12px;
   border-top: 1px solid var(--line);
@@ -164,37 +145,7 @@ body {
 .conn { font-size: 11px; color: var(--muted); }
 .conn.ok { color: var(--ok); }
 .conn.bad { color: var(--bad); }
-/* `.card` now has exactly one user left: #liveCard, which popup.js reveals with
-   `hidden = false`. It is nested INSIDE the padded Run panel, so the old
-   full-width card padding and bottom rule would have drawn a stray line across
-   the middle of the panel and double-indented its contents. Re-styled as an
-   inset block instead, and given no `display` of its own so `hidden` keeps
-   working. */
-.card {
-  margin-top: 12px;
-  padding: 10px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-.card h2,
-.card h3 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  color: var(--muted);
-  margin: 0 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.count {
-  background: var(--line);
-  color: var(--text);
-  border-radius: 10px;
-  padding: 0 7px;
-  font-size: 11px;
-}
+
 .field { display: block; margin-bottom: 8px; }
 .field span { display: block; color: var(--muted); margin-bottom: 3px; font-size: 11px; }
 .field input {
@@ -220,71 +171,57 @@ body {
   font-size: 12px;
 }
 .btn:hover { border-color: var(--accent); }
-.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); color: #1a1005; font-weight: 600; }
 .btn.ghost { background: transparent; border: 1px solid var(--line); }
 .btn.sm { flex: 0 1 auto; padding: 5px 9px; font-size: 11px; }
-.btn.active { background: var(--accent); color: #fff; }
-.picked { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
-.steps {
-  list-style: decimal inside;
-  margin: 0 0 8px;
-  padding: 0;
-  max-height: 160px;
-  overflow: auto;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-.steps li {
-  padding: 3px 4px;
-  border-bottom: 1px solid rgba(255,255,255,.05);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.steps .empty { color: var(--muted); list-style: none; }
+.btn.xs { padding: 2px 6px; font-size: 10px; }
+.btn:disabled { opacity: .55; cursor: default; }
+
 .status { margin-top: 8px; font-size: 11px; min-height: 14px; }
 .status.ok { color: var(--ok); }
 .status.bad { color: var(--bad); }
 .status.warn { color: var(--warn); }
 
-/* Step 31 — shared workflow list */
-.chk { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; cursor: pointer; }
-.chk input { accent-color: var(--accent); }
-.wflist { list-style: none; margin: 0 0 8px; padding: 0; max-height: 180px; overflow: auto; }
-.wflist .empty { color: var(--muted); padding: 4px 0; font-size: 11px; }
-.wfitem {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,.05);
+/* ── Backend connection cards ─────────────────────────────────────────────
+   Radio, not a dropdown: both options and both URLs stay on screen, so the
+   user can see which machine they are about to talk to without opening
+   anything. The whole card is the <label>, so the click target is the card
+   rather than an 13px dot. */
+.modecard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  margin-bottom: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
 }
-.wfmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.wfname { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wfsub { font-size: 10px; color: var(--muted); }
+.modecard:hover { border-color: var(--muted); }
+.modecard input { accent-color: var(--accent); margin: 0; flex: 0 0 auto; }
+.modeicon { font-size: 16px; flex: 0 0 auto; }
+.modemeta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.modename { font-size: 12px; color: var(--text); }
+.modeurl {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* :has() is the reason the selected card can be tinted without JavaScript. It
+   is supported in every Chromium that supports MV3, so there is no version of
+   this extension where the fallback would be needed. */
+.modecard:has(input:checked) { border-color: var(--accent); }
+.modecard:has(input:checked) .modeurl { color: var(--accent); }
+.modecard:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-/* Step 31 — live tick/error per node */
-.live .count { font-family: ui-monospace, Menlo, Consolas, monospace; }
-.livesteps {
-  list-style: none; margin: 0 0 8px; padding: 0;
-  max-height: 160px; overflow: auto;
-  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
-}
-.livesteps .empty { color: var(--muted); padding: 3px 4px; }
-.liverow {
-  display: flex; align-items: center; gap: 6px;
-  padding: 3px 4px; border-bottom: 1px solid rgba(255,255,255,.05);
-}
-.liveicon { width: 14px; text-align: center; color: var(--muted); }
-.livelabel { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.liverow.running .liveicon { color: var(--warn); }
-.liverow.success .liveicon { color: var(--ok); }
-.liverow.error .liveicon { color: var(--bad); }
-.liverow.error .livelabel { color: var(--bad); }
-.liverow.retry .liveicon { color: var(--warn); }
-
-/* ── Element Inspector ────────────────────────────────────────────────────
-   Three read-only lines answering the questions a user has BEFORE picking:
-   which browser am I attached to, which node is waiting, which session am I.
-   Guessing any of those is how a pick ends up somewhere unexpected. */
+/* ── Target Field / status lines ──────────────────────────────────────────
+   Read-only lines answering the questions a user has BEFORE picking: which
+   node, which field, and which exact Field ID. Guessing any of those is how a
+   pick ends up somewhere unexpected. */
 .insp { margin-bottom: 8px; }
+.insp.tree { border-left: 1px dotted var(--line); padding-left: 10px; }
 .inspline {
   display: flex; align-items: center; gap: 8px;
   padding: 3px 0; font-size: 11px;
@@ -295,9 +232,17 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ivalue.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10px; color: var(--muted); }
-.ivalue.local { color: var(--ok); }
-.ivalue.remote { color: var(--accent); }
+.ivalue.ok { color: var(--ok); }
+.ivalue.warn { color: var(--warn); }
 .ivalue.none { color: var(--muted); font-style: italic; }
-.btn.xs { padding: 2px 6px; font-size: 10px; }
+
+/* The one-line verdict under a card: connected / stale / not connected. Kept
+   visually distinct from the label:value lines above it because it is the
+   sentence a user reads first. */
+.tfstate { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.tfstate.ok { color: var(--ok); }
+.tfstate.warn { color: var(--warn); }
+.tfstate.none { color: var(--muted); font-style: italic; }
+
 .hintline { margin-top: 6px; font-size: 10px; line-height: 1.5; color: var(--muted); }
 .hintline b { color: var(--text); font-weight: 600; }
