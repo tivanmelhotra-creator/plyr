@@ -3,284 +3,263 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Automation Backend Helper</title>
+  <title>Element Inspector</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <!--
-  THE REPORT, VERBATIM
-  ────────────────────
-    «UI/UX پاپ‌آپ افزونه Automation Helper هم بهتر کن گیج شدم و نتونستم لوکال
-     رو تست کنم»
+  THE DECISION THIS DOCUMENT IMPLEMENTS, VERBATIM
+  ───────────────────────────────────────────────
+    «Popup افزونه باید دقیقاً دو تب داشته باشد: INSPECT / CONNECTION»
+    «حذف تب ≠ حذف قابلیت»
+    «Connection فقط Connection است.»
+    «در Popup نهایی هیچ User ID نباید وجود داشته باشد.»
 
-  WHAT WAS WRONG
-  ──────────────
-  Seven cards, every one expanded, stacked in a 340px column: Backend, Move
-  session here, Element Inspector, Workflows, Capture, Steps, Live run. Nothing
-  was grouped, nothing was primary, and the whole thing was taller than the
-  popup, so it scrolled. Two separate features were also both called "local" —
-  the Inspector's Local/Remote target and the Remote→Local session handoff — and
-  they sat in different cards with no word about how they relate. That is why
-  Local mode went untested: there was no obvious path through it.
+  WHAT THIS POPUP IS NOW
+  ──────────────────────
+  Not a multi-purpose Automation Helper. One product, one job:
 
-  WHAT THIS IS
-  ────────────
-  Four tabs, one job each, with the daily action first:
-    Inspect  — what am I attached to, and pick/record from the page
-    Run      — saved workflows, the steps I am building, and the live run
-    Local    — move a remote session onto this machine, in numbered steps
-    Setup    — backend URL, key, user
+    Inspect Element → discover the real DOM data → tick what to SEE
+    → choose the ONE value to SEND → it lands in an exact Target Field.
+
+  So the popup has exactly two tabs and nothing else:
+    INSPECT     — which field am I attached to, and arm the picker
+    CONNECTION  — where the backend is, and the credentials to reach it
+
+  WHAT WAS REMOVED, AND WHAT THAT DOES NOT MEAN
+  ─────────────────────────────────────────────
+  The `Run`, `Local` and `Setup` tabs are gone from this document. That is a
+  removal of UI, not of capability. Deliberately still alive and untouched:
+
+    extension/lib/ab-handoff.js          the Remote→Local session handoff client
+    extension/background.js              every AB_HANDOFF_* / AB_RUN_* / AB_LIVE_*
+                                         / AB_MODE_* / AB_RELAY handler
+    public/js/browser-handoff.js         the web app's OWN handoff UI, mounted at
+                                         public/index.html:240, which drives
+                                         /browser-mode/handoff/* by itself
+    src/core/SessionHandoff|BrowserMode|LocalBridge|LiveBrowser|LiveSessions
+
+  The old `Local` tab was never the Local Browser: it was one UI for Session
+  Handoff, and the web app already has a better one. Removing it orphans
+  nothing. The picker and recorder content scripts likewise stay registered in
+  manifest.json and reachable through AB_RELAY.
+
+  THREE CONCEPTS THAT MUST NOT BE CONFLATED
+  ─────────────────────────────────────────
+    BrowserMode / Remote Browser / SessionHandoff  → the execution ENVIRONMENT
+    TargetField                                    → WHERE the data lands
+    Element Inspector                              → inspect, and send ONE value
+
+  Only the last two appear in this popup. The Local/Remote choice below is
+  §1's distinction and nothing else: the LOCATION OF THE BACKEND.
 
   THE TABS USE NO JAVASCRIPT. They are radio inputs plus <label>s, switched by
   CSS `:checked ~` rules. Two reasons: an MV3 popup runs under a strict CSP
   where inline handlers are refused outright, and popup.js resolves EVERY id in
   one eager `els` map at load with no null guards — so a tab strip that built
   panels lazily, or that lived in JS, would hand it nulls and break the whole
-  popup. Every id the controller expects is therefore still present in this
-  document, at load, exactly once. Only the arrangement changed.
-
-  A <label for> is a switch from anywhere in the document, which is why the
-  "Not connected?" hint below can move the user to Setup without a line of JS.
+  popup. Every id the controller expects is therefore present in this document,
+  at load, exactly once.
 -->
 <body>
   <!-- Tab state. These must precede .tabs and .panels: the CSS selects forward
        with `~`, so a radio placed after them could not reach them. -->
   <input type="radio" name="abtab" id="tab-inspect" class="tabin" checked>
-  <input type="radio" name="abtab" id="tab-run" class="tabin">
-  <input type="radio" name="abtab" id="tab-local" class="tabin">
-  <input type="radio" name="abtab" id="tab-setup" class="tabin">
+  <input type="radio" name="abtab" id="tab-connection" class="tabin">
 
   <header class="hdr">
-    <span class="logo">🤖</span>
-    <h1>Automation Helper</h1>
+    <span class="logo">🔍</span>
+    <h1>Element Inspector</h1>
     <!-- Owned by popup.js (textContent + className). Left as a bare span. -->
     <span class="conn" id="conn" title="connection">—</span>
   </header>
 
   <nav class="tabs">
     <label for="tab-inspect">Inspect</label>
-    <label for="tab-run">Run</label>
-    <label for="tab-local">Local</label>
-    <label for="tab-setup">Setup</label>
+    <label for="tab-connection">Connection</label>
   </nav>
 
   <div class="panels">
 
-    <!-- ── INSPECT ───────────────────────────────────────────────────────
-         First, and default, because it is the reason the extension is
-         installed. The three read-only lines come before the button on
-         purpose: a pick that cannot be delivered is the first thing a user
-         needs to know about, not something to discover after clicking. -->
-    <section class="panel" id="p-inspect">
-      <p class="lede">Point at any element on the page and send it to the node that is waiting for it.</p>
+    <!-- ══ INSPECT ══════════════════════════════════════════════════════
+         The destination comes FIRST, before the button. A pick that cannot be
+         delivered is the first thing a user needs to know about, not something
+         to discover after clicking.
 
-      <div class="insp">
-        <div class="inspline">
-          <span class="ilabel">Browser</span>
-          <span class="ivalue" id="inspMode">—</span>
-          <button class="btn ghost xs" id="modeSwitch" hidden>Switch</button>
+         The attribute table and the radio/checkbox list are NOT here: an
+         extension popup closes the moment focus leaves it, and the picker's
+         first act is moving the mouse onto the page. That panel lives in the
+         page (content/inspector.js). This tab's job is to say where a pick
+         will land, and to arm the picker. -->
+    <section class="panel" id="p-inspect">
+      <p class="lede">Point at any element on the page and send one of its values to the field that is waiting for it.</p>
+
+      <div class="sub first">
+        <h3>Target field</h3>
+        <div class="insp">
+          <div class="inspline">
+            <span class="ilabel">Node</span>
+            <span class="ivalue" id="inspNodeName">—</span>
+          </div>
+          <div class="inspline">
+            <span class="ilabel">Field</span>
+            <span class="ivalue" id="inspFieldName">—</span>
+          </div>
+          <!-- The real, server-minted identity: node_<nodeId>__<fieldKey>__<suffix>.
+               Shown last and in monospace because it is for confirming a match,
+               not for reading. -->
+          <div class="inspline">
+            <span class="ilabel">Field ID</span>
+            <span class="ivalue mono" id="inspFieldId">—</span>
+          </div>
         </div>
-        <!-- The DESTINATION, not a session id. A pick is delivered to one
-             specific field, and that field is what the user needs to see before
-             picking. The session id this replaced was an internal handle that
-             named nothing the user could recognise. -->
-        <div class="inspline">
-          <span class="ilabel">Destination</span>
-          <span class="ivalue" id="inspTarget">—</span>
-          <button class="btn ghost xs" id="inspUnpair" hidden>Disconnect</button>
-        </div>
+        <div class="tfstate" id="inspTarget">—</div>
+      </div>
+
+      <div class="row">
+        <button class="btn primary" type="button" id="inspect">🔍 Inspect element</button>
+        <button class="btn ghost sm" type="button" id="inspRefresh" title="Re-read status">↻</button>
+      </div>
+      <div class="hintline">
+        Select an element on the page to inspect it. Or press <b>Ctrl + Shift + C</b>.
+        Tick what you want to see, choose the one value to send, then confirm.
+      </div>
+      <div class="status" id="inspStatus"></div>
+
+      <div class="sub">
+        <h3>Fields open in the project</h3>
         <div class="inspline">
           <span class="ilabel">Waiting</span>
           <span class="ivalue" id="inspNode">—</span>
         </div>
+        <p class="jump">
+          Not attached to a field? <label for="tab-connection" class="link">Open Connection</label>
+          and enter the Authorization Code the project shows on that field.
+        </p>
+      </div>
+    </section>
+
+    <!-- ══ CONNECTION ═══════════════════════════════════════════════════
+         «Connection فقط Connection است.» Backend location, credentials, and
+         the state that results from them. Nothing about Session Handoff, the
+         Remote Browser, saved workflows or live runs belongs in here — putting
+         them back would rebuild the Automation Helper panel this replaces.
+
+         Local vs Remote here is §1's distinction and only that: where the
+         BACKEND lives. It says nothing about where the browser runs. -->
+    <section class="panel" id="p-connection">
+      <p class="lede">Choose where the extension should send inspected data.</p>
+
+      <div class="sub first">
+        <h3>Backend connection</h3>
+        <!-- Radio, not a dropdown: both options and both URLs stay readable at
+             once, so the user can see which machine they are about to talk to
+             without opening anything. -->
+        <label class="modecard" for="modeLocal">
+          <input type="radio" name="abmode" id="modeLocal">
+          <span class="modeicon">🖥</span>
+          <span class="modemeta">
+            <span class="modename">Local Backend</span>
+            <span class="modeurl" id="modeLocalUrl">http://127.0.0.1:3000</span>
+          </span>
+        </label>
+        <label class="modecard" for="modeRemote">
+          <input type="radio" name="abmode" id="modeRemote">
+          <span class="modeicon">🌐</span>
+          <span class="modemeta">
+            <span class="modename">Remote Backend</span>
+            <span class="modeurl" id="modeRemoteUrl">https://your-server.com</span>
+          </span>
+        </label>
       </div>
 
-      <div class="row">
-        <button class="btn primary" id="inspect">🔍 Inspect element</button>
-        <button class="btn ghost sm" id="inspRefresh" title="Re-read status">↻</button>
+      <div class="sub">
+        <h3>Connection details</h3>
+        <label class="field">
+          <span>Base URL</span>
+          <input id="baseUrl" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="hintline">The base URL of your backend server.</div>
       </div>
-      <div class="hintline">
-        Or press <b>Ctrl + Shift + C</b> on the page. Hover, click, tick what you want to
-        see, choose the one value to send, then Confirm &amp; Add to Node.
-      </div>
-      <div class="status" id="inspStatus"></div>
 
-      <!-- ── Connect to a field ──────────────────────────────────────────
-           One-time pairing. The code decides the destination server-side, so
-           this box is the ONLY way a destination is chosen — the extension
-           cannot name a field itself, by design. Shown collapsed once
-           connected, because it is then a re-pairing tool rather than the
-           main action. -->
-      <div class="sub" id="inspPairBox">
-        <h3>Connect to a field</h3>
-        <p class="lede">In the project, press <b>Connect Inspector</b> on the field you want to fill, then type the code it shows.</p>
+      <div class="sub">
+        <h3>Authentication</h3>
+        <p class="lede">Provide the required credentials to authorize the connection.</p>
+        <label class="field">
+          <span>API Key</span>
+          <input id="apiKey" type="password" placeholder="••••••••••••" autocomplete="off">
+        </label>
+        <!-- The Authorization Code is a ONE-TIME pairing credential, not a
+             password. It is scoped server-side to a single Target Field, which
+             is the only reason this extension can never aim a pick at a field
+             the user did not offer (§8). Once paired, ordinary sends use the
+             API Key plus the bound field, and this box is only needed again to
+             move to a different field. -->
         <label class="field">
           <span>Authorization Code</span>
-          <input id="inspCode" type="text" placeholder="ABCD-EFGH" autocomplete="off"
+          <input id="inspCode" type="text" placeholder="ABCD-8F21" autocomplete="off"
                  autocapitalize="characters" spellcheck="false" maxlength="9">
         </label>
         <div class="row">
-          <button class="btn primary" id="inspPair">Connect</button>
+          <button class="btn primary" type="button" id="connect">🔗 Connect</button>
         </div>
         <div class="status" id="inspPairStatus"></div>
       </div>
 
-      <!-- Capture was its own card, which split "get a selector" across two
-           places that looked unrelated. It is the same job, so it is the same
-           panel — behind a divider rather than a second heading. -->
       <div class="sub">
-        <h3>Capture by hand</h3>
-        <div class="row">
-          <button class="btn" id="pick">🎯 Pick element</button>
-          <button class="btn" id="record">⏺ Record</button>
-        </div>
-        <div class="picked" id="pickedBox" hidden>
-          <label class="field">
-            <span>CSS</span>
-            <input id="pickedCss" type="text" readonly>
-          </label>
-          <label class="field">
-            <span>XPath</span>
-            <input id="pickedXpath" type="text" readonly>
-          </label>
-          <div class="row">
-            <button class="btn sm" id="addClick">+ click step</button>
-            <button class="btn sm" id="addExtract">+ extract step</button>
-            <button class="btn sm ghost" id="copyCss">Copy CSS</button>
+        <h3>Connection status</h3>
+        <div class="insp">
+          <div class="inspline">
+            <span class="ilabel">Status</span>
+            <span class="ivalue" id="connState">—</span>
+          </div>
+          <div class="inspline">
+            <span class="ilabel">Backend</span>
+            <span class="ivalue mono" id="connBackend">—</span>
+          </div>
+          <div class="inspline">
+            <span class="ilabel">Authorization</span>
+            <span class="ivalue" id="connAuth">—</span>
           </div>
         </div>
       </div>
 
-      <p class="jump">
-        Nothing showing above? <label for="tab-setup" class="link">Check Setup</label>.
-      </p>
-    </section>
-
-    <!-- ── RUN ───────────────────────────────────────────────────────────
-         Saved workflows, the steps being assembled, and the live result: one
-         story, read top to bottom, so the outcome appears under the thing that
-         caused it instead of three cards away. -->
-    <section class="panel" id="p-run">
-      <p class="lede">Run something you saved, or send the steps you just captured.</p>
-
-      <div class="sub first">
-        <h3>Saved workflows <span class="count" id="wfCount">0</span></h3>
-        <ul class="wflist" id="wflist">
-          <li class="empty">Test the connection, then Refresh to load your saved workflows.</li>
-        </ul>
-        <div class="row">
-          <button class="btn ghost sm" id="refreshWf">↻ Refresh</button>
-          <label class="chk"><input type="checkbox" id="runHeadful"> show browser</label>
-        </div>
-      </div>
-
       <div class="sub">
-        <h3>Steps you captured <span class="count" id="stepCount">0</span></h3>
-        <ol class="steps" id="steps"></ol>
-        <div class="row">
-          <button class="btn ghost sm" id="clearSteps">Clear</button>
-          <button class="btn primary" id="sendFlow">▶ Send to backend</button>
+        <h3>Connected to target</h3>
+        <!-- §26: «The target confirmation is essential.» A connection that is
+             up but pointed somewhere unexpected is worse than no connection,
+             because the send succeeds. -->
+        <div class="insp tree">
+          <div class="inspline">
+            <span class="ilabel">Node</span>
+            <span class="ivalue" id="ctNode">—</span>
+          </div>
+          <div class="inspline">
+            <span class="ilabel">Field</span>
+            <span class="ivalue" id="ctField">—</span>
+          </div>
+          <div class="inspline">
+            <span class="ilabel">Field ID</span>
+            <span class="ivalue mono" id="ctFieldId">—</span>
+          </div>
         </div>
-      </div>
-
-      <!-- popup.js reveals this with `hidden = false` when a run starts, so it
-           must stay a plain hidden element and must NOT be given a `display`
-           rule of its own. -->
-      <section class="card live" id="liveCard" hidden>
-        <h3>Live run <span class="count" id="liveJob">—</span></h3>
-        <ol class="livesteps" id="livesteps"></ol>
-        <div class="status" id="liveStatus"></div>
-      </section>
-    </section>
-
-    <!-- ── LOCAL ─────────────────────────────────────────────────────────
-         «نتونستم لوکال رو تست کنم». The pairing box existed but the procedure
-         did not: the user had to work out that the code comes from a button in
-         the web app, that it expires, and that this is a different thing from
-         the Inspector's Local/Remote target. All three are now written down, in
-         order, next to the field they apply to. -->
-    <section class="panel" id="p-local">
-      <p class="lede">Move a running remote session onto this machine — same tabs, same order, same active tab.</p>
-
-      <ol class="howto">
-        <li>In the web app, open the node you are running and click <b>Switch to Local</b>.</li>
-        <li>It shows a code like <b>ABCD-EFGH</b>. It is valid for about five minutes.</li>
-        <li>Type or paste it below and press <b>Pair &amp; move my tabs</b>.</li>
-      </ol>
-
-      <label class="field">
-        <span>Pairing code from the app</span>
-        <!-- maxlength 9 fits ABCD-EFGH: the code is 8 characters plus the dash
-             we show it with, so a user can paste exactly what is on screen. -->
-        <input id="hoCode" type="text" placeholder="ABCD-EFGH" autocomplete="off"
-               spellcheck="false" maxlength="9">
-      </label>
-      <div class="row">
-        <button class="btn primary" id="hoPair">Pair &amp; move my tabs</button>
-        <button class="btn ghost sm" id="hoApply" hidden>Restore my tabs</button>
-      </div>
-      <div class="status" id="hoStatus"></div>
-
-      <div class="insp">
-        <div class="inspline">
-          <span class="ilabel">Paired</span>
-          <span class="ivalue" id="hoState">—</span>
-          <button class="btn ghost xs" id="hoUnpair" hidden>Unpair</button>
-        </div>
-        <div class="inspline">
-          <span class="ilabel">Session</span>
-          <span class="ivalue mono" id="hoSession">—</span>
+        <div class="tfstate" id="ctState">—</div>
+        <div class="row spaced">
+          <button class="btn ghost sm" type="button" id="inspUnpair" hidden>Disconnect</button>
         </div>
       </div>
 
       <div class="hintline note">
-        This is not the same as the Inspector's <b>Browser</b> setting. Pairing moves a whole
-        session here; <label for="tab-inspect" class="link">Inspect</label> only chooses which
-        browser your next pick is read from.
-      </div>
-    </section>
-
-    <!-- ── SETUP ─────────────────────────────────────────────────────────
-         Last, not first: it is filled in once and then never touched, so it was
-         costing every later visit a scroll past it. -->
-    <section class="panel" id="p-setup">
-      <p class="lede">Where this extension sends everything. Fill in once.</p>
-
-      <label class="field">
-        <span>Base URL</span>
-        <input id="baseUrl" type="text" placeholder="http://localhost:3000" autocomplete="off">
-      </label>
-      <label class="field">
-        <span>API Key</span>
-        <input id="apiKey" type="password" placeholder="your-api-key" autocomplete="off">
-      </label>
-      <label class="field">
-        <span>User ID</span>
-        <input id="userId" type="text" placeholder="local" autocomplete="off">
-      </label>
-      <div class="row">
-        <button class="btn primary" id="saveCfg">Save</button>
-        <button class="btn ghost" id="checkCfg">Test connection</button>
-      </div>
-      <div class="row spaced">
-        <button class="btn ghost sm" id="openPanel">Open panel in a tab</button>
-      </div>
-      <div class="hintline">
-        <b>Test connection</b> also fills in the real User ID your key belongs to, and loads
-        your workflows into <label for="tab-run" class="link">Run</label>.
+        ℹ Inspected data will be sent to the configured backend and mapped to the target field.
       </div>
     </section>
 
   </div>
 
   <!-- The shared status line, deliberately OUTSIDE the panels.
-       popup.js has one setStatus() writing to #status, and it is called from
-       three different tabs: Setup ("Saved.", "Connected as …", "Connection
-       failed: …"), Inspect ("Picked <a>", "Copied.", "Open a normal web page")
-       and Run ("Queued ✓", "Send failed: …"). While every card was on screen at
-       once that was fine. In a tabbed layout, leaving it inside Run would send
-       the answer to "did my key work?" into a panel the user is not looking at —
-       a silent failure, which is the same class of bug as the dead Save button.
-       Kept as one element with one id so no controller change is needed. -->
+       popup.js has one setStatus() writing to #status and it is called from
+       both tabs ("Saved.", "Connected.", "Connection failed: …"). Inside a
+       panel it would answer "did my key work?" into a tab the user is not
+       looking at — a silent failure. -->
   <footer class="foot">
     <div class="status" id="status"></div>
   </footer>

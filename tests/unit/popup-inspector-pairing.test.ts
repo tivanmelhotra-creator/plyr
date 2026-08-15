@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'fs';
+import { describe, it, expect } from 'vitest';
+import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import vm from 'vm';
 
@@ -125,7 +125,6 @@ function boot(replies: Replies = {}): Harness {
   const scripted: Replies = {
     // Sensible defaults; individual tests override.
     AB_INSPECTOR_SESSION: { ok: false, error: 'no_base_url' },
-    AB_HANDOFF_STATUS: { ok: true, paired: false },
     ...replies,
   };
 
@@ -244,12 +243,26 @@ describe('popup: the harness runs the real controller', () => {
 });
 
 describe('popup: the Inspector shows a DESTINATION, not a session id', () => {
-  it('names the node and field a pick will land in', async () => {
+  it('names the node and the field separately, as the user chose them', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected() });
     await h.settle();
-    // What the user can recognise in the project — not `node_n1__url__a1b2c3d4`.
-    expect(h.text('inspTarget')).toBe('HTTP Request → url');
-    expect(h.text('inspTarget')).not.toMatch(/a1b2c3d4/);
+    // Two lines rather than one string, because the user picked a NODE and then
+    // a FIELD, and the two are what they will compare against the project.
+    expect(h.text('inspNodeName')).toBe('http_request');
+    expect(h.text('inspFieldName')).toBe('url');
+  });
+
+  it('shows the exact server-minted Field ID, and only in the id line', async () => {
+    const h = boot({ AB_INSPECTOR_SESSION: connected() });
+    await h.settle();
+    // The id IS the destination, so it must be visible for confirmation — but it
+    // is unreadable, so it must not be what NAMES the destination.
+    expect(h.text('inspFieldId')).toBe('node_n1__url__a1b2c3d4');
+    expect(h.text('inspNodeName')).not.toMatch(/a1b2c3d4/);
+    expect(h.text('inspFieldName')).not.toMatch(/a1b2c3d4/);
+    // Same field, same value, on the Connection tab: the two tabs must never
+    // disagree about where a send would land.
+    expect(h.text('ctFieldId')).toBe('node_n1__url__a1b2c3d4');
   });
 
   it('falls back to action → field when no label was registered', async () => {
@@ -258,15 +271,17 @@ describe('popup: the Inspector shows a DESTINATION, not a session id', () => {
     (r.data.targets[0] as Record<string, unknown>).label = undefined;
     const h = boot({ AB_INSPECTOR_SESSION: r });
     await h.settle();
-    expect(h.text('inspTarget')).toBe('http_request → url');
+    expect(h.text('inspNode')).toBe('http_request → url');
   });
 
-  it('never displays an internal id anywhere in the Inspect panel', async () => {
+  it('never displays a session id anywhere in the popup', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected() });
     await h.settle();
-    ['inspTarget', 'inspNode', 'inspStatus'].forEach((id) => {
-      expect(h.text(id)).not.toMatch(/node_n1__url__/);
-      expect(h.text(id)).not.toMatch(/^(ui|ext|as)-/);
+    // A Target Field survives a session change and a Local/Remote switch
+    // precisely because it is not a session. Showing one here would invite the
+    // user to treat it as the thing identifying their destination.
+    ['inspTarget', 'inspNode', 'inspStatus', 'ctState', 'connState'].forEach((id) => {
+      expect(h.text(id)).not.toMatch(/\b(ui|ext|as)-[a-z0-9]/i);
     });
   });
 });
@@ -275,8 +290,11 @@ describe('popup: the three connection states stay distinguishable', () => {
   it('connected: says picks are ready, and offers Disconnect', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected() });
     await h.settle();
-    expect(h.cls('inspTarget')).toContain('local');       // the "good" tint
+    expect(h.text('inspTarget')).toMatch(/connected to this field/i);
+    expect(h.cls('inspTarget')).toContain('ok');          // the "good" tint
     expect(h.hidden('inspUnpair')).toBe(false);
+    // The Connection tab must reach the same verdict from the same reply.
+    expect(h.text('connAuth')).toBe('Valid');
     await h.refresh();   // init is deliberately quiet; the user pressing ↻ is not
     expect(h.text('inspStatus')).toMatch(/ready/i);
     expect(h.text('inspStatus')).toContain('HTTP Request → url');
@@ -344,7 +362,7 @@ describe('popup: pairing is by CODE only (§8)', () => {
     await h.settle();
 
     h.el('inspCode').value = 'ABCD-EFGH';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
 
     const pair = h.sentOf('AB_INSPECTOR_PAIR');
@@ -362,7 +380,7 @@ describe('popup: pairing is by CODE only (§8)', () => {
     });
     await h.settle();
     h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
     // Otherwise the user has to trust that the code pointed where they thought.
     expect(h.text('inspPairStatus')).toContain('HTTP Request → url');
@@ -373,7 +391,7 @@ describe('popup: pairing is by CODE only (§8)', () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }) });
     await h.settle();
     h.el('inspCode').value = 'nope';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
 
     expect(h.sentOf('AB_INSPECTOR_PAIR')).toHaveLength(0);
@@ -391,7 +409,7 @@ describe('popup: pairing is by CODE only (§8)', () => {
     });
     await h.settle();
     h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
 
     // "expired" and "invalid" call for different actions, so a generic failure
@@ -407,9 +425,9 @@ describe('popup: pairing is by CODE only (§8)', () => {
     });
     await h.settle();
     h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
-    expect(h.el('inspPair').disabled).toBe(false);
+    expect(h.el('connect').disabled).toBe(false);
   });
 
   it('clears the box after success, so a spent code cannot be re-sent', async () => {
@@ -419,7 +437,7 @@ describe('popup: pairing is by CODE only (§8)', () => {
     });
     await h.settle();
     h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
     // The code is one-time; leaving it on screen invites a second, failing try.
     expect(h.el('inspCode').value).toBe('');
@@ -434,7 +452,7 @@ describe('popup: pairing is by CODE only (§8)', () => {
     const before = h.sentOf('AB_INSPECTOR_SESSION').length;
 
     h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspPair').fire('click');
+    h.el('connect').fire('click');
     await h.settle();
 
     // The server is the authority on what this key may write to; a locally
@@ -499,52 +517,73 @@ describe('popup: disconnecting', () => {
 });
 
 describe('popup: the Handoff subsystem is left alone', () => {
-  it('still shows its OWN session id', async () => {
-    // Two independent subsystems. Removing the Inspector's session id must not
-    // take the Handoff's with it — the handoff genuinely moves a session, so an
-    // `as_…` is the correct thing for it to display.
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected(),
-      AB_HANDOFF_STATUS: { ok: true, paired: true, sessionId: 'as_0123456789abcdef01234567' },
-    });
-    await h.settle();
-    expect(h.text('hoSession')).toBe('as_0123456789abcdef01234567');
-    expect(h.text('hoState')).toBe('yes');
-  });
+  // WHY THESE TESTS CHANGED SHAPE
+  // -----------------------------
+  // They used to prove Handoff survived by reading the popup's OWN handoff
+  // lines (#hoSession, #hoState). The popup no longer has any: the Local tab
+  // was one UI for Session Handoff, and it has been removed so the popup can be
+  // exactly two tabs.
+  //
+  // The invariant they were protecting did NOT change — «حذف تب ≠ حذف قابلیت».
+  // What changed is where it can honestly be observed. Re-pointing them at
+  // #hoSession would have meant re-adding a handoff line to the popup purely to
+  // keep a test green, which is the tail wagging the dog. So each one now
+  // checks the same property at the place that actually owns it, and the pair
+  // of "does not disturb" tests keep running through the real controller,
+  // because that is still exactly where an accidental cross-effect would occur.
 
-  it('asks for handoff status independently of the inspector', async () => {
-    const h = boot({ AB_INSPECTOR_SESSION: connected() });
-    await h.settle();
-    expect(h.sentOf('AB_HANDOFF_STATUS').length).toBeGreaterThan(0);
-  });
-
-  it('pairing the Inspector does not disturb the handoff pairing', async () => {
+  it('the Inspector never speaks for the Handoff subsystem', async () => {
+    // The strongest form of "left alone" this popup can demonstrate: booting it
+    // and driving a full pair+unpair emits no handoff traffic whatsoever. It
+    // cannot disturb a subsystem it never addresses.
     const h = boot({
       AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
       AB_INSPECTOR_PAIR: { ok: true, target: { label: 'X → y' } },
-      AB_HANDOFF_STATUS: { ok: true, paired: true, sessionId: 'as_feedfeedfeedfeedfeedfeed' },
+      AB_INSPECTOR_UNPAIR: { ok: true },
     });
     await h.settle();
     h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspPair').fire('click');
-    await h.settle();
-
-    expect(h.sentOf('AB_HANDOFF_UNPAIR')).toHaveLength(0);
-    expect(h.text('hoSession')).toBe('as_feedfeedfeedfeedfeedfeed');
-  });
-
-  it('disconnecting the Inspector does not unpair the handoff', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected(),
-      AB_INSPECTOR_UNPAIR: { ok: true },
-      AB_HANDOFF_STATUS: { ok: true, paired: true, sessionId: 'as_feedfeedfeedfeedfeedfeed' },
-    });
+    h.el('connect').fire('click');
     await h.settle();
     h.el('inspUnpair').fire('click');
     await h.settle();
 
-    expect(h.sentOf('AB_HANDOFF_UNPAIR')).toHaveLength(0);
-    expect(h.text('hoSession')).toBe('as_feedfeedfeedfeedfeedfeed');
+    const handoff = h.sent.filter((m) => String(m.type || '').startsWith('AB_HANDOFF'));
+    expect(handoff).toEqual([]);
+    // And it definitely did do the inspector work, so the emptiness above is
+    // "sent nothing about handoff", not "sent nothing at all".
+    expect(h.sentOf('AB_INSPECTOR_PAIR')).toHaveLength(1);
+    expect(h.sentOf('AB_INSPECTOR_UNPAIR')).toHaveLength(1);
+  });
+
+  it('the background worker still answers every handoff message', () => {
+    // Where the capability actually lives now. The popup stopped SENDING these;
+    // the worker must not stop HANDLING them, because it is the only path from
+    // the extension to /browser-mode/handoff/*.
+    const bgSrc = readFileSync(resolve(ROOT, 'extension/background.js'), 'utf8');
+    for (const type of ['AB_HANDOFF_PAIR', 'AB_HANDOFF_APPLY', 'AB_HANDOFF_STATUS', 'AB_HANDOFF_UNPAIR']) {
+      expect(bgSrc, `${type} must still be handled`).toContain(`case '${type}':`);
+    }
+    // The client library the worker delegates to must still be there too.
+    expect(existsSync(resolve(ROOT, 'extension/lib/ab-handoff.js'))).toBe(true);
+  });
+
+  it("the handoff keeps its own `as_…` session id, which was never the Inspector's", () => {
+    // Two independent namespaces. Removing the Inspector's session id must not
+    // take the Handoff's with it — the handoff genuinely MOVES a session, so an
+    // `as_…` is the correct thing for it to carry, and it still does.
+    const handoffLib = readFileSync(resolve(ROOT, 'extension/lib/ab-handoff.js'), 'utf8');
+    expect(handoffLib).toMatch(/sessionId/);
+  });
+
+  it('the web app still drives the handoff itself, so it kept a real user', () => {
+    // This is the fact that makes "exactly two tabs" and "handoff survives"
+    // non-contradictory rather than a compromise: switching a session between
+    // Remote and Local is done from the app, and never needed this popup.
+    const appUi = readFileSync(resolve(ROOT, 'public/js/browser-handoff.js'), 'utf8');
+    expect(appUi).toContain('/browser-mode/handoff/start');
+    expect(appUi).toContain('/browser-mode/handoff/complete');
+    expect(readFileSync(resolve(ROOT, 'public/index.html'), 'utf8')).toContain('/js/browser-handoff.js');
   });
 });
 

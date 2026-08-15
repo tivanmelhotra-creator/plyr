@@ -6,7 +6,7 @@
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
-    "default_title": "Automation Backend Helper",
+    "default_title": "Element Inspector",
     "default_popup": "popup/popup.html"
   },
   "background": {
