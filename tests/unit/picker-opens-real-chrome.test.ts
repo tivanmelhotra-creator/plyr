@@ -444,12 +444,108 @@ describe('the canvas simulator is no longer the crosshair destination', () => {
   });
 });
 
+/**
+ * THE BROWSER-ENVIRONMENT CHOICE COMES FIRST.
+ *
+ * Everything above pins what happens once REMOTE is the answer. This block
+ * pins the step in front of it. The operator's correction was that the
+ * crosshair must not decide the environment on the user's behalf:
+ *
+ *   «وقتی روی آیکون 🎯 Target This Field کلیک می‌شود، اولین قدم باید انتخاب
+ *    محیط مرورگر باشد، نه انتخاب حالت اتصال.»
+ *
+ * So `requestPick` now hands off to TargetingFlow whenever it knows WHICH
+ * FIELD is being targeted, and only opens the server's Chromium when there is
+ * no field identity to pair against (the canvas-level picker and older call
+ * sites), which is why the tests above still describe real behaviour.
+ */
+describe('requestPick defers to the LOCAL / REMOTE chooser', () => {
+  /** Run `requestPick` with a TargetingFlow present, and report what it did. */
+  async function runWithFlow(opts: unknown, flowStarts: boolean) {
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, { ok: true, viewPath: '/desktop/chrome' });
+    const started: unknown[] = [];
+    (sandbox.window as Record<string, unknown>).TargetingFlow = {
+      start(ctx: unknown) { started.push(ctx); return flowStarts; },
+    };
+
+    const body = `
+      ${openRealBrowserSource()}
+      ${requestPickSource()}
+      return requestPick(function () {}, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'OPTS', body);
+    try {
+      await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, opts);
+    } catch { /* the recorder is what matters */ }
+    await new Promise((r) => setTimeout(r, 0));
+    return { rec, started };
+  }
+
+  const FIELD = {
+    nodeId: '8f21',
+    fieldKey: 'product_selector',
+    action: 'click',
+    workflowId: 'wf1',
+    url: 'https://shop.example/p/1',
+  };
+
+  it('opens NO browser when a field identity is supplied', async () => {
+    // The regression this whole change exists to prevent: reaching the remote
+    // Chromium before the operator has chosen an environment.
+    const { rec, started } = await runWithFlow(FIELD, true);
+    expect(started.length).toBe(1);
+    expect(rec.opened).toEqual([]);
+    expect(rec.posted).toEqual([]);
+  });
+
+  it('passes the field identity through to the chooser', async () => {
+    const { started } = await runWithFlow(FIELD, true);
+    expect(started[0]).toMatchObject({
+      nodeId: '8f21',
+      fieldKey: 'product_selector',
+      action: 'click',
+      // Part of the STABLE pairing key: without it the same node id in two
+      // workflows would share one pairing.
+      workflowId: 'wf1',
+      url: 'https://shop.example/p/1',
+    });
+  });
+
+  it('still opens the Remote Browser when there is no field to pair against', async () => {
+    // The canvas-level picker has no declared field, so there is nothing a
+    // pairing could be filed under and REMOTE is the only possible answer.
+    // Preserved deliberately — the requirement was to ADD the choice in front
+    // of the flow, not to delete the Remote Browser path.
+    const { rec, started } = await runWithFlow({ url: 'https://example.com' }, true);
+    expect(started).toEqual([]);
+    expect(rec.opened.length).toBe(1);
+    expect(rec.posted[0].path).toBe('/browser/real/open');
+  });
+
+  it('falls back to the remote browser if the chooser declines to open', async () => {
+    // `start()` returns false when it cannot run at all. Leaving the crosshair
+    // dead in that case would be a worse failure than the old behaviour.
+    const { rec, started } = await runWithFlow(FIELD, false);
+    expect(started.length).toBe(1);
+    expect(rec.opened.length).toBe(1);
+  });
+});
+
 describe('the crosshair wiring still lines up end to end', () => {
   const ndv = readFileSync(join(ROOT, 'public/js/ndv-nodes.js'), 'utf8');
 
   it('ndv-nodes.js calls the export browser-view.js provides', () => {
     expect(ndv).toContain('BrowserView.requestPick');
     expect(SRC).toMatch(/window\.BrowserView\s*=\s*\{[\s\S]*requestPick:/);
+  });
+
+  it('the crosshair reaches TargetingFlow before it reaches the browser', () => {
+    // Both layers must agree: ndv-nodes.js tries the chooser first, and
+    // browser-view.js refuses to be the shortcut around it.
+    expect(ndv).toContain('TargetingFlow');
+    expect(extractFunction(SRC, 'requestPick')).toContain('TargetingFlow');
   });
 
   it('both entry points share one implementation', () => {

@@ -61,6 +61,7 @@
 
 import { targetFields, type TargetField, type TargetFieldRegistry } from './TargetFieldRegistry';
 import { inspectorAuth, type InspectorAuthorizationRegistry } from './InspectorAuthorization';
+import type { BrowserEnvironmentName } from './BrowserEnvironment';
 
 /** One attribute exactly as the DOM had it. */
 export interface InspectorAttr {
@@ -112,11 +113,25 @@ export interface InspectorSubmission {
   mode?: string;
 }
 
+
 /** What the UI receives and applies to exactly one field. */
 export interface InspectorDelivery {
   id: string;
   ts: number;
   mode: string;
+  /**
+   * Which browser this pick actually came from, LOCAL or REMOTE.
+   *
+   * Taken from the RESOLVED target, never from the submission — the same rule
+   * that governs `fields`. The extension has no way to know which environment
+   * the user chose in the dashboard, and if it could assert one it could claim a
+   * local pick was a server-granted remote one. The server recorded the choice
+   * when the crosshair was pressed; that record is the answer.
+   *
+   * Distinct from `mode`, which is the automation BrowserMode and answers a
+   * different question entirely.
+   */
+  environment: BrowserEnvironmentName;
   /** The resolved destination, from the registry — not from the client. */
   target: TargetField;
   element: InspectorElement;
@@ -368,6 +383,8 @@ export class InspectorHub {
       id: `insp_${Date.now().toString(36)}_${(++this.seq).toString(36)}`,
       ts: Date.now(),
       mode: clean(submission.mode, 20) || 'remote',
+      // From the stored target, not the wire. See the field's doc comment.
+      environment: target.environment,
       target,
       element,
       displayAttributes,

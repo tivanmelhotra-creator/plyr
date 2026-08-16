@@ -630,6 +630,45 @@
 
   function requestPick(onPicked, opts) {
     var o = opts || {};
+
+    // THE BROWSER-ENVIRONMENT CHOICE COMES FIRST.
+    //
+    // This function opens the REMOTE browser, and for a long time it was the
+    // only thing the crosshair did — which meant targeting a field and using
+    // the server's Chromium were the same, inseparable action. The requirement
+    // is that the operator chooses the environment at the moment of clicking:
+    //
+    //   «وقتی روی آیکون 🎯 Target This Field کلیک می‌شود، اولین قدم باید
+    //    انتخاب محیط مرورگر باشد، نه انتخاب حالت اتصال.»
+    //
+    // So when the caller knows WHICH FIELD it is targeting, the choice is
+    // handed to TargetingFlow (LOCAL / REMOTE, then a code only if LOCAL and
+    // only if that field has never been paired). Only if the environment turns
+    // out to be REMOTE does the flow call openRealBrowser — which is why the
+    // remote branch is not lost, merely no longer automatic.
+    //
+    // ndv-nodes.js already routes through TargetingFlow before reaching here,
+    // so this is the second line of defence: any OTHER caller that supplies a
+    // field identity gets the chooser too, instead of silently reinstating the
+    // old always-remote behaviour.
+    var flow = window.TargetingFlow;
+    if (flow && typeof flow.start === 'function' && o.nodeId && o.fieldKey) {
+      if (flow.start({
+        nodeId: o.nodeId,
+        fieldKey: o.fieldKey,
+        action: o.action,
+        workflowId: o.workflowId,
+        label: o.label,
+        url: typeof o.url === 'string' ? o.url : '',
+        onArmed: function () {},
+      })) return;
+    }
+
+    // No field identity (the canvas-level picker, and older call sites): there
+    // is nothing to pair against, so the remote browser remains the only
+    // environment that can be offered. Preserved rather than removed — the
+    // requirement was to ADD the choice in front of the flow, not to delete
+    // the Remote Browser path.
     inspectorHint();
     // Called from the crosshair's click handler, so window.open() here is still
     // inside the user gesture and survives the popup blocker.

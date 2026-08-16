@@ -239,6 +239,42 @@ describe('authorization codes are scoped and single-use', () => {
     expect(second.status).toBe(403);
     expect(second.body.reason).toBe('INVALID_AUTHORIZATION_CODE');
   });
+
+  // The legacy /inspector/authorize route predates the pairing key. It resolved
+  // the target and then issued against the ADDRESS only, taking issue()'s
+  // fallback — so a pairing made through the old "Connect Inspector" button was
+  // filed under an id that is re-minted on the next NDV open, and the operator
+  // was asked for a second code for a field they had already paired. The
+  // chooser's own route was correct; this one silently was not, and both must
+  // honour «دفعات بعد … دیگر نیازی به Authorization Code جدید نیست».
+  it('files the pairing under the STABLE key, so the legacy route needs no second code', async () => {
+    const reg = await openField({ nodeId: 'node-7', fieldKey: 'selector', action: 'click' });
+    const first = reg.body.target.targetFieldId as string;
+    const pairingKey = reg.body.target.pairingKey as string;
+    expect(pairingKey).toBe('tf:-:node-7:selector');
+
+    const auth = await request(app).post('/inspector/authorize')
+      .set('x-api-key', KEY_A).send({ targetFieldId: first });
+    expect(auth.status).toBe(200);
+    await request(app).post('/inspector/pair')
+      .set('x-api-key', KEY_A).send({ code: auth.body.code });
+
+    // The session must report the pairing under the stable identity — not
+    // under the ephemeral address, which is what the bug did.
+    const session = await request(app).get('/inspector/session').set('x-api-key', KEY_A);
+    const keys = (session.body.pairings || []).map((p: { pairingKey: string }) => p.pairingKey);
+    expect(keys).toContain(pairingKey);
+    expect(keys).not.toContain(first);
+
+    // And the consequence the operator actually feels: re-opening the SAME
+    // field reports it already paired, so no code screen appears.
+    await request(app).post('/inspector/target/release')
+      .set('x-api-key', KEY_A).send({ targetFieldId: first });
+    const again = await request(app).get('/inspector/targeting/options')
+      .set('x-api-key', KEY_A).query({ nodeId: 'node-7', fieldKey: 'selector', action: 'click' });
+    expect(again.status).toBe(200);
+    expect(again.body.paired).toBe(true);
+  });
 });
 
 describe('releasing one Target Field leaves the others alone', () => {

@@ -283,6 +283,98 @@
       .catch(function () { return null; });
   }
 
+  // ---------------------------------------------------------------------------
+  // TARGETING — the LOCAL / REMOTE step that now opens the flow
+  //
+  //   «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله باید
+  //    انتخاب Browser Environment باشد، نه Connection Mode.»
+  //
+  // These three wrap the server routes and add nothing of their own. That is
+  // deliberate: the decision of whether a code is needed belongs to
+  // BrowserEnvironment.planTargeting on the server, and a copy of that rule
+  // here would be a second source of truth that could disagree with the first.
+  // The dialog RENDERS what the server decided; it never decides.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Which environments may this field be targeted with, and would either ask
+   * for an Authorization Code?
+   *
+   * A READ. Merely opening a chooser the user may cancel must not mint a
+   * destination or put a code on screen, so nothing is registered until they
+   * actually pick — see targetingBegin.
+   */
+  function targetingOptions(nodeId, fieldKey, opts) {
+    if (!nodeId || !fieldKey) return Promise.resolve(null);
+    var o = opts || {};
+    var q = '?nodeId=' + encodeURIComponent(nodeId)
+      + '&fieldKey=' + encodeURIComponent(fieldKey);
+    if (o.workflowId) q += '&workflowId=' + encodeURIComponent(o.workflowId);
+    return get('/inspector/targeting/options' + q)
+      .then(function (res) { return (res && res.success) ? res : null; })
+      .catch(function () { return null; });
+  }
+
+  /**
+   * The user chose an environment. Register the destination and find out what
+   * happens next.
+   *
+   * Resolves to the server's plan: `step` is 'targeting' when picking can start
+   * immediately, or 'authorize' with a `code` when this field has never been
+   * paired in a local browser before. Resolves to null on refusal rather than
+   * rejecting — the caller is a button, and a failed request must leave the
+   * editor usable.
+   */
+  function targetingBegin(nodeId, fieldKey, environment, opts) {
+    if (!nodeId || !fieldKey) return Promise.resolve(null);
+    var o = opts || {};
+    return post('/inspector/targeting/begin', {
+      nodeId: nodeId,
+      fieldKey: fieldKey,
+      environment: environment,
+      action: o.action,
+      workflowId: o.workflowId,
+      label: o.label,
+    }).then(function (res) {
+      if (!res || !res.success || !res.target) return res || null;
+      // Tracked like any other registration so closing the node releases it.
+      state.mine[res.target.targetFieldId] = { nodeId: nodeId, fieldKey: fieldKey };
+      state.targets = state.targets.concat([res.target]);
+      emit();
+      return res;
+    }).catch(function () { return null; });
+  }
+
+  /**
+   * Has the user finished typing the code into their extension yet?
+   *
+   * Polled by the dialog because the dashboard cannot observe the extension
+   * directly — they are different browsers, which is the entire point of LOCAL.
+   * The server is the only party that sees both sides.
+   */
+  function targetingStatus(targetFieldId) {
+    if (!targetFieldId) return Promise.resolve(null);
+    return get('/inspector/targeting/status?targetFieldId='
+      + encodeURIComponent(targetFieldId))
+      .then(function (res) { return (res && res.success) ? res : null; })
+      .catch(function () { return null; });
+  }
+
+  /**
+   * Deliberately forget a pairing.
+   *
+   * The ONLY thing that makes the code come back. Closing a node, switching
+   * modes and letting an address expire all leave the pairing alone — that
+   * separation is what makes the persistence real rather than best-effort.
+   */
+  function targetingUnpair(nodeId, fieldKey, opts) {
+    var o = opts || {};
+    return post('/inspector/targeting/unpair', {
+      nodeId: nodeId, fieldKey: fieldKey, workflowId: o.workflowId,
+    }).then(function (res) { return !!(res && res.unpaired); })
+      .catch(function () { return false; });
+  }
+
   /** Close one field. Other fields — this node's or another node's — are untouched. */
   function releaseTarget(targetFieldId) {
     if (!targetFieldId) return Promise.resolve(false);
@@ -595,6 +687,11 @@
     stop: stop,
     registerTarget: registerTarget,
     authorizeTarget: authorizeTarget,
+    // The LOCAL / REMOTE step at the top of the Targeting flow.
+    targetingOptions: targetingOptions,
+    targetingBegin: targetingBegin,
+    targetingStatus: targetingStatus,
+    targetingUnpair: targetingUnpair,
     releaseTarget: releaseTarget,
     releaseNode: releaseNode,
     refreshMode: refreshMode,

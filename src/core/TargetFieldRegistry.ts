@@ -67,6 +67,45 @@
 
 import crypto from 'node:crypto';
 import { isDeclaredField, isKnownAction, declaredFields } from './ActionCatalog';
+import {
+  normalizeBrowserEnvironment,
+  type BrowserEnvironmentName,
+} from './BrowserEnvironment';
+
+/**
+ * TWO IDENTITIES, AND WHY ONE WAS NOT ENOUGH
+ * ------------------------------------------
+ * The requirement asks for two things that a single id cannot satisfy at once:
+ *
+ *   (a) «اگر همان Target Field دوباره انتخاب شود، دیگر Code لازم نیست» — the
+ *       pairing between an Extension and a Target Field must SURVIVE closing
+ *       and re-opening the node.
+ *   (b) A pick made against a destination the user has since closed must not
+ *       land — the stale-delivery problem the random suffix was minted for.
+ *
+ * (a) wants an identity that does not change. (b) wants one that does. Serving
+ * both from `targetFieldId` is why the previous build asked for a code every
+ * single time: `register()` mints a fresh `uniqueSuffix` on every NDV open, and
+ * the binding was keyed on that, so the "same" field was never the same field.
+ *
+ * So the destination now carries both:
+ *
+ *   targetFieldId  node_<nodeId>__<fieldKey>__<uniqueSuffix>
+ *                  THE DELIVERY ADDRESS. Ephemeral, re-minted per registration,
+ *                  which is exactly what makes a stale pick fail closed.
+ *
+ *   pairingKey     tf:<workflowId>:<nodeId>:<fieldKey>
+ *                  THE AUTHORIZATION IDENTITY. Derived, deterministic, no
+ *                  randomness — the same field in the same workflow computes the
+ *                  same key tomorrow, so a binding made today still matches.
+ *                  A DIFFERENT field computes a different key, so it gets its
+ *                  own pairing, which is the other half of the requirement:
+ *                  node_8f21__product_selector__… stays paired while
+ *                  node_92aa__product_url__… must authorize afresh.
+ *
+ * The two are not interchangeable and must not be swapped: authorization is
+ * checked against `pairingKey`, delivery is routed by `targetFieldId`.
+ */
 
 /** What the caller asks for when a field's picker button is pressed. */
 export interface TargetFieldRequest {
@@ -77,16 +116,33 @@ export interface TargetFieldRequest {
   workflowId?: string;
   /** A human label for "value added to: Click → Selector". */
   label?: string;
+  /**
+   * Which browser the user chose to target with, LOCAL or REMOTE.
+   *
+   * Recorded on the destination because the answer to «does this need an
+   * Authorization Code?» depends on it, and that question is answered
+   * server-side. Omitted requests default to `remote` — the environment with no
+   * prerequisites — rather than being rejected, so every existing caller that
+   * predates the chooser keeps working unchanged.
+   */
+  environment?: BrowserEnvironmentName | string;
 }
 
 /** A registered destination. `targetFieldId` is the only handle clients get. */
 export interface TargetField {
   targetFieldId: string;
+  /**
+   * The stable authorization identity for this field. See the block above.
+   * Derived, never random, never supplied by the client.
+   */
+  pairingKey: string;
   nodeId: string;
   fieldKey: string;
   action: string;
   workflowId?: string;
   label?: string;
+  /** LOCAL or REMOTE, as chosen at the moment the crosshair was pressed. */
+  environment: BrowserEnvironmentName;
   registeredAt: number;
 }
 
@@ -148,6 +204,42 @@ function validIdPart(s: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s);
 }
 
+/**
+ * Placeholder for an absent workflowId inside a pairing key.
+ *
+ * `validIdPart` forbids a leading `-`, so no real id can collide with it — an
+ * unsaved workflow gets a key that is stable for the session and cannot be
+ * confused with a workflow literally named "-".
+ */
+const NO_WORKFLOW = '-';
+
+/**
+ * The stable authorization identity for a field.
+ *
+ * Pure and deterministic ON PURPOSE: the whole point is that the value computed
+ * when the user first paired must be recomputable, byte for byte, the next time
+ * they open the same node. Anything time-based or random here would silently
+ * restore the "asks for a code every time" bug.
+ *
+ * Exported so callers that hold a nodeId+fieldKey but no registration — the
+ * pre-flight «is this already paired?» question the chooser asks BEFORE any
+ * target exists — can compute it without minting a destination as a side
+ * effect. Asking a question should not create state.
+ *
+ * `environment` is deliberately NOT part of the key. A pairing belongs to a
+ * field, not to a browser choice; including it would force a second code the
+ * first time a user targeted an already-paired field from the other
+ * environment, which nobody asked for.
+ */
+export function pairingKeyFor(
+  nodeId: string,
+  fieldKey: string,
+  workflowId?: string,
+): string {
+  const wf = clean(workflowId, 200) || NO_WORKFLOW;
+  return `tf:${wf}:${clean(nodeId, 200)}:${clean(fieldKey, 120)}`;
+}
+
 export class TargetFieldRegistry {
   /** userId -> targetFieldId -> target. Two levels so several can coexist. */
   private targets = new Map<string, Map<string, TargetField>>();
@@ -175,13 +267,21 @@ export class TargetFieldRegistry {
     }
 
     const suffix = crypto.randomBytes(4).toString('hex');
+    const workflowId = clean(req.workflowId, 200) || undefined;
     const target: TargetField = {
       targetFieldId: `node_${nodeId}${SEPARATOR}${fieldKey}${SEPARATOR}${suffix}`,
+      // Derived from the same three facts every time, so it is identical on the
+      // next NDV open — the property the persistent pairing rests on.
+      pairingKey: pairingKeyFor(nodeId, fieldKey, workflowId),
       nodeId,
       fieldKey,
       action,
-      workflowId: clean(req.workflowId, 200) || undefined,
+      workflowId,
       label: clean(req.label, 200) || undefined,
+      // Coerced rather than validated-and-rejected: a target with a garbled
+      // environment string should still be usable, and `remote` is the choice
+      // that needs nothing from the user.
+      environment: normalizeBrowserEnvironment(req.environment),
       registeredAt: Date.now(),
     };
 
@@ -225,6 +325,56 @@ export class TargetFieldRegistry {
       return null;
     }
     return { ...t };
+  }
+
+  /**
+   * The live destination for a node+field, if one is currently registered.
+   *
+   * Needed because the Targeting flow works forwards from «node n1, field
+   * selector» while everything downstream works backwards from a
+   * `targetFieldId`. Without this the front-end would have to remember the id
+   * it was handed, and a page reload would lose it.
+   */
+  find(userId: string, nodeId: string, fieldKey: string): TargetField | null {
+    const mine = this.targets.get(clean(userId, 200));
+    if (!mine) return null;
+    const wantNode = clean(nodeId, 200);
+    const wantField = clean(fieldKey, 120);
+    const now = Date.now();
+    for (const t of mine.values()) {
+      if (t.nodeId !== wantNode || t.fieldKey !== wantField) continue;
+      if (now - t.registeredAt > TARGET_TTL_MS) {
+        mine.delete(t.targetFieldId);
+        return null;
+      }
+      return { ...t };
+    }
+    return null;
+  }
+
+  /**
+   * The live destination carrying this stable pairing identity.
+   *
+   * The inverse of `pairingKey`, used when a code is redeemed: the extension
+   * knows the pairing it just completed and the server must find the address to
+   * deliver to. Never parses the key — like `resolve`, it matches stored records
+   * so a forged key finds nothing rather than being believed.
+   */
+  resolveByPairingKey(userId: string, pairingKey: string): TargetField | null {
+    const mine = this.targets.get(clean(userId, 200));
+    if (!mine) return null;
+    const want = clean(pairingKey, 600);
+    if (!want) return null;
+    const now = Date.now();
+    for (const t of mine.values()) {
+      if (t.pairingKey !== want) continue;
+      if (now - t.registeredAt > TARGET_TTL_MS) {
+        mine.delete(t.targetFieldId);
+        return null;
+      }
+      return { ...t };
+    }
+    return null;
   }
 
   /**

@@ -244,6 +244,11 @@
        listening once app.js has a valid key (see showApp), because both the
        socket and the inbox are authenticated. -->
   <script src="/js/inspector-client.js"></script>
+  <!-- The LOCAL / REMOTE chooser the crosshair now opens first. Must load AFTER
+       inspector-client.js (it calls InspectorClient.targeting*) and AFTER
+       browser-view.js (the remote branch hands the popup tab to
+       BrowserView.openRealBrowser). -->
+  <script src="/js/targeting-flow.js"></script>
   <script src="/js/views.js"></script>
   <script src="/js/app.js"></script>
 </body>

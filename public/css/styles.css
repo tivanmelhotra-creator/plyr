@@ -6866,3 +6866,122 @@ body.route-fullbleed .fe-mm-restore {
   word-break: break-all;
 }
 [dir="rtl"] .bmode-agent { direction: ltr; text-align: left; }
+
+/* ============================================
+   TARGETING FLOW — the LOCAL / REMOTE chooser
+   --------------------------------------------
+   The dialog that now opens when 🎯 Target This Field is pressed, replacing an
+   unconditional jump into the Remote browser.
+
+   Sits ABOVE the NDV backdrop (z-index 240) because it is opened FROM a node
+   panel and must not appear behind the thing that launched it.
+   ============================================ */
+.tgt-backdrop {
+  position: fixed; inset: 0; z-index: 260;
+  background: rgba(4, 7, 11, 0.72);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  animation: tgtFade 0.14s ease-out;
+}
+@keyframes tgtFade { from { opacity: 0; } to { opacity: 1; } }
+
+.tgt-panel {
+  width: min(560px, 94vw);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 22px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+.tgt-head { display: flex; flex-direction: column; gap: 5px; }
+.tgt-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.tgt-sub { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; }
+
+/* Two cards side by side, stacking on a narrow screen. Deliberately NOT a
+   dropdown: the choice carries consequences (one of them may ask for a code)
+   and a collapsed control would hide the very badge that explains them. */
+.tgt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 560px) { .tgt-grid { grid-template-columns: 1fr; } }
+
+.tgt-card {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 15px;
+  text-align: start;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color var(--transition), background var(--transition);
+}
+.tgt-card:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.tgt-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* Dimmed but still READ, never removed: an option that vanished would raise the
+   question the note answers. */
+.tgt-card.is-off { opacity: 0.55; cursor: not-allowed; }
+
+.tgt-card-name { font-size: 14px; font-weight: 650; }
+.tgt-card-desc { font-size: 12px; color: var(--text-dim); line-height: 1.55; }
+
+.tgt-card-note {
+  margin-top: 2px;
+  padding: 3px 8px;
+  align-self: flex-start;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.tgt-card-note.is-ok { background: var(--success-soft); color: var(--success); }
+.tgt-card-note.is-code { background: var(--info-soft); color: var(--info); }
+.tgt-card-note.is-warn { background: var(--danger-soft); color: var(--danger); }
+
+/* The Authorization Code. Monospace, wide-tracked and LTR even in RTL: it is
+   typed character by character into another application, and a bidi-reordered
+   code is a code that gets mistyped. */
+.tgt-code {
+  align-self: center;
+  padding: 14px 22px;
+  background: var(--surface-0);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  direction: ltr;
+  user-select: all;
+}
+.tgt-expires, .tgt-status {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.tgt-status.is-ok { color: var(--success); font-weight: 600; }
+
+.tgt-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.tgt-btn {
+  padding: 8px 15px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.tgt-btn:hover { border-color: var(--primary); }
+.tgt-btn.is-ghost { background: transparent; color: var(--text-dim); }
+.tgt-btn.is-quiet { background: transparent; }
+/* Unpair sits on the far LEFT, away from Cancel: it is the only destructive
+   control here (it makes the code come back), and putting it next to the button
+   the user reaches for reflexively would invite the wrong click. */
+.tgt-foot .tgt-btn.is-quiet:first-child { margin-inline-end: auto; }

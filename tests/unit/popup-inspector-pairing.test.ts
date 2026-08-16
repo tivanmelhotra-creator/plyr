@@ -607,3 +607,107 @@ describe('popup: an unreachable or unconfigured project', () => {
     expect(h.text('inspTarget')).not.toBe('—');
   });
 });
+
+// ════════════════════════════════════════════════════════════════
+// BROWSER ENVIRONMENT and the DURABLE PAIRING.
+//
+// Two facts the popup could not previously express, both required by the
+// operator's correction:
+//
+//   1. WHICH BROWSER the field is being targeted in. The Connection tab already
+//      shows a "local / remote" pair, but that one is derived from whether the
+//      Base URL is loopback — where the SERVER is. Reading it as the browser
+//      environment is exactly the conflation the requirement forbids:
+//
+//        Browser Environment = LOCAL / REMOTE
+//        Session / Handoff   = infrastructure only
+//        targetFieldId       = the data destination
+//
+//   2. Whether the pairing is DURABLE. "Connected" tracks the ADDRESS, which is
+//      re-minted on every NDV open and expires in hours. The operator's actual
+//      question — «دفعات بعد ... دیگر نیازی به Authorization Code جدید نیست» —
+//      is about the pairing, which lasts for days and survives those re-opens.
+//      Reporting only the address made a live pairing look absent.
+//
+// These assertions read the RENDERED TEXT, so they describe what the operator
+// is told, not how popup.js is written.
+// ════════════════════════════════════════════════════════════════
+describe('popup: Browser Environment', () => {
+  it('names the LOCAL browser in full, on both cards', async () => {
+    const h = boot({ AB_INSPECTOR_SESSION: connected({ environment: 'local' }) });
+    await h.settle();
+    // "Local Browser", not a bare "local": the word Browser is what keeps it
+    // from being read as the backend-location setting shown just above.
+    expect(h.text('inspEnv')).toBe('Local Browser');
+    expect(h.text('ctEnv')).toBe('Local Browser');
+  });
+
+  it('names the REMOTE browser in full, on both cards', async () => {
+    const h = boot({ AB_INSPECTOR_SESSION: connected({ environment: 'remote' }) });
+    await h.settle();
+    expect(h.text('inspEnv')).toBe('Remote Browser');
+    expect(h.text('ctEnv')).toBe('Remote Browser');
+  });
+
+  it('shows a dash rather than guessing when the environment is unknown', async () => {
+    const h = boot({ AB_INSPECTOR_SESSION: connected() });
+    await h.settle();
+    expect(h.text('inspEnv')).toBe('\u2014');
+    expect(h.cls('inspEnv')).toContain('none');
+  });
+
+  it('the two cards can never disagree', async () => {
+    // They are painted from one value in one function precisely so that a
+    // targeting environment cannot be reported two different ways.
+    for (const env of ['local', 'remote']) {
+      const h = boot({ AB_INSPECTOR_SESSION: connected({ environment: env }) });
+      await h.settle();
+      expect(h.text('inspEnv')).toBe(h.text('ctEnv'));
+    }
+  });
+});
+
+describe('popup: the durable pairing', () => {
+  it('states that no code will be needed next time', async () => {
+    const h = boot({
+      AB_INSPECTOR_SESSION: connected({ environment: 'local', paired: true }),
+    });
+    await h.settle();
+    expect(h.text('ctPairing')).toMatch(/no code needed/i);
+    expect(h.cls('ctPairing')).toContain('ok');
+  });
+
+  it('warns that a code WILL be requested when the field is not paired', async () => {
+    const h = boot({
+      AB_INSPECTOR_SESSION: connected({ environment: 'local', paired: false }),
+    });
+    await h.settle();
+    expect(h.text('ctPairing')).toMatch(/code will be requested/i);
+  });
+
+  it('says a pairing is not required at all for the Remote Browser', async () => {
+    // REMOTE never issues a code, so claiming either "paired" or "not paired"
+    // would describe a pairing that does not exist.
+    const h = boot({
+      AB_INSPECTOR_SESSION: connected({ environment: 'remote', paired: false }),
+    });
+    await h.settle();
+    expect(h.text('ctPairing')).toMatch(/not required/i);
+  });
+
+  it('survives the address going stale — the point of the split', async () => {
+    // The node was re-opened, so the ADDRESS this extension holds is no longer
+    // live (`authorized: false`, no `target`). The PAIRING is untouched, and
+    // the operator must be told so: this is the exact state in which the old
+    // popup wrongly implied another code was coming.
+    const h = boot({
+      AB_INSPECTOR_SESSION: connected({
+        environment: 'local', paired: true, authorized: false, target: null,
+      }),
+    });
+    await h.settle();
+    expect(h.text('ctPairing')).toMatch(/no code needed/i);
+    // …while the connection line still reports the address honestly.
+    expect(h.text('ctState')).not.toMatch(/no code needed/i);
+  });
+});

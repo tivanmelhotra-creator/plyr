@@ -111,6 +111,19 @@
             <span class="ilabel">Field ID</span>
             <span class="ivalue mono" id="inspFieldId">—</span>
           </div>
+          <!-- WHICH BROWSER this field is being targeted in: Local Browser (this
+               one) or Remote Browser (the one on the server). Reported by the
+               backend from the target's own record, never asserted here.
+
+               This is NOT the local/remote pair shown on the Connection tab —
+               that one is derived from whether the Base URL is loopback, i.e.
+               where the SERVER is. Keeping both visible, separately labelled,
+               is the point: they are different questions and were being read
+               as one. -->
+          <div class="inspline">
+            <span class="ilabel">Browser</span>
+            <span class="ivalue" id="inspEnv">—</span>
+          </div>
         </div>
         <div class="tfstate" id="inspTarget">—</div>
       </div>
@@ -240,6 +253,25 @@
           <div class="inspline">
             <span class="ilabel">Field ID</span>
             <span class="ivalue mono" id="ctFieldId">—</span>
+          </div>
+          <!-- Same reading as the Inspect tab's "Browser" row, repeated here so
+               the two cards can never disagree about which environment the pick
+               is happening in. Distinct from "Backend" above, which says where
+               the SERVER is — that one is derived from a loopback URL and has
+               nothing to do with which browser does the targeting. -->
+          <div class="inspline">
+            <span class="ilabel">Browser</span>
+            <span class="ivalue" id="ctEnv">—</span>
+          </div>
+          <!-- The DURABLE pairing, as opposed to the ADDRESS in "Field ID".
+               Answers the only question the operator actually cares about here:
+               will another Authorization Code be asked for next time? The
+               address expires in hours and is re-minted on every NDV open; the
+               pairing lasts for days and is what makes the requirement
+               «دفعات بعد ... دیگر نیازی به Authorization Code جدید نیست» true. -->
+          <div class="inspline">
+            <span class="ilabel">Pairing</span>
+            <span class="ivalue" id="ctPairing">—</span>
           </div>
         </div>
         <div class="tfstate" id="ctState">—</div>

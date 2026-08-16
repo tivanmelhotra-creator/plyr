@@ -1335,6 +1335,41 @@
       'insp.codeCopied': 'کد کپی شد.',
       'insp.copy': 'کپی',
 
+      // ── انتخاب محیط مرورگر — نخستین گام هدف‌گیری ─────────────────────────
+      // «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله
+      //  باید انتخاب Browser Environment باشد، نه Connection Mode.»
+      //
+      // این جمله‌ها عمداً می‌گویند «کدام مرورگر»، نه «کدام حالت اتصال». حالت
+      // مرورگر (mode.*) تعیین می‌کند اتوماسیون کجا اجرا شود؛ این‌جا تعیین
+      // می‌شود کاربر با کدام مرورگر المان را نشان می‌دهد. دو پرسش جدا هستند و
+      // یکی‌شدن واژگانشان همان اشتباهی است که این تغییر برای رفعش نوشته شد.
+      'tgt.title': 'هدف‌گیری با کدام مرورگر؟',
+      'tgt.subtitle': 'انتخاب کنید المان را در کدام مرورگر نشان می‌دهید.',
+      'tgt.local': 'مرورگر محلی',
+      'tgt.localDesc': 'مرورگر خودتان روی دستگاه خودتان. با افزونهٔ بازرس انتخاب می‌کنید.',
+      'tgt.remote': 'مرورگر ریموت',
+      'tgt.remoteDesc': 'مرورگر روی سرور. یک تب تازه باز می‌شود و همان‌جا انتخاب می‌کنید.',
+      // برچسبی که پیش از انتخاب می‌گوید چه چیزی در انتظار کاربر است، تا کد
+      // ناگهانی روی صفحه ظاهر نشود.
+      'tgt.needsCode': 'یک‌بار کد مجوز لازم دارد',
+      'tgt.noCode': 'کد لازم ندارد',
+      'tgt.paired': 'قبلاً متصل شده',
+      // چرا یک گزینه در دسترس نیست. به‌جای پنهان‌کردنش دلیل گفته می‌شود،
+      // چون گزینهٔ ناپیدا سؤال می‌سازد و گزینهٔ توضیح‌دار پاسخ.
+      'tgt.localDisabled': 'هدف‌گیری با مرورگر محلی روی این سرور خاموش است.',
+      'tgt.localUnavailable': 'مرورگر محلی در دسترس نیست. افزونهٔ بازرس را نصب و مرورگرتان را باز کنید.',
+      'tgt.cancel': 'انصراف',
+      // گام مجوز، فقط در شاخهٔ محلی و فقط بار اول همان فیلد.
+      'tgt.authTitle': 'این کد را در افزونه وارد کنید',
+      'tgt.authHint': 'کد فقط برای همین فیلد است. بعد از تأیید، دفعات بعد دیگر پرسیده نمی‌شود.',
+      'tgt.waiting': 'در انتظار افزونه…',
+      'tgt.pairedNow': 'متصل شد. حالا المان را در مرورگر خود انتخاب کنید.',
+      'tgt.readyLocal': 'آماده است. المان را در مرورگر خودتان انتخاب کنید.',
+      'tgt.readyRemote': 'مرورگر ریموت در حال باز شدن است…',
+      'tgt.failed': 'شروع هدف‌گیری ممکن نشد. دوباره تلاش کنید.',
+      'tgt.unpair': 'قطع اتصال این فیلد',
+      'tgt.unpaired': 'اتصال این فیلد قطع شد. دفعهٔ بعد کد تازه لازم است.',
+
       'mode.title': 'حالت مرورگر',
       'mode.remote': 'مرورگر ریموت',
       'mode.local': 'مرورگر محلی',
@@ -2618,6 +2653,43 @@
       'insp.codeFailed': 'The code could not be issued. Re-open the node and try again.',
       'insp.codeCopied': 'Code copied.',
       'insp.copy': 'Copy',
+
+      // ── Browser Environment chooser — the FIRST step of Targeting ────────
+      // «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله
+      //  باید انتخاب Browser Environment باشد، نه Connection Mode.»
+      //
+      // These strings deliberately say "which browser", never "which
+      // connection mode". Browser MODE (mode.*) decides where automation RUNS;
+      // this decides which browser the user POINTS AT. They are two different
+      // questions, and merging their vocabulary is the confusion this change
+      // was written to remove.
+      'tgt.title': 'Target with which browser?',
+      'tgt.subtitle': 'Choose where you will point at the element.',
+      'tgt.local': 'Local Browser',
+      'tgt.localDesc': 'Your own browser on your own machine. You pick with the Inspector extension.',
+      'tgt.remote': 'Remote Browser',
+      'tgt.remoteDesc': 'The browser on the server. A new tab opens and you pick there.',
+      // Says what is coming BEFORE the user commits, so a code never appears
+      // out of nowhere.
+      'tgt.needsCode': 'Needs a one-time Authorization Code',
+      'tgt.noCode': 'No code needed',
+      'tgt.paired': 'Already paired',
+      // Why an option cannot be used. Explained rather than hidden: a missing
+      // option raises a question, an explained one answers it.
+      'tgt.localDisabled': 'Local Browser targeting is turned off on this server.',
+      'tgt.localUnavailable': 'No local browser available. Install the Inspector extension and open your browser.',
+      'tgt.cancel': 'Cancel',
+      // The authorize step — local branch only, and only the first time for
+      // that field.
+      'tgt.authTitle': 'Enter this code in the extension',
+      'tgt.authHint': 'The code is for this field only. Once accepted, you will not be asked again.',
+      'tgt.waiting': 'Waiting for the extension…',
+      'tgt.pairedNow': 'Paired. Now pick the element in your browser.',
+      'tgt.readyLocal': 'Ready. Pick the element in your own browser.',
+      'tgt.readyRemote': 'Opening the Remote Browser…',
+      'tgt.failed': 'Targeting could not be started. Try again.',
+      'tgt.unpair': 'Unpair this field',
+      'tgt.unpaired': 'This field was unpaired. Next time a new code will be needed.',
 
       'mode.title': 'Browser mode',
       'mode.remote': 'Remote Browser',
