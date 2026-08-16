@@ -72,10 +72,14 @@
     inspCode: $('inspCode'), connect: $('connect'), inspPairStatus: $('inspPairStatus'),
     connState: $('connState'), connBackend: $('connBackend'), connAuth: $('connAuth'),
     ctNode: $('ctNode'), ctField: $('ctField'), ctFieldId: $('ctFieldId'),
+    // Browser Environment and the durable pairing — the two facts the address
+    // in ctFieldId cannot express. See paintTarget() for why both are needed.
+    ctEnv: $('ctEnv'), ctPairing: $('ctPairing'),
     ctState: $('ctState'), inspUnpair: $('inspUnpair'),
     // Inspect tab
     inspNodeName: $('inspNodeName'), inspFieldName: $('inspFieldName'),
-    inspFieldId: $('inspFieldId'), inspTarget: $('inspTarget'), inspNode: $('inspNode'),
+    inspFieldId: $('inspFieldId'), inspEnv: $('inspEnv'),
+    inspTarget: $('inspTarget'), inspNode: $('inspNode'),
     inspect: $('inspect'), inspRefresh: $('inspRefresh'), inspStatus: $('inspStatus')
   };
 
@@ -341,6 +345,40 @@
     value(els.ctNode, nodeName, nodeName ? '' : 'none');
     value(els.ctField, fieldName, fieldName ? '' : 'none');
     monoValue(els.ctFieldId, fieldId, fieldId ? '' : 'none');
+
+    // ── Browser Environment ─────────────────────────────────────────────────
+    //
+    // Which browser the operator chose to target this field in, taken from the
+    // SERVER's target record (background.js reads target.environment; the
+    // extension never asserts it). Named in full — "Local Browser" / "Remote
+    // Browser" — rather than shown as a bare "local"/"remote", because the
+    // Connection tab immediately above uses those same two words for an
+    // unrelated fact: where the BACKEND lives. Spelling out "Browser" is what
+    // stops the two being read as one setting.
+    var env = (res && res.environment) || (target && target.environment) || '';
+    var envText = env === 'local' ? 'Local Browser'
+      : env === 'remote' ? 'Remote Browser' : '';
+    value(els.inspEnv, envText, envText ? '' : 'none');
+    value(els.ctEnv, envText, envText ? '' : 'none');
+
+    // ── The durable pairing ─────────────────────────────────────────────────
+    //
+    // Deliberately reported separately from "Connected", which tracks the
+    // ADDRESS and therefore goes false every time the node is re-opened. This
+    // line answers the question the operator is actually asking — will I be
+    // asked for another code? — and it stays true across those re-opens, which
+    // is the whole substance of the persistence requirement.
+    //
+    // A REMOTE field shows "not required" rather than "paired": no code was
+    // ever issued for it, and claiming a pairing that does not exist would be
+    // as misleading as hiding one that does.
+    var durable = !!(res && res.paired);
+    var pairText = durable
+      ? '\u25cf Paired \u2014 no code needed next time'
+      : env === 'remote'
+        ? 'Not required for Remote Browser'
+        : '\u25cb Not paired \u2014 a code will be requested';
+    value(els.ctPairing, pairText, durable ? 'ok' : env === 'remote' ? '' : 'none');
 
     var text = live
       ? '\u25cf Connected to this Field'

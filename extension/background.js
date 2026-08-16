@@ -376,6 +376,73 @@ function setTargetFieldId(id) {
 }
 
 /**
+ * The STABLE identity of the field this extension is paired with.
+ *
+ * Stored ALONGSIDE the address, not instead of it, because the two have
+ * different lifetimes and answer different questions:
+ *
+ *   ab_targetFieldId  — the ADDRESS. Re-minted whenever the node is re-opened,
+ *                       expires in hours. Says WHERE a pick should be sent.
+ *   ab_pairingKey     — the IDENTITY. Derived from workflow+node+field, expires
+ *                       in days. Says WHETHER this extension is trusted for
+ *                       that field at all.
+ *
+ * Keeping only the address is what used to make pairing look temporary: the
+ * address died on the next NDV open, and with nothing durable stored the popup
+ * had to report "not paired" and the operator was asked for another code. The
+ * requirement is explicit that this must not happen:
+ *
+ *   «دفعات بعد برای همان Extension و همان Target Field، دیگر نیازی به
+ *    Authorization Code جدید نیست.»
+ */
+function getPairingKey() {
+  return new Promise(function (resolve) {
+    chrome.storage.local.get(['ab_pairingKey'], function (s) {
+      resolve((s && s.ab_pairingKey) || '');
+    });
+  });
+}
+
+function setPairingKey(key) {
+  return new Promise(function (resolve) {
+    chrome.storage.local.set({ ab_pairingKey: key || '' }, function () { resolve(key || ''); });
+  });
+}
+
+/**
+ * Which BROWSER ENVIRONMENT the field this extension is paired with was
+ * targeted in — 'local' or 'remote'.
+ *
+ * Recorded so the popup can state it rather than leave the operator guessing,
+ * and read from the SERVER's target record, never asserted by the extension.
+ * It is a third, separate concept from both of the ids above and from the
+ * automation Browser Mode:
+ *
+ *   Browser Environment = LOCAL / REMOTE   (which browser the pick happens in)
+ *   Session / Handoff   = as_… remote infra (not involved here at all)
+ *   targetFieldId       = the destination   (where the value lands)
+ *
+ * The popup's CONNECTION tab shows a local/remote pair too, but that is derived
+ * from whether the BACKEND URL is loopback — where the server is, not which
+ * browser is doing the targeting. Conflating them is the confusion this field
+ * exists to end.
+ */
+function getTargetEnvironment() {
+  return new Promise(function (resolve) {
+    chrome.storage.local.get(['ab_targetEnvironment'], function (s) {
+      resolve((s && s.ab_targetEnvironment) || '');
+    });
+  });
+}
+
+function setTargetEnvironment(env) {
+  var v = (env === 'local' || env === 'remote') ? env : '';
+  return new Promise(function (resolve) {
+    chrome.storage.local.set({ ab_targetEnvironment: v }, function () { resolve(v); });
+  });
+}
+
+/**
  * What is this extension attached to — which mode, which fields are open, and
  * which of them may it write to?
  *
@@ -397,9 +464,36 @@ async function inspectorSession() {
   res.targetFieldId = chosen;
   res.authorized = isAuthorized;
   // The full record for the DESTINATION panel: node name, field name, label.
-  res.target = (data.targets || []).filter(function (t) {
+  var target = (data.targets || []).filter(function (t) {
     return t.targetFieldId === chosen;
   })[0] || null;
+  res.target = target;
+
+  // ── The durable half of the answer ───────────────────────────────────────
+  //
+  // The stored pairing key is preferred over the live target's, because the
+  // point of a pairing is that it outlives the address: when the dashboard has
+  // not re-registered the field yet, `target` is null and the address is stale,
+  // yet the operator must still be told they are paired and will NOT be asked
+  // for another code.
+  var storedKey = await getPairingKey();
+  var pairingKey = storedKey || (target && target.pairingKey) || '';
+  var pairings = data.pairings || [];
+  res.pairingKey = pairingKey;
+  res.paired = !!pairingKey && pairings.some(function (p) {
+    return p && p.pairingKey === pairingKey;
+  });
+
+  // Environment is taken from the SERVER's target record — the extension does
+  // not get to assert which browser it is. The stored value is only a fallback
+  // for when the field is not currently registered.
+  var env = (target && target.environment) || (await getTargetEnvironment());
+  res.environment = (env === 'local' || env === 'remote') ? env : '';
+  if (target && target.environment) await setTargetEnvironment(target.environment);
+
+  // A pairing the server no longer holds must not keep being displayed: the
+  // operator would be told no code is needed and then be refused on send.
+  if (pairingKey && !res.paired && pairings.length) await setPairingKey('');
   return res;
 }
 
@@ -436,12 +530,44 @@ async function inspectorPair(payload) {
   var target = data.target || null;
   var id = (data.binding && data.binding.targetFieldId) || (target && target.targetFieldId) || '';
   await setTargetFieldId(id);
-  return { ok: true, targetFieldId: id, target: target };
+
+  // Store the DURABLE identity too, not just the address.
+  //
+  // This is the line that makes "no second code" real on the extension side.
+  // The address in `ab_targetFieldId` dies with the next NDV open; the pairing
+  // key does not, so on the next visit to the SAME field the popup can say
+  // "already paired" and the dashboard's chooser skips the code entirely.
+  // Both come from the SERVER's response — the extension never invents either,
+  // because «The Extension must NEVER be able to choose an arbitrary Target
+  // Field» applies just as much to the stable id as to the address.
+  var pairingKey = (data.binding && data.binding.pairingKey) || (target && target.pairingKey) || '';
+  await setPairingKey(pairingKey);
+
+  var env = (target && target.environment) || '';
+  await setTargetEnvironment(env);
+
+  return {
+    ok: true,
+    targetFieldId: id,
+    pairingKey: pairingKey,
+    environment: env,
+    target: target,
+  };
 }
 
-/** Forget the pairing locally. The server keeps its binding until the field closes. */
+/**
+ * Forget the pairing locally.
+ *
+ * Clears the durable key as well as the address — otherwise the popup would go
+ * on reporting "paired" for a field this extension has deliberately let go of,
+ * and the operator would never be offered the code that would reconnect it.
+ * The server keeps its own record until the dashboard's explicit
+ * `/inspector/targeting/unpair`; this is the extension's local half.
+ */
 async function inspectorUnpair() {
   await setTargetFieldId('');
+  await setPairingKey('');
+  await setTargetEnvironment('');
   return { ok: true };
 }
 

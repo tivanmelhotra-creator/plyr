@@ -118,17 +118,57 @@
     return wrap;
   }
 
-  // A target-picker button: hands the selector field over to the live Element
-  // Picker when the browser view is available, otherwise explains why not.
+  // A target-picker button — the 🎯 "Target This Field" control.
   //
   // `getOpts` is read at CLICK time, not at build time, so the picker always
   // opens seeded with what the field holds right now (and in the selector
   // dialect the node is set to) instead of a stale snapshot.
+  //
+  // WHAT THIS BUTTON DOES *FIRST* NOW
+  // ---------------------------------
+  // It used to call BrowserView.requestPick() straight away, which opened the
+  // server's Chromium unconditionally. That made "target this field" and "use
+  // the remote browser" one and the same action, with no point at which the
+  // operator could choose otherwise. The requirement is that the FIRST step is
+  // choosing a browser environment:
+  //
+  //   «وقتی روی آیکون 🎯 Target This Field کلیک می‌شود، اولین قدم باید انتخاب
+  //    محیط مرورگر باشد، نه انتخاب حالت اتصال.»
+  //
+  // So when the field's identity is known (nodeId + fieldKey — which is what
+  // a pairing and a delivery are addressed by), the click opens
+  // TargetingFlow instead: LOCAL / REMOTE, then a code only if LOCAL and only
+  // if this exact field has never been paired before.
+  //
+  // The old path is kept as the fallback for the cases that genuinely have no
+  // field identity to pair against (the canvas-level picker, and any host page
+  // that has not loaded targeting-flow.js). Deleting it would break those; the
+  // requirement was to ADD the choice in front, not to remove what exists.
   function pickerBtn(onPicked, getOpts) {
     return UI().iconBtn('target', t('ndv.pickElement'), 'is-picker', function () {
+      var opts = {};
+      try { opts = (typeof getOpts === 'function' ? getOpts() : null) || {}; } catch (e) {}
+
+      var flow = window.TargetingFlow;
+      if (flow && typeof flow.start === 'function' && opts.nodeId && opts.fieldKey) {
+        var started = flow.start({
+          nodeId: opts.nodeId,
+          fieldKey: opts.fieldKey,
+          action: opts.action,
+          workflowId: opts.workflowId,
+          label: opts.label,
+          url: opts.url || '',
+          // Arming does not deliver a value: the element still has to be
+          // picked, and it arrives asynchronously through the Inspector as a
+          // STRUCTURE (selector + xpath + text + …), which FlowEditor applies
+          // via applyInspectorFields. `onPicked` remains for the fallback path
+          // below, whose callback really is a single selector string.
+          onArmed: function () {},
+        });
+        if (started) return;
+      }
+
       if (window.BrowserView && typeof window.BrowserView.requestPick === 'function') {
-        var opts = {};
-        try { opts = (typeof getOpts === 'function' ? getOpts() : null) || {}; } catch (e) {}
         window.BrowserView.requestPick(onPicked, opts);
         return;
       }
@@ -345,6 +385,16 @@
           value: p.selector,
           mode: p.selectorType === 'xpath' ? 'xpath' : 'css',
           url: ctx.pageUrl || '',
+          // The FIELD's identity, which is what the Targeting flow pairs and
+          // delivers against. `fieldKey` must be a param the action really
+          // declares: the server checks it against the same catalogue and
+          // refuses anything else, because coerceParams() drops undeclared
+          // keys on save — a value written to one would vanish silently.
+          nodeId: node.id,
+          fieldKey: 'selector',
+          action: node.action,
+          workflowId: ctx.workflowId || '',
+          label: (node.name || node.action || node.id) + ' → selector',
         };
       })],
     });
@@ -894,6 +944,17 @@
           // calls page.locator(selector) directly, and Playwright already
           // sniffs a leading `//` as XPath — so one field accepts both and an
           // extra dropdown would be a control the backend never reads.
+          //
+          // NO nodeId/fieldKey EITHER, so this button keeps the legacy path.
+          // That is deliberate. A condition row's selector lives inside the
+          // node's nested `groups` structure — it is NOT the action's declared
+          // top-level `selector` param. Passing `fieldKey: 'selector'` here
+          // would register a destination the Inspector could deliver to, and
+          // applyInspectorFields would then write the picked value into the
+          // top-level param instead of into THIS ROW: a pick that silently
+          // lands somewhere the operator never pointed at. Until a Target
+          // Field can address a row inside `groups`, the honest behaviour is
+          // to use the callback picker, which writes exactly `row.selector`.
           var v = String(row.selector || '');
           return {
             value: v,

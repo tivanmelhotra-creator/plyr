@@ -39,8 +39,13 @@ import {
 import { localBridges, agentConnectPath, defaultAgentCdpPort } from '../core/LocalBridge';
 import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
-import { targetFields } from '../core/TargetFieldRegistry';
+import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
 import { inspectorAuth } from '../core/InspectorAuthorization';
+import {
+  planTargeting,
+  environmentOptions,
+  normalizeBrowserEnvironment,
+} from '../core/BrowserEnvironment';
 import {
   sessionHandoff,
   formatPairingCode,
@@ -229,6 +234,21 @@ const REGISTER_MESSAGES: Record<string, string> = {
     'action is not a known action id.',
   undeclared_field:
     'That field is not declared by this action, so a value written to it would be discarded on save.',
+};
+
+/**
+ * Why a chosen Browser Environment cannot be used right now.
+ *
+ * Reported as a REFUSAL rather than being quietly swapped for the other
+ * environment. A silent downgrade would tell the user "Targeting" while the
+ * server pointed a different browser at a different page — the precise class of
+ * lie this whole subsystem exists to prevent.
+ */
+const ENVIRONMENT_MESSAGES: Record<string, string> = {
+  local_disabled:
+    'Local Browser targeting is turned off on this server. Choose Remote Browser, or enable local mode.',
+  local_unavailable:
+    'No local browser is connected. Install the Inspector extension and start your local browser, then try again.',
 };
 
 export const createModeRoutes = (): Router => {
@@ -635,8 +655,282 @@ export const createModeRoutes = (): Router => {
       targets: targetFields.list(userId),
       // What THIS extension may write to. A different key gets a different list.
       authorized: inspectorAuth.bindingsFor(req.apiKey || ''),
+      // The DURABLE half of the same answer.
+      //
+      // `authorized` lists ADDRESSES (targetFieldId), which are re-minted every
+      // time a node is re-opened and expire in hours. `pairings` lists the
+      // stable Extension⇄Field identities, which survive that and expire in
+      // days. The popup needs both to tell the truth: a field can be genuinely
+      // paired — so no new code will ever be asked for — while its current
+      // address has not been handed over yet. Showing only `authorized` made
+      // that state look like "not paired", which is exactly the misreport the
+      // persistence requirement exists to prevent.
+      pairings: inspectorAuth.pairingsFor(req.apiKey || ''),
       pending: inspectorHub.peek(userId).length,
     });
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Targeting — the LOCAL / REMOTE branch that now opens the flow
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * Can Local Browser be chosen for TARGETING right now?
+   *
+   * Deliberately NOT `reportBrowserMode().localAvailable`. That flag asks
+   * whether a Local Browser AGENT is connected over CDP so this server can DRIVE
+   * the user's Chrome — the automation question. Targeting asks something much
+   * weaker: whether the user may point their own already-open browser at an
+   * element and have the extension post it back. No agent, no CDP and no
+   * automation session are involved in that.
+   *
+   * Tying the two together would also be circular. The extension's presence is
+   * what the Authorization Code proves; refusing to offer the code until we can
+   * already see the extension would mean it could never be paired the first
+   * time. So the only gate is the operator's own switch.
+   */
+  const localTargetingEnabled = (): boolean => reportBrowserMode(SINGLE_USER_ID).localEnabled;
+
+  /**
+   * Step ONE of the Targeting flow: what are my choices for this field?
+   *
+   *   «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله باید
+   *    انتخاب Browser Environment باشد، نه Connection Mode.»
+   *
+   * A READ. It answers "which environments are offered, and would each ask me
+   * for a code?" without registering anything, because merely opening a chooser
+   * the user may cancel must not mint a destination or a pairing.
+   *
+   * That is why it takes nodeId/fieldKey rather than a targetFieldId: at this
+   * point in the flow no target exists yet. The stable `pairingKey` is computed
+   * from those same three facts, which is exactly what makes the answer to
+   * "already paired?" survive the node being closed and re-opened.
+   */
+  router.get('/inspector/targeting/options', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const nodeId = String(req.query.nodeId || '');
+    const fieldKey = String(req.query.fieldKey || '');
+    const workflowId = String(req.query.workflowId || '') || undefined;
+
+    if (!nodeId || !fieldKey) {
+      res.status(400).json({
+        success: false,
+        reason: 'invalid_node_id',
+        error: 'nodeId and fieldKey are required.',
+      });
+      return;
+    }
+
+    const pairingKey = pairingKeyFor(nodeId, fieldKey, workflowId);
+    const paired = inspectorAuth.isPairedForUser(userId, pairingKey);
+    const localEnabled = localTargetingEnabled();
+
+    res.json({
+      success: true,
+      pairingKey,
+      paired,
+      localEnabled,
+      // Built by the same function the chooser's own selection will run through,
+      // so the dialog can never promise "no code needed" and then produce one.
+      options: environmentOptions({ paired, localEnabled, localAvailable: true }),
+      // The AUTOMATION mode, included only so a status line can mention it. It
+      // is a different concept and must not be read as the environment.
+      mode: browserModes.modeOf(userId),
+    });
+  });
+
+  /**
+   * Step TWO: the user picked an environment. Register the destination and say
+   * what happens next.
+   *
+   * ONE route rather than "register" plus "decide", because the two must not be
+   * able to disagree. The environment is recorded ON the target, so every later
+   * delivery reports the browser the value genuinely came from rather than one
+   * the extension asserted.
+   *
+   * REMOTE  — the server owns that Chromium and the extension inside it, so it
+   *           binds the Inspector itself and returns `step: 'targeting'`. No
+   *           code, exactly as the requirement states.
+   * LOCAL   — already paired? Re-point the existing pairing at the new address
+   *           and go straight to targeting. Not paired? Mint a code for THIS
+   *           field, and only this field.
+   */
+  router.post('/inspector/targeting/begin', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const body = req.body || {};
+    const environment = normalizeBrowserEnvironment(body.environment);
+
+    const registration = targetFields.register(userId, {
+      nodeId: body.nodeId,
+      fieldKey: body.fieldKey,
+      action: body.action,
+      workflowId: body.workflowId,
+      label: body.label,
+      environment,
+    });
+
+    if (!registration.ok || !registration.target) {
+      const reason = String(registration.reason || 'invalid_node_id');
+      res.status(400).json({
+        success: false,
+        reason,
+        error: REGISTER_MESSAGES[reason] || 'The target field could not be registered.',
+        declared: registration.declared,
+      });
+      return;
+    }
+
+    const target = registration.target;
+    const paired = inspectorAuth.isPairedForUser(userId, target.pairingKey);
+    const plan = planTargeting({
+      environment,
+      paired,
+      localEnabled: localTargetingEnabled(),
+      localAvailable: true,
+    });
+
+    // Refuse loudly instead of silently falling back to the other environment.
+    if (plan.note === 'local_disabled' || plan.note === 'local_unavailable') {
+      res.status(409).json({
+        success: false,
+        reason: plan.note,
+        error: ENVIRONMENT_MESSAGES[plan.note],
+        environment,
+        target,
+        plan,
+      });
+      return;
+    }
+
+    // ── REMOTE: server-owned browser, server-granted binding, no code ────────
+    if (plan.serverMayGrant) {
+      inspectorAuth.grant(
+        // The remote Chromium runs the extension THIS server side-loaded, seeded
+        // with THIS server's token (InspectorExtension.bootstrapSource). Granting
+        // to that same token is therefore granting to the client that will
+        // actually submit, not to an arbitrary caller.
+        config.API_TOKEN,
+        userId,
+        target.targetFieldId,
+        target.pairingKey,
+      );
+      // The dashboard's own key may differ from the seeded one in a multi-key
+      // setup; bind it too so a pick made through it is not refused.
+      if (req.apiKey && req.apiKey !== config.API_TOKEN) {
+        inspectorAuth.grant(req.apiKey, userId, target.targetFieldId, target.pairingKey);
+      }
+
+      res.json({
+        success: true,
+        environment,
+        step: 'targeting',
+        plan,
+        target,
+        paired: true,
+        openRemoteBrowser: true,
+      });
+      return;
+    }
+
+    // ── LOCAL, already paired: refresh the address, ask for nothing ──────────
+    if (!plan.needsAuthorization) {
+      // The pairing outlived the old address; this hands it the new one. Without
+      // it the user would be correctly told "no code needed" and then find that
+      // nothing could be delivered — trust with no address is not usable.
+      const rebound = inspectorAuth.rebindForUser(userId, target.targetFieldId, target.pairingKey);
+      res.json({
+        success: true,
+        environment,
+        step: 'targeting',
+        plan,
+        target,
+        paired: true,
+        rebound,
+        openRemoteBrowser: false,
+      });
+      return;
+    }
+
+    // ── LOCAL, first time for THIS field: issue a code ───────────────────────
+    const offer = inspectorAuth.issue(userId, target.targetFieldId, Date.now(), target.pairingKey);
+    if (!offer) {
+      res.status(500).json({
+        success: false,
+        reason: 'ATTRIBUTE_SEND_FAILED',
+        error: 'The authorization code could not be issued. Try again.',
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      environment,
+      step: 'authorize',
+      plan,
+      target,
+      paired: false,
+      openRemoteBrowser: false,
+      code: offer.code,
+      display: formatPairingCode(offer.code),
+      expiresAt: offer.expiresAt,
+      expiresInMs: offer.expiresInMs,
+    });
+  });
+
+  /**
+   * Poll: has the user finished typing the code into the extension yet?
+   *
+   * The dashboard cannot observe the extension directly — they are different
+   * browsers, which is the entire point of LOCAL. So the chooser asks the server,
+   * which is the only party that sees both sides. A socket push covers the same
+   * ground when one is available; this is the path that still works behind a
+   * proxy that breaks WebSockets.
+   */
+  router.get('/inspector/targeting/status', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const targetFieldId = String(req.query.targetFieldId || '');
+    const target = targetFields.resolve(userId, targetFieldId);
+
+    if (!target) {
+      res.status(404).json({
+        success: false,
+        reason: 'TARGET_FIELD_NOT_FOUND',
+        error: REFUSAL_MESSAGES.TARGET_FIELD_NOT_FOUND,
+      });
+      return;
+    }
+
+    const paired = inspectorAuth.isPairedForUser(userId, target.pairingKey);
+    res.json({
+      success: true,
+      target,
+      environment: target.environment,
+      paired,
+      step: paired ? 'targeting' : 'authorize',
+    });
+  });
+
+  /**
+   * Deliberately forget a pairing — the user's own "unpair this field".
+   *
+   * Exists as its own route precisely so that nothing ELSE has to do it. Closing
+   * a node, switching modes and expiring an address all leave the pairing alone;
+   * only an explicit request here removes it. That separation is what makes the
+   * persistence in the requirement real rather than best-effort.
+   */
+  router.post('/inspector/targeting/unpair', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const body = req.body || {};
+    const pairingKey = String(body.pairingKey || '')
+      || pairingKeyFor(String(body.nodeId || ''), String(body.fieldKey || ''), body.workflowId);
+
+    // Only a pairing this user actually holds may be dropped; otherwise the
+    // route would confirm whether an arbitrary key exists.
+    if (!inspectorAuth.isPairedForUser(userId, pairingKey)) {
+      res.json({ success: true, unpaired: 0, pairingKey });
+      return;
+    }
+    res.json({ success: true, unpaired: inspectorAuth.unpair(pairingKey), pairingKey });
   });
 
   /**
@@ -658,6 +952,10 @@ export const createModeRoutes = (): Router => {
       action: body.action,
       workflowId: body.workflowId,
       label: body.label,
+      // Accepted here too so a caller that already knows its environment need
+      // not go through the chooser. Absent means `remote`, which preserves the
+      // exact behaviour every existing caller of this route relied on.
+      environment: body.environment,
     });
 
     if (!registration.ok || !registration.target) {
@@ -676,6 +974,8 @@ export const createModeRoutes = (): Router => {
     res.json({
       success: true,
       target: registration.target,
+      // Whether this field is ALREADY paired, so a caller can skip the code.
+      paired: inspectorAuth.isPairedForUser(userId, registration.target.pairingKey),
       mode: browserModes.modeOf(userId),
     });
   });
@@ -683,9 +983,20 @@ export const createModeRoutes = (): Router => {
   /**
    * Forget one Target Field (node closed, or the user cancelled).
    *
-   * Scoped to a single id BY DESIGN, and it revokes only that id's pairings.
+   * Scoped to a single id BY DESIGN, and it revokes only that id's bindings.
    * Closing one node must not disturb another node's live destination — the
    * single-slot claim this replaced could not express that.
+   *
+   * DROPS THE ADDRESS, KEEPS THE PAIRING. `revoke()` removes the binding to this
+   * now-dead `targetFieldId`; the durable Extension⇄Field pairing, filed under
+   * the stable `pairingKey`, is deliberately untouched.
+   *
+   * That distinction is the fix for the behaviour the requirement complains
+   * about. This route fires on every NDV close — including the automatic
+   * `sendBeacon` on page unload — so treating it as "the user wants to unpair"
+   * meant a fresh Authorization Code every single time the node was re-opened.
+   * Closing a panel is not a decision to revoke trust. Only
+   * `/inspector/targeting/unpair` means that.
    */
   router.post('/inspector/target/release', (req: AuthenticatedRequest, res: Response) => {
     const userId = resolveUserId(req);
@@ -720,7 +1031,20 @@ export const createModeRoutes = (): Router => {
       return;
     }
 
-    const offer = inspectorAuth.issue(userId, target.targetFieldId);
+    // File the offer under the target's STABLE pairing key, not just its
+    // address.
+    //
+    // `issue()` falls back to the targetFieldId when no pairing key is given,
+    // and that fallback is wrong here: a targetFieldId is re-minted on every
+    // NDV open, so a pairing filed under it is dead the moment the operator
+    // closes the panel — and they are asked for a second code for a field they
+    // already paired. This legacy route predates the pairing key and was still
+    // taking that fallback, which quietly broke «دفعات بعد برای همان Extension
+    // و همان Target Field، دیگر نیازی به Authorization Code جدید نیست» for
+    // anyone pairing through it rather than through the LOCAL/REMOTE chooser.
+    // The target is already resolved above, so its stable identity is right
+    // here to be used.
+    const offer = inspectorAuth.issue(userId, target.targetFieldId, Date.now(), target.pairingKey);
     if (!offer) {
       res.status(500).json({
         success: false,

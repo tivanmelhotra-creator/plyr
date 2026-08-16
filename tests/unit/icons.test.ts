@@ -45,6 +45,11 @@ const JS_ALL = [
   // the emoji ban and the icon-name check below cover it as well -- all three of
   // those surfaces are user-visible copy.
   'browser-handoff.js',
+  // The LOCAL / REMOTE chooser that now opens before any pick. It renders card
+  // titles, badges, the Authorization Code and its status line, so it is very
+  // much user-visible copy and belongs under the same emoji + icon-name guards
+  // as everything else here.
+  'targeting-flow.js',
 ];
 
 /**

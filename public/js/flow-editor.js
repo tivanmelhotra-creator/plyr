@@ -2471,6 +2471,13 @@
       },
       onParamsChange: function () { renderNodes(); renderFieldFeedback(); },
       onStructureChange: function () { renderInspector(); },
+      // Which workflow this node belongs to.
+      //
+      // Carried into the NDV because it is part of the STABLE pairing key the
+      // Targeting flow files an Extension⇄Field pairing under. Without it, the
+      // same node id in two different workflows would share one pairing — two
+      // genuinely different fields that merely happen to share a name.
+      workflowId: (currentWorkflow && currentWorkflow.id) || '',
       // Where the Element Picker should open. A selector only means something
       // on a page, and the workflow already says which page: the first `goto`
       // that carries a literal URL. Expressions are skipped — {{...}} is not

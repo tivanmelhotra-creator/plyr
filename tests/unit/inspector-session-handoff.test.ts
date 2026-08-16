@@ -162,6 +162,12 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
         mode: 'remote',
         targets: registry.list(USER),
         authorized: auth.bindingsFor(key),
+        // The DURABLE half, mirroring the real route. `authorized` lists
+        // ADDRESSES, which are re-minted on every NDV open; `pairings` lists
+        // the stable Extension⇄Field identities that survive that. Omitting it
+        // here would make the fake disagree with the server and let a
+        // regression in the persistence path pass unnoticed.
+        pairings: auth.pairingsFor(key),
         pending: hub.peek(USER).length,
       });
     }
@@ -262,7 +268,16 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       return reg.target.targetFieldId;
     },
     codeFor(targetFieldId: string) {
-      const offer = auth.issue(USER, targetFieldId);
+      // Mint the code the way the ROUTE does — against the target's stable
+      // pairing key, not just its address.
+      //
+      // `issue()` falls back to the targetFieldId when the key is omitted, so
+      // omitting it here would file the fixture's pairing under an address and
+      // make the harness disagree with the server about what "paired" means.
+      // The durable-pairing tests below would then fail against correct code,
+      // which is a fixture lying rather than a defect found.
+      const target = registry.resolve(USER, targetFieldId);
+      const offer = auth.issue(USER, targetFieldId, Date.now(), target?.pairingKey);
       if (!offer) throw new Error('fixture offer not issued');
       return offer.code;
     },
@@ -649,5 +664,142 @@ describe('what the popup is told about the connection', () => {
     const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
 
     expect(res.authorized).toBe(false);
+  });
+});
+
+// ── The durable half: an Extension remembers the FIELD, not the address ─────
+//
+// «دفعات بعد برای همان Extension و همان Target Field، دیگر نیازی به
+// Authorization Code جدید نیست» — the next time round, for the SAME extension
+// and the SAME Target Field, no new Authorization Code is needed.
+//
+// That promise cannot be kept by `ab_targetFieldId` alone. A targetFieldId is
+// an ADDRESS: it is minted fresh every time the NDV registers the field, so it
+// has already changed by the operator's "next time". If the extension only
+// remembered the address, every re-open would look like a stranger and demand
+// another code — which is exactly the behaviour being corrected.
+//
+// So the extension stores a second thing beside the address: `ab_pairingKey`,
+// the stable tf:<workflow>:<node>:<field> IDENTITY. These tests hold the two
+// apart, and prove the pairing is keyed to the identity: the address may go
+// stale, the worker may be evicted, the field may be re-registered somewhere
+// new — the answer to "will I be asked for a code?" must stay "no".
+describe('the extension remembers the FIELD, not just the address', () => {
+  it('stores the stable pairing key alongside the ephemeral address', async () => {
+    const id = await pairTo(h, { nodeId: 'node-7', fieldKey: 'selector' });
+
+    // The address, as before.
+    expect(h.storage.ab_targetFieldId).toBe(id);
+
+    // …and the identity, which is a different value of a different shape. The
+    // literal is asserted rather than merely "truthy": the extension must file
+    // the pairing under the key the SERVER derived, not one it invented, or
+    // the two sides would disagree about what is paired.
+    expect(h.storage.ab_pairingKey).toBe('tf:-:node-7:selector');
+    expect(h.storage.ab_pairingKey).not.toBe(id);
+  });
+
+  it('reports itself paired against that identity, not against the address', async () => {
+    await pairTo(h);
+
+    const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
+
+    expect(res.paired).toBe(true);
+    expect(res.pairingKey).toBe('tf:-:node-7:selector');
+  });
+
+  it('STAYS paired after the field is re-registered at a NEW address', async () => {
+    const first = await pairTo(h, { nodeId: 'node-7', fieldKey: 'selector' });
+
+    // The operator closes the NDV and opens the very same field again. The
+    // project mints a new address for it — this is the ordinary case, not an
+    // edge case, and it is what used to force a second code.
+    h.registry.unregister(USER, first);
+    const second = h.openField({ nodeId: 'node-7', fieldKey: 'selector' });
+    expect(second).not.toBe(first);
+
+    const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
+
+    // The address the extension holds is now stale: the registry no longer
+    // resolves it, so there is no target record to show. (The old BINDING
+    // lingers on its own TTL — bindings are not revoked by a field closing —
+    // which is precisely why `authorized` is too weak a signal to build the
+    // "no second code" promise on, and why the pairing key exists.)
+    expect(res.target).toBeNull();
+    expect(res.targetFieldId).toBe(first);
+    expect(res.targetFieldId).not.toBe(second);
+    // …but the PAIRING is untouched, because it never depended on the address.
+    // This is the assertion the operator's requirement reduces to: no second
+    // code for the same extension and the same Target Field.
+    expect(res.paired).toBe(true);
+    expect(res.pairingKey).toBe('tf:-:node-7:selector');
+  });
+
+  it('treats a DIFFERENT field as a different pairing, needing its own code', async () => {
+    await pairTo(h, { nodeId: 'node-7', fieldKey: 'selector' });
+
+    // «اگر کاربر یک Target Field جدید انتخاب کند، آن هدف جدید نیاز به
+    // pairing/Authorization جدید دارد.» A pairing must not be a skeleton key:
+    // being paired to one field may never imply being paired to the next.
+    // `url` is a declared field of `goto`, not of `click` — the registry
+    // rejects an undeclared pairing, which is the coerceParams() guard doing
+    // its job rather than an inconvenience to route around.
+    const other = h.openField({ nodeId: 'node-9', fieldKey: 'url', action: 'goto' });
+    const otherKey = h.registry.resolve(USER, other)!.pairingKey;
+
+    expect(otherKey).toBe('tf:-:node-9:url');
+    expect(h.auth.isPaired(API_KEY, USER, otherKey)).toBe(false);
+    // …while the original one is still good.
+    expect(h.auth.isPaired(API_KEY, USER, 'tf:-:node-7:selector')).toBe(true);
+  });
+
+  it('survives an MV3 worker eviction, because it lives in storage', async () => {
+    await pairTo(h);
+
+    // MV3 tears the service worker down whenever it feels like it. Anything
+    // held in a module-level variable is gone; only chrome.storage.local comes
+    // back, which is why the key is written there rather than kept in memory.
+    const revived = loadWorker({ reuse: h });
+    expect(revived.storage.ab_pairingKey).toBe('tf:-:node-7:selector');
+
+    const res = await revived.send({ type: 'AB_INSPECTOR_SESSION' });
+
+    expect(res.paired).toBe(true);
+  });
+
+  it('takes the browser environment from the SERVER, never asserting its own', async () => {
+    const reg = h.registry.register(USER, {
+      nodeId: 'node-7',
+      fieldKey: 'selector',
+      action: 'click',
+      environment: 'local',
+    });
+    const id = reg.target!.targetFieldId;
+    await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: h.codeFor(id) } });
+
+    const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
+
+    // The environment is a property of the TARGET, decided in the dashboard's
+    // chooser. The extension reports what it was told; it does not get a vote,
+    // for the same reason it does not get to choose its own Target Field.
+    expect(res.environment).toBe('local');
+    expect(h.storage.ab_targetEnvironment).toBe('local');
+  });
+
+  it('forgets the durable key on unpair, so a code is offered again', async () => {
+    await pairTo(h);
+    expect(h.storage.ab_pairingKey).toBe('tf:-:node-7:selector');
+
+    await h.send({ type: 'AB_INSPECTOR_UNPAIR' });
+
+    // Both halves must go. Leaving the identity behind would have the popup
+    // announce "paired" for a field this extension has deliberately released,
+    // and the operator would never be offered the code that reconnects it.
+    expect(h.storage.ab_pairingKey).toBe('');
+    expect(h.storage.ab_targetFieldId).toBe('');
+    expect(h.storage.ab_targetEnvironment).toBe('');
+
+    const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
+    expect(res.paired).toBe(false);
   });
 });
