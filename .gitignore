@@ -3,6 +3,9 @@ node_modules/
 
 # ───────── Build output ─────────
 dist/
+# The built Chrome extension. Produced by `npm run build` and uploaded by CI;
+# a checked-in copy would silently go stale against extension/.
+artifacts/
 *.tsbuildinfo
 
 # ───────── Secrets & env ─────────

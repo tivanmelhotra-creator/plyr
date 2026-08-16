@@ -62,6 +62,18 @@ function upstreamPort(): number {
 }
 
 /**
+ * How long a single proxied desktop subresource may take before WE answer.
+ *
+ * Chosen to sit comfortably UNDER the shortest gateway timeout we can expect in
+ * front of this app (nginx `proxy_read_timeout` defaults to 60s; Traefik,
+ * Coolify and most PaaS ingresses use 30-60s). Whoever times out first owns the
+ * error page — and a gateway's page is an HTML body the UI cannot parse, which
+ * is how the operator ended up staring at a bare "HTTP 502". By answering at
+ * 20s we guarantee the reply is always OUR JSON, with a cause and a next step.
+ */
+const PROXY_UPSTREAM_TIMEOUT_MS = 20_000;
+
+/**
  * Is this request for the desktop?
  *
  * Kept as a method (not a bare string compare at the call site) so the prefix
@@ -174,8 +186,39 @@ export class DesktopProxy {
 
     // Claim the request synchronously (so the caller stops), then finish
     // asynchronously once auth resolves.
-    void this.forward(req, res, pathname, search);
+    //
+    // THE .catch() IS LOad-BEARING. This used to be a bare `void this.forward(...)`.
+    // Any rejection inside forward() — an auth backend blip, a stream that was
+    // torn down under it — therefore escaped as an unhandledRejection, and
+    // index.ts turned unhandledRejection into shutdown() -> process.exit(0).
+    // A desktop subresource failing could take the ENTIRE SERVER AND ITS PORT
+    // with it. A proxy for one optional feature must never be able to do that.
+    this.forward(req, res, pathname, search).catch((e) => {
+      console.error('[DESKTOP-PROXY] contained request fault:', (e as Error)?.message || e);
+      this.failSafe(res, 500, 'desktop_proxy_error');
+    });
     return true;
+  }
+
+  /**
+   * Answer a still-open response without ever throwing.
+   *
+   * Called from catch blocks and error events, where a second throw would be
+   * the unhandled one. Every branch is guarded because by the time we get here
+   * the socket may already be gone.
+   */
+  private failSafe(res: ServerResponse, status: number, error: string, hint = ''): void {
+    try {
+      if (res.writableEnded) return;
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error, ...(hint ? { hint } : {}) }));
+    } catch {
+      try { res.destroy(); } catch { /* already gone */ }
+    }
   }
 
   private async forward(
@@ -219,26 +262,76 @@ export class DesktopProxy {
         headers: { ...req.headers, host: `127.0.0.1:${upstreamPort()}` },
       },
       (up) => {
-        res.writeHead(up.statusCode || 502, up.headers);
+        // UPSTREAM GATEWAY FAILURES ARE TRANSLATED, NOT FORWARDED.
+        //
+        // websockify answering 502/503/504 means the desktop stack behind it is
+        // not ready. Passing that status straight through produced the reported
+        // dead end: the UI's error path falls back to a bare `'HTTP ' + status`
+        // whenever the body is not our JSON, so the operator was shown
+        // "HTTP 502" with no cause and no next step. Replacing it with our own
+        // JSON keeps the failure controlled AND keeps it explainable.
+        const status = up.statusCode || 0;
+        if (status === 502 || status === 503 || status === 504) {
+          up.resume(); // drain, or the socket leaks
+          this.failSafe(
+            res,
+            503,
+            'desktop_upstream_unavailable',
+            `The remote desktop answered ${status}. It is still starting or has stopped; ` +
+              'retry, or restart it with POST /api/browser/desktop/start.',
+          );
+          return;
+        }
+
+        // An 'error' on the UPSTREAM RESPONSE has no default listener. Without
+        // this, a websockify that dies mid-body raises an uncaughtException,
+        // which used to mean process.exit(0).
+        up.on('error', (e) => {
+          console.error('[DESKTOP-PROXY] upstream stream error:', e.message);
+          this.failSafe(res, 502, 'desktop_upstream_stream_error');
+        });
+        res.on('error', () => { try { up.destroy(); } catch { /* gone */ } });
+        // The client hanging up mid-download must not leave the upstream
+        // request draining into a dead socket.
+        res.on('close', () => { if (!up.readableEnded) { try { up.destroy(); } catch { /* gone */ } } });
+
+        try {
+          res.writeHead(status || 502, up.headers);
+        } catch (e) {
+          this.failSafe(res, 502, 'desktop_upstream_bad_headers');
+          try { up.destroy(); } catch { /* gone */ }
+          return;
+        }
         up.pipe(res);
       },
     );
+
+    // A desktop that accepts the connection and then never answers must not
+    // hold a request open until some reverse proxy in front of us gives up and
+    // synthesises its own 502/504 HTML page — that page is precisely what the
+    // UI cannot parse. We answer first, in our own format.
+    proxied.setTimeout(PROXY_UPSTREAM_TIMEOUT_MS, () => {
+      try { proxied.destroy(new Error('desktop upstream timeout')); } catch { /* gone */ }
+      this.failSafe(
+        res,
+        504,
+        'desktop_upstream_timeout',
+        `The remote desktop did not answer within ${Math.round(PROXY_UPSTREAM_TIMEOUT_MS / 1000)}s.`,
+      );
+    });
+
+    // The INBOUND body can fail independently of the outbound request.
+    req.on('error', () => { try { proxied.destroy(); } catch { /* gone */ } });
 
     // The desktop not running is the COMMON case, not an exception: the
     // operator has to start it. Say so in a way the UI can show, instead of
     // letting an ECONNREFUSED crash the process.
     proxied.on('error', () => {
-      if (res.headersSent) {
-        res.destroy();
-        return;
-      }
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          success: false,
-          error: 'desktop_not_running',
-          hint: 'Start the remote desktop first (POST /api/browser/desktop/start).',
-        }),
+      this.failSafe(
+        res,
+        503,
+        'desktop_not_running',
+        'Start the remote desktop first (POST /api/browser/desktop/start).',
       );
     });
 
@@ -271,14 +364,31 @@ export class DesktopProxy {
       return;
     }
 
-    void desktopAuthOk(req).then((ok) => {
-      if (!ok) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      this.splice(req, socket, head, pathname, search);
-    });
+    // Sockets raise errors asynchronously and this one has no listener yet, so
+    // attach before anything can fail. Without it, an upgrade that dies during
+    // the auth round trip became an uncaughtException — i.e. a dead server.
+    socket.on('error', () => { try { socket.destroy(); } catch { /* gone */ } });
+
+    // `.catch()` for the same reason as handleRequest(): a rejected auth check
+    // on a fire-and-forget promise used to be a whole-process shutdown.
+    desktopAuthOk(req)
+      .then((ok) => {
+        if (!ok) {
+          try {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          } catch { /* gone */ }
+          socket.destroy();
+          return;
+        }
+        this.splice(req, socket, head, pathname, search);
+      })
+      .catch((e) => {
+        console.error('[DESKTOP-PROXY] contained upgrade fault:', (e as Error)?.message || e);
+        try {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+        } catch { /* gone */ }
+        try { socket.destroy(); } catch { /* gone */ }
+      });
   }
 
   private splice(

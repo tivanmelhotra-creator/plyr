@@ -40,6 +40,7 @@ import { LiveBrowserManager } from './core/LiveBrowser';
 import { setLiveSessionProvider } from './core/LiveSessions';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
 import { DesktopProxy } from './core/DesktopProxy';
+import { classifyFault, FaultReporter } from './core/ProcessGuard';
 import { enforceStartupValidation } from './core/StartupValidation';
 // Dual browser mode: the reverse tunnel to a user's own Chrome, and the
 // Element Inspector's push channel. Both share this port with /live/ws and
@@ -812,15 +813,47 @@ const shutdown = async (signal: string) => {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+// ============================================
+// FAULT CONTAINMENT (not blanket shutdown)
+// ============================================
+//
+// REPORTED: "Remote Browser start fails -> the process/server/port terminates
+// -> after refresh the whole project no longer comes up."
+//
+// The cause was here, and it was policy, not a bug in the browser code. Both
+// last-resort handlers used to call shutdown() -> process.exit(0) for EVERY
+// asynchronous fault in the process. A remote browser that would not launch,
+// a websockify that was not listening yet, an operator closing the noVNC tab
+// mid-stream: each of those is an ordinary, recoverable, request-scoped
+// outcome, and each of them used to release the listening port.
+//
+// The required behaviour is:
+//
+//   Remote Browser start -> FAIL -> controlled error -> main app STAYS ALIVE
+//
+// So the handlers now ASK before they act. ProcessGuard.classifyFault() holds
+// a closed list of faults known to be operational and locally scoped; those
+// are logged (rate-limited, so a wedged desktop cannot fill the disk) and the
+// server keeps serving. Anything unrecognised is still fatal, because a guard
+// that swallows the unknown is how a half-dead process serves wrong answers.
+const faultReporter = new FaultReporter();
+
 process.on('uncaughtException', (err) => {
+  const verdict = classifyFault(err);
+  if (verdict.disposition === 'survive') {
+    faultReporter.report(verdict, err);
+    return;
+  }
   console.error('[FATAL] Uncaught Exception:', err);
   shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  // [C3] Harmonized with uncaughtException: an unhandled rejection leaves the
-  // process in an undefined state, so we shut down gracefully and let the
-  // supervisor (PM2 / Docker restart policy) bring a clean instance back up.
+  const verdict = classifyFault(reason);
+  if (verdict.disposition === 'survive') {
+    faultReporter.report(verdict, reason);
+    return;
+  }
   console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
   shutdown('unhandledRejection');
 });
@@ -881,9 +914,27 @@ const startServer = async () => {
     console.log('');
   });
 
+  // A LISTEN failure is fatal; a runtime socket error on an accepted
+  // connection is not. The old handler exited on both, so a client that hung
+  // up mid-response could free the port and take the whole app down with it.
   server.on('error', (err) => {
+    const verdict = classifyFault(err);
+    if (verdict.disposition === 'survive') {
+      faultReporter.report(verdict, err);
+      return;
+    }
     console.error('[SERVER] Error:', err);
     process.exit(1);
+  });
+
+  // Errors on individual client sockets never reach the request handler, so
+  // without this listener Node re-emits them as uncaughtException. Harmless
+  // per-connection resets (a closed noVNC tab) are absorbed here.
+  server.on('clientError', (err: NodeJS.ErrnoException, socket) => {
+    faultReporter.report(classifyFault(err), err);
+    if (socket && !socket.destroyed) {
+      try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch { /* already gone */ }
+    }
   });
 
   // Step 16: attach the WebSocket live server to this HTTP server.

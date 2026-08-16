@@ -557,13 +557,30 @@ install_client() {
     warn "extension/ folder not found — skipping."
     return 0
   fi
+
+  # Build the verified, installable artifact so the user selects a folder that
+  # has already been checked for a valid manifest and complete runtime files —
+  # rather than the raw source tree, which may carry dev-only extras.
+  local ext_dir="${SCRIPT_DIR}/extension"
+  if command -v node >/dev/null 2>&1 && [ -f scripts/build-extension.js ]; then
+    info "Building the extension artifact…"
+    if node scripts/build-extension.js; then
+      ext_dir="${SCRIPT_DIR}/artifacts/element-inspector-extension"
+      ok "Artifact ready: ${ext_dir}"
+    else
+      warn "Artifact build failed — falling back to the extension/ source folder."
+    fi
+  else
+    warn "Node not found — falling back to the extension/ source folder."
+  fi
+
   cat <<EOF
 ${BOLD}Load the Chrome extension on this PC:${RESET}
   1. Open  ${CYAN}chrome://extensions${RESET}
   2. Enable ${BOLD}Developer mode${RESET} (top-right toggle)
   3. Click ${BOLD}Load unpacked${RESET}
   4. Select this folder:
-       ${CYAN}${SCRIPT_DIR}/extension${RESET}
+       ${CYAN}${ext_dir}${RESET}
   5. Open the extension popup and set:
        • Server URL   (e.g. https://panel.example.com)
        • API token    (your single-user API_TOKEN)
