@@ -272,15 +272,29 @@ export const createBrowserRoutes = (): Router => {
     if (!RealChrome.isEnabled()) {
       // The one genuinely un-healable case: this is a deliberate configuration
       // choice, and turning it on by ourselves would be overriding the operator
-      // rather than helping the user. Note it names the SETTING, and does not
-      // ask for a restart — the setting is read per call.
+      // rather than helping the user.
+      //
+      // The hint used to read "Set REAL_CHROME_ENABLED=true in .env." — which is
+      // unhelpful precisely when it appears, because the DEFAULT IS ALREADY TRUE.
+      // Anyone seeing this has an explicit `false` written somewhere they did not
+      // put it (typically a `.env` inherited from an older release), and needs to
+      // be told where to look, not what to type. See RealChrome.disabledExplanation.
       return fail(
         res, 409,
-        'Real Chrome is disabled.',
-        'Set REAL_CHROME_ENABLED=true in .env.',
+        'The Remote Browser is switched off by configuration (REAL_CHROME_ENABLED=false).',
+        'The default is true, so a stale .env is the usual cause: remove the '
+          + 'REAL_CHROME_ENABLED line from .env (or set it to true) and restart. '
+          + 'Run `npm run doctor` to see the resolved value and where it came from.',
       );
     }
     try {
+      // Undo an earlier /browser/stop. Pressing Stop turns self-healing off so
+      // the browser does not immediately climb back up; pressing Start must turn
+      // it back on, or the browser can be started once and then never kept alive
+      // again. This line used to live in a SECOND, DEAD `/browser/start` handler
+      // registered below this one — Express matches the first, so it never ran.
+      const { setSelfHealEnabled } = await import('../core/SelfHeal');
+      setSelfHealEnabled(true);
       // Everything the old body did by hand — bring up the display, fall back to
       // Xvfb alone when the viewer packages are missing, then launch Chrome — now
       // lives in SelfHeal, so /browser/start, an extension install and a live
@@ -311,15 +325,14 @@ export const createBrowserRoutes = (): Router => {
     } catch (e) { sendError(res, e); }
   });
 
-  router.post('/browser/start', async (_req, res) => {
-    try {
-      const { SelfHeal, setSelfHealEnabled } = await import('../core/SelfHeal');
-      setSelfHealEnabled(true);
-      const { steps, report } = healCollector();
-      const status = await (SelfHeal as any).heal({ report });
-      res.json({ success: true, steps, realChrome: status.realChrome });
-    } catch (e) { sendError(res, e); }
-  });
+  // REMOVED: a second `router.post('/browser/start')` stood here.
+  //
+  // Express dispatches to the FIRST matching route, so this one never executed.
+  // It was not merely redundant — it was where `setSelfHealEnabled(true)` lived,
+  // which meant `/browser/stop` could disable self-healing and nothing in the
+  // product could re-enable it. It also called `(SelfHeal as any).heal(...)`, a
+  // method that does not exist on SelfHeal; had the route ever been reached it
+  // would have thrown. Its one useful line has moved into the live handler above.
 
   /**
    * Relaunch Chrome, reporting each step.

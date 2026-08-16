@@ -222,6 +222,26 @@ export class SelfHeal {
 
   private static async doEnsureBrowser(report: HealReporter): Promise<HealResult> {
     const total = 3;
+
+    // Honour an explicit Stop.
+    //
+    // `/browser/stop` calls `setSelfHealEnabled(false)` with the comment
+    // «غیرفعال‌سازی سراسری SelfHeal تا کروم رو دوباره راه نیندازه» — turn
+    // self-heal off so Chrome does not come straight back up. That flag was
+    // WRITTEN AND NEVER READ: `isSelfHealEnabled()` had no callers anywhere in
+    // src/, so the next action needing a browser relaunched the one the operator
+    // had just deliberately stopped. Reading it here is what makes Stop mean
+    // stop. `/browser/start` clears the flag again.
+    if (!isSelfHealEnabled()) {
+      return {
+        ok: false,
+        realChrome: await RealChrome.status(),
+        problem: 'selfHealDisabled',
+        hint: 'The browser was stopped on purpose (POST /browser/stop). '
+          + 'Start it again with POST /browser/start.',
+      };
+    }
+
     if (!RealChrome.isEnabled()) {
       // Not a healable condition: it is a deliberate configuration choice, and
       // guessing that the operator wanted it on would be worse than saying so.
@@ -229,7 +249,13 @@ export class SelfHeal {
         ok: false,
         realChrome: await RealChrome.status(),
         problem: 'realChromeDisabled',
-        hint: 'REAL_CHROME_ENABLED=true',
+        // Names the CAUSE, not the variable. `REAL_CHROME_ENABLED=true` as a
+        // "hint" is the string the operator reported being stuck on: the
+        // default is already true, so being told to set it explains nothing
+        // about why theirs is false. See RealChrome.disabledExplanation.
+        hint: 'REAL_CHROME_ENABLED=false is set explicitly (the default is true) '
+          + '— usually a stale .env from an older release. Remove that line from '
+          + '.env and restart, or run `npm run doctor` to see where it came from.',
       };
     }
 
@@ -335,7 +361,13 @@ export class SelfHeal {
         ok: false,
         realChrome: await RealChrome.status(),
         problem: 'realChromeDisabled',
-        hint: 'REAL_CHROME_ENABLED=true',
+        // Names the CAUSE, not the variable. `REAL_CHROME_ENABLED=true` as a
+        // "hint" is the string the operator reported being stuck on: the
+        // default is already true, so being told to set it explains nothing
+        // about why theirs is false. See RealChrome.disabledExplanation.
+        hint: 'REAL_CHROME_ENABLED=false is set explicitly (the default is true) '
+          + '— usually a stale .env from an older release. Remove that line from '
+          + '.env and restart, or run `npm run doctor` to see where it came from.',
       };
     }
 

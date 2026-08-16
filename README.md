@@ -138,17 +138,28 @@ ghcr.io/saeedkhoshafsar/plyr:latest
 ### نصب دستی (در صورت تمایل)
 
 ```bash
-npm install                          # postinstall به‌صورت خودکار Chromium را دانلود می‌کند (در صورت خطا، non-fatal)
-# اگر می‌خواهید دانلود مرورگر حین نصب انجام نشود:
-SKIP_BROWSER_INSTALL=1 npm install
-# و بعداً به‌صورت دستی:
-npm run install:browser              # = playwright install chromium
-npm run install:browser:deps        # نصب Chromium + وابستگی‌های سیستمی (نیازمند sudo)
-
+npm ci                               # postinstall خودِ Chromium را دانلود می‌کند و کتابخانه‌های سیستمی را چک می‌کند
 cp .env.example .env                 # سپس مقادیر را ویرایش کنید
+npm run doctor                       # ✅ قبل از هر چیز: آیا این محیط واقعاً آماده است؟
+```
+
+اگر روی سرور هستید، همان سه قدم به‌صورت یک دستور:
+
+```bash
+npm run setup                        # install:browser:deps → build → doctor
+```
+
+نصب اجزای مرورگر به‌صورت جداگانه (در صورت نیاز):
+
+```bash
+SKIP_BROWSER_INSTALL=1 npm ci        # اگر image شما از قبل مرورگر دارد (مثل image رسمی Playwright)
+npm run install:browser              # = playwright install chromium
+npm run install:browser:deps         # Chromium + وابستگی‌های سیستمیِ سطح OS (نیازمند sudo)
 ```
 
 > 🧩 **مرورگر:** به‌صورت پیش‌فرض از Chromium بسته‌بندی‌شده‌ی Playwright استفاده می‌شود. اگر می‌خواهید Chrome/Chromium نصب‌شده‌ی سیستم استفاده شود، مسیر آن را در `CHROME_EXE` بگذارید (در غیر این‌صورت خالی بماند).
+
+> ⚠️ **چرا `npm run doctor` مهم است:** رایج‌ترین خرابیِ این پروژه روی سرور، نصبِ *ظاهراً موفق* است. باینری Chromium دانلود می‌شود ولی چند کتابخانهٔ سیستمی (`libatk-1.0.so.0`، `libatspi.so.0`، …) وجود ندارند، و مرورگر تازه سرِ اولین کلیک می‌میرد. `doctor` دقیقاً همین را قبل از استقرار می‌گوید و دستور رفعش را می‌دهد. کد خروجی: `0` = آماده، `1` = مشکل مسدودکننده.
 
 ## اجرا
 
@@ -163,6 +174,25 @@ npm start
 # production cluster با PM2
 pm2 start ecosystem.config.js
 ```
+
+> ⚠️ **PM2 و `instances`:** فایل `ecosystem.config.js` روی حالت cluster تنظیم است. Real Chrome یک دایرکتوری profile واحد دارد و
+> با `SingletonLock` قفل می‌شود، پس اگر Remote Browser می‌خواهید `instances` را روی `1` بگذارید.
+
+### از صفر تا یک سرورِ کارکُن
+
+بدون هیچ دانشِ قبلی از اینکه روی آن ماشین چه چیزی دستی نصب شده:
+
+```bash
+git clone <repo> && cd automation-backend-v37
+npm ci                          # همهٔ وابستگی‌ها + مرورگر، از روی lockfile
+cp .env.example .env            # فقط REDIS_URL و API_TOKEN را ست کنید
+echo "APP_ENV=server" >> .env   # profile سرور: headed + Xvfb + افزونه‌ها
+npm run build
+npm run doctor                  # باید بگوید ready (کد خروجی 0)
+npm start
+```
+
+سرور در boot خودش هم اعتبارسنجی می‌کند: اگر چیزی واقعاً خراب باشد، به‌جای بالا آمدنِ نصفه‌نیمه، دلیل و راه‌حل را چاپ می‌کند.
 
 ## اجرا با Docker (توصیه‌شده برای Self-Hosted)
 
@@ -187,12 +217,74 @@ docker compose down           # توقف
 > docker run -p 3000:3000 --env-file .env -e REDIS_URL=redis://host.docker.internal:6379 automation-backend
 > ```
 
+## پروفایل‌های محیط (`APP_ENV`)
+
+مقدار درستِ خیلی از متغیرها به **موقعیت** بستگی دارد، نه به سلیقه. به‌جای اینکه هر کسی ده متغیر را دستی ست کند،
+یک متغیر انتخاب می‌شود و بقیه پیش‌فرضِ درستِ همان موقعیت را می‌گیرند:
+
+```bash
+APP_ENV=server    # development | server | production | test
+```
+
+| profile | برای چه | مرورگر | افزونه‌ها | نکته |
+|---------|---------|--------|-----------|------|
+| `development` | لپ‌تاپ توسعه‌دهنده | headed | ✅ | پیش‌فرض وقتی چیزی ست نشده |
+| `server` | **سرور واقعی / استقرار** | headed + Xvfb | ✅ | همان چیزی که Dockerfile و compose ست می‌کنند |
+| `production` | سرورِ بدون نیاز به افزونه | headless | ❌ | RAM کمتر، ولی Element Inspector کار نمی‌کند |
+| `test` | CI و تست خودکار | headless | ❌ | سریع و بی‌صدا |
+
+**قاعدهٔ دقتِ اولویت:** مقدار صریحِ شما همیشه برنده است. profile فقط جاهای خالی را پر می‌کند.
+یعنی `REAL_CHROME_HEADLESS=false` که خودتان نوشته‌اید، حتی در `production` هم محترم شمرده می‌شود.
+
+> ⚠️ **چرا `server` جدا از `production` هست؟** اندازه‌گیری شد، حدس نیست: Chrome در حالت headless **صفر** افزونه لود می‌کند
+> (۰ service worker در برابر ۱ در حالت headed). چون Element Inspector خودش یک افزونهٔ Chrome است، هر profileی که headless باشد
+> عملاً محصول را بدون قابلیت اصلی‌اش تحویل می‌دهد — **و هیچ خطایی هم نمی‌دهد.** برای همین استقرارِ واقعی باید `server` باشد نه
+> `production`. اگر واقعاً افزونه نمی‌خواهید و RAM برایتان مهم‌تر است، `production` انتخابِ آگاهانه و مستندی است.
+
+> `APP_ENV` عمداً از `NODE_ENV` جداست: `NODE_ENV` را ابزارهای بیرونی (npm، فریم‌ورک‌ها، پلتفرم‌های میزبانی) هم دست‌کاری می‌کنند،
+> و نباید یک مقدارِ اتفاقی از جای دیگر، طرزِ بالا آمدن مرورگر شما را عوض کند. مقدار `server` فقط از راه `APP_ENV` قابل انتخاب است.
+
+### ماتریس سازگاری
+
+آنچه واقعاً پشتیبانی و تست می‌شود:
+
+| محیط | Backend | مرورگر | افزونه | انتظار |
+|------|---------|--------|--------|--------|
+| Dev Local | محلی | Chrome/Chromium محلی (headed) | ✅ فعال | ✅ کار می‌کند |
+| Dev Remote | ریموت | Remote Browser روی Xvfb | ✅ فعال | ✅ کار می‌کند |
+| Test / CI | تنظیمات تست | headless | ➖ لود نمی‌شود | ✅ کار می‌کند |
+| Production (`APP_ENV=server`) | ریموت | Real Chrome + Xvfb | ✅ فعال | ✅ کار می‌کند |
+
+حالت‌هایی که **عمداً** پشتیبانی نمی‌شوند:
+
+| حالت | چرا |
+|------|-----|
+| `APP_ENV=production` + انتظارِ افزونه | headless است و Chrome در آن صفر افزونه لود می‌کند. اگر افزونه می‌خواهید از `server` استفاده کنید. |
+| `REAL_CHROME_HEADLESS=true` + Element Inspector | همان دلیل بالا. `doctor` و `/health/browser` این را `degraded` گزارش می‌کنند، نه سالم. |
+| PM2 با `instances > 1` | هر instance می‌خواهد همان یک profile دایرکتوریِ Chrome را باز کند و روی `SingletonLock` قفل می‌خورد. |
+| `REAL_CHROME_ENABLED=false` + Remote Browser / افزونه / Inspector | خاموشیِ صریح است؛ در boot یک‌بار هشدار داده می‌شود. |
+| سروری بدون X و با `DESKTOP_AUTO_PROVISION=false` | حالت headed به یک نمایشگر نیاز دارد و به سرور گفته‌اید خودش نسازد. |
+
+### بررسی آمادگیِ محیط
+
+```bash
+npm run doctor           # گزارش کامل: profile، منشأ هر مقدار، وضعیت مرورگر، حکم نهایی
+curl localhost:3000/health/browser   # همان چیز، برای healthcheck کانتینر
+```
+
+`doctor` برای هر مقدار می‌گوید از کجا آمده (`explicit` / `profile` / `default`) — یعنی سؤالِ «چرا این سرور فرق دارد؟» جوابِ کتبی دارد.
+
+---
+
 ## متغیرهای محیطی
 
 همه‌ی متغیرها در [`.env.example`](./.env.example) با توضیح آمده‌اند. مهم‌ترین‌ها:
 
 | متغیر | پیش‌فرض | توضیح |
 |-------|---------|-------|
+| `APP_ENV` | `development` | پروفایل محیط: `development` / `server` / `production` / `test`. روی سرور `server` بگذارید |
+| `REAL_CHROME_ENABLED` | `true` | Remote Browser و افزونه‌ها. **پیش‌فرض روشن است** — لازم نیست ست شود |
+| `REQUIRE_BROWSER_RUNTIME` | `false` | اگر `true` باشد، سرور با مرورگرِ خراب اصلاً بالا نمی‌آید (به‌جای اینکه فقط همان قابلیت را مسدود کند) |
 | `DEPLOYMENT_MODE` | `single` | `single` = self-hosted تک‌کاربرهٔ full-access؛ `multi` = چندکاربرهٔ SaaS (plan/quota/admin) |
 | `API_TOKEN` | _(تولید خودکار)_ | فقط حالت `single`: توکن مشترک احراز هویت. اگر خالی باشد یک `tok_<hex>` تصادفی در boot ساخته و یک‌بار در لاگ چاپ می‌شود |
 | `PORT` | `3000` | پورت سرور |
@@ -239,10 +331,20 @@ docker compose down           # توقف
 
 ### فعال‌سازی
 
-در `.env`:
+**Real Chrome به‌صورت پیش‌فرض روشن است. برای روشن‌کردنش هیچ کاری لازم نیست.**
+
+> 🩺 **اگر خطای `Real Chrome is disabled` گرفتید:** این یعنی چیزی آن را *صریحاً* خاموش کرده — چون پیش‌فرض `true` است.
+> تقریباً همیشه یک `.env` قدیمی است که از نسخه‌های پیشین کپی شده (آن موقع پیش‌فرض `false` بود). `.env` در `.gitignore` است و
+> `install.sh` هرگز یک `.env` موجود را بازنویسی نمی‌کند، پس این اختلاف خودبه‌خود درست نمی‌شود.
+> **راه‌حل:** خط `REAL_CHROME_ENABLED` را از `.env` پاک کنید (یا `true` بگذارید). برای دیدنِ اینکه مقدار فعلی از کجا آمده:
+> ```bash
+> npm run doctor
+> ```
+
+مقادیر زیر فقط در صورتی لازم‌اند که بخواهید پیش‌فرض‌ها را تغییر دهید — هر کدام در profile شما مقدار درست را از قبل دارد:
 
 ```bash
-REAL_CHROME_ENABLED=true
+REAL_CHROME_ENABLED=true            # پیش‌فرض: true (لازم نیست بنویسید)
 REAL_CHROME_HEADLESS=false          # افزونه‌ها فقط در حالت headed لود می‌شوند
 REAL_CHROME_DISPLAY=:99             # روی سرورِ بدون مانیتور، نیاز به Xvfb دارد
 REAL_CHROME_DEBUG_PORT=9222         # 0 = خاموش؛ >0 = پورت DevTools/CDP
