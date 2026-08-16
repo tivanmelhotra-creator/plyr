@@ -40,8 +40,18 @@ services:
       REDIS_URL: redis://redis:6379
       PORT: "3000"
       NODE_ENV: production
+      # See the Dockerfile for the full reasoning. Short version: the
+      # `production` profile is headless, and a headless Chrome loads ZERO
+      # extensions — so NODE_ENV=production alone silently shipped a Remote
+      # Browser with no Element Inspector. `server` is headed on a virtual
+      # display and is what a deployed server almost always means.
+      APP_ENV: server
     ports:
       - "3000:3000"
+    # Chrome needs more than the default 64MB of shared memory. Without this the
+    # browser dies mid-page with "Target closed" / SIGBUS on heavy sites, which
+    # reads like an application bug and is not one.
+    shm_size: "1gb"
     volumes:
       # Persist runtime data across container restarts
       - ./logs:/app/logs

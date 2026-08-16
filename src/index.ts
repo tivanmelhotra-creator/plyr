@@ -40,6 +40,7 @@ import { LiveBrowserManager } from './core/LiveBrowser';
 import { setLiveSessionProvider } from './core/LiveSessions';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
 import { DesktopProxy } from './core/DesktopProxy';
+import { enforceStartupValidation } from './core/StartupValidation';
 // Dual browser mode: the reverse tunnel to a user's own Chrome, and the
 // Element Inspector's push channel. Both share this port with /live/ws and
 // /browser/ws, which is why the upgrade handler below multiplexes by path.
@@ -829,6 +830,22 @@ process.on('unhandledRejection', (reason, promise) => {
 // ============================================
 
 const startServer = async () => {
+  // FIRST, before anything expensive, and before the port is bound.
+  //
+  // Ordering is the entire value here. Redis connections, browser pools and Lua
+  // scripts all take time and all produce their own errors, so a configuration
+  // fault discovered after them arrives buried under unrelated noise — which is
+  // exactly how "Real Chrome is disabled" ended up being the first and only
+  // thing an operator learned about a four-part subsystem. Validating before
+  // `app.listen` also means a fatally misconfigured instance never accepts a
+  // request it cannot serve, instead of failing one caller at a time.
+  //
+  // It aborts ONLY on genuinely fatal configuration. A missing browser binary
+  // or a downed display is reported in full and the server still starts, so the
+  // dashboard and the job queue keep working and SelfHeal can repair the
+  // browser at runtime. See StartupValidation for that distinction.
+  await enforceStartupValidation();
+
   await cleanupSystem();
   await apiKeyManager.initialize();
   await quotaManager.initialize();
@@ -841,7 +858,16 @@ const startServer = async () => {
     console.log(`║     🚀 AUTOMATION BACKEND v${config.VERSION} - MODULAR EDITION             ║`);
     console.log('╠══════════════════════════════════════════════════════════════════╣');
     console.log(`║  Port:              ${String(config.PORT).padEnd(47)}║`);
-    console.log(`║  Environment:       ${config.NODE_ENV.padEnd(47)}║`);
+    // The PROFILE, not NODE_ENV. NODE_ENV is what tooling wrote; the profile is
+    // what actually decides whether this box runs a headed browser that can
+    // load extensions. Printing the weaker of the two was part of how a
+    // container silently running headless went unnoticed. The source is shown
+    // because "production (from NODE_ENV)" and "server (from APP_ENV)" are
+    // different facts and only one of them was chosen deliberately.
+    console.log(`║  Environment:       ${`${config.APP_PROFILE} (from ${config.APP_PROFILE_SOURCE})`.padEnd(47)}║`);
+    console.log(`║  Remote Browser:    ${(config.REAL_CHROME_ENABLED
+      ? (config.REAL_CHROME_HEADLESS ? '! headless — extensions OFF' : '✓ headed — extensions ON')
+      : '✗ disabled').padEnd(47)}║`);
     console.log(`║  Concurrency:       ${String(config.MAX_CONCURRENT).padEnd(47)}║`);
     console.log(`║  API Auth:          ${(config.API_KEYS_ENABLED ? '✓ Enabled' : '✗ Disabled').padEnd(47)}║`);
     console.log(`║  Turbo Mode:        ${(config.TURBO_MODE ? '✓ Enabled' : '✗ Disabled').padEnd(47)}║`);

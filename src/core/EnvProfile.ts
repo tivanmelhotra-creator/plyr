@@ -62,8 +62,48 @@ export interface ResolvedValue<T> {
  * `test` exists because the test suite has genuinely different needs (never
  * open a window, never wait 60s for a launch) and because CI setting one
  * variable is better than CI setting nine.
+ *
+ * ── WHY `server` EXISTS, AND WHY IT IS NOT JUST `production` ───────────────
+ *
+ * This is the fix for a real, reported defect, so the reasoning is recorded in
+ * full.
+ *
+ * `production` sets `REAL_CHROME_HEADLESS=true` on the entirely sound grounds
+ * that nobody is watching the screen and a headed browser costs RAM. But
+ * MEASURED with this repo's own launch options (playwright 1.56.1 /
+ * chromium-1194, `--load-extension` with `--disable-extensions` stripped):
+ *
+ *     headless=true   ->  0 extension service workers
+ *     headless=false  ->  1 extension service worker
+ *
+ * A headless Chrome loads NO extensions. Not "fewer" — none. So on any box
+ * that set `NODE_ENV=production` (which this repo's OWN Dockerfile and both
+ * compose files do), the Remote Browser came up with the Element Inspector and
+ * every cookie extension silently absent. That is precisely the
+ * "Environment B → Real Chrome silently disabled" outcome we were told to
+ * eliminate.
+ *
+ * Two bad ways to fix it, and why they were rejected:
+ *
+ *   1. Flip `production` to headed. That breaks the legitimate deployment that
+ *      runs ONLY the job queue and wants no X server at all, and it silently
+ *      reverses a deliberate resource decision for every existing operator.
+ *   2. Leave it and document the trap. Documentation does not stop a silent
+ *      failure; it just means the failure is described somewhere.
+ *
+ * So instead the two intents are given two names, and neither is a guess:
+ *
+ *     production  — the app in production. Headless. Remote Browser runs
+ *                   WITHOUT extensions, and now says so loudly at boot.
+ *     server      — a remote server whose job includes the Remote Browser.
+ *                   Headed on a virtual display, extensions load, VNC stays
+ *                   shut unless asked for.
+ *
+ * `server` is what the Dockerfile, both compose files and the deployment docs
+ * now select, because "I deployed this project to a server" overwhelmingly
+ * means "and I want its headline feature to work".
  */
-export const PROFILE_IDS = ['development', 'production', 'test'] as const;
+export const PROFILE_IDS = ['development', 'server', 'production', 'test'] as const;
 export type ProfileId = (typeof PROFILE_IDS)[number];
 
 export interface ProfileMeta {
@@ -83,11 +123,26 @@ export const PROFILES: readonly ProfileMeta[] = [
     summaryFa: 'مرورگر آشکار، خطاهای کامل، هیچ‌چیز پنهان نیست. برای دیدن اتفاقات بهینه شده.',
   },
   {
+    id: 'server',
+    label: 'Remote server',
+    labelFa: 'سرور راه دور',
+    summary:
+      'Production hardening, but the Remote Browser works: headed Chrome on a virtual '
+      + 'display so extensions and the Element Inspector load. Rate limits on, debug port shut.',
+    summaryFa:
+      'سخت‌گیری پروداکشن، اما Remote Browser کار می‌کند: کروم آشکار روی نمایشگر مجازی تا '
+      + 'افزونه‌ها و Element Inspector بارگذاری شوند. محدودیت نرخ روشن، پورت دیباگ بسته.',
+  },
+  {
     id: 'production',
-    label: 'Production',
-    labelFa: 'محصول نهایی',
-    summary: 'Headless browser, tighter limits, no debug port. Optimised for resources and safety.',
-    summaryFa: 'مرورگر پنهان، محدودیت‌های سخت‌تر، بدون پورت دیباگ. برای منابع و امنیت بهینه شده.',
+    label: 'Production (headless)',
+    labelFa: 'محصول نهایی (پنهان)',
+    summary:
+      'Headless browser, tighter limits, no debug port. Optimised for resources and safety. '
+      + 'Extensions do NOT load headless — use the server profile if you need them.',
+    summaryFa:
+      'مرورگر پنهان، محدودیت‌های سخت‌تر، بدون پورت دیباگ. برای منابع و امنیت بهینه شده. '
+      + 'در حالت پنهان افزونه‌ها بارگذاری نمی‌شوند — اگر لازم دارید از پروفایل server استفاده کنید.',
   },
   {
     id: 'test',
@@ -145,11 +200,63 @@ export const PROFILE_DEFAULTS: ProfileTable = {
     },
   },
 
+  /**
+   * A remote server that is expected to RUN the Remote Browser.
+   *
+   * Everything security-related matches `production`. The single difference is
+   * the one the measurement above forces: the browser is headed, on a virtual
+   * display the server starts itself, because that is the only mode in which
+   * an extension exists at all.
+   */
+  server: {
+    REAL_CHROME_HEADLESS: {
+      value: 'false',
+      why: 'Extensions only load in a headed Chrome (measured: 0 extensions headless, 1 headed). '
+        + 'The Element Inspector and cookie extensions are the point of the Remote Browser.',
+      whyFa: 'افزونه‌ها فقط در کروم آشکار بارگذاری می‌شوند (اندازه‌گیری‌شده: صفر افزونه در حالت پنهان، '
+        + 'یک افزونه در حالت آشکار). Element Inspector و افزونه‌های کوکی، هدف اصلی Remote Browser هستند.',
+    },
+    // TRUE, and the earlier draft of this table had it FALSE. The reasoning
+    // written there — "the X display comes up on demand, the VNC viewer stays
+    // off, an idle VNC port is attack surface" — sounded responsible and was
+    // wrong on the facts. `DESKTOP_ENABLED` gates NOTHING: the only reader in
+    // the entire codebase is `Desktop.status().enabled` (Desktop.ts:779), and
+    // `Desktop.start()` brings up Xvfb, x11vnc and websockify whether it is set
+    // or not. Declaring it false would therefore have bought exactly zero
+    // security and cost a `/browser/status` that reports `desktop.enabled:
+    // false` on a box whose desktop is running — the same class of lie this
+    // whole change exists to remove.
+    DESKTOP_ENABLED: {
+      value: 'true',
+      why: 'A headed browser needs a display to be headed ON, and this profile is headed. '
+        + 'Also lets the operator watch the Remote Browser, which is why they deployed it.',
+      whyFa: 'مرورگر آشکار به نمایشگری نیاز دارد که روی آن آشکار باشد، و این پروفایل آشکار است. '
+        + 'ضمناً به اپراتور اجازه می‌دهد Remote Browser را تماشا کند، که دلیل استقرار آن است.',
+    },
+    REAL_CHROME_DEBUG_PORT: {
+      value: '0',
+      why: 'An open DevTools port is remote code execution and full cookie theft. Off unless asked for.',
+      whyFa: 'پورت باز DevTools یعنی اجرای کد از راه دور و سرقت کامل کوکی‌ها. جز با درخواست صریح، خاموش.',
+    },
+    RATE_LIMIT_ENABLED: {
+      value: 'true',
+      why: 'A public endpoint without a rate limit is a bill waiting to happen.',
+      whyFa: 'اندپوینت عمومی بدون محدودیت نرخ، صورت‌حسابی است که در راه است.',
+    },
+    REAL_CHROME_RESTORE_TABS: {
+      value: 'true',
+      why: 'A server restart must not discard the operator\'s half-finished work across tabs.',
+      whyFa: 'ری‌استارت سرور نباید کار نیمه‌تمام اپراتور در چند تب را دور بریزد.',
+    },
+  },
+
   production: {
     REAL_CHROME_HEADLESS: {
       value: 'true',
-      why: 'Nobody is watching the screen. A visible browser costs RAM and a display for nothing.',
-      whyFa: 'کسی صفحه را تماشا نمی‌کند. مرورگر آشکار بی‌دلیل رم و نمایشگر مصرف می‌کند.',
+      why: 'Nobody is watching the screen. A visible browser costs RAM and a display for nothing. '
+        + 'NOTE: no extension loads headless — use APP_ENV=server if you need the Element Inspector.',
+      whyFa: 'کسی صفحه را تماشا نمی‌کند. مرورگر آشکار بی‌دلیل رم و نمایشگر مصرف می‌کند. '
+        + 'توجه: در حالت پنهان هیچ افزونه‌ای بارگذاری نمی‌شود — اگر Element Inspector لازم دارید APP_ENV=server بگذارید.',
     },
     DESKTOP_ENABLED: {
       value: 'false',
@@ -223,23 +330,35 @@ export function detectProfile(env: NodeJS.ProcessEnv = process.env): {
 } {
   const appEnv = normalise(env.APP_ENV);
   if (appEnv) {
-    const id = coerceProfile(appEnv);
+    const id = coerceProfile(appEnv, true);
     if (id) return { id, source: 'APP_ENV', raw: appEnv };
   }
   const nodeEnv = normalise(env.NODE_ENV);
   if (nodeEnv) {
-    const id = coerceProfile(nodeEnv);
+    const id = coerceProfile(nodeEnv, false);
     if (id) return { id, source: 'NODE_ENV', raw: nodeEnv };
   }
   return { id: 'development', source: 'default', raw: appEnv || nodeEnv || '' };
 }
 
-/** `prod`, `PRODUCTION`, `production` all mean the same thing to a human. */
-function coerceProfile(raw: string): ProfileId | null {
+/**
+ * `prod`, `PRODUCTION`, `production` all mean the same thing to a human.
+ *
+ * `allowServer` exists because the two inputs are not equally trustworthy.
+ * `APP_ENV` is ours: nothing writes it but the operator, so every word in the
+ * vocabulary is a deliberate statement. `NODE_ENV` is written by tooling that
+ * knows nothing about this project, so it gets the smaller vocabulary — a
+ * bundler or a PaaS that decided to set `NODE_ENV=server` must not silently
+ * start an X server and a headed Chrome on a box that never asked for one.
+ * `remote` is accepted as a synonym for `server` because the feature is called
+ * "Remote Browser" and that is what people type.
+ */
+function coerceProfile(raw: string, allowServer: boolean): ProfileId | null {
   const v = raw.toLowerCase();
   if (v === 'production' || v === 'prod') return 'production';
   if (v === 'development' || v === 'dev') return 'development';
   if (v === 'test' || v === 'testing' || v === 'ci') return 'test';
+  if (allowServer && (v === 'server' || v === 'remote')) return 'server';
   return null;
 }
 

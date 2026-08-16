@@ -12,9 +12,12 @@
     "start": "node dist/index.js",
     "clean": "rimraf dist",
     "prestart": "npm run build",
+    "doctor": "tsx src/cli/doctor.ts",
+    "doctor:built": "node dist/cli/doctor.js",
+    "setup": "npm run install:browser:deps && npm run build && npm run doctor",
     "install:browser": "playwright install chromium",
     "install:browser:deps": "playwright install --with-deps chromium",
-    "postinstall": "node -e \"if(process.env.SKIP_BROWSER_INSTALL){process.exit(0)}\" && (playwright install chromium || echo \"[postinstall] Skipped Chromium download (run npm run install:browser manually).\")"
+    "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [
     "playwright",
@@ -27,7 +30,6 @@
   "author": "Dev Team",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.7.7",
     "bullmq": "^5.13.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -38,7 +40,7 @@
     "ioredis": "^5.4.1",
     "jimp": "^1.6.0",
     "mime-types": "^2.1.35",
-    "playwright": "^1.48.0",
+    "playwright": "1.56.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "safe-regex2": "^3.1.0",

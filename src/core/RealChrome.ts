@@ -420,6 +420,36 @@ export class RealChrome {
   }
 
   /**
+   * Why the Remote Browser is off, and what to actually do about it.
+   *
+   * REPLACES: "Real Chrome is disabled. Set REAL_CHROME_ENABLED=true to use
+   * extensions." — the exact string the operator reported, and a bad one for a
+   * reason worth recording so it is not reintroduced.
+   *
+   * `REAL_CHROME_ENABLED` DEFAULTS TO TRUE (config.ts). So on a clean checkout
+   * this branch is unreachable, and every operator who ever saw that message
+   * was already in the one state the message cannot be explained by: someone
+   * wrote `false` down somewhere. Telling them to "set it to true" without
+   * saying WHERE the false came from sends them to edit a file that, in the
+   * reported incident, was a `.env` inherited from a pre-35e6ed0 `.env.example`
+   * — a file the installer deliberately never overwrites. They cannot find it
+   * by guessing, and the message gave them nothing else to go on.
+   *
+   * So: name the mechanism, name the likely file, and give the check that
+   * proves it. `npm run doctor` prints the resolved value with its provenance.
+   */
+  private static disabledExplanation(): string {
+    return (
+      'The Remote Browser is switched OFF by configuration: REAL_CHROME_ENABLED=false. '
+      + 'Extensions and the Element Inspector cannot run while it is off.\n'
+      + 'Note the default is TRUE, so something set it explicitly — usually a stale .env '
+      + 'copied from an older release (the installer never overwrites an existing .env).\n'
+      + 'To fix: delete the REAL_CHROME_ENABLED line from your .env, or set it to true, then restart.\n'
+      + 'To see where the current value came from: npm run doctor'
+    );
+  }
+
+  /**
    * The file dialog the remote page is waiting on, if any.
    *
    * Null when the browser is not running, because a dialog belongs to a live
@@ -614,9 +644,7 @@ export class RealChrome {
    */
   static async getContext(): Promise<BrowserContext> {
     if (!this.isEnabled()) {
-      throw new RealChromeError(
-        'Real Chrome is disabled. Set REAL_CHROME_ENABLED=true to use extensions.',
-      );
+      throw new RealChromeError(this.disabledExplanation());
     }
     if (this.context) return this.context;
     if (this.starting) return this.starting;

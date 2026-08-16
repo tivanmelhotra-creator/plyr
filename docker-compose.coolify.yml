@@ -21,6 +21,7 @@
 #        DEPLOYMENT_MODE=single
 #        API_TOKEN=tok_xxxxxxxx...   (or leave empty -> auto-generated at boot)
 #        NODE_ENV=production
+#        APP_ENV=server            (headed browser -> extensions load)
 #      REDIS_URL is set below to the internal redis service.
 #   5. Deploy. Open https://your-domain/ and log in with the API_TOKEN.
 #
@@ -55,6 +56,15 @@ services:
       REDIS_URL: redis://redis:6379
       PORT: "3000"
       NODE_ENV: production
+      # The profile that decides whether the Remote Browser actually works.
+      #
+      # `production` is HEADLESS, and a headless Chrome loads ZERO extensions
+      # (measured: 0 service workers headless vs 1 headed), so it silently
+      # ships without the Element Inspector or any cookie extension. `server`
+      # keeps the same hardening but runs headed on a virtual display.
+      # Override to `production` only if this instance runs the job queue and
+      # nothing else.
+      APP_ENV: ${APP_ENV:-server}
       # --- Set these in the Coolify Environment Variables UI ---
       # Defaults provided here so the stack boots even before you
       # customise them; override in Coolify for production.
@@ -64,6 +74,10 @@ services:
     # The magic label below tells Coolify which container port to expose.
     expose:
       - "3000"
+    # Chrome needs more than Docker's default 64MB /dev/shm. Without this the
+    # browser dies mid-page on heavy sites with "Target closed", which reads
+    # like an application bug and is not one.
+    shm_size: "1gb"
     volumes:
       # Persist runtime data across redeploys.
       - app-logs:/app/logs
