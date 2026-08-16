@@ -1,0 +1,136 @@
+name: CI
+
+# WHY THIS FILE EXISTS
+# --------------------
+# The repository had no `.github/` directory at all, so nothing ever verified
+# that a CLEAN CHECKOUT builds — and nothing produced the Chrome extension the
+# user actually needs to install:
+#
+#   «فقط سورس extension داخل GitHub نمی‌خواهم»
+#
+# So this workflow does the exact sequence that was asked for, on a machine that
+# has never seen this project before:
+#
+#   GitHub repository -> npm ci -> npm run build -> Chrome Extension artifact
+#
+# and then uploads that artifact, so the extension can be downloaded and
+# installed with "Load unpacked" WITHOUT building anything locally.
+
+on:
+  push:
+    branches: [main, genspark_ai_developer]
+  pull_request:
+    branches: [main]
+  # Lets a user produce a fresh downloadable extension on demand, without
+  # pushing a commit.
+  workflow_dispatch:
+
+# A new push supersedes the previous run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build, verify and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # `npm ci` runs scripts/postinstall.js, which downloads Chromium. Neither
+      # the build nor these tests need a browser, and the ~400 MB would dominate
+      # the run. This is the script's own documented escape hatch (the
+      # Dockerfile uses it too), not a generic Playwright variable that it does
+      # not read — see scripts/postinstall.js:65.
+      SKIP_BROWSER_INSTALL: '1'
+      # tests/integration/setup.ts pins the rest; these two are what the
+      # config loader reads before it gets there.
+      NODE_ENV: test
+      CI: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # `npm ci`, not `npm install`: it installs strictly from the lockfile, so
+      # a green run proves the committed lockfile is sufficient. That is half of
+      # "build must not depend on developer-machine-only files".
+      - name: Install dependencies (clean, from lockfile)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      # The real thing, exactly as a user would run it. build:extension verifies
+      # its own output and exits non-zero if the artifact would not load in
+      # Chrome, so this step failing means the download would have been broken.
+      - name: Build (server + Chrome extension)
+        run: npm run build
+
+      # An independent check on top of the build's internal one. The build could
+      # in principle be changed to skip its verification; this step cannot be
+      # satisfied by anything except a real, complete artifact on disk.
+      - name: Verify the extension artifact is installable
+        run: |
+          set -euo pipefail
+          DIR=artifacts/element-inspector-extension
+
+          test -d "$DIR" || { echo "::error::$DIR was not produced by npm run build"; exit 1; }
+
+          for f in \
+            manifest.json \
+            background.js \
+            content/inspector.js \
+            content/presence.js \
+            content/recorder.js \
+            content/selector.js \
+            lib/ab-core.js \
+            lib/ab-handoff.js \
+            lib/ab-inspect.js \
+            popup/popup.html \
+            popup/popup.js \
+            popup/popup.css \
+            icons/icon16.png \
+            icons/icon48.png \
+            icons/icon128.png
+          do
+            test -s "$DIR/$f" || { echo "::error::missing or empty: $DIR/$f"; exit 1; }
+          done
+
+          # MV3, or Chrome will not load it at all.
+          node -e "
+            const m = require('./artifacts/element-inspector-extension/manifest.json');
+            if (m.manifest_version !== 3) { console.error('::error::manifest_version is ' + m.manifest_version); process.exit(1); }
+            console.log('manifest OK: ' + m.name + ' v' + m.version);
+          "
+
+          # A generated bootstrap.config.js can carry a real API token, and this
+          # artifact is downloadable by anyone with repo access.
+          if [ -e "$DIR/bootstrap.config.js" ]; then
+            echo "::error::bootstrap.config.js leaked into the artifact"
+            exit 1
+          fi
+
+          echo "artifact verified:"
+          find "$DIR" -type f | sort
+
+      - name: Test
+        run: npm test
+
+      # THE DELIVERABLE. Downloadable from the run's summary page, so a user can
+      # install the extension without a toolchain: unzip, then
+      # chrome://extensions -> Developer mode -> Load unpacked.
+      - name: Upload the Chrome extension
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: element-inspector-extension
+          path: artifacts/element-inspector-extension
+          if-no-files-found: error
+          retention-days: 30

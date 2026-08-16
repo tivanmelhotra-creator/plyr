@@ -33,6 +33,11 @@ import { describeProfile, PROFILES } from '../core/EnvProfile';
 // belongs to SelfHeal now, because SelfHeal is what tries to make one first.
 import { Desktop, DesktopError } from '../core/Desktop';
 import {
+  withStartBudget,
+  describe as describeStartError,
+  statusForOutcome,
+} from '../core/RemoteBrowserStart';
+import {
   installExtensionArchive,
   installExtensionFromStore,
   webStoreIdFromInput,
@@ -145,12 +150,17 @@ function sendError(res: Response, e: unknown): void {
     // have it reporting a server fault for an ordinary race.
     return fail(res, e instanceof FileChooserError ? 409 : 400, e.message);
   }
-  if (e instanceof RealChromeError) {
+  if (e instanceof RealChromeError || e instanceof DesktopError) {
     // 503: the request was fine, the browser is not available *yet*.
-    return fail(res, 503, e.message);
-  }
-  if (e instanceof DesktopError) {
-    return fail(res, 503, e.message);
+    //
+    // The HINT is the part that was missing. "Could not start the remote
+    // browser: HTTP 502" gave the operator a number and nothing else, while a
+    // missing shared library, a dead X display and a stale profile lock each
+    // have a completely different remedy. describeStartError() names the cause
+    // and the exact next command, and it is shared with the bounded start path
+    // so both routes speak with one voice.
+    const { hint } = describeStartError(e);
+    return fail(res, 503, e.message, hint);
   }
   return fail(res, 500, (e as Error)?.message || 'Unexpected error');
 }
@@ -952,57 +962,128 @@ export const createBrowserRoutes = (): Router => {
    * port.
    */
   router.post('/browser/real/open', async (req, res) => {
-    try {
-      const desktop = await Desktop.start();
+    // ─────────────────────────────────────────────────────────────────────
+    // BOUNDED, CONTAINED START
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // REPORTED: "Could not start the remote browser: HTTP 502", after which the
+    // whole application stopped coming up.
+    //
+    // MEASURED on a clean box: this route returns 200 — in 50.3 seconds. No
+    // step in the chain (desktop provisioning, Xvfb, x11vnc, websockify, a
+    // headed Chromium with a 60s launch timeout of its own) had any overall
+    // deadline. A reverse proxy in front of the app therefore timed out first
+    // and served its OWN html 502/504 page, and the UI, unable to parse a body
+    // that is not our JSON, degraded the message to the bare "HTTP 502".
+    //
+    // So the work now runs under a budget that undercuts every common gateway
+    // timeout. Three properties matter and all three are load-bearing:
+    //
+    //   1. We ALWAYS answer first, in our own JSON, with a cause and a hint.
+    //   2. Expiry does NOT cancel the start. It continues in the background,
+    //      so Retry finds a warm browser instead of beginning a second cold
+    //      boot — which is what makes the retry loop converge.
+    //   3. Every fault stays in REQUEST SCOPE. Nothing here can reach the
+    //      process-level handlers, so a browser that cannot start can no
+    //      longer take the server, the port and /health down with it.
+    const result = await withStartBudget(
+      async () => {
+        const desktop = await Desktop.start();
+        return await openRealBrowser(req, desktop);
+      },
+      {
+        // A start that outlives its budget still has to be heard from. Logged
+        // and swallowed here so that a late failure is diagnosable without
+        // ever becoming an unhandled rejection.
+        onLateSettle: (err) => {
+          if (err) {
+            console.warn(
+              '[REAL-CHROME] background start finished with an error after the reply:',
+              (err as Error)?.message || err,
+            );
+          } else {
+            console.log('[REAL-CHROME] background start completed after the reply — retry will be instant');
+          }
+        },
+      },
+    );
 
-      // A WEDGED browser must not be handed back as if it were healthy.
-      //
-      //   «هنگ کرد و بعدش دیگه فریز شد منم بستم مجدد باز کنم کلا نرفت به اون
-      //    ادرس»
-      //
-      // getContext() returns the existing context whenever `this.context` is
-      // non-null, and a frozen Chromium does not close its context — so
-      // reopening the view used to return the same dead browser, and the button
-      // "went nowhere". Checking BEFORE reuse is what turns that dead end into a
-      // recovery. It costs one round trip on an already-running browser and
-      // nothing at all on a cold start.
-      const recovery = RealChrome.isRunning()
-        ? await RealChrome.recycleIfWedged()
-        : { action: 'not-running' as const, reason: 'cold start' };
+    if (result.outcome === 'ready') {
+      res.json(result.value);
+      return;
+    }
 
-      // The screen must exist before Chrome starts: extensions only load in a
-      // HEADED browser, and a headed browser needs an X display.
-      const ctx = await RealChrome.getContext();
-
-      const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
-      if (url) {
-        const page = await RealChrome.newPage();
-        // Do not await the load: a slow site must not stall the button, and
-        // the operator can watch it load on the desktop they are about to see.
-        void page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => { /* visible on screen */ });
-      }
-
-      res.json({
-        success: true,
-        desktop,
-        // The BARE Chromium view, not noVNC's own vnc.html. That file is the
-        // whole noVNC application (measured: 64 UI elements, a connect dialog,
-        // a control bar), so it handed the operator a VNC client to operate
-        // when all they asked for was the browser. See ChromeView.ts.
-        //
-        // Relative on purpose: the client prefixes its own origin, so this
-        // works on localhost, behind a proxy, and on a sandbox subdomain alike.
-        viewPath: '/desktop/chrome',
-        realChrome: await RealChrome.status(),
-        tabs: ctx ? await RealChrome.tabs() : [],
-        // Say it out loud when a browser was recycled. The operator's tabs come
-        // back (REAL_CHROME_RESTORE_TABS), but a silent relaunch is how "all my
-        // tabs are gone" became a mystery in the first place.
-        recovered: recovery.action === 'recycled',
-        recovery,
-      });
-    } catch (e) { sendError(res, e); }
+    // 503 for both "still starting" and "failed": the request was well formed,
+    // the browser is not available *yet*, and the client may retry. We never
+    // emit 502 — in this system that code only ever meant a gateway invented an
+    // answer we did not send.
+    res.status(statusForOutcome(result.outcome)).json({
+      success: false,
+      error: result.error,
+      hint: result.hint,
+      retryable: true,
+      startedMs: result.elapsedMs,
+      // The desktop's own view of itself, best-effort. It is the first thing
+      // asked for in a support thread and costs nothing to include.
+      desktop: await Desktop.status().catch(() => null),
+    });
   });
+
+  /**
+   * The actual open sequence, extracted so the route above stays about
+   * TIMING and CONTAINMENT while this stays about the browser.
+   */
+  async function openRealBrowser(
+    req: AuthenticatedRequest,
+    desktop: Awaited<ReturnType<typeof Desktop.start>>,
+  ): Promise<Record<string, unknown>> {
+    // A WEDGED browser must not be handed back as if it were healthy.
+    //
+    //   «هنگ کرد و بعدش دیگه فریز شد منم بستم مجدد باز کنم کلا نرفت به اون
+    //    ادرس»
+    //
+    // getContext() returns the existing context whenever `this.context` is
+    // non-null, and a frozen Chromium does not close its context — so
+    // reopening the view used to return the same dead browser, and the button
+    // "went nowhere". Checking BEFORE reuse is what turns that dead end into a
+    // recovery. It costs one round trip on an already-running browser and
+    // nothing at all on a cold start.
+    const recovery = RealChrome.isRunning()
+      ? await RealChrome.recycleIfWedged()
+      : { action: 'not-running' as const, reason: 'cold start' };
+
+    // The screen must exist before Chrome starts: extensions only load in a
+    // HEADED browser, and a headed browser needs an X display.
+    const ctx = await RealChrome.getContext();
+
+    const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+    if (url) {
+      const page = await RealChrome.newPage();
+      // Do not await the load: a slow site must not stall the button, and
+      // the operator can watch it load on the desktop they are about to see.
+      void page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => { /* visible on screen */ });
+    }
+
+    return {
+      success: true,
+      desktop,
+      // The BARE Chromium view, not noVNC's own vnc.html. That file is the
+      // whole noVNC application (measured: 64 UI elements, a connect dialog,
+      // a control bar), so it handed the operator a VNC client to operate
+      // when all they asked for was the browser. See ChromeView.ts.
+      //
+      // Relative on purpose: the client prefixes its own origin, so this
+      // works on localhost, behind a proxy, and on a sandbox subdomain alike.
+      viewPath: '/desktop/chrome',
+      realChrome: await RealChrome.status(),
+      tabs: ctx ? await RealChrome.tabs() : [],
+      // Say it out loud when a browser was recycled. The operator's tabs come
+      // back (REAL_CHROME_RESTORE_TABS), but a silent relaunch is how "all my
+      // tabs are gone" became a mystery in the first place.
+      recovered: recovery.action === 'recycled',
+      recovery,
+    };
+  }
 
   /**
    * Is the real browser actually answering, and recycle it if not.

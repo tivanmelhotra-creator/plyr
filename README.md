@@ -33,7 +33,7 @@ Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript**
 - **گزارش لحظه‌ای دوکاناله به بیرون (Step 29):** علاوه بر رویدادهای سطح-job، می‌توانید **هر استپ** را لحظه‌ای به بیرون گزارش بگیرید. **کانال ۱ — Webhook هر استپ:** با `STEP_WEBHOOK_ENABLED=true`، هر رویداد `step.start/done/error/retry` (به‌همراه خلاصهٔ آیتم ورودی/خروجی و خطا) با همان امضای **HMAC-SHA256** (`X-Signature`+`X-Webhook-Timestamp`+`X-Webhook-Event`) و retry/backoff به `webhookUrl` جاب ارسال می‌شود؛ نود **Trigger n8n** اکنون این رویدادهای per-step را هم در فهرست Eventها می‌پذیرد. **کانال ۲ — لینک مشاهدهٔ زندهٔ قابل‌اشتراک:** با `POST /live/share/:userId/:jobId` یک **توکن امضاشدهٔ منقضی‌شونده** و URL کامل بگیرید و صفحهٔ فقط‌خواندنیِ `/live/view/:userId/:jobId?share=…` را با هرکسی به‌اشتراک بگذارید — بدون افشای API-key، نودبه‌نود + خروجی هر استپ را زنده نشان می‌دهد (WebSocket با fallbackِ SSE). منطق payload و امضا/تأیید توکن در یک هستهٔ خالص تست‌پذیر (`src/core/StepReporter.ts`) جداست (۲۴ تست واحد + ۶ تست authorize).
 - **کتابخانهٔ چند-ورکفلو در UI:** ویوی «📚 ورکفلوها» با گرید کارت — دیگر به یک ورکفلو محدود نیستید. ساخت/تغییرنام/کپی/حذف/اجرا، باز کردن هر ورکفلو در ادیتور بصری، دکمهٔ «💾 ذخیره روی سرور» (PUT با بامپ نسخه)، و مشاهدهٔ تاریخچهٔ نسخه‌ها + بازگردانی (restore) — همگی روی همان CRUD سرور (`/workflows/:userId`) با i18n کامل fa+en.
 - **نمایش زندهٔ مرورگر + Element Picker:** مرورگر سروری را زنده داخل داشبورد ببینید (CDP Screencast روی WebSocket `/browser/ws`)، روی صفحه کلیک/تایپ/اسکرول کنید (تعامل دوطرفه با `Input.*`)، و با ابزار «انتخاب عنصر» سلکتور CSS/XPath را خودکار بسازید و با یک کلیک به‌صورت گام `click`/`extract` به فرم اجرا اضافه کنید. هر نشست یک context ایزوله با TTL بی‌کاری دارد.
-- **افزونهٔ کمکی Chrome (Manifest V3):** پوشهٔ [`extension/`](extension/README.md) — روی مرورگر واقعی خودتان عنصر انتخاب کنید (CSS/XPath با همان منطق Picker بک‌اند)، اکشن‌ها را ضبط کنید (click/fill/press/goto) و با API Key مستقیم از popup به‌صورت یک Flow (`POST /run`) به بک‌اند بفرستید. بدون build؛ از طریق *Load unpacked* نصب می‌شود. راهنمای نصب و نکتهٔ CORS در `extension/README.md`.
+- **افزونهٔ کمکی Chrome (Manifest V3):** پوشهٔ [`extension/`](extension/README.md) — روی مرورگر واقعی خودتان عنصر انتخاب کنید (CSS/XPath با همان منطق Picker بک‌اند)، اکشن‌ها را ضبط کنید (click/fill/press/goto) و با API Key مستقیم از popup به‌صورت یک Flow (`POST /run`) به بک‌اند بفرستید. با `npm run build` یک **artifact نصب‌شدنی** در `artifacts/element-inspector-extension/` ساخته می‌شود که مستقیماً با *Load unpacked* در Chrome نصب می‌گردد (همین artifact در CI هم ساخته و به‌عنوان workflow artifact آپلود می‌شود تا بدون build کردن قابل دانلود باشد). راهنمای گام‌به‌گام: [نصب افزونهٔ Element Inspector روی Chrome شخصی](#نصب-افزونهٔ-element-inspector-روی-chrome-شخصی-local-browser). نکتهٔ CORS در `extension/README.md`.
 - **Schedule:** زمان‌بندی cron با BullMQ repeatable jobs.
 - **ادغام n8n / API (F3):** حالت همگام `POST /run?wait=true` (صبر تا پایان جاب و بازگشت نتیجه به‌صورت inline؛ در timeout پاسخ `202` با `pollUrl`)، هدر `Idempotency-Key` برای جلوگیری از اجرای دوبارهٔ درخواست‌های تکراری، و **webhookهای امضاشده با HMAC-SHA256** (`X-Signature: sha256=…` + `X-Webhook-Timestamp` وقتی `WEBHOOK_SECRET` ست شود). مشخصات کامل OpenAPI در [`docs/openapi.yaml`](./docs/openapi.yaml).
 - **n8n Community Node (F4):** پکیج [`n8n-node/`](n8n-node/README.md) با نام `n8n-nodes-automationbackend` — یک Action node و یک Trigger node (دریافت webhookهای بک‌اند با **تأیید امضای HMAC**)؛ Credentials = Base URL + API Key (+ Webhook Secret اختیاری). عملیات‌های Action node: **Run Saved Workflow** (مدل ب — اجرای ورکفلوی ذخیره‌شده با انتخاب از dropdownِ زنده‌ای که با `loadOptions` از `GET /workflows/:userId` پر می‌شود، تزریق `triggerData`، حالت `wait=true` و `Idempotency-Key`) / **Run Inline Workflow** (`POST /run`) / Get Job Result / Create Schedule / Cancel Job. نصب و نمونه‌ورکفلوها در `n8n-node/README.md`.
@@ -160,6 +160,38 @@ npm run install:browser:deps         # Chromium + وابستگی‌های سیس
 > 🧩 **مرورگر:** به‌صورت پیش‌فرض از Chromium بسته‌بندی‌شده‌ی Playwright استفاده می‌شود. اگر می‌خواهید Chrome/Chromium نصب‌شده‌ی سیستم استفاده شود، مسیر آن را در `CHROME_EXE` بگذارید (در غیر این‌صورت خالی بماند).
 
 > ⚠️ **چرا `npm run doctor` مهم است:** رایج‌ترین خرابیِ این پروژه روی سرور، نصبِ *ظاهراً موفق* است. باینری Chromium دانلود می‌شود ولی چند کتابخانهٔ سیستمی (`libatk-1.0.so.0`، `libatspi.so.0`، …) وجود ندارند، و مرورگر تازه سرِ اولین کلیک می‌میرد. `doctor` دقیقاً همین را قبل از استقرار می‌گوید و دستور رفعش را می‌دهد. کد خروجی: `0` = آماده، `1` = مشکل مسدودکننده.
+
+### نصب افزونهٔ Element Inspector روی Chrome شخصی (LOCAL BROWSER)
+
+مسیر **LOCAL BROWSER** (وقتی می‌خواهید عنصر را روی مرورگر Chrome خودتان انتخاب کنید، نه روی مرورگر سرور) به افزونهٔ Chrome نیاز دارد. build پروژه یک **artifact آمادهٔ نصب** تولید می‌کند:
+
+```bash
+npm ci
+npm run build          # = build:server (tsc) + build:extension
+# خروجی: artifacts/element-inspector-extension/
+```
+
+سپس در Chrome:
+
+1. **پروژه را build کنید** — `npm run build` (خروجی در `artifacts/element-inspector-extension/`).
+2. آدرس **`chrome://extensions`** را باز کنید.
+3. **Developer mode** را روشن کنید (کلید بالا-راست).
+4. روی **Load unpacked** کلیک کنید.
+5. پوشهٔ **`artifacts/element-inspector-extension`** را انتخاب کنید — «Element Inspector» نصب می‌شود.
+
+> 📦 **بدون build هم می‌شود:** یک workflow آماده همین artifact را در GitHub Actions می‌سازد و با نام **`element-inspector-extension`** آپلود می‌کند؛ کافی است از صفحهٔ Actions دانلود، unzip و در گام ۴ همان پوشه را انتخاب کنید.
+>
+> ⚠️ این workflow فعلاً در `.github/workflows-pending/ci.yml` پارک شده و **فعال نیست** — اکانت اتوماسیونی که PR را باز کرد مجوز `workflows` گیت‌هاب را ندارد و push به `.github/workflows/` رد می‌شود. برای فعال‌سازی فقط یک دستور لازم است:
+> ```bash
+> git mv .github/workflows-pending/ci.yml .github/workflows/ci.yml && git commit -m "ci: activate" && git push
+> ```
+> جزئیات در [`.github/workflows-pending/README.md`](.github/workflows-pending/README.md).
+
+**چه چیزی داخل artifact است؟** `manifest.json` (Manifest V3)، `background.js` (service worker)، اسکریپت‌های محتوا (`content/`)، `lib/`، `popup/`، `icons/` و یک `INSTALL.md`. اسکریپت build (`scripts/build-extension.js`) پس از کپی، **صحت artifact را بررسی می‌کند** — وجود و معتبر بودن manifest، resolve شدن همهٔ مسیرهای manifest، دارایی‌های HTML و `importScripts`، و نشت‌نکردن `bootstrap.config.js` (که ممکن است توکن داشته باشد). اگر فایلی کم باشد build با کد خروجی `1` شکست می‌خورد تا artifact ناقص هرگز منتشر نشود.
+
+**جریان کاری بعد از نصب:** `Target This Field` → **LOCAL BROWSER** → دریافت **Authorization Code** → pair کردن افزونه با همان Target Field → انتخاب عنصر در Chrome خودتان → ارسال مقدار به همان فیلد. برای **همان افزونه + همان Target Field** دیگر کد جدید خواسته نمی‌شود؛ فقط **Target Field جدید** نیاز به pairing تازه دارد.
+
+> ℹ️ **تفاوت با REMOTE BROWSER:** در حالت REMOTE، افزونه توسط خود سرور داخل پروفایل مرورگر ریموت seed می‌شود (`src/core/InspectorExtension.ts`) و شما لازم نیست چیزی نصب کنید. artifact بالا فقط برای مرورگر **شخصی** شماست.
 
 ## اجرا
 

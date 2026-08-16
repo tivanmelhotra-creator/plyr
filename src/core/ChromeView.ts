@@ -328,29 +328,90 @@ let rfb = null;
  * Defined above authHeaders/apiKey but only ever CALLED from the bottom of the
  * module, after both are initialised.
  */
-async function startThenConnect() {
-  show('Starting Chromium\\u2026', true);
+/**
+ * Explain a failed start in terms the operator can act on.
+ *
+ * WHY THIS FUNCTION EXISTS. The reported message was, in full:
+ *
+ *     Could not start the remote browser: HTTP 502
+ *
+ * That string came from the old fallback below, and it is a dead end: a bare
+ * status with no cause and no next step. Worse, it is MISLEADING, because this
+ * server never sends 502 for this route -- sendError() only ever produces
+ * 400/409/500/503 with a JSON {success,error} body. A 502 carrying a non-JSON
+ * body therefore did not come from the application at all: it was synthesised
+ * by a reverse proxy in front of it that stopped waiting (measured cold start:
+ * 50.3s, against gateway read timeouts of 30-60s).
+ *
+ * So gateway statuses are now NAMED as gateway statuses, and everything else
+ * prefers the server's own error + hint, which do name the missing package.
+ */
+function explainStartFailure(status, body) {
+  if (body && body.error) {
+    return body.hint ? body.error + ' \\u2014 ' + body.hint : body.error;
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return 'the gateway in front of this app returned ' + status
+      + ' before the server answered. The browser is most likely still starting'
+      + ' (a first-ever start also provisions the desktop and can take a minute).'
+      + ' Nothing was cancelled -- press "Try again" in a few seconds.';
+  }
+  if (status === 401 || status === 403) {
+    return 'authentication was rejected (HTTP ' + status + '). Reopen this view from the app.';
+  }
+  return 'HTTP ' + status;
+}
+
+/**
+ * Ask the server to start the stack, retrying while it says "still starting".
+ *
+ * The server now answers inside a time budget instead of holding the request
+ * open until a proxy invents a 502, so a slow cold start comes back as a
+ * CONTROLLED 503 remote_browser_starting rather than an unparseable error page.
+ * That is a "keep waiting" signal, not a failure, so it is retried
+ * automatically with a backoff and only reported when it is really a failure.
+ * Every attempt is idempotent, so retrying never starts a second browser.
+ */
+async function startThenConnect(attempt) {
+  attempt = attempt || 1;
+  const MAX_ATTEMPTS = 6;
+
+  show(attempt === 1
+    ? 'Starting Chromium\\u2026'
+    : 'Still starting Chromium\\u2026 (attempt ' + attempt + ' of ' + MAX_ATTEMPTS + ')', true);
+
+  let r, j;
   try {
-    const r = await fetch('/browser/real/open', {
+    r = await fetch('/browser/real/open', {
       method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: '{}',
       credentials: 'same-origin',
     });
-    const j = await r.json().catch(() => null);
-    if (!r.ok || !j || !j.success) {
-      // Show the SERVER's own reason. It is the one that names the missing
-      // package, and a generic "could not start" would throw that away.
-      const why = (j && j.error) || ('HTTP ' + r.status);
-      show('Could not start the remote browser: ' + why, false);
-      return;
-    }
+    j = await r.json().catch(() => null);
   } catch (e) {
     show('Could not reach the server to start the remote browser: '
       + ((e && e.message) || 'network error'), false);
     return;
   }
-  connect();
+
+  if (r.ok && j && j.success) { connect(); return; }
+
+  // RETRYABLE means the work is still in flight on the server, so waiting is
+  // the correct response. A gateway 502/504 is treated the same way: it says
+  // the proxy stopped waiting, never that the start failed.
+  const stillStarting = (j && (j.retryable || j.error === 'remote_browser_starting'))
+    || r.status === 502 || r.status === 504;
+
+  if (stillStarting && attempt < MAX_ATTEMPTS) {
+    // Capped backoff: 2s, 4s, 6s, 8s, 10s -- enough to outlast the measured
+    // ~50s cold start across the attempt budget without hammering the box.
+    const waitMs = Math.min(attempt * 2000, 10000);
+    setTimeout(function () { void startThenConnect(attempt + 1); }, waitMs);
+    return;
+  }
+
+  show('Could not start the remote browser: ' + explainStartFailure(r.status, j), false);
 }
 
 function connect() {
