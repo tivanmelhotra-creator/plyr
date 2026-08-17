@@ -564,6 +564,153 @@
 
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
 
+  /* ============================================================
+     COPYING A VALUE — the same affordance the in-page picker has.
+
+     «کپی کردن رو فقط برای باکس پیکر پیاده کردی ولی attributes در دو جا نمایش
+      داده میشه ... حیفه اونجام هم ایکن کپی کردن رو نداره»
+
+     Attributes are rendered in TWO places — the picker panel in the page, and
+     this popup's Inspect tab — and only the first could copy. Which is the wrong
+     way round for the commoner case: the popup is where a user lands after
+     re-opening it to read a pick they took a minute ago, and a long selector
+     shown there was un-copyable, so they had to re-pick just to get the text.
+
+     Deliberately a re-implementation rather than a shared import: the picker
+     lives in a closed shadow root inside an arbitrary page and this file is an
+     extension page with its own CSP; they share no module scope, and a `lib/`
+     round-trip for ~20 lines would add a load-order dependency to the popup's
+     boot for no behavioural gain. What IS shared is the CONTRACT, asserted by
+     tests on both sides: resolve-then-confirm, an execCommand fallback, and a
+     per-row confirmation that reverts.
+     ============================================================ */
+
+  /** The ⧉ used on both surfaces, so the control reads the same in both. */
+  var COPY_GLYPH = '\u29c9';
+
+  /** Live confirmation timers, keyed by row, so two rows cannot cancel each other. */
+  var copyTimers = {};
+
+  /**
+   * Put `text` on the clipboard, resolving true/false.
+   *
+   * Two paths, because one is not enough. `navigator.clipboard.writeText` needs a
+   * secure context AND a focused document; an extension popup loses focus the
+   * instant anything else is clicked, and then it REJECTS. The off-screen
+   * textarea still works there.
+   *
+   * The node is removed in a `finally`: a stray textarea left in the popup steals
+   * the next keystroke, and cleanup that only runs on success leaks precisely
+   * when something already went wrong.
+   */
+  function writeClipboard(text) {
+    var s = String(text == null ? '' : text);
+    if (!s) return Promise.resolve(false);
+
+    function legacy() {
+      var ta = null;
+      try {
+        if (!document.body || typeof document.execCommand !== 'function') return false;
+        ta = document.createElement('textarea');
+        ta.value = s;
+        // Off-screen, not display:none — a hidden field is not selectable, and a
+        // visible one would flash across the panel.
+        ta.setAttribute('style',
+          'position:fixed;top:-1000px;left:-1000px;opacity:0;pointer-events:none;');
+        ta.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(ta);
+        if (ta.select) ta.select();
+        if (ta.setSelectionRange) ta.setSelectionRange(0, s.length);
+        return !!document.execCommand('copy');
+      } catch (e) {
+        return false;
+      } finally {
+        if (ta && ta.parentNode) {
+          try { ta.parentNode.removeChild(ta); } catch (e2) { /* nothing to do */ }
+        }
+      }
+    }
+
+    try {
+      var nav = (typeof navigator !== 'undefined') ? navigator : null;
+      if (nav && nav.clipboard && nav.clipboard.writeText) {
+        var p = nav.clipboard.writeText(s);
+        if (p && p.then) {
+          return p.then(function () { return true; }, function () { return legacy(); });
+        }
+        return Promise.resolve(true);
+      }
+    } catch (e) { /* fall through to the legacy path */ }
+
+    return Promise.resolve(legacy());
+  }
+
+  /** The short-lived label on one copy button. */
+  function flashCopy(key, button, glyph, title) {
+    if (!button) return;
+    button.textContent = glyph;
+    button.title = title;
+    if (button.classList) button.classList.add('done');
+
+    // `hasOwnProperty`, not truthiness: a timer handle may legitimately be 0, and
+    // a falsy-but-real handle would sail past an `if (timers[key])` guard and
+    // leave a live timer behind to clear this label early.
+    if (Object.prototype.hasOwnProperty.call(copyTimers, key)) {
+      try { clearTimeout(copyTimers[key]); } catch (e) { /* not fatal */ }
+      delete copyTimers[key];
+    }
+    copyTimers[key] = setTimeout(function () {
+      delete copyTimers[key];
+      // The button may have been discarded by a re-render (a new pick, a tick);
+      // writing to a detached node is harmless, but the guard says so out loud.
+      if (!button.isConnected && button.parentNode == null) return;
+      button.textContent = COPY_GLYPH;
+      button.title = 'Copy this value';
+      if (button.classList) button.classList.remove('done');
+    }, 1100);
+  }
+
+  /**
+   * One copy button, for ONE row's value.
+   *
+   * `key` is captured in the closure, which is what makes it impossible for a
+   * button to produce a different row's value after a re-render reorders things.
+   *
+   * The click is stopped from propagating because in ATTRIBUTES this button sits
+   * in a row whose controls toggle DISPLAY and arm the SEND — an action for
+   * READING a value must not change what the panel shows or what it will send.
+   */
+  function copyButton(key) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cp';
+    b.textContent = COPY_GLYPH;
+    b.title = 'Copy this value';
+    // Named for its row: a column of identical glyphs is just "button, button,
+    // button" to a screen reader otherwise.
+    b.setAttribute('aria-label', 'Copy ' + key);
+    b.addEventListener('click', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      var row = rowByKey(key);
+      var text = row ? row.value : '';
+      if (!text) {
+        // A boolean attribute (`<ol reversed>`) has nothing to put on a
+        // clipboard. Said on the button, because silently doing nothing reads as
+        // the button being broken.
+        flashCopy(key, b, '\u2014', 'No value to copy');
+        return;
+      }
+      // Confirmed only AFTER the write resolves — a ✓ shown optimistically is a
+      // lie on every origin where the clipboard is refused.
+      writeClipboard(text).then(function (ok) {
+        if (ok) flashCopy(key, b, '\u2713', 'Copied');
+        else flashCopy(key, b, '!', 'Copy failed — select the value and press Ctrl+C');
+      });
+    });
+    return b;
+  }
+
   /**
    * SELECTED ELEMENT — §17: reflects the CHECKBOX state, and nothing else.
    *
@@ -602,6 +749,9 @@
       }
       row.appendChild(k);
       row.appendChild(v);
+      // Copyable here too: this is the section a user reads a ticked value OUT
+      // of, so it is the likeliest place for them to want the text itself.
+      row.appendChild(copyButton(r.key));
       els.selList.appendChild(row);
     });
   }
@@ -701,6 +851,10 @@
       row.appendChild(rdWrap);
       row.appendChild(name);
       row.appendChild(val);
+      // The value column is `text-overflow: ellipsis`, so a long selector is
+      // TRUNCATED on screen. Without this the full text was simply unreachable
+      // from the popup — the one place it is most often needed.
+      row.appendChild(copyButton(r.key));
       els.attrList.appendChild(row);
     });
     renderCount();
