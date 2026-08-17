@@ -37,6 +37,15 @@ import {
   describe as describeStartError,
   statusForOutcome,
 } from '../core/RemoteBrowserStart';
+// The runtime-settings layer is what makes "no restart may ever be required"
+// true for CONFIGURATION as well as for state. See src/core/RuntimeSettings.ts.
+import {
+  applySetting,
+  resolveSetting,
+  remedyFor,
+  MANAGED_KEYS,
+  REMEDIES,
+} from '../core/RuntimeSettings';
 import {
   installExtensionArchive,
   installExtensionFromStore,
@@ -200,6 +209,32 @@ async function persistToProfile(userId: string, imported: CookieImportResult): P
  * `key` is a stable identifier, never a sentence, because the UI must be able to
  * render it in Persian as well as English.
  */
+/**
+ * Download the Chromium Playwright expects, without a shell.
+ *
+ * `execFile`, not `exec`: there is no user input in these arguments today, and
+ * there must not be a shell available to interpret any that arrives tomorrow.
+ *
+ * `--with-deps` is deliberately NOT passed. It runs `apt-get install`, which
+ * needs root — and on the boxes where this button matters, the process is not
+ * root, so the flag turns a working download into a permission error. The
+ * library half is handled before this call by DesktopProvision, which installs
+ * into a private prefix precisely because it cannot assume privileges.
+ */
+async function installChromium(): Promise<void> {
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const run = promisify(execFile);
+  await run('npx', ['--yes', 'playwright', 'install', 'chromium'], {
+    // Generous: a cold download of ~170MB over a slow link. The endpoint's own
+    // budget answers the client long before this, so a large number here costs
+    // the user nothing but gives a slow box room to finish.
+    timeout: 15 * 60_000,
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_GC: '1' },
+  });
+}
+
 function healCollector(): { steps: HealStep[]; report: (s: HealStep) => void } {
   const steps: HealStep[] = [];
   return {
@@ -280,21 +315,37 @@ export const createBrowserRoutes = (): Router => {
    */
   router.post('/browser/start', async (_req, res) => {
     if (!RealChrome.isEnabled()) {
-      // The one genuinely un-healable case: this is a deliberate configuration
-      // choice, and turning it on by ourselves would be overriding the operator
-      // rather than helping the user.
+      // WHAT THIS USED TO BE, AND WHY IT CHANGED.
       //
-      // The hint used to read "Set REAL_CHROME_ENABLED=true in .env." — which is
-      // unhelpful precisely when it appears, because the DEFAULT IS ALREADY TRUE.
-      // Anyone seeing this has an explicit `false` written somewhere they did not
-      // put it (typically a `.env` inherited from an older release), and needs to
-      // be told where to look, not what to type. See RealChrome.disabledExplanation.
-      return fail(
-        res, 409,
-        'The Remote Browser is switched off by configuration (REAL_CHROME_ENABLED=false).',
-        'The default is true, so a stale .env is the usual cause: remove the '
-          + 'REAL_CHROME_ENABLED line from .env (or set it to true) and restart. '
-          + 'Run `npm run doctor` to see the resolved value and where it came from.',
+      // A 409 with the hint "remove the REAL_CHROME_ENABLED line from .env (or
+      // set it to true) and restart". Every clause of that is a task handed to
+      // the user, and this project's own rule (SelfHeal.ts) is that a message
+      // asking the user to do a thing the server can do is a bug the server is
+      // filing against its own user. The reported outcome was exactly that:
+      //
+      //     Could not start the remote browser: remote_browser_disabled
+      //     — Remote Chrome is disabled. Set REAL_CHROME_ENABLED=true and
+      //       restart the server.
+      //
+      //   «متغییر ها باید از داخل پروژه هم باید قابل تنظیم باشه و مجبور نباشیم
+      //    کل پروژه رو ریستارت کنیم»
+      //
+      // So the refusal is gone. Pressing Start IS the consent to turn it on:
+      // there is no reading of "start the browser" under which "no, it is
+      // configured off" is a more useful answer than starting it. The value is
+      // recorded in .env too, so the next boot agrees with this one instead of
+      // reverting and reproducing the same dead end.
+      //
+      // This is NOT self-heal acting on its own — SelfHeal still refuses to
+      // enable it silently (see doEnsureBrowser), because a background task
+      // flipping an operator's configuration is a different act from a person
+      // pressing Start. The consent lives here, at the button.
+      const applied = await applySetting('REAL_CHROME_ENABLED', true);
+      console.log(
+        '[REAL-CHROME] enabled at runtime by POST /browser/start'
+        + (applied.persisted
+          ? (applied.unchanged ? ' (.env already said true)' : ' and written to .env')
+          : ` (NOT persisted: ${applied.persistError || 'unknown'})`),
       );
     }
     try {
@@ -332,6 +383,207 @@ export const createBrowserRoutes = (): Router => {
       setSelfHealEnabled(false);
       await RealChrome.stop();
       res.json({ success: true, realChrome: await RealChrome.status() });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Turn the Remote Browser on, NOW, and start it.
+   *
+   * ── WHY THIS ENDPOINT EXISTS AS ITS OWN THING ─────────────────────────────
+   * It is the target of the `fixable` remedy attached to
+   * `remote_browser_disabled` (see RuntimeSettings.REMEDIES). A failure that
+   * carries an endpoint can be rendered as a BUTTON; a failure that carries only
+   * prose can only be read. That is the whole difference between the reported
+   * dead end and a recoverable one, and it is why the answer is a route rather
+   * than a longer hint.
+   *
+   * Separate from `/browser/start` even though Start now enables implicitly,
+   * because the two are different intentions and a client should be able to say
+   * which it means. Start says "I want a browser"; this says "I want the setting
+   * changed", and it reports what it changed and whether that survives a
+   * restart — which Start has no reason to talk about.
+   *
+   * ── TWO EFFECTS, BOTH REQUIRED ────────────────────────────────────────────
+   *   in memory  the very next isEnabled() is true  → no restart, as demanded
+   *   in .env    the next boot agrees               → the fix is not temporary
+   *
+   * A .env that cannot be written (read-only container, root-owned file) does
+   * NOT fail the request: the feature works now, and the response says plainly
+   * that it will need doing again after a restart. Refusing here would be
+   * choosing "your browser stays broken" over "your browser works today".
+   */
+  router.post('/browser/enable', async (_req, res) => {
+    try {
+      const applied = await applySetting('REAL_CHROME_ENABLED', true);
+
+      // Pressing Enable after a deliberate Stop must actually produce a
+      // browser. Stop sets the self-heal flag false, and leaving it false here
+      // would make this endpoint succeed while every subsequent action still
+      // refused — a green button with no effect, which is the failure mode this
+      // whole change exists to remove.
+      const { setSelfHealEnabled } = await import('../core/SelfHeal');
+      setSelfHealEnabled(true);
+
+      const { steps, report } = healCollector();
+      const healed = await SelfHeal.ensureBrowser(report);
+
+      // The setting change is reported as a success even when the browser then
+      // fails to start for an unrelated reason (no Xvfb, no binary): those are
+      // different problems with different remedies, and conflating them is how
+      // an operator ends up believing the flag did not take.
+      const body = {
+        setting: {
+          key: applied.key,
+          value: applied.value,
+          source: applied.source,
+          persisted: applied.persisted,
+          ...(applied.persistError ? { persistError: applied.persistError } : {}),
+        },
+        restartRequired: false,
+        steps,
+        realChrome: healed.realChrome,
+      };
+
+      if (!healed.ok) {
+        return res.status(503).json({
+          success: false,
+          error: healed.problem || 'The setting was applied but the browser could not be started.',
+          ...(healed.hint ? { hint: healed.hint } : {}),
+          ...(healed.problem ? { fixable: remedyFor(healed.problem) } : {}),
+          ...body,
+        });
+      }
+      res.json({ success: true, ...body });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Fetch whatever the browser is missing — the binary, its system libraries,
+   * or both — and then start it.
+   *
+   * ── THE REQUEST THIS ANSWERS ──────────────────────────────────────────────
+   *   «اگر کتابخانه ای نصب نبود به جای خطا یک دکمه بزاره که با زدنش اون
+   *    کتابخانه نصب بشه»
+   *
+   * "npx playwright install --with-deps chromium" is a perfectly good answer to
+   * someone at a terminal and no answer at all to someone in a browser tab on a
+   * hosted box. Both existed before this; only the first was reachable.
+   *
+   * ── WHY IT DOES NOT SHELL OUT TO npm/apt ──────────────────────────────────
+   * It uses the two mechanisms already in this codebase, in order:
+   *
+   *   1. DesktopProvision — this repo's OWN unprivileged installer. It
+   *      `apt-get download`s and `dpkg-deb -x`es into a private prefix, so it
+   *      works WITHOUT root, which is the situation on most hosted boxes. A
+   *      button that needs sudo is a button that fails for the people most
+   *      likely to press it.
+   *   2. `npx playwright install` for the browser download, which needs no
+   *      privileges either.
+   *
+   * ── WHY IT IS BOUNDED ─────────────────────────────────────────────────────
+   * A cold download is minutes, and an HTTP request that outlives its gateway
+   * produces the invented 502 that RemoteBrowserStart.ts exists to prevent. So
+   * it runs under the same budget discipline: answer first, keep working, let
+   * Retry find the finished work.
+   */
+  router.post('/browser/dependencies/install', async (_req, res) => {
+    const result = await withStartBudget(
+      async () => {
+        const steps: string[] = [];
+
+        // 1. The desktop + library stack, through the unprivileged installer.
+        try {
+          const { provisionDesktopStack } = await import('../core/DesktopProvision');
+          await provisionDesktopStack();
+          steps.push('desktop-stack');
+        } catch (e) {
+          // Not fatal on its own: a box that already has libX11 and Xvfb from
+          // its image needs nothing here, and reporting a failure for work that
+          // was not needed would send the operator after a non-problem.
+          steps.push(`desktop-stack-skipped:${(e as Error)?.message || 'unknown'}`);
+        }
+
+        // 2. The browser binary, if there is not one.
+        const { inspectBrowserRuntime } = await import('../core/BrowserRuntime');
+        const before = await inspectBrowserRuntime();
+        const needsBinary = before.checks.some(
+          (c) => c.id === 'executable' && c.state === 'failed',
+        );
+        if (needsBinary) {
+          await installChromium();
+          steps.push('chromium');
+        }
+
+        // 3. Only now say whether it worked, by MEASURING rather than assuming
+        //    the install succeeded because the command exited 0.
+        const after = await inspectBrowserRuntime();
+        const { steps: healSteps, report } = healCollector();
+        const healed = await SelfHeal.ensureBrowser(report);
+        return {
+          success: healed.ok,
+          installed: steps,
+          runtime: after,
+          steps: healSteps,
+          realChrome: healed.realChrome,
+          restartRequired: false,
+          ...(healed.ok ? {} : {
+            error: healed.problem || 'The dependencies were fetched but the browser did not start.',
+            ...(healed.hint ? { hint: healed.hint } : {}),
+            ...(healed.problem ? { fixable: remedyFor(healed.problem) } : {}),
+          }),
+        };
+      },
+      {
+        // Downloads are legitimately slow, so this budget is larger than the
+        // browser-start one — but still finite, for the gateway's sake.
+        budgetMs: 60_000,
+        onLateSettle: (err) => {
+          if (err) {
+            console.warn('[BROWSER-DEPS] background install failed after the reply:',
+              (err as Error)?.message || err);
+          } else {
+            console.log('[BROWSER-DEPS] background install finished after the reply — retry will be instant');
+          }
+        },
+      },
+    );
+
+    if (result.outcome === 'ready') {
+      const value = result.value as Record<string, unknown>;
+      return res.status(value.success ? 200 : 503).json(value);
+    }
+    res.status(statusForOutcome(result.outcome)).json({
+      success: false,
+      error: result.error,
+      hint: result.hint,
+      ...(result.fixable ? { fixable: result.fixable } : {}),
+      retryable: true,
+      restartRequired: false,
+      startedMs: result.elapsedMs,
+    });
+  });
+
+  /**
+   * What can be changed from here, and what it is set to.
+   *
+   * The counterpart to the two endpoints above: a client that is going to offer
+   * a button needs to know the button exists in this build, and an operator
+   * looking at a value needs to know where it came from. `source` is the part
+   * that answers the reported confusion — nobody in that incident could say who
+   * had written `false`, and 'explicit' vs 'default' vs 'runtime' says it.
+   */
+  router.get('/browser/settings', async (_req, res) => {
+    try {
+      res.json({
+        success: true,
+        settings: MANAGED_KEYS.map((key) => {
+          const r = resolveSetting(key);
+          return { key, value: r.value, source: r.source, settableAtRuntime: true };
+        }),
+        // Named so a client can render buttons without hardcoding endpoints.
+        remedies: REMEDIES,
+        restartRequired: false,
+      });
     } catch (e) { sendError(res, e); }
   });
 

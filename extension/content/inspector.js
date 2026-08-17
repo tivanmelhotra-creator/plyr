@@ -47,6 +47,35 @@
    into the viewport by clampPanel() — on open, on every resize, and after every
    drag. The size is unchanged: this was never a "too small / too large" problem.
 
+   THE PICK IS KEPT UNTIL THE USER CLOSES — AND 👁 IS WHY THAT IS BEARABLE
+   ----------------------------------------------------------------------
+   Clicking freezes an element and the panel then STAYS: the picker does not
+   close itself, because comparing two candidate elements, or reading a value
+   before committing it, both need the panel to survive the click. The cost is
+   that the picking gesture remains armed over a page the user now wants to read
+   — every mousemove re-outlines, every click is swallowed and re-aimed — and the
+   only way out used to be ✕, which discards the pick along with the ticks and
+   the armed radio.
+
+   The header's 👁 pauses the GESTURE and nothing else. Selection off: no hover
+   outline follows the mouse, no click re-picks, the arrows do not walk the tree,
+   and page clicks are handed back to the page. Everything the user has chosen —
+   the frozen element, its rows, the checkboxes, the radio — is untouched, and
+   the outline stays on the picked element so the panel's subject is still
+   visible. ✕ closes; 👁 pauses. They are deliberately not the same action.
+
+   EVERY DISPLAYED VALUE CAN BE COPIED
+   -----------------------------------
+   Each attribute row and each SELECTED ELEMENT entry carries its own copy
+   button. Own, not shared: the button closes over ITS row's key and resolves the
+   text through valueForKey() at click time, which is what makes "copying one row
+   cannot yield another row's value" a structural property rather than a thing to
+   be careful about. Values are read from `state.rows`, so what is copied is the
+   real string and never the "(empty)" placeholder the cell may be showing. The
+   confirmation is a ✓ on the pressed button for ~1s — deliberately not a toast,
+   because §16 forbids growing the picker and the question being answered ("did
+   THAT line copy?") is local to one line.
+
    WHY THE HEADER IS THE ONLY DRAG HANDLE
    --------------------------------------
    The panel covers part of the page it describes, so it has to be movable. But a
@@ -69,6 +98,29 @@
 
   var state = {
     active: false,     // picker armed, following the mouse
+    /*
+     * SELECTION MODE — the 👁 toggle in the header.
+     *
+     * `active` and `selecting` are TWO states, and the distinction is the whole
+     * feature. `active` means "the picker is open"; `selecting` means "moving the
+     * mouse and clicking picks a new element".
+     *
+     * Why they cannot be one flag: after freezing an element the user often needs
+     * to interact with the PAGE again — scroll a list to read the value in
+     * context, open a menu, compare the element against a neighbour. While
+     * `selecting` is on, every mousemove re-outlines and every click is swallowed
+     * and re-aimed, so the only way to stop re-picking used to be to CLOSE the
+     * picker — which throws away the pick that was just made and, with it, the
+     * ticked rows and the armed radio.
+     *
+     * So 👁 pauses the picking gesture and NOTHING else: the panel stays open,
+     * the frozen element stays described, both selections survive, and the
+     * outline stays on the element that was picked so the user can still see
+     * what the panel is talking about. ✕ / Cancel / Esc remain the only ways to
+     * close. Conflating the two would make "let me look at the page" and "throw
+     * my pick away" the same button.
+     */
+    selecting: true,   // hover/click may re-target; toggled by the eye button
     hovered: null,     // element currently under the cursor
     frozen: null,      // element the user clicked; the panel describes this one
     described: null,   // ab-inspect.describeElement result for `frozen`
@@ -99,7 +151,12 @@
     // frame: reading a computed style forces layout on a page we do not own, and
     // the numbers we set are the numbers we mean.
     pos: null,         // { left, top }
-    drag: null         // { dx, dy, id } while the header is being dragged
+    drag: null,        // { dx, dy, id } while the header is being dragged
+    // Per-row "✓ Copied" reset timers, keyed by row key. Held here so a second
+    // copy on the SAME row restarts its own countdown instead of stacking two
+    // timers that would each try to clear the label — and so a copy on one row
+    // never cancels another row's feedback. See copyValue().
+    copyTimers: {}
   };
 
   // The panel's margin from the viewport edge. Large enough that a page's own
@@ -125,6 +182,14 @@
   // fallback: the real height depends on how many rows the picked element
   // produced, so it is measured everywhere it matters.
   var PANEL_H_GUESS = 420;
+
+  // The copy control's resting glyph: the two-sheets mark every editor uses for
+  // copy. A text glyph rather than an SVG for the same reason the header's
+  // crosshair is one — this panel inherits nothing from the page and a single
+  // mark needs no viewBox. Declared once because it is written in three places
+  // (the button's initial label, and the two restores after a flash), and three
+  // literals is three chances for the icon to change in only two of them.
+  var COPY_GLYPH = '\u29c9';
 
   /* ----------------------------------------------------------
      TYPOGRAPHY
@@ -351,6 +416,13 @@
      ---------------------------------------------------------- */
   function onMove(e) {
     if (!state.active) return;
+    // 👁 off: the picking GESTURE is paused, so the mouse is the page's again.
+    // Returning before anything is written is what makes the pause total — the
+    // outline is left exactly where it was (on the frozen element, if there is
+    // one), and `state.hovered` is not advanced, so a later Arrow keypress or a
+    // re-enable cannot act on an element the user merely swept the cursor over
+    // while selection was off.
+    if (!state.selecting) return;
     // Once an element is frozen the panel describes THAT element; letting the
     // outline follow the mouse would point at one element while the panel
     // listed another.
@@ -364,6 +436,21 @@
   function onClick(e) {
     if (!state.active) return;
     if (isOurs(e.target)) return;         // clicks inside our panel are UI, not picks
+    /*
+     * 👁 off: no new pick, and the click is NOT swallowed either.
+     *
+     * The swallowing below exists only to protect a pick in progress. With
+     * selection paused there is no gesture to protect, and the reason a user
+     * pauses it is to use the page again — expanding the row that holds the
+     * element, opening the tab it lives in, scrolling a virtualised list. A
+     * picker that still ate every click would leave the page inert with no
+     * visible cause, which reads as the tool having hung.
+     *
+     * Returning before freezeOn() is what satisfies "click does NOT select
+     * another element": the frozen element, its rows, the ticks and the armed
+     * radio are all untouched by a click anywhere on the page.
+     */
+    if (!state.selecting) return;
     // A pick must not also activate the page: clicking a link while picking
     // would navigate away and take the pick with it.
     e.preventDefault();
@@ -412,6 +499,13 @@
     // the text span inside the button, or the row wrapping the cell. Arrow keys
     // move the selection up to the parent or down to the first child instead of
     // making the user hunt for a pixel where the right element is on top.
+    //
+    // Paused with 👁 off, because this IS element selection — reached by keyboard
+    // rather than by pointer. Leaving it live would mean "selection disabled"
+    // stopped the mouse and not the arrows, i.e. the toggle would only half do
+    // what it says, and an accidental ArrowUp would silently re-describe the
+    // element the user had deliberately frozen.
+    if (!state.selecting) return;
     var base = state.frozen || state.hovered;
     if (!base) return;
 
@@ -516,6 +610,278 @@
         }
       });
     } catch (e) { /* storage is a convenience here; the panel still works */ }
+  }
+
+  /* ----------------------------------------------------------
+     SELECTION MODE — the 👁 toggle
+
+     WHAT IT IS FOR
+     --------------
+     The picker keeps a pick until the user closes it, which is right: closing on
+     the first click would make comparing two candidate elements impossible. But
+     it also means the picking gesture stays armed over a page the user now wants
+     to READ — and while it is armed, every mousemove re-outlines and every click
+     is swallowed. The only escape was ✕, which discards the pick.
+
+     So this pauses the gesture and nothing else. It is deliberately NOT a second
+     route to closing, and it does not clear `frozen`, `described`, `rows`,
+     `display` or `sendKey`: pausing selection must not lose a single thing the
+     user has chosen, or nobody would dare press it.
+     ---------------------------------------------------------- */
+
+  /**
+   * Turn element selection on or off.
+   *
+   * `on` is coerced rather than trusted so a click handler passing an event by
+   * accident cannot leave the flag holding an object that is truthy forever.
+   */
+  function setSelecting(on) {
+    var next = !!on;
+    if (state.selecting === next) { renderEye(); return; }
+    state.selecting = next;
+
+    if (!next) {
+      /*
+       * Turning it OFF. `hovered` is dropped because it is a fact about a
+       * gesture that is no longer running — keeping it would let a re-enable, or
+       * an Arrow key, act on whatever the cursor happened to be over when the
+       * user paused.
+       *
+       * The OUTLINE is a different question, and the requirement is explicit:
+       * «currently selected element remains visible». So with a frozen element
+       * the outline is re-measured and KEPT — the panel still describes that
+       * element, and an outline is how the user knows which one. Without a
+       * frozen element there is nothing being described, and an outline left
+       * over a hover the picker no longer tracks would be a lie, so it goes.
+       */
+      state.hovered = null;
+      if (state.frozen && state.frozen.isConnected !== false) moveOverlay(state.frozen);
+      else hideOverlay();
+    } else if (state.frozen && state.frozen.isConnected !== false) {
+      // Back on with a pick still frozen: the outline stays on that element (the
+      // panel still describes it), and the next click re-freezes as usual.
+      moveOverlay(state.frozen);
+    }
+
+    renderEye();
+  }
+
+  function toggleSelecting() { setSelecting(!state.selecting); }
+
+  /**
+   * Paint the eye button for the state it now carries.
+   *
+   * The class is what the CSS keys off, and `aria-pressed` is what a screen
+   * reader keys off — a toggle whose state is only a colour is invisible to
+   * anyone not looking at the colour. The label is a glyph swap (👁 / 🚫-ish
+   * slashed eye) so the state is legible even where the accent is not.
+   */
+  function renderEye() {
+    if (!state.ui) return;
+    // The notice is painted first and unconditionally, so it cannot survive on
+    // screen in a build where the eye is missing.
+    if (state.ui.paused) {
+      state.ui.paused.style.display = state.selecting ? 'none' : 'block';
+    }
+    if (!state.ui.eye) return;
+    var b = state.ui.eye;
+    b.className = state.selecting ? 'ey on' : 'ey off';
+    // U+1F441 vs the same eye with a combining slash is unreliable across
+    // platforms, so the OFF state uses the "no entry"-free pair the panel can
+    // guarantee: an open eye and a struck-through eye drawn as text.
+    b.textContent = state.selecting ? '\u25c9' : '\u25cc';
+    b.setAttribute('aria-pressed', state.selecting ? 'true' : 'false');
+    b.title = state.selecting
+      ? 'Element selection is ON — click an element to pick it. Click to pause.'
+      : 'Element selection is PAUSED — the page is yours again. Click to resume.';
+  }
+
+  /* ----------------------------------------------------------
+     COPY — one button per displayed value
+
+     WHY EVERY ROW GETS ITS OWN
+     --------------------------
+     The values in this panel are the whole reason the panel exists, and their
+     destination is very often somewhere outside this product: a colleague's
+     message, a test file, a selector box in another tool. Selecting a clipped
+     one-line cell with the mouse is unreliable (and the header's drag makes a
+     stray selection worse), so each row carries its own copy action.
+
+     WHY THE VALUE IS CAPTURED PER ROW, NOT LOOKED UP ON CLICK
+     --------------------------------------------------------
+     A shared handler that resolved "the current row" at click time is how a copy
+     button ends up putting a NEIGHBOUR's value on the clipboard after a
+     re-render. Each button closes over its own row's key and reads that row's
+     value from `state.rows`, so a copy can only ever produce the value on the
+     line the user pressed.
+     ---------------------------------------------------------- */
+
+  /**
+   * The exact string a given row is offering.
+   *
+   * Read from `state.rows` — the same array the row and SELECTED ELEMENT render
+   * from — rather than from the rendered cell's textContent. The cell may be
+   * showing "(empty)" for a boolean attribute, and copying the literal word
+   * "(empty)" would be putting our own placeholder on the user's clipboard.
+   */
+  function valueForKey(key) {
+    if (!state.rows) return '';
+    for (var i = 0; i < state.rows.length; i++) {
+      if (state.rows[i].key === key) return state.rows[i].value || '';
+    }
+    return '';
+  }
+
+  /**
+   * Put `text` on the clipboard, resolving true/false.
+   *
+   * Two paths, and both are needed. `navigator.clipboard.writeText` is the
+   * modern one but it is gated on a secure context and on the document being
+   * focused — and this panel lives in an arbitrary page, so an http:// site or a
+   * page that has just stolen focus would simply fail. The execCommand fallback
+   * works there. It is written into a textarea positioned off-screen with
+   * `readonly` cleared, because a readonly/hidden field is not selectable in
+   * every engine.
+   *
+   * The temporary node is appended to the DOCUMENT, not to our shadow root: a
+   * selection inside a closed shadow root is not what execCommand('copy') reads.
+   * It is removed in a `finally`, so a throw cannot leave a stray textarea in
+   * the user's page.
+   */
+  function writeClipboard(text) {
+    var s = String(text == null ? '' : text);
+    if (!s) return Promise.resolve(false);
+
+    function legacy() {
+      var ta = null;
+      try {
+        ta = document.createElement('textarea');
+        ta.value = s;
+        // Off-screen rather than display:none — a hidden field cannot be
+        // selected, and a visible one would flash over the page.
+        ta.setAttribute('style',
+          'position:fixed;top:-1000px;left:-1000px;opacity:0;pointer-events:none;');
+        ta.setAttribute('aria-hidden', 'true');
+        (document.body || document.documentElement).appendChild(ta);
+        if (ta.select) ta.select();
+        if (ta.setSelectionRange) ta.setSelectionRange(0, s.length);
+        var ok = false;
+        if (document.execCommand) ok = !!document.execCommand('copy');
+        return ok;
+      } catch (e) {
+        return false;
+      } finally {
+        if (ta && ta.parentNode) {
+          try { ta.parentNode.removeChild(ta); } catch (e2) { /* nothing to do */ }
+        }
+      }
+    }
+
+    try {
+      var nav = window.navigator;
+      if (nav && nav.clipboard && nav.clipboard.writeText) {
+        var p = nav.clipboard.writeText(s);
+        if (p && p.then) {
+          return p.then(function () { return true; }, function () { return legacy(); });
+        }
+        return Promise.resolve(true);
+      }
+    } catch (e) { /* fall through to the legacy path */ }
+
+    return Promise.resolve(legacy());
+  }
+
+  /**
+   * Copy one row's value and confirm it ON THAT ROW.
+   *
+   * The confirmation is deliberately local and small: a "✓" swapped into the
+   * button that was pressed, reverting after a moment. §16 forbids growing the
+   * picker, and a toast would either cover the very rows being read or push the
+   * layout — while the question the user is asking ("did THAT one copy?") is
+   * about a single line and is answered best beside it.
+   *
+   * The timer is keyed by row so two copies in a row on different lines each get
+   * their own confirmation, and a repeat copy on the same line restarts its own
+   * countdown rather than stacking a second timer that would clear the label
+   * early.
+   */
+  function copyValue(key, button) {
+    var text = valueForKey(key);
+    if (!button) return;
+
+    if (!text) {
+      // A boolean attribute (`<ol reversed>`) has nothing to put on a clipboard.
+      // Said plainly on the button rather than silently doing nothing, which
+      // would read as the button being broken.
+      flashCopy(key, button, '\u2014', 'no value to copy');
+      return;
+    }
+
+    writeClipboard(text).then(function (ok) {
+      if (ok) flashCopy(key, button, '\u2713', 'Copied');
+      else flashCopy(key, button, '!', 'Copy failed — select the value and press Ctrl+C');
+    });
+  }
+
+  /** The short-lived label on one copy button. */
+  function flashCopy(key, button, glyph, title) {
+    if (!button) return;
+    button.textContent = glyph;
+    button.title = title;
+    if (button.classList) button.classList.add('done');
+
+    // `key in`, not a truthiness test: a timer handle is allowed to be 0, and a
+    // falsy-but-real handle would sail past `if (state.copyTimers[key])` and leave
+    // a live timer behind to clear this label early.
+    if (Object.prototype.hasOwnProperty.call(state.copyTimers, key)) {
+      try {
+        if (typeof clearTimeout === 'function') clearTimeout(state.copyTimers[key]);
+      } catch (e) { /* not fatal */ }
+      delete state.copyTimers[key];
+    }
+    if (typeof setTimeout !== 'function') return;
+    state.copyTimers[key] = setTimeout(function () {
+      delete state.copyTimers[key];
+      // The button may have been thrown away by a re-render (a new pick, a bulk
+      // tick) while the timer was pending. Restoring text on a detached node is
+      // harmless, so there is nothing to guard beyond the node existing.
+      button.textContent = COPY_GLYPH;
+      button.title = 'Copy this value';
+      if (button.classList) button.classList.remove('done');
+    }, 1100);
+  }
+
+  /**
+   * One copy button, for one row's value.
+   *
+   * `key` is captured in the closure, which is what guarantees the rule that
+   * copying one row cannot produce another row's value. The click is stopped
+   * from propagating because in the rows this button sits inside a `<label>`
+   * whose own click toggles DISPLAY — without this, every copy would also tick
+   * or untick the row, i.e. an action for reading a value would change what the
+   * panel is showing.
+   */
+  function copyButton(key) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cp';
+    b.textContent = COPY_GLYPH;
+    b.title = 'Copy this value';
+    // Named for the row, so the control is not just "button" to a screen reader
+    // reading a column of identical glyphs.
+    b.setAttribute('aria-label', 'Copy ' + key);
+    b.addEventListener('click', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      copyValue(key, b);
+    });
+    // The panel's rows are not a drag handle, but the SELECTED ELEMENT section
+    // and the rows both sit under a header that is — and a press that wanders a
+    // pixel must not turn a copy into a window move.
+    b.addEventListener('pointerdown', function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+    });
+    return b;
   }
 
   /**
@@ -796,6 +1162,77 @@
       'justify-content:center;background:transparent;border-color:transparent;color:#a0a0a0;',
       'font-size:13px}',
       '.hd button.x:hover{color:#fff;background:#ffffff14;border-color:transparent}',
+      /*
+       * ── THE 👁 SELECTION TOGGLE ───────────────────────────────────────────
+       *
+       * Same 24px square and same 1px/4px chrome as ✕ beside it, because they are
+       * peers in the header — but they are NOT the same kind of action, and the
+       * styling has to say so. ✕ is borderless and muted: it dismisses the tool
+       * and should not compete for attention. This one carries state, so it is a
+       * real bordered control whose two states are distinguishable at a glance:
+       *
+       *   ON  — the accent, on the accent's own faint wash. This is the picker's
+       *         normal condition and the colour the outline and the armed radio
+       *         already use, so "orange means this is what is live" holds across
+       *         the whole panel.
+       *   OFF — muted foreground on the panel's own #151515, with a dashed border.
+       *         Deliberately NOT dimmed to near-invisibility: selection being off
+       *         is a state the user chose and will want to leave, so the control
+       *         has to stay legible and obviously pressable. The dash is what
+       *         makes the difference readable without colour, which matters
+       *         because the whole distinction would otherwise be one hue.
+       */
+      '.hd button.ey{padding:0;width:24px;display:flex;align-items:center;',
+      'justify-content:center;font-size:12px;line-height:1}',
+      '.hd button.ey.on{color:#ff6600;border-color:#55301d;background:#ff66001a}',
+      '.hd button.ey.on:hover{background:#ff660026;border-color:#ff6600}',
+      '.hd button.ey.off{color:#a0a0a0;border-color:#3a3a3a;background:#151515;',
+      'border-style:dashed}',
+      '.hd button.ey.off:hover{color:#fff;border-color:#555;background:#1f1f1f}',
+      // Keyboard focus must be visible on both states: this is a toggle, and a
+      // toggle nobody can see the focus on cannot be operated without a mouse.
+      '.hd button.ey:focus-visible{outline:2px solid #ff6600;outline-offset:1px}',
+      /*
+       * ── PAUSED BANNER ─────────────────────────────────────────────────────
+       *
+       * With selection off, the page stops responding to the picker — no outline
+       * follows the mouse, no click re-picks. That is exactly what was asked for,
+       * and it is also indistinguishable from the picker having died unless the
+       * panel says which it is. One line, in the existing `.meta` idiom, on the
+       * accent so it reads as a live mode rather than an error.
+       *
+       * `display` is toggled from renderEye()'s caller, so the row occupies no
+       * space at all while selection is on — this must not become permanent
+       * furniture in the panel's normal state.
+       */
+      '.pz{padding:6px 10px;font:10px/13px ' + MONO + ';letter-spacing:.04em;',
+      'color:#ff6600;background:#1a0f07;border-bottom:1px solid #55301d;',
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      /*
+       * ── COPY BUTTONS ──────────────────────────────────────────────────────
+       *
+       * One per value, in the rows and in SELECTED ELEMENT. Sized down to 18px
+       * from the header's 24px because these repeat once per line: at header size
+       * a twenty-row list would read as a column of buttons with attribute values
+       * squeezed beside them, inverting what the panel is for.
+       *
+       * Muted and borderless at rest, for the same reason ✕ is: the values are
+       * the content, and twenty resting accents would flatten the one accent that
+       * means something (the armed radio). The control earns its border and its
+       * accent on hover/focus — the point at which it IS what the user is doing.
+       *
+       * `flex:0 0 auto` so the button never shrinks under a long value, and never
+       * steals width from it either.
+       */
+      '.cp{flex:0 0 auto;width:18px;height:18px;display:flex;align-items:center;',
+      'justify-content:center;padding:0;border:1px solid transparent;border-radius:3px;',
+      'background:transparent;color:#6f6f6f;font:11px/1 ' + MONO + ';cursor:pointer}',
+      '.cp:hover{color:#ff6600;border-color:#55301d;background:#ff660014}',
+      '.cp:focus-visible{outline:2px solid #ff6600;outline-offset:1px;color:#ff6600}',
+      // The "✓ Copied" moment. Green is the design's --green, already the panel's
+      // success colour in the footer status line, so a confirmation means the same
+      // thing wherever it appears. It reverts on its own after ~1s.
+      '.cp.done{color:#00c853;border-color:#1d4a2c;background:#00c8531a}',
       '.meta{padding:7px 10px;font:11px/14px ' + MONO + ';color:#a0a0a0;background:#131313;',
       'border-bottom:1px solid #2a2a2a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       /*
@@ -835,8 +1272,17 @@
       '.sel .sh i{flex:1;min-width:0;font:400 9px/12px ' + SANS + ';letter-spacing:0;',
       'text-transform:none;color:#666;font-style:normal;text-align:right;',
       'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.sitem{padding:5px 10px 6px;border-top:1px solid #1c1c1c}',
+      // `position:relative` plus the reserved right padding is how the copy
+      // button gets a place in this section without changing its two-line
+      // key-above-value shape. Laying the key and the button out as a flex row
+      // instead would push the key's own wrapping around, and this section exists
+      // precisely so nothing here has to be reflowed to fit.
+      '.sitem{position:relative;padding:5px 30px 6px 10px;border-top:1px solid #1c1c1c}',
       '.sitem.first{border-top:0}',
+      // Aligned to the KEY line rather than the value: the value can be many
+      // lines tall here, and a button that drifted to the middle of a wrapped
+      // XPath would stop reading as belonging to that entry's heading.
+      '.sitem > .cp{position:absolute;top:4px;right:6px}',
       '.sk{display:block;font:10px/13px ' + MONO + ';color:#a0a0a0}',
       '.sk.tagd{color:#d98b52}',
       /*
@@ -977,11 +1423,52 @@
       state.described = null;
       hidePanel();
       hideOverlay();
+      // "Pick again" is a request to pick, so it un-pauses. Leaving selection off
+      // here would tear the panel down and then refuse to pick anything, which is
+      // a dead end with no visible cause — the user asked for the hovering state,
+      // and the hovering state requires selection to be live.
+      setSelecting(true);
       // Withdraw the abandoned pick as well, for the same reason Cancel does: the
       // user has just said this element was the wrong one, and leaving it in
       // storage would keep it on offer in the popup.
       publishPick();
     });
+
+    /*
+     * ── 👁 SELECTION TOGGLE ───────────────────────────────────────────────
+     *
+     * A THIRD kind of header action, and the reason it has to exist separately
+     * from the two beside it:
+     *
+     *   "Pick again"  discards this pick and goes back to hovering.
+     *   ✕             closes the picker and discards everything.
+     *   👁            keeps the pick AND the panel, and only stops the gesture.
+     *
+     * Before this, a user who had picked the element they wanted had no way to
+     * touch the page again: hovering re-outlined, clicking re-picked, and the only
+     * exit was ✕, which threw away the pick along with the ticks and the armed
+     * radio. Pausing selection is what makes a frozen pick something you can keep
+     * while you go and read the page around it.
+     *
+     * Bound to `click` only — no keyboard shortcut is added, because every letter
+     * combination is the page's and the picker already spends Ctrl+Shift+C, Esc,
+     * Enter and the arrows.
+     */
+    var eye = document.createElement('button');
+    eye.type = 'button';
+    // The class, glyph, tooltip and aria-pressed are all set by renderEye() so
+    // there is exactly one place that decides what each state looks like — two
+    // would drift the moment a state was added.
+    eye.className = 'ey on';
+    eye.addEventListener('click', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      // Toggles selection and NOTHING else. It must never reach stop(): ✕ closes,
+      // this pauses, and collapsing the two is the exact confusion this control
+      // exists to remove.
+      toggleSelecting();
+    });
+
     var close = document.createElement('button');
     close.type = 'button';
     // Borderless and muted, as the design's `.close` is: this dismisses the tool
@@ -995,7 +1482,7 @@
     // that moves a pixel or two — which most presses do — would begin a window
     // move and the click would never arrive, making "Pick again" and ✕ feel
     // broken exactly when the user is trying to escape a bad pick.
-    [again, close].forEach(function (b) {
+    [again, eye, close].forEach(function (b) {
       b.addEventListener('pointerdown', function (e) {
         if (e.stopPropagation) e.stopPropagation();
       });
@@ -1004,10 +1491,24 @@
     hd.appendChild(mark);
     hd.appendChild(title);
     hd.appendChild(again);
+    // Between "Pick again" and ✕: it belongs with the picking controls, and it is
+    // kept off the panel's edge so the muscle-memory reach for ✕ cannot land on a
+    // control that silently pauses the tool instead of closing it.
+    hd.appendChild(eye);
     hd.appendChild(close);
 
     var meta = document.createElement('div');
     meta.className = 'meta';
+
+    /*
+     * The paused notice. Hidden while selection is live (see renderPaused), so it
+     * costs no height in the panel's normal state — it exists to explain a mode
+     * the user has deliberately entered, not to decorate the default one.
+     */
+    var paused = document.createElement('div');
+    paused.className = 'pz';
+    paused.style.display = 'none';
+    paused.textContent = 'Selection paused \u00b7 the page is yours \u00b7 \u25c9 to resume';
 
     /*
      * SELECTED ELEMENT — the ticked rows, rendered in FULL (§17).
@@ -1073,8 +1574,11 @@
     var hint = document.createElement('div');
     hint.className = 'hint';
     // Spells out the distinction the two controls encode, because a checkbox
-    // next to a radio is otherwise ambiguous on first sight.
-    hint.textContent = '\u2611 show \u00b7 \u25c9 send (one only) \u00b7 \u2191/\u2193 parent or child \u00b7 Esc closes';
+    // next to a radio is otherwise ambiguous on first sight. The copy mark is
+    // named here too: it is a 18px glyph repeated down the list, and a legend is
+    // cheaper than twenty tooltips the user has to hover to discover.
+    hint.textContent = '\u2611 show \u00b7 \u25c9 send (one only) \u00b7 '
+      + COPY_GLYPH + ' copy \u00b7 \u2191/\u2193 parent or child \u00b7 Esc closes';
 
     var ft = document.createElement('div');
     ft.className = 'ft';
@@ -1096,6 +1600,10 @@
 
     wrap.appendChild(hd);
     wrap.appendChild(meta);
+    // Directly under the header, beside the control that produced it: a mode
+    // notice further down would be read as a comment on the rows rather than on
+    // the picker.
+    wrap.appendChild(paused);
     // Above the toolbar and the rows: the readable statement of the pick comes
     // first, and the controls that edit it follow. Reversing these would put the
     // full values below a scrolling list, i.e. off-screen exactly when the list
@@ -1120,7 +1628,16 @@
       // Only the BODY is cached: the header is static, so nothing ever needs to
       // find it again, and caching it would invite a future edit to rewrite it.
       sel: sel, selBody: selBody,
+      // The eye and its notice ARE re-read on every toggle, so both are cached:
+      // finding them by class on each press would be a second place that knows the
+      // markup, and the toggle has to be able to repaint even with no pick loaded.
+      eye: eye, paused: paused,
     };
+
+    // The panel is built once and may be built while selection is already paused,
+    // so the eye and its notice are painted from the CURRENT state here rather
+    // than assumed to start on.
+    renderEye();
   }
 
   function renderPanel() {
@@ -1275,6 +1792,20 @@
       row.appendChild(cb);
       row.appendChild(rd);
       row.appendChild(label);
+      /*
+       * The copy control, OUTSIDE the label and last in the row.
+       *
+       * Outside, because the label's click toggles DISPLAY: a copy button inside
+       * it would tick or untick the row on every copy, so reading a value would
+       * silently change what the panel is showing. (Its own handler stops
+       * propagation as well — belt and braces, since the label is an ancestor in
+       * the event path either way.)
+       *
+       * Last, because the two selection controls are the row's PURPOSE and the
+       * value is its content; a copy button before them would put a
+       * clipboard action in the position the eye reads as "what this row is for".
+       */
+      row.appendChild(copyButton(r.key));
       ui.rows.appendChild(row);
     });
 
@@ -1379,6 +1910,20 @@
 
       item.appendChild(k);
       item.appendChild(v);
+      /*
+       * Its own copy button, keyed by the SAME row key as the list's.
+       *
+       * Not shared with the row's button, and not a lookup of "the visible one":
+       * this section and the rows are two renderings of one row, and each
+       * rendering owns the control the user pressed so a "✓ Copied" appears where
+       * the click landed. Both read the value from `state.rows` through
+       * valueForKey(), so the two buttons cannot disagree about what they copy.
+       *
+       * This is also the button that matters most: this section is where the
+       * value is shown UNCLIPPED, so it is where a user reading a long CSS
+       * selector or XPath is standing when they decide to take it.
+       */
+      item.appendChild(copyButton(r.key));
       body.appendChild(item);
     });
   }
@@ -1478,6 +2023,17 @@
     state.active = true;
     state.frozen = null;
     state.described = null;
+    /*
+     * Opening the picker ALWAYS starts with selection live, whatever it was when
+     * the picker was last closed.
+     *
+     * Persisting the pause would mean the very next Ctrl+Shift+C opened a picker
+     * that outlines nothing and picks nothing — the tool arriving broken, for a
+     * reason set minutes earlier on another page. The pause is a state WITHIN one
+     * picking session, so it belongs to that session.
+     */
+    state.selecting = true;
+    renderEye();
     ensureOverlay();
     hidePanel();
     document.addEventListener('mousemove', onMove, true);
@@ -1497,6 +2053,20 @@
     // Cleared too, or the next pick would arrive with a radio armed on an
     // attribute the newly picked element may not even have.
     state.sendKey = '';
+    // Reset with everything else, so a paused session cannot hand its pause to
+    // the next one. start() asserts the same thing; both do it because either can
+    // be reached first (✕ then Ctrl+Shift+C, or the popup's Inspect button).
+    state.selecting = true;
+    // Pending "✓ Copied" reverts are dropped: their buttons are going away with
+    // the panel, and a timer that outlives the UI it was going to repaint is a
+    // leak with no observable purpose.
+    Object.keys(state.copyTimers).forEach(function (k) {
+      try {
+        if (typeof clearTimeout === 'function') clearTimeout(state.copyTimers[k]);
+      } catch (e) { /* not fatal */ }
+    });
+    state.copyTimers = {};
+    renderEye();
     // An in-flight drag is abandoned, but `state.pos` is deliberately KEPT: the
     // user moved the panel because the default spot covered what they were
     // inspecting, and that is still true on the next pick.

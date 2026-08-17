@@ -1333,6 +1333,9 @@
       'insp.codeExpires': 'تا ۵ دقیقه اعتبار دارد',
       'insp.codeFailed': 'صدور کد ممکن نشد. نود را دوباره باز کنید و تلاش کنید.',
       'insp.codeCopied': 'کد کپی شد.',
+      // زمانی که افزونه کد را پذیرفت. باکس کد پس از آن برداشته می‌شود، پس بدون
+      // این پیام هیچ نشانه‌ای از موفقیت باقی نمی‌ماند.
+      'insp.pairedNow': 'افزونه متصل شد. حالا المان را در مرورگر خود انتخاب کنید.',
       'insp.copy': 'کپی',
 
       // ── انتخاب محیط مرورگر — نخستین گام هدف‌گیری ─────────────────────────
@@ -1377,6 +1380,13 @@
       'tgt.baseDetected': 'شناسایی‌شده — در صورت نیاز اصلاحش کنید',
       'tgt.baseLoopback': 'فقط روی همین رایانه کار می‌کند',
       'tgt.copied': 'کپی شد',
+      // برچسب خود کد. تا پیش از این کد بدون برچسب و کنار دکمهٔ «کپی» در پایین
+      // پنجره بود؛ حالا که دو مقدار قابل کپی روی صفحه است، هرکدام باید بگوید
+      // چه چیزی را کپی می‌کند.
+      'tgt.authCode': 'کد مجوز (Authorization Code)',
+      // وقتی نوشتن در کلیپ‌بورد ممکن نشد — مثلاً روی مبدأ ناامن. سکوت در این
+      // حالت بدترین حالت است: کاربر مقدار قبلی کلیپ‌بورد را جای‌گذاری می‌کند.
+      'tgt.copyManual': 'کپی نشد — خودتان انتخاب و Ctrl+C کنید',
 
       'mode.title': 'حالت مرورگر',
       'mode.remote': 'مرورگر ریموت',
@@ -2660,6 +2670,9 @@
       'insp.codeExpires': 'Valid for 5 minutes',
       'insp.codeFailed': 'The code could not be issued. Re-open the node and try again.',
       'insp.codeCopied': 'Code copied.',
+      // Shown when the extension accepts the code. The code box is removed at
+      // that moment, so without this there is no sign the pairing succeeded.
+      'insp.pairedNow': 'Extension connected. Now pick the element in your browser.',
       'insp.copy': 'Copy',
 
       // ── Browser Environment chooser — the FIRST step of Targeting ────────
@@ -2706,6 +2719,14 @@
       'tgt.baseDetected': 'detected — correct it if needed',
       'tgt.baseLoopback': 'only works on this machine',
       'tgt.copied': 'Copied',
+      // The code's own label. It previously had none, sitting next to a footer
+      // button simply marked "Copy"; with two copyable values on screen each has
+      // to say which one it takes.
+      'tgt.authCode': 'Authorization Code',
+      // When the clipboard write failed -- an insecure origin, or a document
+      // without focus. Saying nothing is the worst outcome: the operator pastes
+      // whatever was on the clipboard before.
+      'tgt.copyManual': 'Not copied — select it and press Ctrl+C',
 
       'mode.title': 'Browser mode',
       'mode.remote': 'Remote Browser',

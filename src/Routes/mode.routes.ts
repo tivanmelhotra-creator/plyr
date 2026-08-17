@@ -277,6 +277,75 @@ function advertisedBaseUrl(req: AuthenticatedRequest) {
   });
 }
 
+/**
+ * Whose targets should THIS extension be shown?
+ *
+ * Not simply `resolveUserId(req)`, and that difference is a bug fix rather than
+ * a refinement.
+ *
+ * An Authorization Code is minted by the DASHBOARD, for the dashboard's account,
+ * and redeemed by the EXTENSION, which authenticates with its own key. Redemption
+ * deliberately records the dashboard's account on the binding
+ * (`Binding.userId = <the user the code was issued for>`) precisely so the
+ * extension inherits the destination rather than being able to name one.
+ *
+ * `/inspector/session` then had to answer two questions at once, and answered
+ * them in two different scopes:
+ *
+ *   authorized — from the KEY  (found the binding  → the popup went online)
+ *   targets    — from the USER (resolved from the extension's own key mapping)
+ *
+ * Whenever the extension's key mapped to a different account than the dashboard's
+ * — a separate extension key, `API_TOKEN_USER_ID` set on one side only, an env
+ * admin key (`env_root`) on the other — `authorized` was true while `targets` was
+ * empty. The popup therefore reported "online", showed nothing under "Connected
+ * to target", and left Send matte, because Send is gated on
+ * `live = authorized && target`. Three symptoms, one scope mismatch.
+ *
+ * So the owner is taken from the BINDINGS the code created: they are the
+ * authoritative record of which account this extension was authorized into. The
+ * caller's own resolved id is kept first in the list, so the ordinary
+ * single-account case is completely unchanged, and nothing here lets a client
+ * ASSERT an identity — the ids come only from bindings the server itself wrote
+ * after a code it itself issued was redeemed.
+ */
+function sessionOwners(req: AuthenticatedRequest, bindings: { userId: string }[]): string[] {
+  const own = resolveUserId(req);
+  const owners = [own];
+  for (const b of bindings) {
+    const id = String(b?.userId || '');
+    if (id && !owners.includes(id)) owners.push(id);
+  }
+  return owners;
+}
+
+/**
+ * Which account owns the destination this submission names?
+ *
+ * The same scope mismatch as sessionOwners(), on the write side. A pick is
+ * delivered into the TARGET OWNER's inbox, because that is the account whose
+ * dashboard has the node open and is polling for it. Resolving the owner from
+ * the extension's own key mapping would queue the delivery under an account
+ * nobody is watching: the send would return 200 and the value would never
+ * appear — a silent mis-delivery, which is the one outcome this subsystem is
+ * built to make impossible.
+ *
+ * Falls back to the caller's own id when no binding claims the target, so an
+ * unauthorized submission is still refused by `submit()` exactly as before
+ * (TARGET_FIELD_NOT_FOUND / TARGET_NOT_AUTHORIZED) rather than being reported
+ * differently. Only ids the server itself wrote onto a binding are ever
+ * considered — never anything from the request body.
+ */
+function ownerForTarget(req: AuthenticatedRequest, targetFieldId: string): string {
+  const own = resolveUserId(req);
+  const id = String(targetFieldId || '');
+  if (!id) return own;
+  for (const owner of sessionOwners(req, inspectorAuth.bindingsFor(req.apiKey || ''))) {
+    if (targetFields.resolve(owner, id)) return owner;
+  }
+  return own;
+}
+
 export const createModeRoutes = (): Router => {
   const router = Router();
 
@@ -669,6 +738,27 @@ export const createModeRoutes = (): Router => {
   router.get('/inspector/session', (req: AuthenticatedRequest, res: Response) => {
     const userId = resolveUserId(req);
     const report = reportBrowserMode(userId);
+
+    // Read the bindings FIRST: they name every account this extension was
+    // authorized into, and the target list has to be gathered in those same
+    // scopes or the two halves of this answer contradict each other. See
+    // sessionOwners() for the failure that produced.
+    const authorized = inspectorAuth.bindingsFor(req.apiKey || '');
+    const owners = sessionOwners(req, authorized);
+
+    // De-duplicated by id: two owners can legitimately resolve to the same
+    // account (the ordinary case), and a target listed twice would be counted
+    // twice by the popup's "N fields open".
+    const seen = new Set<string>();
+    const targets = [];
+    for (const owner of owners) {
+      for (const t of targetFields.list(owner)) {
+        if (seen.has(t.targetFieldId)) continue;
+        seen.add(t.targetFieldId);
+        targets.push(t);
+      }
+    }
+
     res.json({
       success: true,
       userId,
@@ -678,9 +768,9 @@ export const createModeRoutes = (): Router => {
       bridge: localBridges.info(userId),
       // Every live destination, not one "current" node. Several must be able to
       // coexist, so a single-valued answer here would misdescribe the state.
-      targets: targetFields.list(userId),
+      targets,
       // What THIS extension may write to. A different key gets a different list.
-      authorized: inspectorAuth.bindingsFor(req.apiKey || ''),
+      authorized,
       // The DURABLE half of the same answer.
       //
       // `authorized` lists ADDRESSES (targetFieldId), which are re-minted every
@@ -1153,8 +1243,11 @@ export const createModeRoutes = (): Router => {
    * user sees why instead of a pick that vanished.
    */
   router.post('/inspector/element', (req: AuthenticatedRequest, res: Response) => {
-    const userId = resolveUserId(req);
     const body = req.body || {};
+    // The TARGET's account, not merely the caller's — see ownerForTarget(). The
+    // delivery has to be queued where the dashboard that opened the field is
+    // looking, or a 200 hides a pick that never arrives.
+    const userId = ownerForTarget(req, String(body.targetFieldId || ''));
 
     const result = inspectorHub.submit(userId, {
       targetFieldId: body.targetFieldId,

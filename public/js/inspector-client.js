@@ -278,6 +278,16 @@
           target: res.target || null,
           expiresAt: res.expiresAt || 0,
           expiresInMs: res.expiresInMs || 0,
+          // The OTHER half of what the operator has to type into the extension.
+          //
+          // The route has always sent these; this wrapper used to drop them, so
+          // the only caller (the editor's inline Connect row) could show a code
+          // and no address — and an extension pointed at the wrong origin fails
+          // to pair for a reason that is nowhere on screen. Passed through
+          // rather than defaulted: an older server that sends nothing must lead
+          // to the row showing no address, never to a guess made here.
+          baseUrl: res.baseUrl || '',
+          baseUrlSource: res.baseUrlSource || '',
         };
       })
       .catch(function () { return null; });

@@ -273,14 +273,26 @@ persist_public_domain() {
     . scripts/ask-domain.sh
     _domain_write "$domain"
   else
-    # Fallback for a partial checkout. Also clears any stale BASE_URL synonym,
-    # or the operator would see the new domain in .env and be served the old one.
-    sed_inplace "/^[[:space:]]*BASE_URL=/d" .env
-    if grep -q '^[[:space:]]*PUBLIC_DOMAIN=' .env; then
-      sed_inplace "s|^[[:space:]]*PUBLIC_DOMAIN=.*|PUBLIC_DOMAIN=${domain}|" .env
-    else
-      printf "\nPUBLIC_DOMAIN=%s\n" "$domain" >> .env
-    fi
+    # Fallback for a partial checkout, kept byte-for-byte equivalent to
+    # _domain_write above. It must clear any stale BASE_URL synonym too, or the
+    # operator would see the new domain in .env and still be served the old one.
+    #
+    # WHY THIS IS ONE awk AND NOT A grep + sed PAIR ANY MORE. The previous
+    # version substituted into the FIRST matching line and left every other
+    # assignment in place, so a .env that already carried two PUBLIC_DOMAIN lines
+    # came out of the installer still carrying two — one of them wrong, and
+    # dotenv is last-wins, so which value won depended on line order. It also
+    # required the "=" to touch the name, which meant a hand-edited
+    # `PUBLIC_DOMAIN = https://x` survived untouched and was then joined by the
+    # canonical line: two live assignments produced by the code meant to prevent
+    # exactly that. Dropping every assignment and appending one canonical line is
+    # the only form that is idempotent regardless of what it started from.
+    awk -v val="$domain" '
+      /^[[:space:]]*PUBLIC_DOMAIN[[:space:]]*=/ { next }
+      /^[[:space:]]*BASE_URL[[:space:]]*=/      { next }
+      { print }
+      END { printf "PUBLIC_DOMAIN=%s\n", val }
+    ' .env > .env.domain.tmp && mv .env.domain.tmp .env
   fi
   ok "Saved PUBLIC_DOMAIN=${domain} to .env"
 }

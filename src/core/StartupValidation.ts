@@ -210,7 +210,15 @@ export async function validateStartup(): Promise<StartupReport> {
       feature: 'Remote Browser',
       problem: 'REAL_CHROME_ENABLED=false — the Remote Browser, extension loading and the '
         + 'Element Inspector are switched off by configuration.',
-      fix: 'Remove REAL_CHROME_ENABLED from .env (the default is true) to turn them back on.',
+      // WAS: 'Remove REAL_CHROME_ENABLED from .env (the default is true) to turn
+      // them back on.' Correct, and still a file edit followed by a restart. The
+      // setting is changeable at runtime now (core/RuntimeSettings.ts), so the
+      // boot report names the one-click route as well — while keeping "the
+      // default is true", because that sentence is what explains to the operator
+      // that they are looking at drift and not at their own choice.
+      fix: 'POST /api/browser/enable turns them back on immediately, with no restart '
+        + '(the default is true, so this value came from a .env — usually a stale one). '
+        + 'The endpoint writes the corrected value back to .env.',
     });
   } else {
     browser = await inspectBrowserRuntime();

@@ -287,7 +287,13 @@ export async function inspectBrowserRuntime(): Promise<BrowserRuntimeReport> {
       ? 'REAL_CHROME_ENABLED=true'
       : 'REAL_CHROME_ENABLED=false — the Remote Browser is switched off, so no '
         + 'extension can be loaded and the Element Inspector cannot run.',
-    fix: enabled ? '' : 'Set REAL_CHROME_ENABLED=true in .env (or remove the line — the default is true).',
+    // WAS: 'Set REAL_CHROME_ENABLED=true in .env (or remove the line — the
+    // default is true).' A doctor report that ends in "edit this file" is fine
+    // for someone at a terminal and useless to someone in a panel, and the
+    // second group is who hit this. The value is settable at runtime now, so
+    // the fix names the one-click route instead. See core/RuntimeSettings.ts.
+    fix: enabled ? '' : 'POST /api/browser/enable turns it on immediately — no restart, '
+      + 'and the value is written to .env so it stays on.',
   });
 
   // ── 2. The binary ────────────────────────────────────────────────────────

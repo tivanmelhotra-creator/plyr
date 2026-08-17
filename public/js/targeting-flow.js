@@ -171,6 +171,92 @@
   }
 
   /**
+   * Put text on the clipboard, for real.
+   *
+   * `navigator.clipboard.writeText` is the right call and is NOT reliable here:
+   * it rejects on an insecure origin (a plain-http LAN address, which is exactly
+   * how this panel is reached while someone is still setting PUBLIC_DOMAIN up)
+   * and on a document that does not have focus. The values this dialog copies —
+   * an Authorization Code and a Base URL — are the two things the operator MUST
+   * transfer into another application, so a copy button that quietly does nothing
+   * is worse here than anywhere else in the product: they paste stale clipboard
+   * content into the extension and the pairing fails for a reason that is
+   * nowhere on screen.
+   *
+   * So the deprecated `execCommand('copy')` is kept as a fallback. The textarea
+   * is appended to the document (not to the panel) and removed in a `finally`,
+   * so a throw cannot leave a stray node behind or shift the dialog's layout.
+   *
+   * Returns a Promise<boolean> — RESOLVED, never rejected. The caller renders
+   * either "Copied" or an instruction to copy by hand, and both of those are
+   * more useful than an exception.
+   */
+  function writeClipboard(text) {
+    var s = String(text == null ? '' : text);
+    if (!s) return Promise.resolve(false);
+
+    function legacy() {
+      try {
+        var doc = document;
+        if (!doc || !doc.body || typeof doc.execCommand !== 'function') return false;
+        var ta = doc.createElement('textarea');
+        ta.value = s;
+        // Off-screen rather than hidden: a `display:none` textarea cannot be
+        // selected, so the copy would silently produce nothing.
+        ta.setAttribute('aria-hidden', 'true');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        doc.body.appendChild(ta);
+        try {
+          ta.focus();
+          ta.select();
+          return !!doc.execCommand('copy');
+        } finally {
+          if (ta.parentNode) ta.parentNode.removeChild(ta);
+        }
+      } catch (e) { return false; }
+    }
+
+    try {
+      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(s).then(
+          function () { return true; },
+          function () { return legacy(); }
+        );
+      }
+    } catch (e) { /* fall through to the legacy path */ }
+    return Promise.resolve(legacy());
+  }
+
+  /**
+   * A Copy button that says what happened.
+   *
+   * Confirmation is applied only once the write has RESOLVED. A "Copied" shown
+   * before that is a claim the operator only discovers to be false when they
+   * paste — and at that point they have no reason to suspect the button.
+   *
+   * `getText` is a function rather than a string so the button always copies the
+   * value currently on screen, not the one captured when it was built.
+   */
+  function copyButton(getText, cls) {
+    var label = t('insp.copy');
+    var b = button(label, 'is-quiet' + (cls ? ' ' + cls : ''), function () {
+      writeClipboard(getText()).then(function (ok) {
+        b.textContent = ok ? t('tgt.copied') : t('tgt.copyManual');
+        b.className = 'tgt-btn is-quiet' + (cls ? ' ' + cls : '') + (ok ? ' is-ok' : ' is-warn');
+        if (b.copyTimer) clearTimeout(b.copyTimer);
+        b.copyTimer = setTimeout(function () {
+          b.textContent = label;
+          b.className = 'tgt-btn is-quiet' + (cls ? ' ' + cls : '');
+        }, ok ? 1200 : 2600);
+      });
+    });
+    b.setAttribute('aria-label', label);
+    return b;
+  }
+
+  /**
    * The Base URL, beside the code, with its own Copy button.
    *
    * Its own button rather than one that copies both: they go into two different
@@ -203,17 +289,11 @@
     var value = el('code', 'tgt-base-url', baseUrl);
     line.appendChild(value);
 
-    var copy = button(t('insp.copy'), 'is-quiet tgt-base-copy', function () {
-      try {
-        if (navigator.clipboard) navigator.clipboard.writeText(baseUrl);
-      } catch (e) { /* it is on screen; copying is a convenience */ }
-      // Confirm the copy on the button itself. Without it a click on a
-      // clipboard button is indistinguishable from a click that did nothing.
-      var was = copy.textContent;
-      copy.textContent = t('tgt.copied');
-      setTimeout(function () { copy.textContent = was; }, 1200);
-    });
-    line.appendChild(copy);
+    // Through the shared helper, so this button and the CODE's button behave
+    // identically — including the insecure-origin fallback, which matters most
+    // for precisely this value: an operator copying a Base URL is very often
+    // looking at a plain-http LAN address at the time.
+    line.appendChild(copyButton(function () { return baseUrl; }, 'tgt-base-copy'));
     wrap.appendChild(line);
 
     return wrap;
@@ -318,8 +398,26 @@
     // `display` is the grouped form (e.g. "4821-9930"). LTR and user-select:all
     // are set in CSS so the code reads correctly and copies cleanly in an RTL
     // page — a digit group must not be reordered by the bidi algorithm.
+    //
+    // The code now sits on its own labelled line WITH a Copy button, matching
+    // the Base URL below it. Both are values the operator has to move into the
+    // extension by hand, so both deserve the same affordance — and the raw
+    // `res.code` is what gets copied, not the grouped display form, because the
+    // separators are cosmetic and pasting them back is one more thing that can
+    // go wrong.
+    var codeWrap = el('div', 'tgt-base tgt-code-wrap');
+    var codeHead = el('div', 'tgt-base-head');
+    codeHead.appendChild(el('span', 'tgt-base-label', t('tgt.authCode')));
+    codeWrap.appendChild(codeHead);
+
+    var codeLine = el('div', 'tgt-base-line');
     var code = el('div', 'tgt-code', res.display || res.code || '');
-    panel.appendChild(code);
+    codeLine.appendChild(code);
+    codeLine.appendChild(copyButton(function () {
+      return res.code || res.display || '';
+    }, 'tgt-code-copy'));
+    codeWrap.appendChild(codeLine);
+    panel.appendChild(codeWrap);
     panel.appendChild(el('div', 'tgt-expires', t('insp.codeExpires')));
 
     // ── The other half of the pairing ────────────────────────────────────────
@@ -340,12 +438,10 @@
     var status = el('div', 'tgt-status', t('tgt.waiting'));
     panel.appendChild(status);
 
+    // Only Cancel remains here: Copy moved up beside the value it copies. A
+    // footer button labelled just "Copy" could not say WHICH of the two values
+    // on screen it would take, and now there are two.
     footer(panel, [
-      button(t('insp.copy'), 'is-quiet', function () {
-        try {
-          if (navigator.clipboard) navigator.clipboard.writeText(res.code || '');
-        } catch (e) { /* the code is on screen; copying is a convenience */ }
-      }),
       button(t('tgt.cancel'), 'is-ghost', closeDialog),
     ]);
 

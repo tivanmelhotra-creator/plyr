@@ -606,6 +606,14 @@ body {
 }
 .kv .v.none { color: var(--muted); font-style: italic; font-family: var(--sans); }
 
+/* The Copy column, added ONLY to SELECTED ELEMENT.
+   -------------------------------------------------------------------------
+   Scoped to `#selList` on purpose. `.kv` is shared with DESTINATION below,
+   whose rows are static markup with two cells; giving the base rule a third
+   track would leave every DESTINATION row reserving 18px of empty gutter for a
+   button that is never built. A third column here, and nothing there. */
+#selList .kv { grid-template-columns: 110px minmax(0, 1fr) 18px; }
+
 /* DESTINATION uses the same key:value idea at the design's tighter 72px
    gutter, with no hairlines — it is a restatement, not a table. */
 .kvlist.tight { display: grid; gap: 8px; padding: 0; }
@@ -667,7 +675,12 @@ body {
 .attrs { display: block; }
 .arow {
   display: grid;
-  grid-template-columns: 18px 18px minmax(82px, 120px) minmax(0, 1fr);
+  /* The trailing 18px is the Copy button. The value column is `ellipsis`, so a
+     long selector is truncated on screen and this is the only way to get the
+     whole string out of the popup. Fixed rather than `auto` so the value column
+     does not resize as buttons swap glyph (⧉ → ✓ → ⧉), which would make the
+     whole table twitch on every copy. */
+  grid-template-columns: 18px 18px minmax(82px, 120px) minmax(0, 1fr) 18px;
   gap: 7px;
   align-items: center;
   padding: 7px 10px;
@@ -747,6 +760,35 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .avalue.empty { color: var(--dim); font-style: italic; font-family: var(--sans); }
+
+/* ── Copy button (ATTRIBUTES + SELECTED ELEMENT) ───────────────────────────
+   The same control as the in-page picker's `.cp`, down to the tokens: muted at
+   rest, --orange on hover/focus, --green when it has just confirmed. The two
+   surfaces show the same attributes, so an affordance that looked different in
+   each would read as two different features.
+
+   Square and `flex: 0 0 auto`, because it lives in a fixed grid track — a
+   button that grew with its label would steal width from the value beside it
+   every time the glyph changed. */
+.cp {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font: 11px/1 var(--mono);
+  cursor: pointer;
+}
+.cp:hover { color: var(--orange); border-color: #55301d; background: #ff660014; }
+/* focus-visible, not focus: a keyboard user needs the ring, a mouse user who
+   just clicked does not want one left behind on the row they are reading. */
+.cp:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; color: var(--orange); }
+/* The "✓ Copied" moment — the panel's success colour, so a confirmation means
+   the same thing here as everywhere else. Reverts on its own after ~1.1s. */
+.cp.done { color: var(--green); border-color: #1d4a2c; background: #00c8531a; }
 
 /* ── Status lines ─────────────────────────────────────────────────────── */
 .status { margin-top: 8px; font: 11px/14px var(--mono); min-height: 14px; }

@@ -55,6 +55,16 @@ class FakeNode {
   disabled = false;
   textContent = '';
   scrollTop = 0;
+  /**
+   * Only the clipboard's execCommand fallback uses this: it writes the value
+   * into a throwaway <textarea>, selects it and asks the document to copy. It is
+   * here so that path can be exercised at all — a page on http://, or one that
+   * has just taken focus, is exactly where navigator.clipboard fails and this is
+   * the only route left.
+   */
+  value = '';
+  selected = false;
+  select() { this.selected = true; }
   style: Record<string, string> = {};
   attrs: Record<string, string> = {};
   childNodes: FakeNode[] = [];
@@ -95,6 +105,13 @@ class FakeNode {
 
   setAttribute(k: string, v: string) { this.attrs[k] = v; }
   getAttribute(k: string) { return this.attrs[k] != null ? this.attrs[k] : null; }
+  /**
+   * The clipboard fallback removes its scratch textarea through
+   * `ta.parentNode.removeChild(ta)`, so the fake needs the parentNode alias — a
+   * missing one would silently leave the node in the page, which is the exact
+   * litter the `finally` exists to prevent.
+   */
+  get parentNode(): FakeNode | null { return this.parentElement; }
   appendChild(c: FakeNode) { c.parentElement = this; this.childNodes.push(c); return c; }
   removeChild(c: FakeNode) {
     const i = this.childNodes.indexOf(c);
@@ -175,6 +192,8 @@ interface RowControls {
   checkbox: FakeNode;
   radio: FakeNode;
   label: FakeNode;
+  /** The row's own copy button — one per row, never shared. */
+  copy: FakeNode;
 }
 
 interface Harness {
@@ -184,6 +203,14 @@ interface Harness {
   isActive(): boolean;
   /** Click a page element while picking — freezes it and opens the panel. */
   pick(el: FakeEl): void;
+  /**
+   * Sweep the mouse over a page element WITHOUT clicking.
+   *
+   * The distinction from pick() is the whole of the eye toggle: with selection
+   * on, a hover re-outlines and re-labels; with it off, a hover must change
+   * nothing at all.
+   */
+  hover(el: FakeEl): void;
   /** The rendered rows, in panel order, with their two controls. */
   rows(): RowControls[];
   row(key: string): RowControls;
@@ -230,6 +257,60 @@ interface Harness {
   selVisible(): boolean;
   /** The "nothing ticked" message, or '' when values are being shown. */
   selEmptyText(): string;
+  /**
+   * The copy button belonging to one SELECTED ELEMENT entry.
+   *
+   * Separate from the row's, deliberately: the two are different renderings of
+   * one row and each has to copy that row's value on its own, so a test that
+   * could only reach one of them would leave the other untested.
+   */
+  selCopy(key: string): FakeNode;
+
+  // ── The 👁 selection toggle ───────────────────────────────────────────────
+  /** The header's eye button. */
+  eye(): FakeNode;
+  /** Press it, exactly as a pointer does. */
+  clickEye(): void;
+  /**
+   * Whether element selection is live, read the way the USER reads it: off the
+   * button's `aria-pressed`, not from the module's private state. A refactor of
+   * the internals must not be able to make these tests lie.
+   */
+  selectionOn(): boolean;
+  /** The "selection paused" notice: its text, or '' while it is hidden. */
+  pausedText(): string;
+  /** The highlight overlay's outline box and its label. */
+  outline(): { visible: boolean; left: string; top: string; label: string };
+  /** Press a key on the document, the way onKey receives it. */
+  key(name: string, mods?: { ctrlKey?: boolean; shiftKey?: boolean }): void;
+  /** Whether a page click was swallowed by the picker (preventDefault'd). */
+  clickWasSwallowed(el: FakeEl): boolean;
+
+  // ── The clipboard ─────────────────────────────────────────────────────────
+  /** Everything written to navigator.clipboard, in order. */
+  clipboard: string[];
+  /** Make navigator.clipboard.writeText reject, forcing the legacy path. */
+  failClipboard(on: boolean): void;
+  /** Whether the execCommand fallback ran, and with what text. */
+  legacyCopies: string[];
+  /** Make document.execCommand('copy') report failure too. */
+  failLegacy(on: boolean): void;
+  /** Run every pending setTimeout callback — i.e. let the "✓" revert. */
+  flushTimers(): void;
+  /** Any scratch nodes the clipboard fallback left behind in the page. */
+  strayNodes(): FakeNode[];
+  /**
+   * Let the clipboard's promise chain finish.
+   *
+   * The button deliberately does NOT say "Copied" the instant it is pressed — it
+   * says so only once the write has actually resolved, because a tick that
+   * appears before the copy succeeded is a lie the user only discovers when they
+   * paste. That honesty costs a microtask (two, on the fallback path: the modern
+   * rejection, then execCommand), so any test reading the CONFIRMATION has to
+   * await this first. Tests reading only `clipboard` need not: the value is
+   * handed over synchronously on the click.
+   */
+  settle(): Promise<void>;
 
   /** The status line the user reads. */
   status(): { text: string; kind: string };
@@ -281,11 +362,42 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
   const reply: { value: unknown } = { value: { ok: true, node: 'HTTP Request', field: 'url', attribute: 'href', value: '/checkout' } };
   let timeouts = 0;
 
+  /*
+   * THE CLIPBOARD, BOTH PATHS.
+   *
+   * `clipboard` records what navigator.clipboard.writeText received; `legacyCopies`
+   * records what the execCommand fallback selected. Both are needed because the
+   * panel runs in an arbitrary page: on http://, or with the document unfocused,
+   * the modern API rejects and the fallback is the only thing that copies. A test
+   * suite that only knew about the first would call the feature covered while the
+   * path most users on a plain http:// site actually take went unexercised.
+   */
+  const clipboard: string[] = [];
+  const legacyCopies: string[] = [];
+  const fail = { modern: false, legacy: false };
+  /** Pending setTimeout callbacks, so the "✓ Copied" revert can be run on demand. */
+  const pending: Array<() => void> = [];
+
   const documentFake = {
     documentElement: documentEl,
     body,
     title: 'Shop',
     createElement: (tag: string) => new FakeNode(tag),
+    /**
+     * The copy fallback's last step. It reports what the selected scratch node
+     * held, which is how the tests assert the LEGACY path copied the right text
+     * rather than merely that it ran.
+     */
+    execCommand: (cmd: string) => {
+      if (cmd !== 'copy') return false;
+      // Only a node that was actually selected can be copied — the same rule the
+      // browser applies, and the reason the implementation calls select().
+      const ta = body.childNodes.filter((n) => n.tagName === 'TEXTAREA' && n.selected)[0];
+      if (!ta) return false;
+      if (fail.legacy) return false;
+      legacyCopies.push(ta.value);
+      return true;
+    },
     addEventListener: (t: string, fn: (e: unknown) => void) => { (docListeners[t] ||= []).push(fn); },
     removeEventListener: (t: string, fn: (e: unknown) => void) => {
       const l = docListeners[t];
@@ -305,6 +417,19 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     // one that stranded the Confirm button off-screen — is reproduced.
     innerWidth: 1280,
     innerHeight: 800,
+    // The modern clipboard, which is what a normal https:// page gives the panel.
+    // `fail.modern` models the ordinary failures — an insecure context, or a
+    // document that does not have focus — by rejecting, which is precisely what
+    // the real API does there.
+    navigator: {
+      clipboard: {
+        writeText: (s: string) => {
+          if (fail.modern) return Promise.reject(new Error('not allowed'));
+          clipboard.push(s);
+          return Promise.resolve();
+        },
+      },
+    },
     addEventListener: (t: string, fn: (e: unknown) => void) => { (winListeners[t] ||= []).push(fn); },
     removeEventListener: (t: string, fn: (e: unknown) => void) => {
       const l = winListeners[t];
@@ -341,7 +466,24 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     document: documentFake,
     location: { href: 'https://shop.test/p/1' },
     chrome: chromeFake,
-    setTimeout: () => { timeouts += 1; return 0; },
+    /*
+     * Counts as it always did — the auto-close-after-send assertions read
+     * `timeouts` — but now also KEEPS the callback, because the copy feedback's
+     * whole contract is that it reverts. A stub that dropped the callback could
+     * only ever prove the "✓" appears, never that the button goes back to normal.
+     *
+     * Handles are 1-based so a real handle is never 0: the implementation clears a
+     * pending revert before starting another, and a falsy handle is exactly the
+     * case a truthiness check would miss.
+     */
+    setTimeout: (fn: () => void) => {
+      timeouts += 1;
+      pending.push(typeof fn === 'function' ? fn : () => {});
+      return pending.length;
+    },
+    clearTimeout: (id: number) => {
+      if (typeof id === 'number' && id >= 1 && pending[id - 1]) pending[id - 1] = () => {};
+    },
     module: undefined,
   };
   sandbox.globalThis = sandbox;
@@ -379,9 +521,20 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
       const checkbox = inputs.filter((c) => c.type === 'checkbox')[0]!;
       const radio = inputs.filter((c) => c.type === 'radio')[0]!;
       const label = row.childNodes.filter((c) => c.tagName === 'LABEL')[0]!;
+      /*
+       * The copy button, found on the ROW rather than inside the label.
+       *
+       * That is not an incidental detail of the query: the label's own click
+       * toggles DISPLAY, so a copy button nested inside it would tick or untick
+       * the row on every copy. Reaching for it here — as a sibling of the label —
+       * is what makes the test fail if it is ever moved back in.
+       */
+      const copy = row.childNodes.filter(
+        (c) => c.tagName === 'BUTTON' && c.className.split(/\s+/).indexOf('cp') >= 0,
+      )[0]!;
       // The row's identity as the USER sees it: the key column's text.
       const keyCell = label ? label.childNodes[0] : undefined;
-      return { key: keyCell ? keyCell.textContent : '', checkbox, radio, label };
+      return { key: keyCell ? keyCell.textContent : '', checkbox, radio, label, copy };
     });
   }
 
@@ -464,6 +617,39 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     return found;
   }
 
+  /**
+   * The header's eye button.
+   *
+   * Found by class, and asserted to be a real BUTTON: it has to be reachable by
+   * keyboard and announceable as a control, which a clickable <div> is not.
+   */
+  function eye(): FakeNode {
+    const host = panelHost();
+    if (!host) throw new Error('the panel has not been built');
+    const found = findAll(host, (n) => n.tagName === 'BUTTON'
+      && n.className.split(/\s+/).indexOf('ey') >= 0)[0];
+    if (!found) throw new Error('the panel header rendered no selection toggle');
+    return found;
+  }
+
+  /** One SELECTED ELEMENT entry's own copy button. */
+  function selCopyButton(key: string): FakeNode {
+    const host = panelHost();
+    if (!host) throw new Error('the panel has not been built');
+    const items = findAll(host, (n) => n.className.split(/\s+/).indexOf('sitem') >= 0);
+    for (const item of items) {
+      const k = item.childNodes.filter((c) => c.className.indexOf('sk') === 0)[0];
+      const label = k ? k.textContent.replace(/\s*\u2192 sending$/, '') : '';
+      if (label !== key) continue;
+      const btn = item.childNodes.filter(
+        (c) => c.tagName === 'BUTTON' && c.className.split(/\s+/).indexOf('cp') >= 0,
+      )[0];
+      if (!btn) throw new Error(`SELECTED ELEMENT entry "${key}" has no copy button`);
+      return btn;
+    }
+    throw new Error(`no SELECTED ELEMENT entry labelled "${key}"`);
+  }
+
   function selected(): Array<{ key: string; value: string; sending: boolean; empty: boolean }> {
     const host = panelHost();
     if (!host) return [];
@@ -521,6 +707,48 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
         target: el, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
       }));
     },
+    /**
+     * A hover, which is the OTHER half of the picking gesture.
+     *
+     * Both `mousemove` and `mouseover` are dispatched because the picker binds
+     * onMove to both — a test that fired only one could pass against an
+     * implementation that had stopped guarding the other.
+     */
+    hover(el: FakeEl) {
+      ['mousemove', 'mouseover'].forEach((t) => {
+        (docListeners[t] || []).slice().forEach((fn) => fn({
+          target: el, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
+        }));
+      });
+    },
+    /**
+     * Whether the picker SWALLOWED a page click.
+     *
+     * This is the observable difference between selection on and off for a click
+     * that lands on the page: while picking, the click must not also activate the
+     * page (clicking a link would navigate away and take the pick with it), but
+     * once selection is paused the page must get its clicks back — otherwise the
+     * page is inert with no visible cause, which reads as the tool having hung.
+     */
+    clickWasSwallowed(el: FakeEl) {
+      let prevented = false;
+      (docListeners.click || []).slice().forEach((fn) => fn({
+        target: el,
+        preventDefault() { prevented = true; },
+        stopPropagation() {},
+        stopImmediatePropagation() {},
+      }));
+      return prevented;
+    },
+    /** A keypress on the document, as onKey receives it. */
+    key(name: string, mods: { ctrlKey?: boolean; shiftKey?: boolean } = {}) {
+      (docListeners.keydown || []).slice().forEach((fn) => fn({
+        key: name,
+        ctrlKey: !!mods.ctrlKey,
+        shiftKey: !!mods.shiftKey,
+        preventDefault() {}, stopPropagation() {},
+      }));
+    },
     rows,
     row,
     tick(key: string) {
@@ -570,6 +798,87 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
       const msg = findAll(host, (n) => n.className === 'sempty')[0];
       return msg ? msg.textContent : '';
     },
+    selCopy: selCopyButton,
+
+    // ── The 👁 toggle ───────────────────────────────────────────────────────
+    eye,
+    clickEye() { eye().fire('click'); },
+    /**
+     * Read from `aria-pressed`, which is the state as it is PUBLISHED — to a
+     * screen reader, and to anyone inspecting the control. Reading the module's
+     * private flag instead would let an implementation that forgot to paint the
+     * button still pass.
+     */
+    selectionOn() { return eye().getAttribute('aria-pressed') === 'true'; },
+    pausedText() {
+      const host = panelHost();
+      if (!host) return '';
+      const note = findAll(host, (n) => n.className === 'pz')[0];
+      if (!note || note.style.display === 'none') return '';
+      return note.textContent;
+    },
+    /**
+     * The highlight overlay: whether it is drawn, where, and what it says.
+     *
+     * A separate shadow host from the panel, so it is found from the document
+     * root. The label matters as much as the box — it names the element the
+     * picker is pointing at, and "the selected element remains visible" means
+     * both parts stay put.
+     */
+    outline() {
+      const hl = findAll(documentEl, (n) => n.id === 'ab-inspector-highlight')[0];
+      if (!hl) return { visible: false, left: '', top: '', label: '' };
+      const box = findAll(hl, (n) => n.className === 'box')[0];
+      const tip = findAll(hl, (n) => n.className === 'tip')[0];
+      return {
+        visible: !!box && box.style.display === 'block',
+        left: box ? (box.style.left || '') : '',
+        top: box ? (box.style.top || '') : '',
+        label: tip && tip.style.display === 'block' ? tip.textContent : '',
+      };
+    },
+
+    // ── The clipboard ─────────────────────────────────────────────────────────
+    clipboard,
+    legacyCopies,
+    failClipboard(on: boolean) { fail.modern = !!on; },
+    failLegacy(on: boolean) { fail.legacy = !!on; },
+    /**
+     * Run every pending timer callback.
+     *
+     * Drained rather than iterated, because a callback may schedule another; and
+     * each is replaced with a no-op first so a second flush cannot run the same
+     * revert twice.
+     */
+    flushTimers() {
+      while (pending.length) {
+        const fn = pending.shift()!;
+        fn();
+      }
+    },
+    /**
+     * Anything the clipboard fallback left in the page.
+     *
+     * The scratch <textarea> is removed in a `finally`, so this must always come
+     * back empty — a stray one would be litter in the user's own document, on a
+     * page we do not own.
+     */
+    strayNodes() {
+      return body.childNodes.filter((n) => n.tagName === 'TEXTAREA');
+    },
+    /**
+     * Drain the microtask queue so the copy's confirmation has been applied.
+     *
+     * Several ticks rather than one: the modern path resolves, then `copyValue`'s
+     * own `.then` runs; the fallback path adds the rejection handler and the
+     * legacy write on top. Awaiting a fixed number of ticks would make these
+     * tests sensitive to the number of links in that chain — which is an
+     * implementation detail, not behaviour anyone can observe.
+     */
+    async settle() {
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    },
+
     status() {
       const host = panelHost();
       const st = findAll(host!, (n) => n.className.indexOf('st') === 0)[0]!;
@@ -1995,5 +2304,763 @@ describe('picker → popup handoff', () => {
   it('works on a browser with no storage available', () => {
     // The handoff is a convenience; the panel itself must not depend on it.
     expect(() => { h.start(); h.pick(buyLink()); }).not.toThrow();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// THE 👁 SELECTION TOGGLE
+//
+// THE REPORTED BEHAVIOUR, AND WHAT WAS MISSING
+// --------------------------------------------
+// Picking an element FREEZES it and the panel then stays open until the user
+// closes it. That is correct and is kept: closing on the first click would make
+// it impossible to compare two candidates or to read a value before committing
+// to it.
+//
+// The cost was that the picking GESTURE stayed armed over a page the user now
+// wanted to read. Every mousemove re-outlined, every click was swallowed and
+// re-aimed, the arrows walked the tree — and the only escape was ✕, which throws
+// the pick away along with the ticks and the armed radio. So "let me look at the
+// page again" and "discard my pick" were the same button.
+//
+// 👁 separates them. It pauses the gesture and NOTHING else.
+//
+// WHAT THESE TESTS PIN
+// --------------------
+// The two actions must stay distinct (✕ closes, 👁 pauses), the pause must be
+// total (pointer AND keyboard), and — the part that makes it safe to press — the
+// pick must survive it intact: the frozen element, its rows, the checkboxes, the
+// radio and the outbound value. Asserted through the rendered controls, the
+// published pick and the payload, never against the module's private state.
+// ════════════════════════════════════════════════════════════════
+describe('inspector panel: 👁 toggles element selection without closing (§16)', () => {
+  it('offers the toggle in the header, as a real button, alongside ✕', () => {
+    h.start();
+    h.pick(buyLink());
+
+    const eye = h.eye();
+    // A BUTTON, not a clickable div: it must be tabbable and announceable.
+    expect(eye.tagName).toBe('BUTTON');
+    expect(eye.type).toBe('button');
+    // In the header, which is where the picker's own controls live — not in the
+    // footer beside Confirm/Cancel, which are about the PICK rather than the tool.
+    expect(h.header().childNodes.indexOf(eye)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('starts with selection ON, because that is what opening a picker means', () => {
+    h.start();
+    h.pick(buyLink());
+    expect(h.selectionOn()).toBe(true);
+    // And says so, rather than leaving the state to a colour alone.
+    expect(h.eye().getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('shows no "paused" notice while selection is live', () => {
+    h.start();
+    h.pick(buyLink());
+    // The notice explains a mode the user chose. In the default mode it would be
+    // permanent furniture in a panel that is deliberately not allowed to grow.
+    expect(h.pausedText()).toBe('');
+  });
+
+  it('keeps the picker OPEN when selection is switched off', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.clickEye();
+
+    // The whole point: this is not a second Close. `isActive()` is the picker's
+    // own answer to "am I open?", and the panel is still on screen.
+    expect(h.isActive()).toBe(true);
+    expect(h.selectionOn()).toBe(false);
+    expect(h.wrap().style.display).toBe('flex');
+  });
+
+  it('leaves the selected element visible and described after pausing', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.selected();
+    const outlineBefore = h.outline();
+
+    h.clickEye();
+
+    // «currently selected element remains visible» — both the panel's readout of
+    // it and the outline that points at it on the page.
+    expect(h.selected()).toEqual(before);
+    expect(h.outline().visible).toBe(true);
+    expect(h.outline().left).toBe(outlineBefore.left);
+    expect(h.outline().top).toBe(outlineBefore.top);
+    expect(h.outline().label).toBe(outlineBefore.label);
+  });
+
+  it('states that selection is paused, so an inert page has a visible cause', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clickEye();
+
+    // Without this the picker looks identical to one that has died: no outline
+    // follows the mouse and no click picks. The notice is the difference between
+    // a mode and a fault.
+    expect(h.pausedText()).toMatch(/paus/i);
+  });
+
+  it('stops a HOVER from re-outlining another element', () => {
+    h.start();
+    h.pick(buyLink());
+    const frozenOutline = h.outline();
+
+    h.clickEye();
+    h.hover(new FakeEl('footer', { id: 'somewhere-else' }));
+
+    // The outline must still be on the PICKED element, not on whatever the cursor
+    // crossed: «mouse movement/click does NOT select another element».
+    expect(h.outline().visible).toBe(true);
+    expect(h.outline().label).toBe(frozenOutline.label);
+  });
+
+  it('stops a CLICK from re-picking, leaving the pick exactly as it was', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = { rows: h.rows().map((r) => r.key), selected: h.selected() };
+
+    h.clickEye();
+    h.pick(new FakeEl('div', { id: 'other', 'data-nope': 'x' }));
+
+    // Same element still described: same rows, same readout. A re-pick would have
+    // replaced both.
+    expect(h.rows().map((r) => r.key)).toEqual(before.rows);
+    expect(h.selected()).toEqual(before.selected);
+  });
+
+  it('hands page clicks back to the page while paused', () => {
+    h.start();
+    h.pick(buyLink());
+
+    // While picking, a click is swallowed so that clicking a link cannot navigate
+    // away and take the pick with it.
+    expect(h.clickWasSwallowed(new FakeEl('a', { href: '/x' }))).toBe(true);
+
+    h.clickEye();
+
+    // Paused, there is no gesture left to protect — and the reason to pause is to
+    // use the page again. A picker that still ate every click would leave the page
+    // dead with no visible cause.
+    expect(h.clickWasSwallowed(new FakeEl('a', { href: '/x' }))).toBe(false);
+  });
+
+  it('pauses the ARROW KEYS too, not merely the mouse', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.rows().map((r) => r.key);
+
+    h.clickEye();
+    h.key('ArrowUp');
+    h.key('ArrowDown');
+
+    // Arrow-walking IS element selection, reached by keyboard. If it stayed live,
+    // "selection disabled" would only be half true and a stray ArrowUp would
+    // silently re-describe the element the user deliberately froze.
+    expect(h.rows().map((r) => r.key)).toEqual(before);
+  });
+
+  it('re-enables selection on a second press', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.clickEye();
+    expect(h.selectionOn()).toBe(false);
+    h.clickEye();
+
+    expect(h.selectionOn()).toBe(true);
+    expect(h.pausedText()).toBe('');
+  });
+
+  it('picks again normally once selection is back on', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clickEye();
+    h.clickEye();
+
+    const other = new FakeEl('img', { id: 'hero', src: '/hero.png' });
+    h.pick(other);
+
+    // The gesture is genuinely restored, not merely reported as restored.
+    expect(h.rows().map((r) => r.key)).toContain('src');
+    expect(h.selected().some((s) => s.value === '/hero.png')).toBe(true);
+  });
+
+  it('is NOT the close button: ✕ still closes the picker', () => {
+    h.start();
+    h.pick(buyLink());
+
+    const close = h.header().childNodes.filter(
+      (c) => c.tagName === 'BUTTON' && c.className.split(/\s+/).indexOf('x') >= 0,
+    )[0]!;
+    close.fire('click');
+
+    // The two actions must never collapse into one. Close means close.
+    expect(h.isActive()).toBe(false);
+    expect(h.wrap().style.display).toBe('none');
+  });
+
+  it('does not disturb the checkboxes or the armed radio', () => {
+    h.start();
+    h.pick(buyLink());
+    h.tick('data-sku');
+    h.arm('href');
+    const ticked = h.rows().filter((r) => r.checkbox.checked).map((r) => r.key);
+
+    h.clickEye();
+
+    // Nobody would dare press a pause that could lose a selection. §16/§23's two
+    // independent states both survive it untouched.
+    expect(h.rows().filter((r) => r.checkbox.checked).map((r) => r.key)).toEqual(ticked);
+    expect(h.row('href').radio.checked).toBe(true);
+  });
+
+  it('still sends the same single value after pausing', () => {
+    h.start();
+    h.pick(buyLink());
+    h.arm('href');
+
+    h.clickEye();
+    h.confirm();
+
+    // Pausing the GESTURE cannot change what the pick will deliver — otherwise
+    // the toggle would silently rewrite the outbound value.
+    expect(h.sent[0]!.sendAttribute).toEqual({ name: 'href', value: '/checkout' });
+  });
+
+  it('leaves the published pick intact, so the popup still sees it', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.stored.ab_lastPick;
+
+    h.clickEye();
+
+    // Cancel withdraws the pick; pausing must not. The popup is a second view of
+    // the SAME pick, and it should not blank because the user paused picking.
+    expect(h.stored.ab_lastPick).toEqual(before);
+  });
+
+  it('marks the two states differently, and keeps the OFF state legible', () => {
+    h.start();
+    h.pick(buyLink());
+    const on = h.eye().className;
+
+    h.clickEye();
+    const off = h.eye().className;
+
+    expect(on).not.toBe(off);
+    // The classes the design system keys off: `on` takes the orange accent, `off`
+    // is muted-but-clearly-pressable rather than dimmed to invisibility, because
+    // it is a state the user will want to leave.
+    expect(on).toContain('on');
+    expect(off).toContain('off');
+
+    const css = h.panelCss();
+    expect(css).toContain('.hd button.ey.on');
+    expect(css).toContain('.hd button.ey.off');
+    // ON carries the panel's own accent, the same one the outline and the armed
+    // radio use — "orange means this is live" has to hold across the whole panel.
+    expect(/\.hd button\.ey\.on\{[^}]*#ff6600/.test(css)).toBe(true);
+  });
+
+  it('opens the next session with selection live again', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clickEye();
+    expect(h.selectionOn()).toBe(false);
+
+    h.stop();
+    h.start();
+    h.pick(buyLink());
+
+    // A pause is a state WITHIN one picking session. Persisting it would mean the
+    // next Ctrl+Shift+C opened a picker that outlines nothing and picks nothing,
+    // for a reason set minutes earlier on another page.
+    expect(h.selectionOn()).toBe(true);
+    expect(h.pausedText()).toBe('');
+  });
+
+  it('"Pick again" un-pauses, because it is a request to pick', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clickEye();
+
+    const again = h.header().childNodes.filter(
+      (c) => c.tagName === 'BUTTON' && c.textContent === 'Pick again',
+    )[0]!;
+    again.fire('click');
+
+    // Otherwise it would tear the panel down and then refuse to pick anything —
+    // a dead end with no visible cause.
+    expect(h.selectionOn()).toBe(true);
+    h.pick(new FakeEl('img', { id: 'hero', src: '/hero.png' }));
+    expect(h.rows().map((r) => r.key)).toContain('src');
+  });
+
+  it('does not move the panel when pressed', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.pos();
+
+    // The header is the drag handle, so a press on a control inside it must stop
+    // the gesture before it starts — or a press that wanders a pixel would move
+    // the window and swallow the click.
+    let stopped = false;
+    (h.eye().listeners.pointerdown || []).forEach((fn) => fn({
+      button: 0, pointerId: 7, clientX: before.left + 250, clientY: before.top + 10,
+      preventDefault() {}, stopPropagation() { stopped = true; }, target: h.eye(),
+    }));
+    expect(stopped).toBe(true);
+    expect(h.pos()).toEqual(before);
+  });
+
+  it('Esc still closes even while selection is paused', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clickEye();
+
+    h.key('Escape');
+
+    // Pausing must not strand the user: the documented way out still works.
+    expect(h.isActive()).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// COPY, ON EVERY DISPLAYED VALUE
+//
+// WHY THIS IS A FEATURE AND NOT A CONVENIENCE
+// -------------------------------------------
+// The values this panel shows are its entire output, and their destination is
+// frequently outside this product: a colleague's message, a test file, another
+// tool's selector box. Selecting a clipped one-line cell with the mouse is
+// unreliable, and the panel hangs under a draggable header, so a stray selection
+// gesture is worse than useless.
+//
+// THE RULE THAT NEEDS DEFENDING
+// ----------------------------
+// «Copy کردن یک row نباید مقدار row دیگری را تغییر دهد» — each button copies ITS
+// OWN row. The tempting implementation is one shared handler that resolves "the
+// current row" at click time, and it is precisely how a copy button ends up
+// putting a neighbour's value on the clipboard after a re-render. Nothing throws;
+// the user simply pastes the wrong selector.
+//
+// So the assertions below always check WHICH value arrived on the clipboard, for
+// several different rows, including after the list has been re-rendered — never
+// merely that "a copy happened".
+// ════════════════════════════════════════════════════════════════
+describe('inspector panel: every value carries its own Copy action', () => {
+  it('gives every attribute row a copy button', () => {
+    h.start();
+    h.pick(buyLink());
+
+    const all = h.rows();
+    expect(all.length).toBeGreaterThan(3);
+    all.forEach((r) => {
+      expect(r.copy, `row "${r.key}" has no copy button`).toBeTruthy();
+      expect(r.copy.tagName).toBe('BUTTON');
+      expect(r.copy.type).toBe('button');
+    });
+  });
+
+  it('gives every SELECTED ELEMENT entry one too', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+
+    // This is the section that shows values UNCLIPPED, so it is where a user
+    // reading a long CSS selector or XPath is standing when they decide to take
+    // it. A copy action anywhere else would be the wrong place.
+    h.selected().forEach((s) => {
+      expect(() => h.selCopy(s.key), `"${s.key}" has no copy button`).not.toThrow();
+    });
+  });
+
+  it('copies the exact value of the row that was pressed', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.row('href').copy.fire('click');
+
+    expect(h.clipboard).toEqual(['/checkout']);
+  });
+
+  it('copies a DIFFERENT row\'s value without disturbing the first', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.row('href').copy.fire('click');
+    h.row('data-sku').copy.fire('click');
+    h.row('Text').copy.fire('click');
+
+    // Each press yields its own line's value, in order. A shared "current row"
+    // handler would repeat one of them here.
+    expect(h.clipboard).toEqual(['/checkout', 'W-9', 'Buy now']);
+  });
+
+  it('copies the derived CSS Selector and XPath, not just DOM attributes', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.row('CSS Selector').copy.fire('click');
+    h.row('XPath').copy.fire('click');
+    h.row('Tag Name').copy.fire('click');
+
+    // These are the rows that say how a node FINDS the element, and they are
+    // computed rather than read off it — the case a naive `getAttribute(key)`
+    // implementation would return empty for.
+    expect(h.clipboard).toEqual(['#buy', '//*[@id="buy"]', 'a']);
+  });
+
+  it('copies CUSTOM attributes, whatever the site called them', () => {
+    const el = new FakeEl('div', {
+      class: 'product-card',
+      'data-order': '123',
+      'data-product-id': '987',
+      'tracking-id': 'trk-55',
+      'custom-price': '19.99',
+    });
+    h.start();
+    h.pick(el);
+    h.selectAll();
+
+    ['data-order', 'data-product-id', 'tracking-id', 'custom-price'].forEach((k) => {
+      h.row(k).copy.fire('click');
+    });
+
+    // There is no whitelist anywhere in the extraction core, and there must be
+    // none here either: a copy button that only knew a fixed set of keys would
+    // silently do nothing on exactly the attributes people pick elements for.
+    expect(h.clipboard).toEqual(['123', '987', 'trk-55', '19.99']);
+  });
+
+  it('copies the Class row as the class list the user can read', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.row('Class').copy.fire('click');
+
+    // Derived from `classes`, so what is copied is what the row shows — not the
+    // array's toString, and not the raw attribute if the two ever differ.
+    expect(h.clipboard).toEqual(['btn primary']);
+  });
+
+  it('copies the same value from the row and from the readout', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+
+    h.row('XPath').copy.fire('click');
+    h.selCopy('XPath').fire('click');
+
+    // Two renderings of ONE row. If they could disagree, the panel would be
+    // offering two different answers to "what is this element's XPath?".
+    expect(h.clipboard).toEqual(['//*[@id="buy"]', '//*[@id="buy"]']);
+  });
+
+  it('confirms the copy briefly, on the button that was pressed', async () => {
+    h.start();
+    h.pick(buyLink());
+    const btn = h.row('href').copy;
+    const resting = btn.textContent;
+
+    btn.fire('click');
+    // The tick waits for the write to actually resolve — see settle(). Claiming
+    // success before that is the one failure mode the user cannot detect.
+    await h.settle();
+
+    // A local "✓", not a toast: §16 forbids growing the picker, and the question
+    // being answered ("did THAT line copy?") belongs beside that line.
+    expect(btn.textContent).toBe('\u2713');
+    expect(btn.title).toMatch(/copied/i);
+    expect(btn.className).toContain('done');
+    expect(btn.textContent).not.toBe(resting);
+  });
+
+  it('returns to its resting state afterwards', async () => {
+    h.start();
+    h.pick(buyLink());
+    const btn = h.row('href').copy;
+    const resting = btn.textContent;
+
+    btn.fire('click');
+    await h.settle();
+    expect(btn.className).toContain('done');
+    h.flushTimers();
+
+    // The feedback is a moment, not a new state: a button stuck on "✓" would stop
+    // reading as something that can be pressed again.
+    expect(btn.textContent).toBe(resting);
+    expect(btn.className).not.toContain('done');
+    expect(btn.title).toMatch(/copy/i);
+  });
+
+  it('confirms on ONE row only, never on its neighbours', async () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.row('href').copy.fire('click');
+    await h.settle();
+
+    expect(h.row('href').copy.className).toContain('done');
+    // Feedback that appeared on every row would tell the user nothing about which
+    // value they actually took.
+    expect(h.row('data-sku').copy.className).not.toContain('done');
+    expect(h.row('XPath').copy.className).not.toContain('done');
+  });
+
+  it('lets two rows show their own feedback at the same time', async () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.row('href').copy.fire('click');
+    h.row('data-sku').copy.fire('click');
+    await h.settle();
+
+    // Per-row timers, so a second copy does not cancel the first row's
+    // confirmation — and neither one clears the other's early.
+    expect(h.row('href').copy.className).toContain('done');
+    expect(h.row('data-sku').copy.className).toContain('done');
+  });
+
+  it('restarts its own countdown when the same row is copied twice', async () => {
+    h.start();
+    h.pick(buyLink());
+    const btn = h.row('href').copy;
+
+    btn.fire('click');
+    btn.fire('click');
+    await h.settle();
+
+    // Still confirming after the second press: a stacked pair of timers would let
+    // the first one revert the label while the second copy was still fresh.
+    expect(btn.textContent).toBe('\u2713');
+    expect(h.clipboard).toEqual(['/checkout', '/checkout']);
+  });
+
+  it('does not tick or untick the row it sits on', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.rows().filter((r) => r.checkbox.checked).map((r) => r.key);
+
+    h.row('data-sku').copy.fire('click');
+
+    // The row's text is a label whose click toggles DISPLAY. A copy button inside
+    // it — or one that let the click bubble — would change what the panel shows
+    // every time the user took a value.
+    expect(h.rows().filter((r) => r.checkbox.checked).map((r) => r.key)).toEqual(before);
+    expect(h.row('data-sku').checkbox.checked).toBe(false);
+  });
+
+  it('does not change which value is SENT', () => {
+    h.start();
+    h.pick(buyLink());
+    h.arm('href');
+
+    h.row('data-sku').copy.fire('click');
+    h.row('XPath').copy.fire('click');
+    h.confirm();
+
+    // Copying is a read. §21's single outbound value belongs to the radio and to
+    // nothing else — least of all to whichever row was last copied.
+    expect(h.sent[0]!.sendAttribute).toEqual({ name: 'href', value: '/checkout' });
+  });
+
+  it('does not move the panel when pressed', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.pos();
+
+    let stopped = false;
+    (h.row('href').copy.listeners.pointerdown || []).forEach((fn) => fn({
+      button: 0, pointerId: 7, clientX: before.left + 300, clientY: before.top + 200,
+      preventDefault() {}, stopPropagation() { stopped = true; }, target: h.row('href').copy,
+    }));
+    expect(stopped).toBe(true);
+    expect(h.pos()).toEqual(before);
+  });
+
+  it('copies the right value after the list has been re-rendered', () => {
+    h.start();
+    h.pick(buyLink());
+    // A bulk tick rebuilds every row, which is exactly when a shared handler that
+    // resolved "the current row" late would start returning a stale one.
+    h.selectAll();
+    h.clearAll();
+    h.selectAll();
+
+    h.row('data-sku').copy.fire('click');
+
+    expect(h.clipboard).toEqual(['W-9']);
+  });
+
+  it('copies the right value after a NEW element is picked', () => {
+    h.start();
+    h.pick(buyLink());
+    h.row('href').copy.fire('click');
+
+    const other = new FakeEl('img', { id: 'hero', src: '/hero.png', 'data-sku': 'OTHER' });
+    h.pick(other);
+    h.row('data-sku').copy.fire('click');
+
+    // The second copy must be the SECOND element's value. A button holding a
+    // captured VALUE rather than a key would still be offering the first one.
+    expect(h.clipboard).toEqual(['/checkout', 'OTHER']);
+  });
+
+  it('copies the whole value, not the row\'s clipped preview', () => {
+    const long = '/checkout?sku=W-9&utm_source=newsletter&utm_campaign=spring-sale-2026&ref=abcdefghijklmnop';
+    const el = new FakeEl('a', { id: 'buy', href: long });
+    el.innerText = 'Buy';
+    h.start();
+    h.pick(el);
+
+    h.row('href').copy.fire('click');
+
+    // The row is nowrap+ellipsis by design, so what is on screen is a preview.
+    // Copying the preview would be the whole feature failing quietly.
+    expect(h.clipboard).toEqual([long]);
+  });
+
+  it('copies a value the page filled with markup as literal text', () => {
+    const hostile = new FakeEl('div', { id: 'q', 'data-x': '<img src=x onerror=alert(1)>' });
+    h.start();
+    h.pick(hostile);
+    h.selectAll();
+
+    h.row('data-x').copy.fire('click');
+
+    // Verbatim: not parsed, not stripped, not escaped. The clipboard gets what
+    // the attribute holds.
+    expect(h.clipboard).toEqual(['<img src=x onerror=alert(1)>']);
+  });
+
+  it('refuses gracefully on a row with no value to copy', () => {
+    // A boolean attribute is real and worth SEEING (`<ol reversed>` is
+    // `reversed=""`), but there is nothing to put on a clipboard.
+    const list = new FakeEl('ol', { reversed: '', start: '3' });
+    h.start();
+    h.pick(list);
+    h.selectAll();
+
+    const btn = h.row('reversed').copy;
+    btn.fire('click');
+
+    // Says so on the button rather than silently doing nothing, which would read
+    // as the control being broken — and never copies the "(empty)" placeholder the
+    // cell is displaying.
+    expect(h.clipboard).toEqual([]);
+    expect(btn.title).toMatch(/no value/i);
+  });
+
+  it('falls back to the legacy path when the modern clipboard is refused', async () => {
+    // The panel runs in an arbitrary page: on http://, or when the document does
+    // not have focus, navigator.clipboard rejects. That is an ordinary condition,
+    // not an edge case, and the value still has to reach the clipboard.
+    h.failClipboard(true);
+    h.start();
+    h.pick(buyLink());
+    const btn = h.row('href').copy;
+
+    btn.fire('click');
+    await h.settle();
+
+    expect(h.clipboard).toEqual([]);
+    expect(h.legacyCopies).toEqual(['/checkout']);
+    // The fallback is not a lesser path: it confirms exactly as the modern one
+    // does, because from the user's side the value did reach the clipboard.
+    expect(btn.textContent).toBe('\u2713');
+  });
+
+  it('leaves no scratch nodes behind in the user\'s page', () => {
+    h.failClipboard(true);
+    h.start();
+    h.pick(buyLink());
+
+    h.row('href').copy.fire('click');
+    h.row('data-sku').copy.fire('click');
+
+    // The fallback needs a real, selectable <textarea> in the document. Leaving
+    // one behind would be litter in a page we do not own.
+    expect(h.strayNodes()).toEqual([]);
+  });
+
+  it('says so when the value could not be copied at all', async () => {
+    h.failClipboard(true);
+    h.failLegacy(true);
+    h.start();
+    h.pick(buyLink());
+    const btn = h.row('href').copy;
+
+    btn.fire('click');
+    await h.settle();
+
+    // A silent failure is the worst outcome: the user pastes whatever was on the
+    // clipboard before and does not find out until it is somewhere else.
+    expect(btn.textContent).not.toBe('\u2713');
+    expect(btn.title).toMatch(/failed/i);
+  });
+
+  it('is styled as part of the panel, not bolted onto it', () => {
+    h.start();
+    h.pick(buyLink());
+    const css = h.panelCss();
+
+    // Same charcoal/subtle-border/orange-accent language as everything else: at
+    // rest it is muted and borderless (the values are the content, and twenty
+    // resting accents would flatten the one accent that means something), and it
+    // earns the accent on hover and focus.
+    const rule = /\.cp\{[^}]*\}/.exec(css);
+    expect(rule, '.cp rule must exist in the picker stylesheet').not.toBeNull();
+    expect(rule![0]).toContain('cursor:pointer');
+    expect(rule![0]).toContain('border:1px solid transparent');
+    expect(css).toMatch(/\.cp:hover\{[^}]*#ff6600/);
+    // Keyboard focus has to be visible: this control repeats down a list and is
+    // reachable by Tab.
+    expect(css).toContain('.cp:focus-visible');
+    // The confirmation uses the design's --green, the same success colour the
+    // footer status line uses, so "it worked" looks the same everywhere.
+    expect(css).toMatch(/\.cp\.done\{[^}]*#00c853/);
+  });
+
+  it('never steals width from the value it belongs to', () => {
+    h.start();
+    h.pick(buyLink());
+    const rule = /\.cp\{[^}]*\}/.exec(h.panelCss())!;
+
+    // `flex:0 0 auto` in both directions: the button must not shrink under a long
+    // value, and must not grow at its expense either. The row's job is to show
+    // the value.
+    expect(rule[0]).toContain('flex:0 0 auto');
+  });
+
+  it('names each button for its row, for anyone not seeing the glyph', () => {
+    h.start();
+    h.pick(buyLink());
+
+    // A column of identical glyphs is just "button, button, button" to a screen
+    // reader without this.
+    expect(h.row('href').copy.getAttribute('aria-label')).toBe('Copy href');
+    // Named from the row's KEY, not its visible label: the key is what the value
+    // is fetched by, so a mismatch here would be the first sign a button and its
+    // value had drifted apart. The rows are addressed by the label the user reads
+    // ("CSS Selector"), while the button announces the key it copies ("css").
+    expect(h.row('CSS Selector').copy.getAttribute('aria-label')).toBe('Copy css');
+    expect(h.row('Tag Name').copy.getAttribute('aria-label')).toBe('Copy tag');
+  });
+
+  it('explains the copy mark in the panel\'s legend', () => {
+    h.start();
+    h.pick(buyLink());
+    const host = h.wrap();
+    const hint = host.childNodes.filter((c) => c.className === 'hint')[0]!;
+
+    // The panel already explains ☑ and ◉ there. An 18px glyph repeated down the
+    // list deserves the same one-word introduction rather than twenty tooltips
+    // the user has to hover to discover.
+    expect(hint.textContent).toMatch(/copy/i);
   });
 });

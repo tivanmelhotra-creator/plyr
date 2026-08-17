@@ -102,6 +102,20 @@ export function chromeViewHtml(): string {
   }
   #retry:hover { background: #3d3d47; }
   #retry[hidden] { display: none; }
+  /* ── The one-click fix ─────────────────────────────────────────────────
+     Visually the PRIMARY action whenever it appears, because when it appears
+     it is the only thing that will help: "Try again" against a browser that
+     is switched off by configuration just reproduces the same failure, which
+     is what the reporter experienced. Blue rather than grey so the eye goes
+     to the button that changes something. */
+  #fixbtn {
+    font: inherit; color: #fff; background: #3d6ae0;
+    border: 1px solid #4d7af0; border-radius: 6px;
+    padding: 7px 16px; cursor: pointer; margin-right: 8px;
+  }
+  #fixbtn:hover { background: #4d7af0; }
+  #fixbtn:disabled { opacity: .6; cursor: default; }
+  #fixbtn[hidden] { display: none; }
 
   /* ── The file bar ──────────────────────────────────────────────────────
      Downloads land on the SERVER's disk and uploads have to get onto it, so
@@ -219,6 +233,12 @@ export function chromeViewHtml(): string {
 <div id="note">
   <div class="spin" id="spin"></div>
   <div id="msg">Starting Chromium&hellip;</div>
+  <!-- The button the reported error should have been.
+       «اگر مثل الان متغییری باید تغییر کنه با زدن اون دکمه تغییر کنه»
+       It is hidden until a failure arrives carrying a 'fixable' remedy, and
+       its label and endpoint come from that remedy, so the server decides what
+       can be fixed and this page never has to guess. -->
+  <button id="fixbtn" type="button" hidden></button>
   <button id="retry" type="button" hidden>Try again</button>
 </div>
 <script type="module">
@@ -271,6 +291,7 @@ const note  = document.getElementById('note');
 const msg   = document.getElementById('msg');
 const spin  = document.getElementById('spin');
 const retry = document.getElementById('retry');
+const fixbtn = document.getElementById('fixbtn');
 // Declared up here with the other elements, not next to the file-bar code that
 // uses it, because connect() runs during the module body and would otherwise
 // read it inside its temporal dead zone.
@@ -290,12 +311,41 @@ const UP_IDLE = '\u2191 Send a file';
 
 const qs = new URLSearchParams(location.search);
 
-/** Show a status message. 'busy' decides spinner vs. retry button. */
-function show(text, busy) {
+/**
+ * Show a status message. 'busy' decides spinner vs. retry button.
+ *
+ * 'fixable' is the third state this page used to lack. Without it, a failure the
+ * SERVER can repair looked exactly like one it cannot: the same grey "Try
+ * again", which for 'remote_browser_disabled' simply re-ran a start that was
+ * always going to be refused. Passing the remedy through means the page offers
+ * the action that changes the situation, and the label comes from the server so
+ * this file never has to know what causes exist.
+ */
+function show(text, busy, fixable) {
   msg.textContent = text;
   spin.hidden  = !busy;
   retry.hidden = busy;
   note.hidden  = false;
+  showFix(busy ? null : (fixable || null));
+}
+
+/**
+ * Offer, or withdraw, the one-click fix.
+ *
+ * Held in a module-level variable rather than on the element, because the click
+ * handler is registered ONCE (a handler added per failure would fire N times
+ * after N failures — and each firing is a POST that installs software).
+ */
+let pendingFix = null;
+
+function showFix(fixable) {
+  pendingFix = fixable && fixable.endpoint ? fixable : null;
+  if (!pendingFix) { fixbtn.hidden = true; return; }
+  // The label is the server's, and only its own strings are ever used: this is
+  // textContent, so a hostile value cannot become markup.
+  fixbtn.textContent = pendingFix.label || 'Fix this';
+  fixbtn.disabled = false;
+  fixbtn.hidden = false;
 }
 
 // Same origin, same port: the app proxies the VNC stream at /desktop/websockify
@@ -411,8 +461,62 @@ async function startThenConnect(attempt) {
     return;
   }
 
-  show('Could not start the remote browser: ' + explainStartFailure(r.status, j), false);
+  // The third argument is what turns this dead end into a recoverable one. The
+  // reported message was:
+  //
+  //   "Could not start the remote browser: remote_browser_disabled — Remote
+  //    Chrome is disabled. Set REAL_CHROME_ENABLED=true and restart the server."
+  //
+  // and the only control on screen was "Try again", which could not possibly
+  // help: the start was refused by configuration, so retrying re-refused it.
+  show('Could not start the remote browser: ' + explainStartFailure(r.status, j),
+    false, j && j.fixable);
 }
+
+/**
+ * Apply the server's remedy, then carry on with what the user actually wanted.
+ *
+ * The continuation is the point. Someone who presses "Turn on the Remote
+ * Browser" did not want a setting changed for its own sake — they wanted the
+ * browser. Stopping at "enabled" would leave them to find Try again themselves,
+ * which is a smaller version of the same defect.
+ */
+fixbtn.addEventListener('click', async () => {
+  if (!pendingFix) return;
+  const fix = pendingFix;
+  // Disabled for the duration: these endpoints install software or launch a
+  // browser, and a double-click must not start two of either.
+  fixbtn.disabled = true;
+  show(fix.label ? fix.label + '\\u2026' : 'Fixing\\u2026', true);
+
+  let r, j;
+  try {
+    r = await fetch(fix.endpoint, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: '{}',
+      credentials: 'same-origin',
+    });
+    j = await r.json().catch(() => null);
+  } catch (e) {
+    show('Could not reach the server to apply the fix: '
+      + ((e && e.message) || 'network error'), false, fix);
+    return;
+  }
+
+  // A fix that reports failure may still name a DIFFERENT remedy — enabling the
+  // browser can succeed and then reveal that there is no Chromium binary. Using
+  // the new remedy rather than re-offering the old one is what lets the operator
+  // walk out of a chain of causes one button at a time.
+  if (!(r.ok && j && j.success)) {
+    show('That did not work: ' + explainStartFailure(r.status, j), false,
+      (j && j.fixable) || null);
+    return;
+  }
+
+  // It worked. Continue to the browser the user was asking for.
+  void startThenConnect();
+});
 
 function connect() {
   show('Starting Chromium\\u2026', true);

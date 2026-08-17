@@ -1773,9 +1773,57 @@
     var out = document.createElement('span');
     out.className = 'ndv-connect-out';
 
+    // The poll that makes this box GO AWAY. See startWatch().
+    var watch = null;
+    function stopWatch() {
+      if (watch) { clearInterval(watch); watch = null; }
+    }
+
+    /**
+     * One copyable value: a label, the value, and a Copy button that confirms.
+     *
+     * Both of the things the operator has to move into the extension — the code
+     * and the Base URL — are rendered through this, so neither can end up with
+     * an affordance the other lacks. `writeClipboard` is the editor's existing
+     * helper, which already falls back to execCommand on a non-secure origin;
+     * that fallback matters most here, because a plain-http LAN address is
+     * exactly the situation in which someone is copying a Base URL.
+     */
+    function valueChip(labelText, value, cls) {
+      var chip = document.createElement('span');
+      chip.className = 'ndv-connect-chip';
+
+      if (labelText) {
+        var lab = document.createElement('span');
+        lab.className = 'ndv-connect-label';
+        lab.textContent = labelText;
+        chip.appendChild(lab);
+      }
+
+      // The value must be selectable — users read it across to another window,
+      // and a half-selected code is a silent pairing failure.
+      var v = document.createElement('code');
+      v.className = 'ndv-connect-code' + (cls ? ' ' + cls : '');
+      v.textContent = value;
+      chip.appendChild(v);
+
+      var copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'btn ghost xs ndv-connect-copy';
+      copy.textContent = t('insp.copy');
+      copy.title = t('insp.copy');
+      copy.setAttribute('aria-label', t('insp.copy') + ' ' + labelText);
+      copy.addEventListener('click', function () {
+        writeClipboard(value);
+      });
+      chip.appendChild(copy);
+
+      return chip;
+    }
+
     // Rendered as text, never innerHTML: the code comes from the server, and
     // this is the habit that keeps it impossible for any value to become markup.
-    function show(msg, kind, code) {
+    function show(msg, kind, offer) {
       out.className = 'ndv-connect-out' + (kind ? ' ' + kind : '');
       out.textContent = '';
       if (msg) {
@@ -1784,14 +1832,54 @@
         label.textContent = msg;
         out.appendChild(label);
       }
-      if (code) {
-        // The code must be selectable — users read it across to the extension,
-        // and some will paste rather than retype.
-        var el = document.createElement('code');
-        el.className = 'ndv-connect-code';
-        el.textContent = code;
-        out.appendChild(el);
+      if (offer && (offer.display || offer.code)) {
+        out.appendChild(valueChip(
+          t('tgt.authCode'), offer.display || offer.code, ''
+        ));
       }
+      // A code with no address is not usable. Shown only when the server sent
+      // one — an address invented here would be presented with the same
+      // confidence as a configured one and be wrong more often.
+      if (offer && offer.baseUrl) {
+        out.appendChild(valueChip(t('tgt.baseUrl'), offer.baseUrl, 'ndv-connect-base'));
+      }
+    }
+
+    /**
+     * Watch for the extension accepting the code, then clear this box.
+     *
+     *   «توقع داشتم وقتی ارتباط برقرار میشه باکسی که کد اتورایز و بیس یو ار ال
+     *    رو نمایش میده خارج بشه و انتظار یک الرت موفقیت بودم ولی هیچ اتفاقی
+     *    نیوفتاد»
+     *
+     * And nothing did: this row printed a code and then never asked about it
+     * again. The dashboard cannot observe the extension directly — they are
+     * different browsers — so the server, the only party that sees both sides,
+     * is polled. Exactly the mechanism the LOCAL/REMOTE chooser already uses;
+     * this row simply never had it.
+     *
+     * Stops on success, and stops itself if the field is closed underneath it,
+     * so a timer cannot outlive the node it belongs to.
+     */
+    function startWatch(ic, targetFieldId) {
+      stopWatch();
+      if (typeof ic.targetingStatus !== 'function') return;
+
+      watch = setInterval(function () {
+        // The row was re-rendered or the node closed: the id this timer holds is
+        // no longer the live destination, so keeping it would poll forever.
+        if (myTargetIdFor(node.id, f.k) !== targetFieldId) { stopWatch(); return; }
+
+        ic.targetingStatus(targetFieldId).then(function (s) {
+          if (!s || !s.paired) return;
+          stopWatch();
+          // The box goes away, because its whole content — a one-time code and
+          // an address to type it into — is now spent. Leaving it up invites
+          // the operator to type a consumed code a second time.
+          show('', '', null);
+          if (U() && U().toast) U().toast(t('insp.pairedNow'), 'ok');
+        }).catch(function () { /* a failed poll is retried on the next tick */ });
+      }, 1000);
     }
 
     btn.addEventListener('click', function () {
@@ -1801,21 +1889,23 @@
       // stale/forged delivery the random suffix exists to prevent.
       var targetFieldId = myTargetIdFor(node.id, f.k);
       if (!ic || typeof ic.authorizeTarget !== 'function' || !targetFieldId) {
-        show(t('insp.err.TARGET_FIELD_NOT_FOUND'), 'err', '');
+        show(t('insp.err.TARGET_FIELD_NOT_FOUND'), 'err', null);
         return;
       }
 
       btn.disabled = true;
-      show(t('common.loading') || '…', '', '');
+      stopWatch();
+      show(t('common.loading') || '…', '', null);
       ic.authorizeTarget(targetFieldId).then(function (offer) {
         btn.disabled = false;
-        if (!offer) { show(t('insp.codeFailed'), 'err', ''); return; }
+        if (!offer) { show(t('insp.codeFailed'), 'err', null); return; }
         // Name the lifetime: a code with no stated expiry looks broken rather
         // than expired when it later stops working.
-        show(t('insp.codeReady') + ' · ' + t('insp.codeExpires'), 'ok', offer.display);
+        show(t('insp.codeReady') + ' · ' + t('insp.codeExpires'), 'ok', offer);
+        startWatch(ic, targetFieldId);
       }).catch(function () {
         btn.disabled = false;
-        show(t('insp.codeFailed'), 'err', '');
+        show(t('insp.codeFailed'), 'err', null);
       });
     });
 
@@ -2840,6 +2930,39 @@
     return steps[0] || {};
   }
 
+  /**
+   * The off-screen-textarea copy, for every case the async API cannot serve.
+   *
+   * Pulled out of writeClipboard so it can be reached from BOTH failure paths.
+   * The API being absent (a plain-http origin) used to be the only one handled,
+   * but the commoner failure by far is `writeText()` REJECTING because the
+   * document is not focused — clicking a button in a dialog the browser has not
+   * yet given focus to. That path used to report failure without ever trying
+   * this, so a Base URL on a LAN address simply could not be copied.
+   *
+   * The node is removed in a `finally`: cleanup that only happens on success
+   * leaks a focus-stealing textarea into <body> exactly when things went wrong.
+   */
+  function legacyClipboardWrite(text) {
+    try {
+      if (!document.body || typeof document.execCommand !== 'function') return false;
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'readonly');
+      ta.setAttribute('aria-hidden', 'true');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      try {
+        ta.select();
+        return !!document.execCommand('copy');
+      } finally {
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+      }
+    } catch (e) { return false; }
+  }
+
   /** Copy `text` to the clipboard, with a fallback for non-secure contexts. */
   function writeClipboard(text) {
     var done = function (ok) {
@@ -2847,25 +2970,19 @@
     };
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () { done(true); },
-          function () { done(false); });
+        navigator.clipboard.writeText(text).then(
+          function () { done(true); },
+          // A rejection is not the end of the road: an unfocused document is the
+          // routine case, and document.execCommand still works there.
+          function () { done(legacyClipboardWrite(text)); }
+        );
         return true;
       }
     } catch (e) { /* fall through to the textarea path */ }
     // Fallback for non-secure contexts, where navigator.clipboard is absent.
-    try {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', 'readonly');
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = document.execCommand && document.execCommand('copy');
-      document.body.removeChild(ta);
-      done(!!ok);
-      return !!ok;
-    } catch (e2) { done(false); return false; }
+    var ok = legacyClipboardWrite(text);
+    done(ok);
+    return ok;
   }
 
   /** Copy ONE node's serialized step to the clipboard as JSON (Advanced ▸). */
