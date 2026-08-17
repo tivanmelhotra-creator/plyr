@@ -51,6 +51,22 @@ class El {
   childNodes: El[] = [];
   parentNode: El | null = null;
   listeners: Record<string, Array<(e: unknown) => void>> = {};
+  /**
+   * Enough of a textarea for the execCommand copy fallback.
+   *
+   * `style` is a plain bag because the fallback only ever writes to it (moving
+   * the node off-screen), and `focus`/`select` are recorded rather than ignored:
+   * an unselected textarea copies nothing, so "was it selected?" is a real
+   * question about whether the fallback would have worked in a browser.
+   */
+  style: Record<string, string> = {};
+  value = '';
+  selected = false;
+  focused = false;
+  focus() { this.focused = true; }
+  select() { this.selected = true; }
+  /** Any timer the copy button parked on itself, so a test can inspect it. */
+  copyTimer?: number;
 
   constructor(tag = 'div') { this.tagName = tag.toUpperCase(); }
 
@@ -122,6 +138,19 @@ type Harness = {
   backdrop(): El | null;
   panel(): El | null;
   docListeners: Record<string, Array<(e: unknown) => void>>;
+  /**
+   * Everything that reached the clipboard, in order, tagged with the path taken.
+   *
+   * The path matters: 'api' is navigator.clipboard, 'exec' is the
+   * execCommand fallback. A copy button that silently takes neither is the
+   * defect these tests exist to catch, and only recording both can tell
+   * "fell back" apart from "did nothing".
+   */
+  clipboard: Array<{ text: string; via: 'api' | 'exec' }>;
+  /** Nodes appended to <body> by the execCommand path and not cleaned up. */
+  strayNodes(): El[];
+  /** Let a copy button's promise chain resolve before asserting on its label. */
+  settle(): Promise<void>;
 };
 
 type Responses = {
@@ -129,6 +158,12 @@ type Responses = {
   begin?: unknown | ((env: string) => unknown);
   status?: unknown[];      // consumed one per poll
   unpair?: boolean;
+  /** Make navigator.clipboard.writeText reject, as an insecure origin does. */
+  clipboardFails?: boolean;
+  /** Remove navigator.clipboard entirely, as a very old browser does. */
+  noClipboardApi?: boolean;
+  /** Make the execCommand fallback fail too — nothing can be copied. */
+  execFails?: boolean;
 };
 
 function boot(res: Responses): Harness {
@@ -142,6 +177,7 @@ function boot(res: Responses): Harness {
   let timerId = 1;
   const statusQueue = (res.status || []).slice();
   const docListeners: Record<string, Array<(e: unknown) => void>> = {};
+  const clipboard: Harness['clipboard'] = [];
 
   const document = {
     createElement: (tag: string) => new El(tag),
@@ -153,6 +189,20 @@ function boot(res: Responses): Harness {
       const l = docListeners[ev] || [];
       const i = l.indexOf(fn);
       if (i >= 0) l.splice(i, 1);
+    },
+    /**
+     * The legacy copy path. Reads from whatever textarea is currently SELECTED,
+     * which is how the real thing behaves — so a fallback that forgot to call
+     * select() records nothing here and the test fails, exactly as the browser
+     * would have.
+     */
+    execCommand(cmd: string) {
+      if (cmd !== 'copy') return false;
+      if (res.execFails) return false;
+      const ta = body.childNodes.filter((c) => c.selected).pop();
+      if (!ta) return false;
+      clipboard.push({ text: ta.value, via: 'exec' });
+      return true;
     },
   };
 
@@ -200,10 +250,22 @@ function boot(res: Responses): Harness {
     },
   };
 
+  // The modern clipboard, with the two ways it actually fails in the field:
+  // absent (very old browser) and rejecting (insecure origin, or a document
+  // without focus). Both are ordinary on a plain-http LAN address, which is
+  // exactly where an operator copies a Base URL from.
+  const clipboardApi = res.noClipboardApi ? undefined : {
+    writeText: (text: string) => {
+      if (res.clipboardFails) return Promise.reject(new Error('not allowed'));
+      clipboard.push({ text: String(text), via: 'api' as const });
+      return Promise.resolve();
+    },
+  };
+
   const sandbox: Record<string, unknown> = {
     window: win,
     document,
-    navigator: { clipboard: { writeText: () => Promise.resolve() } },
+    navigator: { clipboard: clipboardApi },
     setInterval: (fn: () => void, ms: number) => {
       const id = timerId++;
       timers.push({ fn, ms, interval: true, id });
@@ -250,6 +312,17 @@ function boot(res: Responses): Harness {
     panel() {
       const b = h.backdrop();
       return b ? b.find('tgt-panel')[0] || null : null;
+    },
+    clipboard,
+    // Anything the fallback left behind. A textarea that survives the copy would
+    // be a growing pile of hidden nodes and, worse, one that a later copy could
+    // read from instead of the intended value.
+    strayNodes: () => body.childNodes.filter((c) => c.tagName === 'TEXTAREA'),
+    // Drained rather than counted: the copy path is
+    // writeText -> then -> render, and a fixed number of awaits would depend on
+    // the length of that chain, which is an implementation detail.
+    async settle() {
+      for (let i = 0; i < 8; i += 1) await settleOnce();
     },
   };
   return h;
@@ -542,6 +615,208 @@ describe('§3 — LOCAL, first time for this field: a code is issued', () => {
     // A timer outliving its dialog would arm a field the operator cancelled.
     expect(h.calls.filter((c) => c.fn === 'targetingStatus').length).toBe(0);
     expect(h.armed).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOTH values, each with a Copy that really copies.
+//
+//   «Authorization UI باید هم AUTHORIZATION CODE و هم BASE URL را نمایش دهد،
+//    هرکدام با یک Copy واقعی.»
+//
+// "Real" is the operative word, and it is why these tests watch the CLIPBOARD
+// rather than the existence of a button. The previous code's Copy called
+// navigator.clipboard.writeText inside a try/catch and rendered nothing at all:
+// on an insecure origin — a plain-http LAN address, which is precisely where an
+// operator reads a Base URL from — the promise rejected, the catch swallowed it,
+// and the button looked exactly like a button that had worked. The operator then
+// pasted whatever was on the clipboard before into the extension, and the
+// pairing failed for a reason nowhere on screen.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('§8 — the code and the Base URL are both copyable', () => {
+  const OFFER = {
+    success: true, environment: 'local', step: 'authorize', target: TARGET,
+    paired: false, openRemoteBrowser: false,
+    code: '48219930', display: '4821-9930',
+    expiresAt: Date.now() + 300000, expiresInMs: 300000,
+    baseUrl: 'https://panel.example.com', baseUrlSource: 'configured',
+  };
+
+  /** Open the code screen with a given clipboard environment. */
+  async function codeScreen(over: Partial<Responses> = {}) {
+    const h = boot({ options: OPTIONS_UNPAIRED, begin: OFFER, ...over });
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+    return h;
+  }
+
+  const copyButtons = (h: Harness) => h.panel()!.find('tgt-btn')
+    .filter((b) => b.className.indexOf('tgt-code-copy') >= 0
+      || b.className.indexOf('tgt-base-copy') >= 0);
+  const codeCopy = (h: Harness) => h.panel()!.find('tgt-code-copy')[0];
+  const baseCopy = (h: Harness) => h.panel()!.find('tgt-base-copy')[0];
+
+  it('shows both values on the same screen', async () => {
+    const h = await codeScreen();
+    expect(h.panel()!.find('tgt-code')[0].text()).toBe('4821-9930');
+    expect(h.panel()!.find('tgt-base-url')[0].text()).toBe('https://panel.example.com');
+  });
+
+  it('gives each value its OWN Copy button', async () => {
+    const h = await codeScreen();
+    // Two buttons, not one that copies both: they go into two different fields
+    // in the extension, so a combined copy would only have to be pulled apart
+    // again by hand.
+    expect(copyButtons(h).length).toBe(2);
+    expect(codeCopy(h)).toBeTruthy();
+    expect(baseCopy(h)).toBeTruthy();
+  });
+
+  it('labels the code, now that it is not the only value on screen', async () => {
+    const h = await codeScreen();
+    const labels = h.panel()!.find('tgt-base-label').map((n) => n.text());
+    expect(labels).toContain('tgt.authCode');
+    expect(labels).toContain('tgt.baseUrl');
+  });
+
+  it('copies the RAW code, not the grouped display form', async () => {
+    const h = await codeScreen();
+    codeCopy(h).fire('click');
+    await h.settle();
+    // The separators are cosmetic and the server normalises them away; pasting
+    // them back is one more thing that can go wrong.
+    expect(h.clipboard).toEqual([{ text: '48219930', via: 'api' }]);
+  });
+
+  it('copies the Base URL exactly as advertised', async () => {
+    const h = await codeScreen();
+    baseCopy(h).fire('click');
+    await h.settle();
+    expect(h.clipboard).toEqual([{ text: 'https://panel.example.com', via: 'api' }]);
+  });
+
+  it('confirms ON the button, so a click is distinguishable from a no-op', async () => {
+    const h = await codeScreen();
+    const b = codeCopy(h);
+    expect(b.text()).toBe('insp.copy');
+    b.fire('click');
+    await h.settle();
+    expect(b.text()).toBe('tgt.copied');
+  });
+
+  it('confirms only AFTER the write resolved, never before', async () => {
+    const h = await codeScreen();
+    const b = codeCopy(h);
+    b.fire('click');
+    // Not settled yet: a "Copied" here would be a claim the operator only
+    // discovers to be false when they paste.
+    expect(b.text()).toBe('insp.copy');
+    await h.settle();
+    expect(b.text()).toBe('tgt.copied');
+  });
+
+  it('falls back to execCommand when the clipboard API rejects', async () => {
+    // An insecure origin, or a document without focus. Both ordinary here.
+    const h = await codeScreen({ clipboardFails: true });
+    baseCopy(h).fire('click');
+    await h.settle();
+    expect(h.clipboard).toEqual([{ text: 'https://panel.example.com', via: 'exec' }]);
+    expect(baseCopy(h).text()).toBe('tgt.copied');
+  });
+
+  it('falls back when the clipboard API is missing entirely', async () => {
+    const h = await codeScreen({ noClipboardApi: true });
+    codeCopy(h).fire('click');
+    await h.settle();
+    expect(h.clipboard).toEqual([{ text: '48219930', via: 'exec' }]);
+  });
+
+  it('leaves no textarea behind after the fallback', async () => {
+    const h = await codeScreen({ clipboardFails: true });
+    codeCopy(h).fire('click');
+    await h.settle();
+    // A survivor would be a hidden node a later copy could read from instead of
+    // the intended value.
+    expect(h.strayNodes()).toEqual([]);
+  });
+
+  it('says so, and how to recover, when nothing can be copied', async () => {
+    const h = await codeScreen({ clipboardFails: true, execFails: true });
+    const b = codeCopy(h);
+    b.fire('click');
+    await h.settle();
+    expect(h.clipboard).toEqual([]);
+    // Silence here is the worst outcome: the operator pastes the previous
+    // clipboard contents and the pairing fails for an invisible reason.
+    expect(b.text()).toBe('tgt.copyManual');
+  });
+
+  it('keeps the failure visible longer than a success', async () => {
+    const ok = await codeScreen();
+    codeCopy(ok).fire('click');
+    await ok.settle();
+    const okMs = ok.timers.filter((x) => !x.interval).map((x) => x.ms).pop();
+
+    const bad = await codeScreen({ clipboardFails: true, execFails: true });
+    codeCopy(bad).fire('click');
+    await bad.settle();
+    const badMs = bad.timers.filter((x) => !x.interval).map((x) => x.ms).pop();
+
+    // "Copied" is a glance; an instruction to press Ctrl+C has to be read.
+    expect(badMs!).toBeGreaterThan(okMs!);
+  });
+
+  it('still shows the code screen when the server sent no Base URL', async () => {
+    // An older server. The address is omitted rather than invented — a made-up
+    // Base URL presented this confidently is worse than none.
+    const h = boot({
+      options: OPTIONS_UNPAIRED,
+      begin: { ...OFFER, baseUrl: undefined, baseUrlSource: undefined },
+    });
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+    expect(h.panel()!.find('tgt-code')[0].text()).toBe('4821-9930');
+    expect(h.panel()!.find('tgt-base-url').length).toBe(0);
+    expect(copyButtons(h).length).toBe(1);
+  });
+
+  it('names where the address came from, so a guess is not read as a fact', async () => {
+    const h = await codeScreen();
+    expect(h.panel()!.find('tgt-base-src')[0].text()).toBe('tgt.baseConfigured');
+
+    const detected = boot({
+      options: OPTIONS_UNPAIRED,
+      begin: { ...OFFER, baseUrl: 'http://192.168.1.50:3000', baseUrlSource: 'detected' },
+    });
+    await openChooser(detected);
+    card(detected, 'local').fire('click');
+    await settle();
+    expect(detected.panel()!.find('tgt-base-src')[0].text()).toBe('tgt.baseDetected');
+  });
+
+  it('the box disappears and success is announced once the code is accepted', async () => {
+    const h = boot({
+      options: OPTIONS_UNPAIRED,
+      begin: OFFER,
+      status: [{ success: true, paired: true, target: TARGET }],
+    });
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+    // Both values are on screen while the pairing is pending…
+    expect(h.panel()!.find('tgt-code').length).toBe(1);
+    expect(h.panel()!.find('tgt-base-url').length).toBe(1);
+
+    await h.tick();
+    await h.flushTimeouts();
+
+    // …and gone once it lands, with a toast rather than a silent close. A
+    // one-time code left on screen invites the operator to type it again.
+    expect(h.flow.isOpen()).toBe(false);
+    expect(h.backdrop()).toBeNull();
+    expect(h.toasts).toContain('tgt.readyLocal');
   });
 });
 
