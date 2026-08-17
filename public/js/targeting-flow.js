@@ -170,6 +170,55 @@
     return foot;
   }
 
+  /**
+   * The Base URL, beside the code, with its own Copy button.
+   *
+   * Its own button rather than one that copies both: they go into two different
+   * fields in the extension, so a combined copy would only have to be pulled
+   * apart again by hand. The address is rendered LTR and `user-select:all` for
+   * the same reason as the code — it is retyped into another application, and a
+   * bidi-reordered URL is a URL that gets mistyped in an RTL page.
+   *
+   * `source` is shown because "detected" and "configured" do not deserve equal
+   * confidence. A detected LAN address is a good guess that the operator may
+   * need to correct; saying so is what lets them realise they should set
+   * PUBLIC_DOMAIN instead of concluding the product is broken.
+   */
+  function baseUrlRow(baseUrl, source) {
+    var wrap = el('div', 'tgt-base');
+
+    var head = el('div', 'tgt-base-head');
+    head.appendChild(el('span', 'tgt-base-label', t('tgt.baseUrl')));
+    var hintKey = source === 'configured' ? 'tgt.baseConfigured'
+      : source === 'request' ? 'tgt.baseRequest'
+        : source === 'detected' ? 'tgt.baseDetected'
+          : source === 'loopback' ? 'tgt.baseLoopback' : '';
+    if (hintKey) {
+      head.appendChild(el('span', 'tgt-base-src' + (source === 'configured' ? ' is-ok' : ''), t(hintKey)));
+    }
+    wrap.appendChild(head);
+
+    var line = el('div', 'tgt-base-line');
+    // textContent, never innerHTML: this string is assembled from a Host header.
+    var value = el('code', 'tgt-base-url', baseUrl);
+    line.appendChild(value);
+
+    var copy = button(t('insp.copy'), 'is-quiet tgt-base-copy', function () {
+      try {
+        if (navigator.clipboard) navigator.clipboard.writeText(baseUrl);
+      } catch (e) { /* it is on screen; copying is a convenience */ }
+      // Confirm the copy on the button itself. Without it a click on a
+      // clipboard button is indistinguishable from a click that did nothing.
+      var was = copy.textContent;
+      copy.textContent = t('tgt.copied');
+      setTimeout(function () { copy.textContent = was; }, 1200);
+    });
+    line.appendChild(copy);
+    wrap.appendChild(line);
+
+    return wrap;
+  }
+
   // ---------------------------------------------------------------------------
   // Step 1 — the chooser
   // ---------------------------------------------------------------------------
@@ -272,6 +321,21 @@
     var code = el('div', 'tgt-code', res.display || res.code || '');
     panel.appendChild(code);
     panel.appendChild(el('div', 'tgt-expires', t('insp.codeExpires')));
+
+    // ── The other half of the pairing ────────────────────────────────────────
+    // A code alone is not usable: the extension needs an address to send it to,
+    // and until now the operator had to work that out themselves. On a laptop
+    // the guess is localhost:3000 and usually right; behind Cloudflare, on a
+    // VPS or in a Codespace it is not, and the result is an extension that
+    // cannot connect while this dialog insists a valid code is waiting.
+    //
+    // The server sends it because only the server knows its configured domain
+    // and listening port. If it sends nothing (an older server), this block is
+    // skipped entirely rather than inventing an address here — a made-up Base
+    // URL presented this confidently is worse than none.
+    if (res.baseUrl) {
+      panel.appendChild(baseUrlRow(res.baseUrl, res.baseUrlSource));
+    }
 
     var status = el('div', 'tgt-status', t('tgt.waiting'));
     panel.appendChild(status);

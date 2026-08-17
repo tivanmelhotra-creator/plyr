@@ -37,6 +37,7 @@ import {
   type BrowserModeName,
 } from '../core/BrowserMode';
 import { localBridges, agentConnectPath, defaultAgentCdpPort } from '../core/LocalBridge';
+import { resolveBaseUrl, requestHints } from '../core/PublicBaseUrl';
 import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
 import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
@@ -250,6 +251,31 @@ const ENVIRONMENT_MESSAGES: Record<string, string> = {
   local_unavailable:
     'No local browser is connected. Install the Inspector extension and start your local browser, then try again.',
 };
+
+/**
+ * The address to put beside an Authorization Code.
+ *
+ * A code with no address is not usable: the operator has to type BOTH into the
+ * extension, and previously only the code was shown. Every route that issues a
+ * code goes through here, so the two issue sites cannot drift into advertising
+ * different addresses — which would be worse than showing nothing, because the
+ * operator would have no way to tell which one to believe.
+ *
+ * The request is passed in because the address the operator's own browser
+ * reached the panel on is better evidence than anything this process can detect
+ * about itself: it already accounts for reverse proxies, published container
+ * ports and tunnels.
+ */
+function advertisedBaseUrl(req: AuthenticatedRequest) {
+  return resolveBaseUrl({
+    configuredDomain: config.PUBLIC_DOMAIN,
+    port: config.PORT,
+    request: requestHints(req as unknown as {
+      headers?: Record<string, unknown>;
+      socket?: { encrypted?: boolean };
+    }),
+  });
+}
 
 export const createModeRoutes = (): Router => {
   const router = Router();
@@ -862,6 +888,11 @@ export const createModeRoutes = (): Router => {
       return;
     }
 
+    // The code is half of what the operator needs; this is the other half.
+    // Sent alongside rather than left to the UI to guess, because only the
+    // server knows its own configured domain and listening port.
+    const base = advertisedBaseUrl(req);
+
     res.json({
       success: true,
       environment,
@@ -874,6 +905,10 @@ export const createModeRoutes = (): Router => {
       display: formatPairingCode(offer.code),
       expiresAt: offer.expiresAt,
       expiresInMs: offer.expiresInMs,
+      baseUrl: base.baseUrl,
+      // How the address was arrived at, so the dialog can say "detected" rather
+      // than presenting a guess with the same confidence as a configured domain.
+      baseUrlSource: base.source,
     });
   });
 
@@ -1054,6 +1089,8 @@ export const createModeRoutes = (): Router => {
       return;
     }
 
+    const base = advertisedBaseUrl(req);
+
     res.json({
       success: true,
       // Grouped for display, like the handoff code. The raw form is included
@@ -1063,6 +1100,11 @@ export const createModeRoutes = (): Router => {
       target,
       expiresAt: offer.expiresAt,
       expiresInMs: offer.expiresInMs,
+      // Same pair as the targeting route: a code is not usable without the
+      // address it belongs to, and this legacy route's callers need it just as
+      // much as the new one's.
+      baseUrl: base.baseUrl,
+      baseUrlSource: base.source,
     });
   });
 

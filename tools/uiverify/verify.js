@@ -506,6 +506,152 @@ async function verifyPicker(ctx, id) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(300);
 
+  // ── Select all / Clear, on the real build ─────────────────────────────────
+  //
+  // §19 says these affect CHECKBOXES ONLY and must never touch the radio. The
+  // unit suite asserts that against a hand-rolled fake DOM with no layout engine
+  // and no real input elements, so it cannot see a toolbar that renders off the
+  // panel, a button the browser considers unclickable, or a `checked` property
+  // that never reached the actual <input>. That is precisely what §18 is for.
+
+  /** Every row's checkbox/radio state, read through the closed shadow root. */
+  async function readRows() {
+    const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true });
+    const host = findNode(root, (n) => attr(n, 'id') === 'ab-inspector-panel');
+    const shadow = host && (host.shadowRoots || [])[0];
+    if (!shadow) return null;
+
+    // Rows are identified by their INDEX, not by a data-* attribute: the shipped
+    // inputs carry no key of any kind (inspector.js closes over `r.key` instead),
+    // and inventing one here would mean asserting against markup the extension
+    // does not actually emit. Each .row holds exactly one checkbox and one radio,
+    // so walking rows in document order pairs them reliably.
+    const out = [];
+    (function walk(node) {
+      if (hasClass(node, 'row')) {
+        const row = { idx: out.length, cb: null, rd: null, label: null };
+        (function inner(n) {
+          if (String(n.nodeName).toUpperCase() === 'INPUT') {
+            const type = (attr(n, 'type') || '').toLowerCase();
+            if (type === 'checkbox' && !row.cb) row.cb = n.nodeId;
+            if (type === 'radio' && !row.rd) row.rd = n.nodeId;
+          }
+          if (hasClass(n, 'k') && row.label === null) row.label = textOf(n);
+          for (const k of [...(n.children || []), ...(n.shadowRoots || [])]) inner(k);
+        })(node);
+        if (row.cb || row.rd) out.push(row);
+        return; // rows do not nest
+      }
+      for (const k of [...(node.children || []), ...(node.shadowRoots || [])]) walk(k);
+    })(shadow);
+
+    // `checked` is a live property, not an attribute, so it has to be resolved on
+    // the object rather than read off the markup — the whole point of doing this
+    // in a real browser instead of against a fake DOM.
+    for (const r of out) {
+      r.checked = await propOf(r.cb, 'checked');
+      r.armed = await propOf(r.rd, 'checked');
+      r.disabled = await propOf(r.rd, 'disabled');
+    }
+    return { rows: out };
+  }
+
+  /** Read a live property off a node inside the closed shadow root. */
+  async function propOf(nodeId, prop) {
+    if (!nodeId) return null;
+    try {
+      const { object } = await cdp.send('DOM.resolveNode', { nodeId });
+      const { result } = await cdp.send('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: `function () { return this.${prop}; }`,
+        returnByValue: true,
+      });
+      return result.value;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Concatenated text of a CDP node subtree. */
+  function textOf(node) {
+    if (node.nodeType === 3) return node.nodeValue || '';
+    return (node.children || []).map(textOf).join('');
+  }
+
+  /** Click a button inside the shadow root by real mouse input, as a user would. */
+  async function clickTool(cls) {
+    const b = await boxOf(cls);
+    if (!b) return false;
+    await page.mouse.click(b.left + b.w / 2, b.top + b.h / 2);
+    await page.waitForTimeout(200);
+    return true;
+  }
+
+  const toolsBox = await boxOf('tools');
+  check('the Select all toolbar is rendered', !!toolsBox,
+    toolsBox && { left: Math.round(toolsBox.left), top: Math.round(toolsBox.top),
+                  w: Math.round(toolsBox.w), h: Math.round(toolsBox.h) });
+
+  if (toolsBox) {
+    // On screen, or the control exists and cannot be used.
+    const panelNow = (await readPanel()).panel;
+    check('the toolbar is inside the panel and on screen',
+      toolsBox.left >= 0 && toolsBox.top >= 0 &&
+      toolsBox.right <= 1280 && toolsBox.bottom <= 800 &&
+      !!panelNow && toolsBox.top >= panelNow.top - 1 && toolsBox.bottom <= panelNow.bottom + 1,
+      { tools: Math.round(toolsBox.top), panelTop: panelNow && Math.round(panelNow.top) });
+
+    const armedOf = (s) => (s ? s.rows.findIndex((r) => r.armed === true) : -2);
+    const shownOf = (s) => (s ? s.rows.filter((r) => r.checked === true).map((r) => r.idx) : []);
+
+    const before = await readRows();
+    check('the picker lists attribute rows to act on',
+      !!before && before.rows.length > 1,
+      before && { rows: before.rows.length, labels: before.rows.map((r) => r.label).slice(0, 4) });
+
+    // The armed radio must be the SAME row before and after every bulk action.
+    // Captured as an index because the shipped inputs carry no key attribute.
+    const armedBefore = armedOf(before);
+    check('one row is armed to send before any bulk action', armedBefore >= 0,
+      { armedRow: armedBefore, label: before && before.rows[armedBefore]?.label });
+
+    // Select all: every checkbox on, radio untouched.
+    await clickTool('all');
+    let after = await readRows();
+    check('Select all ticks every checkbox',
+      !!after && after.rows.length > 0 && after.rows.every((r) => r.checked === true),
+      after && { on: shownOf(after).length, of: after.rows.length });
+    check('Select all does NOT move the radio (§19)',
+      armedOf(after) === armedBefore,
+      { before: armedBefore, after: armedOf(after) });
+
+    // Clear: everything off EXCEPT the armed row, which must stay visible —
+    // otherwise the panel claims it is sending an attribute shown nowhere.
+    await clickTool('none');
+    after = await readRows();
+    const stillOn = shownOf(after);
+    check('Clear unticks everything except the armed row',
+      !!after && stillOn.length === 1 && stillOn[0] === armedBefore,
+      { stillShown: stillOn, armedRow: armedBefore });
+    check('Clear does NOT move the radio (§19)',
+      armedOf(after) === armedBefore,
+      { before: armedBefore, after: armedOf(after) });
+
+    // The panel must not move or resize: a bulk edit is not a re-open.
+    const panelAfter = (await readPanel()).panel;
+    check('bulk selection does not move or resize the panel',
+      !!panelAfter && !!panelNow &&
+      near(panelAfter.left, panelNow.left, 2) && near(panelAfter.top, panelNow.top, 2) &&
+      near(panelAfter.w, panelNow.w, 2),
+      { before: panelNow && [Math.round(panelNow.left), Math.round(panelNow.top), Math.round(panelNow.w)],
+        after: panelAfter && [Math.round(panelAfter.left), Math.round(panelAfter.top), Math.round(panelAfter.w)] });
+
+    await shot(page, '09b-picker-bulk-select');
+
+    // Back to a full selection so the footer checks below see a normal panel.
+    await clickTool('all');
+  }
+
   // Both footer actions must be inside the viewport and hit-testable, or the
   // picker can be opened and never resolved.
   for (const cls of ['cx', 'go']) {

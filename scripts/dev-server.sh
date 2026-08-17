@@ -16,6 +16,17 @@ PORT="${PORT:-3000}"
 
 say() { printf '[dev] %s\n' "$*"; }
 
+# ── Public domain (optional) ─────────────────────────────────────────────────
+# Asked BEFORE the server starts, because this value is read at boot and is what
+# gets shown beside the Authorization Code. Asking afterwards would mean the
+# first pairing of the session still advertised a detected address.
+#
+# Silent and non-blocking when there is no terminal, so CI and nohup runs are
+# unaffected — see scripts/ask-domain.sh.
+# shellcheck source=scripts/ask-domain.sh
+. "${ROOT}/scripts/ask-domain.sh"
+ask_public_domain
+
 # ── Redis ────────────────────────────────────────────────────────────────────
 if redis-cli -p 6379 ping >/dev/null 2>&1; then
   say "redis already up on 6379"
