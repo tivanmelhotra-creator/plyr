@@ -679,7 +679,31 @@ body {
 
 .ctl { position: relative; display: flex; }
 .ctl input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.ctl .mark { display: block; width: 14px; height: 14px; pointer-events: none; }
+/* `position: relative` is load-bearing, not decoration.
+   -------------------------------------------------------------------------
+   The radio's filled dot is an `::after` positioned with `inset: 3px`, and an
+   absolutely positioned box resolves its inset against the nearest POSITIONED
+   ancestor. Without this line that ancestor was `.ctl` — the grid cell's label,
+   which the `.arow` track makes 18px wide while the ring is only 14px — so the
+   dot was inset 3px from the LABEL and came out 12×10: a horizontal oval,
+   wider than the ring it was supposed to sit inside, visibly spilling past the
+   circle's left and right edges. The ring looked broken while the ring itself
+   was perfectly correct.
+   Making `.mark` the containing block is what ties the dot to the CIRCLE it
+   belongs to, so `inset: 3px` means "3px inside this ring" and yields a
+   centred 6×6 dot at any cell width. `.modecard .dot` never had this bug
+   precisely because it declares `position: relative` itself.
+   `flex: 0 0 14px` is the same defence one layer out: `.ctl` is a flex
+   container, so a stretched or shrunk flex item would resize the ring — and
+   with it the dot — the moment a row's height or content changed. */
+.ctl .mark {
+  position: relative;
+  flex: 0 0 14px;
+  display: block;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
 .ctl.check .mark { border: 1px solid #777; border-radius: 2px; background: transparent; }
 .ctl.check input:checked ~ .mark {
   background: var(--orange);

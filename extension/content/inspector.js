@@ -799,6 +799,67 @@
       '.meta{padding:7px 10px;font:11px/14px ' + MONO + ';color:#a0a0a0;background:#131313;',
       'border-bottom:1px solid #2a2a2a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       /*
+       * ── SELECTED ELEMENT (§17), in the picker ────────────────────────────
+       *
+       * The picker used to end at the attribute rows, and every one of those rows
+       * is deliberately CLIPPED to a single line (`.v` is nowrap + ellipsis, for
+       * the alignment reasons written above that rule). At 330px that leaves
+       * roughly thirty characters, so a ticked CSS Selector read
+       * "div.bubble > div.desc:nth-of…" and an XPath read "/html[1]/body[1]/div[1]…"
+       * — a half-line PREVIEW of the very string the user is about to commit to
+       * their node. The whole value existed only in a `title` tooltip, which is
+       * not somewhere a value can be read, compared against another candidate,
+       * or copied.
+       *
+       * The popup already solves this: its SELECTED ELEMENT card renders every
+       * TICKED row in full, wrapping (`.kv .v { overflow-wrap: anywhere }`). Two
+       * surfaces of one feature answering "what did I just select?" differently
+       * is the actual defect — so the picker gets the same section, driven by the
+       * same checkbox state, and a tick now has somewhere to be READ instead of
+       * only somewhere to be counted.
+       *
+       * It sits ABOVE the attribute rows: this is the readable statement of the
+       * pick, and the rows below are the controls that edit that statement. Its
+       * own scroll and a max-height keep a long value from pushing the rows — and
+       * the toolbar that edits them — out of a 70vh panel. The section is a
+       * readout; it must never crowd out the thing it reflects.
+       */
+      '.sel{flex:0 0 auto;max-height:34vh;overflow:auto;background:#0e0e0e;',
+      'border-bottom:1px solid #2a2a2a}',
+      '.sel .sh{display:flex;align-items:baseline;gap:6px;padding:6px 10px 4px;',
+      'font:700 9px/12px ' + MONO + ';letter-spacing:.1em;text-transform:uppercase;',
+      'color:#ff6600}',
+      // Names WHY a value is here at all, which is the §16/§23 distinction the
+      // whole panel rests on: this section is the checkbox column made readable,
+      // never the radio's outbound value.
+      '.sel .sh i{flex:1;min-width:0;font:400 9px/12px ' + SANS + ';letter-spacing:0;',
+      'text-transform:none;color:#666;font-style:normal;text-align:right;',
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.sitem{padding:5px 10px 6px;border-top:1px solid #1c1c1c}',
+      '.sitem.first{border-top:0}',
+      '.sk{display:block;font:10px/13px ' + MONO + ';color:#a0a0a0}',
+      '.sk.tagd{color:#d98b52}',
+      /*
+       * THE ENTIRE POINT OF THIS SECTION: the value is shown WHOLE.
+       *
+       * `overflow-wrap:anywhere` (the popup's own `.kv .v` rule) rather than the
+       * rows' nowrap+ellipsis. The rows clip because uniform row heights are what
+       * make a long list scannable; here there is no list to keep aligned and no
+       * reason left to hide the tail. `user-select:text` because the reason a user
+       * wants the full string on screen is frequently to copy it, and the header's
+       * `user-select:none` must not leak down here.
+       */
+      '.sv{display:block;margin-top:2px;font:11px/15px ' + MONO + ';color:#fff;',
+      'overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}',
+      '.sv.empty{color:#666;font-style:italic;font-family:' + SANS + '}',
+      // The armed row is marked here as well as in the list, so the answer to
+      // "which of these actually travels?" never requires looking away.
+      '.sitem.out{background:#120e0b}',
+      '.sitem.out .sk{color:#ff6600}',
+      // Not an error state: it is the honest reading of "you have ticked nothing",
+      // and it names the control that changes it.
+      '.sempty{padding:7px 10px;font:10px/14px ' + SANS + ';color:#666}',
+      /*
        * The DISPLAY toolbar. The popup has had "Select all / Clear" since §19;
        * this panel only ever offered one-at-a-time ticking, so an element with
        * twenty data-* attributes cost twenty clicks to show.
@@ -949,6 +1010,31 @@
     meta.className = 'meta';
 
     /*
+     * SELECTED ELEMENT — the ticked rows, rendered in FULL (§17).
+     *
+     * Built as a container plus a fixed header here, and refilled per change by
+     * renderSelected(); the header is static so the section keeps its identity
+     * even while it holds nothing, which is what lets it explain itself instead
+     * of appearing out of nowhere on the first tick.
+     */
+    var sel = document.createElement('div');
+    sel.className = 'sel';
+    var selHead = document.createElement('div');
+    selHead.className = 'sh';
+    var selTitle = document.createElement('span');
+    selTitle.textContent = 'Selected element';
+    // Stated in the header rather than in a tooltip, because the one thing a
+    // user must not have to guess is why a row is in this list.
+    var selNote = document.createElement('i');
+    selNote.textContent = 'checked rows, in full';
+    selHead.appendChild(selTitle);
+    selHead.appendChild(selNote);
+    var selBody = document.createElement('div');
+    selBody.className = 'sb';
+    sel.appendChild(selHead);
+    sel.appendChild(selBody);
+
+    /*
      * Bulk DISPLAY controls, requested because ticking twenty data-* attributes
      * one at a time is twenty clicks for something the popup has always done in
      * one. The popup's §19 contract is copied exactly rather than reinvented:
@@ -1010,6 +1096,11 @@
 
     wrap.appendChild(hd);
     wrap.appendChild(meta);
+    // Above the toolbar and the rows: the readable statement of the pick comes
+    // first, and the controls that edit it follow. Reversing these would put the
+    // full values below a scrolling list, i.e. off-screen exactly when the list
+    // is long enough for the clipping to matter.
+    wrap.appendChild(sel);
     wrap.appendChild(tools);
     wrap.appendChild(rows);
     wrap.appendChild(hint);
@@ -1026,6 +1117,9 @@
     state.ui = {
       wrap: wrap, hd: hd, title: title, meta: meta, rows: rows, st: st, go: go,
       tools: tools, allBtn: allBtn, noneBtn: noneBtn, count: count,
+      // Only the BODY is cached: the header is static, so nothing ever needs to
+      // find it again, and caching it would invite a future edit to rewrite it.
+      sel: sel, selBody: selBody,
     };
   }
 
@@ -1045,13 +1139,21 @@
     // know to keep the footer on screen.
     placePanel();
 
+    // Rebuilds the rows AND, through them, SELECTED ELEMENT — so a fresh pick
+    // cannot leave the previous element's values on screen.
     renderRows();
 
     ui.rows.scrollTop = 0;
+    // The readout scrolls independently, so it needs its own reset: a pick made
+    // after scrolling down a long value would otherwise open part-way into the
+    // new element's first attribute.
+    ui.sel.scrollTop = 0;
 
     // Re-clamp now that the rows exist and the panel has its real height. A
     // 3-row pick and a 30-row pick are very different heights, and the second is
-    // the one whose footer used to end up below the fold.
+    // the one whose footer used to end up below the fold — and SELECTED ELEMENT
+    // adds height of its own, which is precisely why it is capped and scrollable
+    // rather than free to grow with the value it holds.
     placePanel();
   }
 
@@ -1091,6 +1193,12 @@
         // sending would silently disarm the send, and the button would refuse
         // for a reason the user could not see.
         renderTools();
+        // The readout is repainted here rather than by rebuilding the rows: a
+        // full renderRows() would replace the very checkbox the pointer is on
+        // mid-click. This is the ONE thing a tick is for, so it has to be
+        // immediate — the point of the section is that ticking a box is how you
+        // read a value in full.
+        renderSelected();
         publishPick();
       });
 
@@ -1118,6 +1226,10 @@
           // Arming can both raise the count and change Clear's floor, since the
           // armed row can no longer be hidden.
           renderTools();
+          // Arming moves the "→ sending" marker AND can pull a previously hidden
+          // row into the readout (the line above just ticked it), so the section
+          // has to be rebuilt, not merely re-marked.
+          renderSelected();
           publishPick();
         }
       });
@@ -1154,6 +1266,9 @@
         if (cb.checked) state.display[r.key] = true;
         else delete state.display[r.key];
         renderTools();
+        // Same repaint as the checkbox's own handler: this IS the checkbox, just
+        // reached through a larger hit target.
+        renderSelected();
         publishPick();
       });
 
@@ -1166,6 +1281,106 @@
     // The toolbar reads from the same state the rows were just built from, so it
     // cannot fall out of step with what is on screen.
     renderTools();
+    // …and so does SELECTED ELEMENT. Called from HERE, once, rather than from
+    // each of the four places that mutate `state.display`: every one of those
+    // already repaints through renderRows(), so hanging the readout off the same
+    // call is what guarantees it can never show a set the rows disagree with.
+    renderSelected();
+  }
+
+  /**
+   * SELECTED ELEMENT — every TICKED row, with its value shown IN FULL (§17).
+   *
+   * WHY THIS EXISTS AT ALL
+   * ----------------------
+   * The attribute rows above are clipped to one line on purpose: equal row
+   * heights are what keep the key column aligned and a twenty-row list
+   * scannable. But that means the panel's only rendering of a value was a
+   * ~30-character preview — "div.bubble > div.desc:nth-of…" — of a string the
+   * user is about to commit to a node field. The full text lived solely in a
+   * `title` tooltip: fine as a reassurance, useless for reading a long XPath,
+   * comparing two candidate selectors, or copying either.
+   *
+   * The popup has always had this section. The picker not having it is the
+   * defect: the two surfaces of one feature gave different answers to "what did
+   * I just select?", and the picker's answer was the truncated one — while the
+   * picker is the surface the user is actually looking at when they tick a box.
+   *
+   * WHAT DRIVES IT — AND WHAT MUST NOT
+   * ----------------------------------
+   * `state.display` — the CHECKBOXES — and nothing else, exactly as the popup's
+   * renderSelected() does. §16/§23 keep display and send independent, so this
+   * section must not be filtered by, reordered around, or limited to
+   * `state.sendKey`; the armed row is merely MARKED here (`.out`), because
+   * "which one travels" is a fact worth seeing beside the values, not a filter
+   * on them.
+   *
+   * Order is PANEL ORDER, from `state.rows`, so the readout reads in the same
+   * sequence as the list it reflects — not in tick order, which would reshuffle
+   * the section every time a box changed.
+   */
+  function renderSelected() {
+    if (!state.ui || !state.ui.selBody) return;
+    var ui = state.ui;
+    var body = ui.selBody;
+
+    while (body.firstChild) body.removeChild(body.firstChild);
+
+    // No pick yet: the section is hidden entirely rather than shown empty. Before
+    // the first freeze there is no element to describe, and an empty card above
+    // the rows would just be furniture.
+    if (!state.described || !state.rows || !state.rows.length) {
+      ui.sel.style.display = 'none';
+      return;
+    }
+    ui.sel.style.display = 'block';
+
+    var shown = state.rows.filter(function (r) { return !!state.display[r.key]; });
+
+    if (!shown.length) {
+      // Kept VISIBLE and explained, unlike the no-pick case: here the emptiness
+      // is a state the user produced (a Clear, or un-ticking the last row) and
+      // can undo, so the section says which control brings values back instead
+      // of silently vanishing and looking like a bug.
+      var none = document.createElement('div');
+      none.className = 'sempty';
+      none.textContent = 'Nothing ticked. Check a row below to show it here in full.';
+      body.appendChild(none);
+      return;
+    }
+
+    shown.forEach(function (r, i) {
+      var item = document.createElement('div');
+      item.className = 'sitem'
+        + (i === 0 ? ' first' : '')
+        + (state.sendKey === r.key ? ' out' : '');
+
+      var k = document.createElement('span');
+      // Same data-* tint as the rows, so a key means the same thing in both
+      // places.
+      k.className = r.group === 'data' ? 'sk tagd' : 'sk';
+      k.textContent = r.label || r.key;
+      // The arrow is appended as TEXT rather than drawn by a CSS ::after so the
+      // marker survives being read by a screen reader, and so the row cannot end
+      // up claiming to be outbound in one renderer and not the other.
+      if (state.sendKey === r.key) k.textContent += '  \u2192 sending';
+
+      var v = document.createElement('span');
+      if (r.value) {
+        v.className = 'sv';
+        // textContent, never innerHTML: this is an attribute value from an
+        // arbitrary page, and one `<img onerror=…>` here would be script
+        // execution inside our own UI. The whole file holds to this rule.
+        v.textContent = r.value;
+      } else {
+        v.className = 'sv empty';
+        v.textContent = '(empty)';
+      }
+
+      item.appendChild(k);
+      item.appendChild(v);
+      body.appendChild(item);
+    });
   }
 
   function hidePanel() {
