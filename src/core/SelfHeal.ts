@@ -253,9 +253,15 @@ export class SelfHeal {
         // "hint" is the string the operator reported being stuck on: the
         // default is already true, so being told to set it explains nothing
         // about why theirs is false. See RealChrome.disabledExplanation.
+        // WAS: '... Remove that line from .env and restart, or run `npm run
+        // doctor` ...'. The refusal is still right — a background heal must not
+        // flip an operator's configuration on its own — but the WAY OUT no longer
+        // has to be a file edit and a restart. Pressing Start (or Enable) is the
+        // consent this code correctly declines to assume, and it is one click.
         hint: 'REAL_CHROME_ENABLED=false is set explicitly (the default is true) '
-          + '— usually a stale .env from an older release. Remove that line from '
-          + '.env and restart, or run `npm run doctor` to see where it came from.',
+          + '— usually a stale .env from an older release. POST /api/browser/enable '
+          + 'turns it on now, with no restart; `npm run doctor` shows where the '
+          + 'current value came from.',
       };
     }
 
@@ -365,9 +371,15 @@ export class SelfHeal {
         // "hint" is the string the operator reported being stuck on: the
         // default is already true, so being told to set it explains nothing
         // about why theirs is false. See RealChrome.disabledExplanation.
+        // WAS: '... Remove that line from .env and restart, or run `npm run
+        // doctor` ...'. The refusal is still right — a background heal must not
+        // flip an operator's configuration on its own — but the WAY OUT no longer
+        // has to be a file edit and a restart. Pressing Start (or Enable) is the
+        // consent this code correctly declines to assume, and it is one click.
         hint: 'REAL_CHROME_ENABLED=false is set explicitly (the default is true) '
-          + '— usually a stale .env from an older release. Remove that line from '
-          + '.env and restart, or run `npm run doctor` to see where it came from.',
+          + '— usually a stale .env from an older release. POST /api/browser/enable '
+          + 'turns it on now, with no restart; `npm run doctor` shows where the '
+          + 'current value came from.',
       };
     }
 

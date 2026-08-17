@@ -50,9 +50,28 @@
  */
 
 import { config } from '../config';
+import { remedyFor, type Remedy } from './RuntimeSettings';
 
 /** Why a start attempt ended the way it did. */
 export type StartOutcome = 'ready' | 'starting' | 'failed';
+
+/**
+ * A named cause, a human next step, and — when we can do it ourselves — the
+ * button that does it.
+ *
+ * `fixable` is the whole point of this shape. A hint is prose, and prose is
+ * where "Set REAL_CHROME_ENABLED=true and restart the server" lived: it asks a
+ * person to be the mechanism. When the server can perform the fix, the failure
+ * carries the endpoint that performs it, so the view can offer one click. When
+ * it genuinely cannot (a package that is not on the machine and cannot be
+ * fetched), `fixable` is absent and the hint is all there is — which is the
+ * honest answer, not a hidden one.
+ */
+export interface StartFailure {
+  error: string;
+  hint: string;
+  fixable?: Remedy;
+}
 
 export interface StartResult<T> {
   outcome: StartOutcome;
@@ -62,6 +81,11 @@ export interface StartResult<T> {
   error?: string;
   /** Human next step; present when not ready. */
   hint?: string;
+  /**
+   * The one-click fix, when this build can apply it. Passed straight through to
+   * the client so a dead end becomes a button.
+   */
+  fixable?: Remedy;
   /** Milliseconds actually spent inside the budget. */
   elapsedMs: number;
 }
@@ -173,7 +197,7 @@ export async function withStartBudget<T>(
  * missing shared library, a dead display and a stale singleton lock each have a
  * different and specific remedy, and this is where they get said out loud.
  */
-export function describe(e: unknown): { error: string; hint: string } {
+export function describe(e: unknown): StartFailure {
   const msg = (e as Error)?.message || String(e ?? 'unknown error');
   const m = msg.toLowerCase();
 
@@ -182,21 +206,29 @@ export function describe(e: unknown): { error: string; hint: string } {
       error: 'display_unavailable',
       hint:
         'The X display is not up, so a headed browser cannot start. ' +
-        'Start it with POST /api/browser/desktop/start, or check Xvfb in GET /api/browser/real/health.',
+        'Press the button to start it — nothing needs restarting.',
+      fixable: remedyFor('display_unavailable'),
     };
   }
   if (m.includes('error while loading shared libraries') || m.includes('cannot open shared object')) {
     return {
       error: 'browser_libraries_missing',
+      // The command is still named, because an operator WITH a shell is faster
+      // running it themselves and deserves to know what the button will do. The
+      // difference is that the command is no longer the ONLY way out: `fixable`
+      // means someone holding a mouse is not stuck.
       hint:
         'Chromium is installed but cannot link its system libraries. ' +
-        'Run: npx playwright install --with-deps chromium (see GET /api/health/browser for the exact list).',
+        'Press the button to fetch them (the same work as: npx playwright install --with-deps chromium).',
+      fixable: remedyFor('browser_libraries_missing'),
     };
   }
   if (m.includes("executable doesn't exist") || m.includes('executable path')) {
     return {
       error: 'browser_not_installed',
-      hint: 'No Chromium binary was found. Run: npx playwright install chromium',
+      hint: 'No Chromium binary was found. Press the button to download it '
+        + '(the same work as: npx playwright install chromium).',
+      fixable: remedyFor('browser_not_installed'),
     };
   }
   if (m.includes('processsingleton') || m.includes('singletonlock')) {
@@ -204,7 +236,8 @@ export function describe(e: unknown): { error: string; hint: string } {
       error: 'browser_profile_locked',
       hint:
         'A previous Chrome still holds the profile lock. ' +
-        'Recover it with POST /api/browser/real/recover — the main server does not need restarting.',
+        'Press the button to clear it — the main server does not need restarting.',
+      fixable: remedyFor('browser_profile_locked'),
     };
   }
   if (m.includes('timeout') || m.includes('timed out')) {
@@ -222,9 +255,23 @@ export function describe(e: unknown): { error: string; hint: string } {
     };
   }
   if (!config.REAL_CHROME_ENABLED) {
+    // THE REPORTED STRING WAS:
+    //   "Remote Chrome is disabled. Set REAL_CHROME_ENABLED=true and restart
+    //    the server."
+    //
+    // Three faults in one sentence. It names a variable the operator did not
+    // set (the default is TRUE), it names a file they may not be able to edit,
+    // and it asks for the one action the panel exists to avoid. Meanwhile the
+    // server can simply turn it on — see RuntimeSettings and POST
+    // /browser/enable — so this now describes a BUTTON, not a chore.
+    //
+    // `fixable` is the machine-readable half: the view renders a real button
+    // from it instead of parsing English out of `hint`.
     return {
       error: 'remote_browser_disabled',
-      hint: 'Remote Chrome is disabled. Set REAL_CHROME_ENABLED=true and restart the server.',
+      hint: 'The Remote Browser is switched off for this instance. '
+        + 'Nothing needs restarting — press the button to turn it on now.',
+      fixable: remedyFor('remote_browser_disabled'),
     };
   }
   return {

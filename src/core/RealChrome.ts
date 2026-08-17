@@ -444,7 +444,14 @@ export class RealChrome {
       + 'Extensions and the Element Inspector cannot run while it is off.\n'
       + 'Note the default is TRUE, so something set it explicitly — usually a stale .env '
       + 'copied from an older release (the installer never overwrites an existing .env).\n'
-      + 'To fix: delete the REAL_CHROME_ENABLED line from your .env, or set it to true, then restart.\n'
+      // WAS: "delete the REAL_CHROME_ENABLED line from your .env, or set it to
+      // true, then restart." — which is a chore, and one that the person seeing
+      // this message often cannot perform (no shell on the box, no write access
+      // to the file). The server can flip it in memory AND record it in .env, so
+      // the fix is now a request rather than an errand. See RuntimeSettings.
+      + 'To fix, with no restart: POST /api/browser/enable — or press the button the panel '
+      + 'offers beside this message. It takes effect immediately and is written to .env so '
+      + 'it survives the next boot.\n'
       + 'To see where the current value came from: npm run doctor'
     );
   }

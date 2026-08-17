@@ -2,6 +2,12 @@ import 'dotenv/config';
 import path from 'path';
 import os from 'os';
 import { detectProfile, profiledEnv } from './core/EnvProfile';
+// Only `settingValue` is imported, and only for the handful of settings that
+// must be changeable while the process runs. RuntimeSettings deliberately does
+// NOT import this module back (it keeps its own copy of cleanEnv's rule, and a
+// test asserts the two agree) because a cycle here would leave the getter
+// below undefined at the exact moment the object literal is evaluated.
+import { settingValue, setOverride } from './core/RuntimeSettings';
 
 const cleanEnv = (val: string | undefined): string | undefined => {
   if (!val) return undefined;
@@ -284,7 +290,39 @@ export const config = {
   //
   // Set REAL_CHROME_ENABLED=false to get the old throwaway-context behaviour
   // (lighter, no X server needed, no extensions).
-  REAL_CHROME_ENABLED: (cleanEnv(process.env.REAL_CHROME_ENABLED)?.toLowerCase() ?? 'true') !== 'false',
+  //
+  // ── WHY THIS ONE IS A GETTER ──────────────────────────────────────────
+  // Every other value here is computed ONCE, when this module is first
+  // imported, and that is correct for a port or a directory: nothing can
+  // usefully change them while the process runs. This one is different,
+  // because of the report it comes from:
+  //
+  //     Could not start the remote browser: remote_browser_disabled
+  //     — Remote Chrome is disabled. Set REAL_CHROME_ENABLED=true and
+  //       restart the server.
+  //
+  //   «متغییر ها باید از داخل پروژه هم باید قابل تنظیم باشه و مجبور نباشیم
+  //    کل پروژه رو ریستارت کنیم»
+  //
+  // A snapshot makes that error unanswerable from inside the app: the panel
+  // could write a new value to .env and STILL refuse, because the boolean it
+  // checks was frozen at import. Delegating the read means POST
+  // /browser/enable takes effect on the very next call, which is what turns
+  // a dead end into a button. See src/core/RuntimeSettings.ts for the
+  // precedence (runtime override > explicit env > default) and for why the
+  // set of settable keys is a short allow-list rather than "any variable".
+  //
+  // The SETTER exists because assignment to a config value is a legitimate
+  // in-process statement ("for this run, it is on") that several call sites and
+  // tests already make. It records a runtime override and does NOT touch .env:
+  // writing a file is a separate, louder act, and it belongs to the endpoint
+  // that a human pressed. See RuntimeSettings.setOverride vs applySetting.
+  get REAL_CHROME_ENABLED(): boolean {
+    return settingValue('REAL_CHROME_ENABLED');
+  },
+  set REAL_CHROME_ENABLED(value: boolean) {
+    setOverride('REAL_CHROME_ENABLED', value === true);
+  },
 
   // The persistent profile directory. This is what makes cookies imported by an
   // extension survive a restart and be visible to automation runs.
