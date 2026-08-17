@@ -6966,6 +6966,48 @@ body.route-fullbleed .fe-mm-restore {
 }
 .tgt-status.is-ok { color: var(--success); font-weight: 600; }
 
+/* The Base URL, beside the code. Deliberately QUIETER than .tgt-code: both are
+   needed, but the code is the thing that expires and the address is the thing
+   that rarely changes, so they should not compete for the same attention. */
+.tgt-base {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.tgt-base-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tgt-base-label { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+/* Where the address came from. A detected guess and a configured domain do not
+   deserve the same confidence, so only the configured one is tinted as good. */
+.tgt-base-src { font-size: 10.5px; color: var(--text-dim); opacity: 0.85; }
+.tgt-base-src.is-ok { color: var(--success); opacity: 1; }
+.tgt-base-line { display: flex; align-items: center; gap: 8px; }
+/* LTR and selectable for the same reason as the code: it is retyped into
+   another application, and a bidi-reordered URL is one that gets mistyped. */
+.tgt-base-url {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  direction: ltr;
+  unicode-bidi: isolate;
+  user-select: all;
+  /* One line with the tail visible: the port is at the END of the string and is
+     exactly the part that is wrong when a connection fails. */
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.tgt-base-copy { padding: 5px 11px; font-size: 11.5px; white-space: nowrap; }
+
 .tgt-foot { display: flex; justify-content: flex-end; gap: 8px; }
 .tgt-btn {
   padding: 8px 15px;

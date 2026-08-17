@@ -40,6 +40,20 @@ services:
       REDIS_URL: redis://redis:6379
       PORT: "3000"
       NODE_ENV: production
+      # The address the Extension should connect to, shown beside the
+      # Authorization Code. Set it in .env (PUBLIC_DOMAIN=https://your-domain).
+      #
+      # Written as an interpolation, NOT a literal, and that distinction matters:
+      # `environment:` wins over `env_file:`, so hardcoding a blank value here
+      # would silently erase whatever the operator put in .env -- the one place
+      # they were told to configure it. `${PUBLIC_DOMAIN:-}` instead resolves
+      # from .env (Compose reads it for substitution) or the shell, and falls
+      # back to empty so the stack still starts when it is unset.
+      #
+      # Worth setting for Docker specifically: from inside a container the only
+      # detectable addresses are the bridge IP and the container hostname, and
+      # neither is reachable from the operator's browser.
+      PUBLIC_DOMAIN: "${PUBLIC_DOMAIN:-}"
       # See the Dockerfile for the full reasoning. Short version: the
       # `production` profile is headless, and a headless Chrome loads ZERO
       # extensions — so NODE_ENV=production alone silently shipped a Remote

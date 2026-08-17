@@ -179,6 +179,24 @@ export const config = {
   // Server
   // ============================================
   PORT: parseInt(cleanEnv(process.env.PORT) || '3000', 10),
+
+  // ── The address to advertise to the Extension ─────────────────────────
+  // Pairing needs the Authorization Code AND the Base URL, and the second was
+  // previously left for the operator to guess. On a laptop that guess is
+  // localhost:3000 and usually right; behind Cloudflare, on a VPS, in Docker or
+  // in a Codespace it is none of those, and the operator gets an extension that
+  // cannot connect while the server insists a valid code is waiting.
+  //
+  // Set this to the domain the panel is reached on. A bare host is fine
+  // (example.com); the scheme is filled in as https, and a path is discarded.
+  // BASE_URL is accepted as a synonym because that is the name the Extension's
+  // own field uses, and an operator who has just read it there will reach for
+  // the same word. Left empty, the server detects an address instead -- see
+  // src/core/PublicBaseUrl.ts for the order of precedence.
+  //
+  // Not `profiled()`: a profile guessing a domain would silently advertise a
+  // wrong address, and a wrong address is worse than an absent one.
+  PUBLIC_DOMAIN: cleanEnv(process.env.PUBLIC_DOMAIN) || cleanEnv(process.env.BASE_URL) || '',
   NODE_ENV: cleanEnv(process.env.NODE_ENV) || 'development',
   // Which profile filled in the gaps, and where that was read from. Surfaced
   // so the UI can say "development chose this for you" rather than leaving the

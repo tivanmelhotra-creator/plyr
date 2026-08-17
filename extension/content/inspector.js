@@ -518,6 +518,66 @@
     } catch (e) { /* storage is a convenience here; the panel still works */ }
   }
 
+  /**
+   * Tick or clear the DISPLAY column in one action.
+   *
+   * The popup's §19 contract, applied here unchanged: this touches
+   * `state.display` and NOTHING else. `state.sendKey` is deliberately not read
+   * or written, because "show me everything" and "send this one value" are
+   * different questions — see the block comment where the buttons are built.
+   *
+   * Rebuilt through renderRows() rather than by walking the live checkboxes, so
+   * there is exactly one place that turns `state.display` into what is on screen.
+   * Poking the inputs directly would leave two renderers to keep in agreement.
+   */
+  function setDisplayAll(on) {
+    if (!state.rows || !state.rows.length) return;
+    state.display = {};
+    if (on) {
+      state.rows.forEach(function (r) { state.display[r.key] = true; });
+    } else if (state.sendKey) {
+      /*
+       * One exception to a literal "clear", and it exists to keep the panel
+       * honest rather than to be clever: the row being SENT stays visible.
+       *
+       * Arming a radio already forces its checkbox on (see the radio handler),
+       * because sending a value the user cannot see is indefensible. If Clear
+       * were allowed to hide that row, the panel would claim it is sending an
+       * attribute that appears nowhere in the list, and DESTINATION in the popup
+       * would name a value with no corresponding row. Clearing everything else
+       * is the useful part of the gesture and it still happens.
+       */
+      state.display[state.sendKey] = true;
+    }
+    renderRows();
+    publishPick();
+  }
+
+  /**
+   * The toolbar's own state: the count, and whether each bulk action can still
+   * do anything.
+   *
+   * Disabling at the extremes matters more here than in the popup, because this
+   * panel floats over the user's page — a button that swallows a click without
+   * visible effect reads as the panel having frozen.
+   */
+  function renderTools() {
+    if (!state.ui || !state.ui.tools) return;
+    var total = state.rows ? state.rows.length : 0;
+    var shown = state.rows
+      ? state.rows.filter(function (r) { return !!state.display[r.key]; }).length
+      : 0;
+    state.ui.count.textContent = total ? shown + ' of ' + total + ' shown' : '';
+    state.ui.allBtn.disabled = total === 0 || shown === total;
+    // With a radio armed, the floor is 1 rather than 0: that row cannot be
+    // hidden, so at 1-of-N there is genuinely nothing left for Clear to do.
+    var floor = state.sendKey && state.display[state.sendKey] ? 1 : 0;
+    state.ui.noneBtn.disabled = total === 0 || shown <= floor;
+    // With nothing picked there is nothing to bulk-edit, and an enabled toolbar
+    // over an empty list invites a click that cannot work.
+    state.ui.tools.style.display = total ? 'flex' : 'none';
+  }
+
   /* ----------------------------------------------------------
      WHERE THE PANEL SITS
 
@@ -738,6 +798,30 @@
       '.hd button.x:hover{color:#fff;background:#ffffff14;border-color:transparent}',
       '.meta{padding:7px 10px;font:11px/14px ' + MONO + ';color:#a0a0a0;background:#131313;',
       'border-bottom:1px solid #2a2a2a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      /*
+       * The DISPLAY toolbar. The popup has had "Select all / Clear" since §19;
+       * this panel only ever offered one-at-a-time ticking, so an element with
+       * twenty data-* attributes cost twenty clicks to show.
+       *
+       * It sits directly above the rows, on the same #131313 as `.meta`, so it
+       * reads as a header FOR the list rather than another row IN it. Its buttons
+       * are the design's `.btn.secondary` shrunk to 22px: they are a bulk edit of
+       * the checkbox column, not a peer of Confirm/Cancel in the footer.
+       */
+      '.tools{display:flex;align-items:center;gap:6px;padding:5px 10px;background:#131313;',
+      'border-bottom:1px solid #2a2a2a}',
+      '.tools button{height:22px;padding:0 8px;border-radius:3px;background:#151515;',
+      'border:1px solid #2a2a2a;color:#fff;font:600 9px/1 ' + MONO + ';letter-spacing:.08em;',
+      'text-transform:uppercase;cursor:pointer}',
+      '.tools button:hover{background:#1d1d1d;border-color:#3a3a3a}',
+      // A disabled bulk action states "there is nothing left to do" — clearer
+      // than a button that accepts the click and changes nothing.
+      '.tools button[disabled]{opacity:.4;cursor:default}',
+      '.tools button[disabled]:hover{background:#151515;border-color:#2a2a2a}',
+      // The count is the feedback for a bulk edit: after one click on Select all,
+      // this line is the only thing that confirms how many rows it touched.
+      '.tools .n{flex:1;min-width:0;text-align:right;font:10px/12px ' + MONO + ';',
+      'color:#a0a0a0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.rows{flex:1;overflow:auto;padding:4px 0}',
       '.row{display:flex;gap:7px;align-items:flex-start;padding:6px 10px}',
       '.row:hover{background:#ffffff08}',
@@ -864,6 +948,39 @@
     var meta = document.createElement('div');
     meta.className = 'meta';
 
+    /*
+     * Bulk DISPLAY controls, requested because ticking twenty data-* attributes
+     * one at a time is twenty clicks for something the popup has always done in
+     * one. The popup's §19 contract is copied exactly rather than reinvented:
+     *
+     *   these affect the CHECKBOX column ONLY and must never move the radio.
+     *
+     * Showing every attribute and choosing which single one to send are separate
+     * decisions. A "Clear" that also disarmed the radio would leave Confirm
+     * refusing for a reason nothing on screen explains — and worse, a "Select
+     * all" that armed a radio would change what is about to be written to the
+     * user's node when they only asked to look at the list.
+     */
+    var tools = document.createElement('div');
+    tools.className = 'tools';
+    var allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = 'all';
+    allBtn.textContent = 'Select all';
+    allBtn.title = 'Show every discovered attribute (does not change what is sent)';
+    allBtn.addEventListener('click', function () { setDisplayAll(true); });
+    var noneBtn = document.createElement('button');
+    noneBtn.type = 'button';
+    noneBtn.className = 'none';
+    noneBtn.textContent = 'Clear';
+    noneBtn.title = 'Show none of them (does not change what is sent)';
+    noneBtn.addEventListener('click', function () { setDisplayAll(false); });
+    var count = document.createElement('span');
+    count.className = 'n';
+    tools.appendChild(allBtn);
+    tools.appendChild(noneBtn);
+    tools.appendChild(count);
+
     var rows = document.createElement('div');
     rows.className = 'rows';
 
@@ -893,6 +1010,7 @@
 
     wrap.appendChild(hd);
     wrap.appendChild(meta);
+    wrap.appendChild(tools);
     wrap.appendChild(rows);
     wrap.appendChild(hint);
     wrap.appendChild(ft);
@@ -905,7 +1023,10 @@
     // `hd` is cached because the drag needs it for pointer capture and for the
     // `.dragging` class — looking it up per pointermove would query the DOM on
     // every frame of a gesture.
-    state.ui = { wrap: wrap, hd: hd, title: title, meta: meta, rows: rows, st: st, go: go };
+    state.ui = {
+      wrap: wrap, hd: hd, title: title, meta: meta, rows: rows, st: st, go: go,
+      tools: tools, allBtn: allBtn, noneBtn: noneBtn, count: count,
+    };
   }
 
   function renderPanel() {
@@ -924,6 +1045,34 @@
     // know to keep the footer on screen.
     placePanel();
 
+    renderRows();
+
+    ui.rows.scrollTop = 0;
+
+    // Re-clamp now that the rows exist and the panel has its real height. A
+    // 3-row pick and a 30-row pick are very different heights, and the second is
+    // the one whose footer used to end up below the fold.
+    placePanel();
+  }
+
+  /**
+   * Build the attribute rows from `state.display` / `state.sendKey`.
+   *
+   * Split out of renderPanel() so the bulk DISPLAY buttons repaint through the
+   * SAME code that first drew the list. The alternative — walking the live
+   * checkboxes and flipping `.checked` — would create a second renderer to keep
+   * in step with this one, and the two would eventually disagree about the
+   * checkbox/radio coupling that the rows encode.
+   *
+   * Note it does NOT re-clamp or reset the scroll position: a bulk tick must not
+   * jump the list back to the top or move a panel the user has placed. Row count
+   * and therefore panel height are unchanged by a display toggle, so there is
+   * nothing for the clamp to correct.
+   */
+  function renderRows() {
+    if (!state.ui || !state.rows) return;
+    var ui = state.ui;
+
     while (ui.rows.firstChild) ui.rows.removeChild(ui.rows.firstChild);
 
     state.rows.forEach(function (r) {
@@ -941,6 +1090,7 @@
         // Deliberately does NOT touch state.sendKey: un-ticking the row you are
         // sending would silently disarm the send, and the button would refuse
         // for a reason the user could not see.
+        renderTools();
         publishPick();
       });
 
@@ -965,6 +1115,9 @@
           // reverse is not true — which is exactly why the two states differ.
           state.display[r.key] = true;
           cb.checked = true;
+          // Arming can both raise the count and change Clear's floor, since the
+          // armed row can no longer be hidden.
+          renderTools();
           publishPick();
         }
       });
@@ -1000,6 +1153,7 @@
         cb.checked = !cb.checked;
         if (cb.checked) state.display[r.key] = true;
         else delete state.display[r.key];
+        renderTools();
         publishPick();
       });
 
@@ -1009,12 +1163,9 @@
       ui.rows.appendChild(row);
     });
 
-    ui.rows.scrollTop = 0;
-
-    // Re-clamp now that the rows exist and the panel has its real height. A
-    // 3-row pick and a 30-row pick are very different heights, and the second is
-    // the one whose footer used to end up below the fold.
-    placePanel();
+    // The toolbar reads from the same state the rows were just built from, so it
+    // cannot fall out of step with what is on screen.
+    renderTools();
   }
 
   function hidePanel() {

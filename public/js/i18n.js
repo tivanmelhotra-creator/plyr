@@ -1369,6 +1369,14 @@
       'tgt.failed': 'شروع هدف‌گیری ممکن نشد. دوباره تلاش کنید.',
       'tgt.unpair': 'قطع اتصال این فیلد',
       'tgt.unpaired': 'اتصال این فیلد قطع شد. دفعهٔ بعد کد تازه لازم است.',
+      // آدرس سرور، کنار کد. کد بدون آدرس قابل استفاده نیست: کاربر باید هر دو را
+      // در افزونه وارد کند و تا پیش از این فقط کد نمایش داده می‌شد.
+      'tgt.baseUrl': 'آدرس سرور (Base URL)',
+      'tgt.baseConfigured': 'دامنهٔ تنظیم‌شده',
+      'tgt.baseRequest': 'همان آدرسی که این صفحه با آن باز شده',
+      'tgt.baseDetected': 'شناسایی‌شده — در صورت نیاز اصلاحش کنید',
+      'tgt.baseLoopback': 'فقط روی همین رایانه کار می‌کند',
+      'tgt.copied': 'کپی شد',
 
       'mode.title': 'حالت مرورگر',
       'mode.remote': 'مرورگر ریموت',
@@ -2690,6 +2698,14 @@
       'tgt.failed': 'Targeting could not be started. Try again.',
       'tgt.unpair': 'Unpair this field',
       'tgt.unpaired': 'This field was unpaired. Next time a new code will be needed.',
+      // The server address, beside the code. A code with no address is not
+      // usable -- both go into the extension, and only the code was shown.
+      'tgt.baseUrl': 'Server address (Base URL)',
+      'tgt.baseConfigured': 'configured domain',
+      'tgt.baseRequest': 'the address this page was opened on',
+      'tgt.baseDetected': 'detected — correct it if needed',
+      'tgt.baseLoopback': 'only works on this machine',
+      'tgt.copied': 'Copied',
 
       'mode.title': 'Browser mode',
       'mode.remote': 'Remote Browser',

@@ -19,7 +19,8 @@
 #
 # Non-interactive flags:
 #   --server-node | --server-docker | --client | --client-n8n | --coolify
-#   --domain <host>   (server-node) set the public domain for Caddy/HTTPS
+#   --domain <host>   public domain -> saved to .env as PUBLIC_DOMAIN (and, on
+#                     --server-node, used to configure Caddy/HTTPS)
 #   --port <n>        (server-node) app port (default 3000)
 #   -y, --yes         assume "yes" for every confirmation
 #   -h, --help
@@ -114,7 +115,9 @@ ${BOLD}Options${RESET}
   --coolify            Print Coolify deploy guidance
   --client             Non-interactive Chrome-extension helper
   --client-n8n         Non-interactive n8n node build/install
-  --domain <host>      (server-node) public domain for Caddy/HTTPS
+  --domain <host>      Public domain, saved to .env as PUBLIC_DOMAIN and shown
+                       beside the Authorization Code. On --server-node it also
+                       configures Caddy/HTTPS.
   --port <n>           (server-node) app port (default 3000)
   -y, --yes            Assume "yes" for all confirmations
   -h, --help           Show this help
@@ -202,6 +205,94 @@ gen_token() {
 sed_inplace() {
   local expr="$1"; local file="$2"
   if sed --version >/dev/null 2>&1; then sed -i "$expr" "$file"; else sed -i '' "$expr" "$file"; fi
+}
+
+# ---------------------------------------------------------------------------
+# Public domain -> .env
+# ---------------------------------------------------------------------------
+# The panel shows a Base URL beside the Authorization Code, and the Extension is
+# useless without it. Left unset, the server detects an address; detection is
+# right on a laptop and wrong behind a reverse proxy, in Docker or on a VPS,
+# where the operator is the only one who knows the public hostname. So when they
+# tell us a domain, we must persist it -- the installer previously collected a
+# domain for Caddy and then threw it away, which meant HTTPS worked and pairing
+# still advertised a LAN IP.
+#
+# Delegates the actual rewrite to scripts/ask-domain.sh so the installer and the
+# dev startup scripts share ONE writer. Two writers here would drift on the
+# variable name, and the failure mode of that drift is silent: a domain written
+# as BASE_URL by one path and read as PUBLIC_DOMAIN by another is simply ignored.
+persist_public_domain() {
+  local domain="${1:-}"
+  [ -n "$domain" ] || return 0
+
+  # A '#' would be read as the start of a comment by the config loader, so the
+  # value could not be stored faithfully. Say so rather than truncating it.
+  case "$domain" in
+    *'#'*) warn "Ignoring domain containing '#' (it would be read as a comment)."; return 0 ;;
+  esac
+
+  # Reject answers that are plainly not a domain.
+  #
+  # Every other question in this wizard is a y/N confirmation, so an operator
+  # running on muscle memory answers this one "y" too -- and without this guard
+  # that silently became PUBLIC_DOMAIN=y. The damage is not a bad .env line; it
+  # is that the panel would then advertise "https://y" beside the Authorization
+  # Code and the Extension could never connect, with nothing on screen hinting
+  # at why. Better to refuse the value and let detection take over.
+  local bare="${domain#*://}"
+  bare="${bare%%/*}"
+  case "$bare" in
+    ""|[Yy]|[Nn]|[Yy]es|[Nn]o|true|false)
+      warn "\"${domain}\" does not look like a domain — ignoring it."
+      info "This question wants an address, e.g. https://panel.example.com (not y/n)."
+      return 0 ;;
+    *' '*|*$'\t'*)
+      warn "Ignoring domain containing whitespace: \"${domain}\""
+      return 0 ;;
+  esac
+  # A hostname needs a dot, unless it is localhost or an explicit host:port.
+  case "$bare" in
+    *.*|localhost|localhost:*|*:[0-9]*) ;;
+    *)
+      warn "\"${domain}\" does not look like a domain (no dot) — ignoring it."
+      info "Use a full address, e.g. https://panel.example.com"
+      return 0 ;;
+  esac
+
+  # Refuse to conjure a .env: the server needs a complete one, and a file holding
+  # only a domain would start and then fail for unrelated missing values.
+  if [ ! -f .env ]; then
+    warn "No .env exists yet — could not save the domain."
+    info "Add it by hand once .env exists:  PUBLIC_DOMAIN=${domain}"
+    return 0
+  fi
+
+  if [ -f scripts/ask-domain.sh ]; then
+    # shellcheck source=scripts/ask-domain.sh
+    . scripts/ask-domain.sh
+    _domain_write "$domain"
+  else
+    # Fallback for a partial checkout. Also clears any stale BASE_URL synonym,
+    # or the operator would see the new domain in .env and be served the old one.
+    sed_inplace "/^[[:space:]]*BASE_URL=/d" .env
+    if grep -q '^[[:space:]]*PUBLIC_DOMAIN=' .env; then
+      sed_inplace "s|^[[:space:]]*PUBLIC_DOMAIN=.*|PUBLIC_DOMAIN=${domain}|" .env
+    else
+      printf "\nPUBLIC_DOMAIN=%s\n" "$domain" >> .env
+    fi
+  fi
+  ok "Saved PUBLIC_DOMAIN=${domain} to .env"
+}
+
+# Give a domain a scheme, for display only. An operator typing `example.com`
+# means the same server as `https://example.com`, and printing a schemeless
+# string as a "Panel URL" produces a link nothing can open.
+domain_to_url() {
+  case "${1:-}" in
+    http://*|https://*) printf "%s" "$1" ;;
+    *) printf "https://%s" "$1" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -448,9 +539,15 @@ install_server_node() {
     domain="$(ask "Your domain for the panel (e.g. panel.example.com) — leave empty for IP:port only" "")"
   fi
   if [ -n "$domain" ]; then
+    # Recorded BEFORE setup_caddy, which can bail out (declined DNS record, no
+    # package manager for Caddy). The domain is still the address the operator
+    # wants advertised at pairing time even if the reverse proxy is set up later
+    # by hand, so persisting it must not depend on Caddy succeeding.
+    persist_public_domain "$domain"
     setup_caddy "$domain" "$port"
   else
     info "No domain given — the panel will be reachable on http://<server-ip>:${port}"
+    info "The panel detects that address itself and shows it beside the Authorization Code."
     PANEL_URL="http://localhost:${port}"
   fi
 
@@ -499,6 +596,28 @@ install_server_docker() {
 
   ensure_env_file
 
+  # Public domain (optional).
+  #
+  # Asked BEFORE `up -d`, because the container reads PUBLIC_DOMAIN at boot;
+  # writing it afterwards would leave the running stack advertising a detected
+  # address until the next restart.
+  #
+  # This path needs the question MORE than the native one, not less: inside a
+  # container the only detectable addresses are the compose bridge IP and the
+  # container hostname, and neither is reachable from the operator's browser.
+  title "Public domain (optional)"
+  local dk_domain="${OPT_DOMAIN:-}"
+  if [ -z "$dk_domain" ]; then
+    info "A custom domain is shown beside the Authorization Code so the Extension can connect."
+    info "Leave it empty to let the server detect an address by itself."
+    dk_domain="$(ask "Your public domain (e.g. https://panel.example.com) — leave empty to skip" "")"
+  fi
+  if [ -n "$dk_domain" ]; then
+    persist_public_domain "$dk_domain"
+  else
+    info "No domain set — the server will detect an address."
+  fi
+
   info "About to build and start the stack:  ${COMPOSE} up -d --build"
   if ! confirm "Build and start the Docker stack now?"; then
     warn "Aborted. Run later with: ${COMPOSE} up -d --build"
@@ -507,7 +626,11 @@ install_server_docker() {
   $COMPOSE up -d --build
   ok "Stack started."
 
-  PANEL_URL="http://localhost:3000"
+  if [ -n "$dk_domain" ]; then
+    PANEL_URL="$(domain_to_url "$dk_domain")"
+  else
+    PANEL_URL="http://localhost:3000"
+  fi
   if [ -f .env ] && grep -q '^API_TOKEN=$' .env 2>/dev/null; then
     warn "API_TOKEN is empty in .env — a random one is generated at boot."
     info "Reveal it with: ${COMPOSE} logs app | grep API_TOKEN"

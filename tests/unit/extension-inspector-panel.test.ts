@@ -195,6 +195,26 @@ interface Harness {
   clickLabel(key: string): void;
   /** Press "Confirm & Add to Node". */
   confirm(): void;
+
+  // ── The bulk display toolbar ───────────────────────────────────────────────
+  /**
+   * Reached by class, exactly as a user reaches them by reading the labels:
+   * these are the panel's "Select all" / "Clear" buttons. `selectAll()` and
+   * `clearAll()` refuse on a disabled button, because the browser does too —
+   * a test that could "click" a greyed-out control would be able to assert
+   * behaviour no user can ever reach.
+   */
+  toolsAll(): FakeNode;
+  toolsNone(): FakeNode;
+  selectAll(): void;
+  clearAll(): void;
+  /** The "N of M shown" counter, as text. */
+  toolsCount(): string;
+  /** Whether the toolbar is on screen at all. */
+  toolsVisible(): boolean;
+  /** The scrolling rows container — so tests can assert the list is not jumped. */
+  list(): FakeNode;
+
   /** The status line the user reads. */
   status(): { text: string; kind: string };
   /** Everything handed to chrome.runtime.sendMessage. */
@@ -360,6 +380,31 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     return findAll(host!, (n) => n.className === 'go')[0]!;
   }
 
+  /** The bulk-display toolbar and its three parts. */
+  function tools(): FakeNode | null {
+    const host = panelHost();
+    if (!host) return null;
+    return findAll(host, (n) => n.className === 'tools')[0] || null;
+  }
+  function toolButton(cls: string): FakeNode {
+    const bar = tools();
+    if (!bar) throw new Error('the panel rendered no display toolbar');
+    const found = findAll(bar, (n) => n.tagName === 'BUTTON' && n.className === cls)[0];
+    if (!found) throw new Error(`no toolbar button ".${cls}"`);
+    return found;
+  }
+  /**
+   * Click a toolbar button the way a pointer does — which means honouring
+   * `disabled`. The browser fires no click on a disabled button, so neither do
+   * we; otherwise a passing test could describe a path that is unreachable on
+   * screen.
+   */
+  function clickTool(cls: string) {
+    const btn = toolButton(cls);
+    if (btn.disabled) return;
+    btn.fire('click');
+  }
+
   /** The panel's own outer box — the thing that gets positioned. */
   function wrap(): FakeNode {
     const host = panelHost();
@@ -449,6 +494,24 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     },
     clickLabel(key: string) { row(key).label.fire('click'); },
     confirm() { confirmButton().fire('click'); },
+    toolsAll: () => toolButton('all'),
+    toolsNone: () => toolButton('none'),
+    selectAll() { clickTool('all'); },
+    clearAll() { clickTool('none'); },
+    toolsCount() {
+      const bar = tools();
+      if (!bar) return '';
+      const n = findAll(bar, (x) => x.className === 'n')[0];
+      return n ? n.textContent : '';
+    },
+    toolsVisible() {
+      const bar = tools();
+      return !!bar && bar.style.display !== 'none';
+    },
+    list() {
+      const host = panelHost();
+      return findAll(host!, (n) => n.className === 'rows')[0]!;
+    },
     status() {
       const host = panelHost();
       const st = findAll(host!, (n) => n.className.indexOf('st') === 0)[0]!;
@@ -617,6 +680,293 @@ describe('inspector panel: checkboxes control DISPLAY only (§23)', () => {
     // One name, one value — regardless of how much is on screen.
     expect(Object.keys(msg.sendAttribute!).sort()).toEqual(['name', 'value']);
     expect(typeof msg.sendAttribute!.name).toBe('string');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// The bulk DISPLAY toolbar — "Select all" / "Clear".
+//
+// The popup has had these since §19; this floating panel offered only
+// one-at-a-time ticking, so an element with twenty data-* attributes cost
+// twenty clicks. The risk in adding them is precise, and it is the risk §19
+// named for the popup: a bulk control that reaches for "the selection" finds
+// TWO selections here, and the convenient implementation — rebuild everything
+// from one collection — quietly re-aims or disarms the outbound value. Nothing
+// throws; the server simply receives a different value than the user chose.
+//
+// So these assertions are made where the user and the server can see them: the
+// rendered controls, the "N of M shown" counter, and the payload handed to
+// chrome.runtime.sendMessage. Never against the module's private state.
+// ════════════════════════════════════════════════════════════════
+describe('inspector panel: Select all / Clear are BULK DISPLAY only (§19)', () => {
+  it('offers the two bulk actions, labelled as the user reads them', () => {
+    h.start();
+    h.pick(buyLink());
+    expect(h.toolsAll().textContent).toMatch(/select all/i);
+    expect(h.toolsNone().textContent).toMatch(/clear/i);
+    expect(h.toolsVisible()).toBe(true);
+  });
+
+  it('Select all shows every row the pick produced', () => {
+    h.start();
+    h.pick(buyLink());
+    // The library's default shows one row of nine, so there is real work to do —
+    // which is the whole complaint this toolbar answers.
+    expect(h.rows().filter((r) => r.checkbox.checked).length).toBeLessThan(h.rows().length);
+
+    h.selectAll();
+
+    const rows = h.rows();
+    expect(rows.length).toBe(9);
+    for (const r of rows) {
+      expect(r.checkbox.checked, `row "${r.key}" should be shown`).toBe(true);
+    }
+  });
+
+  it('shows a valueless row in bulk without making it sendable', () => {
+    // The distinction §14 left behind: a boolean attribute like `reversed` is
+    // worth SEEING and has nothing to send. A bulk select that forgot the
+    // difference would offer to send it.
+    h.start();
+    h.pick(new FakeEl('ol', { reversed: '' }));
+    h.selectAll();
+
+    const empty = h.rows().filter((r) => r.label.childNodes[1]!.className.indexOf('empty') >= 0);
+    expect(empty.length).toBeGreaterThan(0);
+    for (const r of empty) {
+      expect(r.checkbox.checked).toBe(true);        // visible…
+      expect(r.radio.disabled).toBe(true);          // …but still unsendable
+    }
+  });
+
+  it('Select all does not change which value is sent', () => {
+    // Checked against the PAYLOAD, not the radio: the panel re-renders the rows,
+    // so a corrupted outbound choice would still paint a plausible-looking radio.
+    h.start();
+    h.pick(buyLink());
+    h.confirm();
+    const baseline = h.sent[0]!.sendAttribute!;
+
+    const fresh = boot();
+    fresh.start();
+    fresh.pick(buyLink());
+    fresh.selectAll();
+    fresh.confirm();
+
+    expect(fresh.sent[0]!.sendAttribute).toEqual(baseline);
+  });
+
+  it('Select all leaves the armed radio exactly where the user put it', () => {
+    h.start();
+    h.pick(buyLink());
+    h.arm('data-sku');
+
+    h.selectAll();
+
+    const armed = h.rows().filter((r) => r.radio.checked);
+    expect(armed).toHaveLength(1);                  // still exactly one…
+    expect(armed[0]!.key).toBe('data-sku');         // …and still that one
+    h.confirm();
+    expect(h.sent[0]!.sendAttribute).toEqual({ name: 'data-sku', value: 'W-9' });
+  });
+
+  it('Clear hides everything when nothing is armed', () => {
+    // Reachable for real: with no selector generator, css/xpath arrive empty and
+    // nothing is armable, so "clear" has no row it must protect.
+    const bare = boot({ selectors: false });
+    bare.start();
+    bare.pick(new FakeEl('div', { 'data-x': 'v' }));
+    expect(bare.rows().filter((r) => r.radio.checked)).toHaveLength(0);
+
+    bare.selectAll();
+    bare.clearAll();
+
+    expect(bare.rows().filter((r) => r.checkbox.checked)).toHaveLength(0);
+  });
+
+  it('Clear never disarms the send', () => {
+    // §19's stated failure mode: a "clear" that cancelled the send would leave
+    // Confirm refusing for a reason invisible on screen.
+    h.start();
+    h.pick(buyLink());
+    h.arm('href');
+
+    h.clearAll();
+
+    const armed = h.rows().filter((r) => r.radio.checked);
+    expect(armed).toHaveLength(1);
+    expect(armed[0]!.key).toBe('href');
+    h.confirm();
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]!.sendAttribute!.name).toBe('href');
+  });
+
+  it('Clear keeps the row being SENT visible, so the panel stays honest', () => {
+    // Arming forces that row's checkbox on, because sending a value the user
+    // cannot see is indefensible. If Clear could hide it, the panel would claim
+    // to send an attribute that appears nowhere in its own list.
+    h.start();
+    h.pick(buyLink());
+    h.arm('data-sku');
+
+    h.clearAll();
+
+    const shown = h.rows().filter((r) => r.checkbox.checked);
+    expect(shown).toHaveLength(1);
+    expect(shown[0]!.key).toBe('data-sku');
+    // The payload agrees: the name being sent appears in the display list.
+    h.confirm();
+    expect(h.sent[0]!.displayAttributes).toContain(h.sent[0]!.sendAttribute!.name);
+  });
+
+  it('counts what is shown out of what was found', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.selectAll();
+    expect(h.toolsCount()).toBe('9 of 9 shown');
+
+    h.clearAll();
+    // One row survives: the pre-armed one. The count must say so rather than
+    // claim a tidy zero.
+    expect(h.toolsCount()).toBe('1 of 9 shown');
+  });
+
+  it('keeps the count truthful when single rows are ticked one at a time', () => {
+    // The count is drawn by the toolbar, the tick by the row. If they do not
+    // share one repaint the number drifts, and a stale "9 of 9" is worse than
+    // showing no count at all.
+    h.start();
+    h.pick(buyLink());
+
+    h.selectAll();
+    h.tick('data-sku');                             // untick one, via the box
+    expect(h.toolsCount()).toBe('8 of 9 shown');
+
+    h.clickLabel('data-sku');                       // and back on, via the label
+    expect(h.toolsCount()).toBe('9 of 9 shown');
+  });
+
+  it('updates the count when arming a radio pulls a hidden row into view', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clearAll();
+    expect(h.toolsCount()).toBe('1 of 9 shown');
+
+    h.arm('Text');                                  // hidden; arming shows it
+
+    expect(h.row('Text').checkbox.checked).toBe(true);
+    expect(h.toolsCount()).toBe('2 of 9 shown');
+  });
+
+  it('disables each action once it can do nothing more', () => {
+    // This panel floats over the user's own page: a button that swallows a click
+    // with no visible effect reads as the panel having frozen.
+    h.start();
+    h.pick(buyLink());
+
+    h.selectAll();
+    expect(h.toolsAll().disabled).toBe(true);        // everything already shown
+    expect(h.toolsNone().disabled).toBe(false);
+
+    h.clearAll();
+    expect(h.toolsAll().disabled).toBe(false);
+    // A radio is armed here, so one row survived Clear and there is nothing
+    // left for it to hide.
+    expect(h.toolsNone().disabled).toBe(true);
+  });
+
+  it('re-enables Select all as soon as one row is un-ticked', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+    expect(h.toolsAll().disabled).toBe(true);
+
+    h.tick('data-sku');
+
+    expect(h.toolsAll().disabled).toBe(false);
+  });
+
+  it('does not scroll the list back to the top on a bulk change', () => {
+    // The user may have scrolled down to the data-* rows. A display toggle
+    // changes no row count and no panel height, so it must not move the view.
+    h.start();
+    h.pick(buyLink());
+    h.list().scrollTop = 120;
+
+    h.selectAll();
+    expect(h.list().scrollTop).toBe(120);
+
+    h.clearAll();
+    expect(h.list().scrollTop).toBe(120);
+  });
+
+  it('does not move a panel the user has already placed', () => {
+    h.start();
+    h.pick(buyLink());
+    // The panel opens bottom-right, so it must be dragged UP AND LEFT to reach
+    // somewhere the default placement could not also produce. Dragging down-right
+    // clamps straight back to the opening corner, and the assertion below would
+    // then hold no matter what the bulk action did to the position.
+    const opened = h.pos();
+    h.drag({ x: 1000, y: 400 }, { x: 400, y: 150 });
+    const placed = h.pos();
+    expect(placed).not.toEqual(opened);
+
+    h.selectAll();
+
+    expect(h.pos()).toEqual(placed);
+  });
+
+  it('publishes the bulk change to the popup, in panel order', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+
+    const saved = h.stored.ab_lastPick as { display: string[]; sendKey: string };
+    // Every row is shown, so the published list is the list itself — in the
+    // order the user read it, which is what the popup restores.
+    expect(saved.display).toEqual(['tag', 'id', 'class', 'css', 'xpath', 'text', 'role', 'href', 'data-sku']);
+    expect(saved.sendKey).toBe('css');              // untouched by the bulk edit
+  });
+
+  it('publishes a Clear as the one surviving row', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clearAll();
+
+    const saved = h.stored.ab_lastPick as { display: string[]; sendKey: string };
+    expect(saved.display).toEqual(['css']);
+    expect(saved.sendKey).toBe('css');
+  });
+
+  it('starts each new pick from a fresh toolbar', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+    expect(h.toolsAll().disabled).toBe(true);
+
+    h.pick(new FakeEl('div', { 'data-y': 'z' }));
+
+    // The second pick shows the library's default, not the first pick's
+    // "everything" — otherwise the toolbar would look pressed for an element
+    // the user never bulk-selected.
+    expect(h.toolsAll().disabled).toBe(false);
+    expect(h.rows().filter((r) => r.checkbox.checked)).toHaveLength(1);
+  });
+
+  it('draws the toolbar above the list, not inside it', () => {
+    // It is a header FOR the rows; rendered as a row IN them it would scroll
+    // away exactly when a long list makes it useful.
+    h.start();
+    h.pick(buyLink());
+    const bar = h.toolsAll().parentElement!;
+    expect(bar.className).toBe('tools');
+    expect(bar.parentElement).toBe(h.wrap());
+    expect(h.list().childNodes.filter((n) => n.className === 'tools')).toHaveLength(0);
+    // …and before the list in document order.
+    const kids = h.wrap().childNodes;
+    expect(kids.indexOf(bar)).toBeLessThan(kids.indexOf(h.list()));
   });
 });
 

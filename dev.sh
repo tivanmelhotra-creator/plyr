@@ -53,6 +53,17 @@ else
     echo ".env موجود — رد میشم"
 fi
 
+# ۲.۵. دامنهٔ اختیاری
+#
+# قبل از build و اجرای سرور پرسیده می‌شود، چون همین مقدار است که کنار
+# Authorization Code به کاربر نشان داده می‌شود. اگر خالی بماند، سرور خودش
+# آدرس را تشخیص می‌دهد.
+echo ""
+echo "=== ۲.۵. دامنهٔ عمومی (اختیاری) ==="
+# shellcheck source=scripts/ask-domain.sh
+. "$(dirname "$0")/scripts/ask-domain.sh"
+ask_public_domain
+
 # ۳. Redis
 echo ""
 echo "=== ۳. اجرای Redis ==="
