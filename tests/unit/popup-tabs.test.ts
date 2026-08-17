@@ -67,13 +67,31 @@ function idsInHtml(): string[] {
  */
 const visible = html.replace(/<!--[\s\S]*?-->/g, '');
 
-/** The markup of one panel, by id, up to the next panel or the panels' end. */
+/**
+ * The markup of one panel, by id — to its own closing tag, counting nesting.
+ *
+ * A panel is a `<section>` and so is every card inside it, because that is what
+ * the approved design is: a panel of cards. So this cannot stop at the first
+ * `</section>` it meets — that one closes the FIRST CARD, and everything from the
+ * second card onward would silently vanish from every assertion below. A test
+ * that reads only the first card still passes while the rest of the tab is
+ * missing entirely, which is the failure mode most worth avoiding here: these
+ * assertions exist precisely to notice absent controls.
+ */
 function panel(id: string): string {
   const start = visible.indexOf(`id="${id}"`);
   expect(start, `panel ${id} must exist`).toBeGreaterThan(0);
   const rest = visible.slice(start);
-  const end = rest.indexOf('</section>');
-  return end > 0 ? rest.slice(0, end) : rest;
+
+  let depth = 1;
+  const tag = /<(\/?)section\b/gi;
+  let m = tag.exec(rest);
+  while (m) {
+    depth += m[1] ? -1 : 1;
+    if (depth === 0) return rest.slice(0, m.index);
+    m = tag.exec(rest);
+  }
+  return rest;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

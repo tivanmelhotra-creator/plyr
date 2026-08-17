@@ -7,58 +7,61 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <!--
-  THE DECISION THIS DOCUMENT IMPLEMENTS, VERBATIM
-  ───────────────────────────────────────────────
-    «Popup افزونه باید دقیقاً دو تب داشته باشد: INSPECT / CONNECTION»
-    «حذف تب ≠ حذف قابلیت»
-    «Connection فقط Connection است.»
-    «در Popup نهایی هیچ User ID نباید وجود داشته باشد.»
+  THE APPROVED DESIGN THIS DOCUMENT IMPLEMENTS
+  ────────────────────────────────────────────
+  Two supplied design documents are the canonical source of truth for this
+  popup, and this file is a faithful implementation of them — not an
+  approximation of the old popup with new colours:
 
-  WHAT THIS POPUP IS NOW
-  ──────────────────────
-  Not a multi-purpose Automation Helper. One product, one job:
+    inspect.html      → the INSPECT tab
+    connection.html   → the CONNECTION tab
 
-    Inspect Element → discover the real DOM data → tick what to SEE
-    → choose the ONE value to SEND → it lands in an exact Target Field.
+  They supersede the earlier PNG mockups in extension/UI_UX/ wherever the two
+  disagree, being both newer and far more specific: they carry an explicit token
+  set, a type pairing and per-component geometry. The specification prose in
+  extension/UI_UX/ still governs BEHAVIOUR, and nothing about behaviour changed.
 
-  So the popup has exactly two tabs and nothing else:
-    INSPECT     — which field am I attached to, and arm the picker
-    CONNECTION  — where the backend is, and the credentials to reach it
+  INSPECT, exactly as composed in the design:
 
-  WHAT WAS REMOVED, AND WHAT THAT DOES NOT MEAN
-  ─────────────────────────────────────────────
-  The `Run`, `Local` and `Setup` tabs are gone from this document. That is a
-  removal of UI, not of capability. Deliberately still alive and untouched:
+    TARGET FIELD            node / field / Field ID / ● Connected to this Field
+        ↓
+    [ ◎ INSPECT ELEMENT ]
+        ↓
+    SELECTED ELEMENT        only the CHECKED properties appear here
+        ↓
+    ATTRIBUTES              discovered on the real element; ☑ show · ◉ send (one)
+        ↓
+    DESTINATION             node / field / Field ID / selected value
+        ↓
+    [ Send Selected Attribute ]
+
+  «حذف تب ≠ حذف قابلیت»
+  ─────────────────────
+  Run / Local / Setup / User ID / Session UI are not here. That is a removal of
+  UI, not of capability. Deliberately still alive and untouched:
 
     extension/lib/ab-handoff.js          the Remote→Local session handoff client
     extension/background.js              every AB_HANDOFF_* / AB_RUN_* / AB_LIVE_*
                                          / AB_MODE_* / AB_RELAY handler
-    public/js/browser-handoff.js         the web app's OWN handoff UI, mounted at
-                                         public/index.html:240, which drives
-                                         /browser-mode/handoff/* by itself
-    src/core/SessionHandoff|BrowserMode|LocalBridge|LiveBrowser|LiveSessions
-
-  The old `Local` tab was never the Local Browser: it was one UI for Session
-  Handoff, and the web app already has a better one. Removing it orphans
-  nothing. The picker and recorder content scripts likewise stay registered in
-  manifest.json and reachable through AB_RELAY.
+    public/js/targeting-flow.js          Target This Field → LOCAL / REMOTE, the
+                                         Browser Environment step that comes FIRST
+    public/js/browser-handoff.js         the web app's own handoff UI
+    src/core/SessionHandoff|BrowserMode|BrowserEnvironment|LiveBrowser
 
   THREE CONCEPTS THAT MUST NOT BE CONFLATED
   ─────────────────────────────────────────
-    BrowserMode / Remote Browser / SessionHandoff  → the execution ENVIRONMENT
-    TargetField                                    → WHERE the data lands
-    Element Inspector                              → inspect, and send ONE value
+    Browser Environment = LOCAL / REMOTE browser   → chosen in the TARGETING flow
+    Session / Handoff   = browser infrastructure   → not in this popup at all
+    targetFieldId       = the exact data destination
 
-  Only the last two appear in this popup. The Local/Remote choice below is
-  §1's distinction and nothing else: the LOCATION OF THE BACKEND.
+  The Local/Remote pair on CONNECTION is §1's distinction and ONLY that: the
+  LOCATION OF THE BACKEND. The Browser Environment is reported on INSPECT as a
+  separate, differently-labelled row, because they are different questions.
 
-  THE TABS USE NO JAVASCRIPT. They are radio inputs plus <label>s, switched by
-  CSS `:checked ~` rules. Two reasons: an MV3 popup runs under a strict CSP
-  where inline handlers are refused outright, and popup.js resolves EVERY id in
-  one eager `els` map at load with no null guards — so a tab strip that built
-  panels lazily, or that lived in JS, would hand it nulls and break the whole
-  popup. Every id the controller expects is therefore present in this document,
-  at load, exactly once.
+  THE TABS USE NO JAVASCRIPT. They are radio inputs plus <label>s switched by
+  CSS `:checked ~` rules — an MV3 popup runs under a CSP that refuses inline
+  handlers, and popup.js resolves every id in one eager map at load with no null
+  guards, so every id it expects is present in this document, at load, once.
 -->
 <body>
   <!-- Tab state. These must precede .tabs and .panels: the CSS selects forward
@@ -66,10 +69,27 @@
   <input type="radio" name="abtab" id="tab-inspect" class="tabin" checked>
   <input type="radio" name="abtab" id="tab-connection" class="tabin">
 
+  <!-- ══ TITLE BAR ════════════════════════════════════════════════════════
+       48px on --panel, the boxed crosshair mark then ELEMENT INSPECTOR in
+       orange mono — the design's own header, both documents open with it.
+
+       The designs also place a ⚙ / ? / ✕ trio at the right. All three are inert
+       in the mockups and all three would stay inert here: a Chrome popup
+       already dismisses itself on click-away, and this extension ships no
+       options page — its settings ARE the Connection tab, one click below.
+       Three buttons that do nothing teach a user that this popup's controls do
+       nothing. What occupies that corner instead is the live backend indicator,
+       the one thing a user wants to know before reading anything else: whether
+       what they are about to send to is reachable. -->
   <header class="hdr">
-    <span class="logo">🔍</span>
+    <span class="brand" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="8.4"></circle>
+        <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"></circle>
+      </svg>
+    </span>
     <h1>Element Inspector</h1>
-    <!-- Owned by popup.js (textContent + className). Left as a bare span. -->
+    <!-- Owned by popup.js (textContent + className). -->
     <span class="conn" id="conn" title="connection">—</span>
   </header>
 
@@ -80,218 +100,431 @@
 
   <div class="panels">
 
-    <!-- ══ INSPECT ══════════════════════════════════════════════════════
-         The destination comes FIRST, before the button. A pick that cannot be
-         delivered is the first thing a user needs to know about, not something
-         to discover after clicking.
-
-         The attribute table and the radio/checkbox list are NOT here: an
-         extension popup closes the moment focus leaves it, and the picker's
-         first act is moving the mouse onto the page. That panel lives in the
-         page (content/inspector.js). This tab's job is to say where a pick
-         will land, and to arm the picker. -->
+    <!-- ══ INSPECT ══════════════════════════════════════════════════════ -->
     <section class="panel" id="p-inspect">
-      <p class="lede">Point at any element on the page and send one of its values to the field that is waiting for it.</p>
 
-      <div class="sub first">
-        <h3>Target field</h3>
-        <div class="insp">
-          <div class="inspline">
-            <span class="ilabel">Node</span>
-            <span class="ivalue" id="inspNodeName">—</span>
+      <!-- ── TARGET FIELD ──────────────────────────────────────────────
+           The destination comes FIRST, before the button. A pick that cannot be
+           delivered is the first thing a user needs to know about, not
+           something to discover after clicking. §4: the human-readable Node and
+           Field names carry the stronger visual hierarchy; the technical Field
+           ID is clearly visible but secondary. -->
+      <section class="card">
+        <div class="card-hd"><h2>Target field</h2></div>
+        <div class="card-bd">
+          <div class="idrow">
+            <span class="idicon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                <circle cx="12" cy="5" r="2.4"></circle><circle cx="5.5" cy="18" r="2.4"></circle>
+                <circle cx="18.5" cy="18" r="2.4"></circle>
+                <path d="M12 7.4v4.2M5.5 15.6v-2a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </span>
+            <span class="idmeta">
+              <span class="idlabel">Node</span>
+              <span class="ivalue strong" id="inspNodeName">—</span>
+            </span>
           </div>
-          <div class="inspline">
-            <span class="ilabel">Field</span>
-            <span class="ivalue" id="inspFieldName">—</span>
+          <div class="idrow">
+            <span class="idicon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                <rect x="4" y="3.5" width="16" height="17" rx="2.5"></rect>
+                <circle cx="12" cy="10.5" r="2.2"></circle>
+                <path d="M8.4 16.4c.9-1.6 2.1-2.4 3.6-2.4s2.7.8 3.6 2.4"></path>
+              </svg>
+            </span>
+            <span class="idmeta">
+              <span class="idlabel">Field</span>
+              <span class="ivalue strong" id="inspFieldName">—</span>
+            </span>
           </div>
           <!-- The real, server-minted identity: node_<nodeId>__<fieldKey>__<suffix>.
-               Shown last and in monospace because it is for confirming a match,
-               not for reading. -->
-          <div class="inspline">
-            <span class="ilabel">Field ID</span>
-            <span class="ivalue mono" id="inspFieldId">—</span>
+               Monospace and dimmer, because it is for confirming a match rather
+               than for reading. -->
+          <div class="idrow">
+            <span class="idicon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M9 3.5 7 20.5M17 3.5l-2 17M3.8 9h16.4M3 15h16.4"></path>
+              </svg>
+            </span>
+            <span class="idmeta">
+              <span class="idlabel">Field ID</span>
+              <span class="ivalue mono" id="inspFieldId">—</span>
+            </span>
           </div>
           <!-- WHICH BROWSER this field is being targeted in: Local Browser (this
                one) or Remote Browser (the one on the server). Reported by the
-               backend from the target's own record, never asserted here.
+               backend from the target's own record, never asserted here, and
+               CHOSEN at the start of the targeting flow — not a setting on the
+               Connection tab.
 
-               This is NOT the local/remote pair shown on the Connection tab —
-               that one is derived from whether the Base URL is loopback, i.e.
-               where the SERVER is. Keeping both visible, separately labelled,
-               is the point: they are different questions and were being read
-               as one. -->
-          <div class="inspline">
-            <span class="ilabel">Browser</span>
-            <span class="ivalue" id="inspEnv">—</span>
+               Distinct from the Local/Remote pair on CONNECTION, which is
+               derived from whether the Base URL is loopback, i.e. where the
+               SERVER is. Two different questions, separately labelled. -->
+          <div class="idrow">
+            <span class="idicon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                <rect x="2.8" y="4.5" width="18.4" height="12" rx="2"></rect>
+                <path d="M9 20h6M12 16.5V20"></path>
+              </svg>
+            </span>
+            <span class="idmeta">
+              <span class="idlabel">Browser</span>
+              <span class="ivalue" id="inspEnv">—</span>
+            </span>
           </div>
-        </div>
-        <div class="tfstate" id="inspTarget">—</div>
-      </div>
+          <div class="tfstate" id="inspTarget">—</div>
+          <!-- How many fields are open across the project, which is NOT the same
+               question as which one THIS extension is connected to. Both facts
+               are needed because "nothing is open" and "I am not connected to
+               what is open" need different fixes, and one line cannot say which
+               applies.
 
-      <div class="row">
-        <button class="btn primary" type="button" id="inspect">🔍 Inspect element</button>
-        <button class="btn ghost sm" type="button" id="inspRefresh" title="Re-read status">↻</button>
+               This is the empty state only: popup.js hides the row entirely once
+               a live target exists, because the approved design shows the
+               connected card with nothing below the status line. What it
+               replaces — a whole «FIELDS OPEN IN THE PROJECT» section with a
+               «Not attached to a field? Open Connection» paragraph — was old
+               Automation-Helper UI and is gone.
+
+               The label is what remains of that paragraph's one useful job. When
+               there is no destination, the ONLY place to establish one is the
+               Connection tab, and a user reading "no target field" in this card
+               has no reason to know that. So the empty-state line is itself the
+               route there — a real <label for>, which switches tabs through the
+               same CSS the tab strip uses. No script, so it cannot be defeated by
+               MV3's CSP, and no second mechanism to keep in step with the first.
+               It is only reachable while the row is visible, i.e. while there is
+               genuinely nothing to pick into. -->
+          <label class="hintline" id="inspNodeRow" for="tab-connection"><span id="inspNode">—</span></label>
+        </div>
+      </section>
+
+      <!-- ── THE PRIMARY ACTION ──────────────────────────────────────────
+           Full-width, solid accent, crosshair mark — the one thing on this tab
+           a first-time user is meant to press. -->
+      <div class="cta">
+        <button class="btn primary lg" type="button" id="inspect">
+          <span class="bicon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="7.4"></circle>
+              <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"></circle>
+              <path d="M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3"></path>
+            </svg>
+          </span>Inspect element</button>
+        <button class="btn ghost icon" type="button" id="inspRefresh" title="Re-read status" aria-label="Refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M20 12a8 8 0 1 1-2.34-5.66"></path><path d="M20 4v4.4h-4.4"></path>
+          </svg>
+        </button>
       </div>
-      <div class="hintline">
-        Select an element on the page to inspect it. Or press <b>Ctrl + Shift + C</b>.
-        Tick what you want to see, choose the one value to send, then confirm.
-      </div>
+      <p class="undercta">Select an element on the page to inspect it. Or press <b>Ctrl + Shift + C</b>.</p>
       <div class="status" id="inspStatus"></div>
 
-      <div class="sub">
-        <h3>Fields open in the project</h3>
-        <div class="inspline">
-          <span class="ilabel">Waiting</span>
-          <span class="ivalue" id="inspNode">—</span>
+      <!-- ── SELECTED ELEMENT ────────────────────────────────────────────
+           §17: reflects the CHECKBOX state and nothing else. Empty until a pick
+           exists, so the card announces what it is for rather than showing
+           blank rows. -->
+      <section class="card">
+        <div class="card-hd"><h2>Selected element</h2></div>
+        <div class="card-bd flush">
+          <div class="kvlist" id="selList"></div>
+          <p class="empty" id="selEmpty">No element picked yet. Only checked properties appear here.</p>
         </div>
-        <p class="jump">
-          Not attached to a field? <label for="tab-connection" class="link">Open Connection</label>
-          and enter the Authorization Code the project shows on that field.
-        </p>
+      </section>
+
+      <!-- ── ATTRIBUTES ──────────────────────────────────────────────────
+           §11: built from the ACTUAL selected element, never a static list of
+           generic HTML attributes. §16: two controls per row with completely
+           different jobs, named in the legend so a checkbox beside a radio is
+           not ambiguous on first sight. -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>Attributes <span class="hnote">Actual attributes discovered from this element</span></h2>
+        </div>
+        <div class="legend">
+          <span class="lg"><i class="swatch cb" aria-hidden="true"></i>display</span>
+          <span class="lg"><i class="swatch rd" aria-hidden="true"></i>send one value</span>
+        </div>
+        <div class="card-bd flush">
+          <div class="attrs" id="attrList"></div>
+          <p class="empty" id="attrEmpty">Pick an element to discover its real attributes.</p>
+        </div>
+        <!-- §19: these affect CHECKBOXES only and must never move the radio. -->
+        <div class="card-ft" id="attrTools" hidden>
+          <button class="btn ghost xs" type="button" id="attrAll">Select all</button>
+          <button class="btn ghost xs" type="button" id="attrNone">Clear</button>
+          <span class="counts" id="attrCount"></span>
+        </div>
+      </section>
+
+      <!-- ── DESTINATION ─────────────────────────────────────────────────
+           §20: the same authorized target, restated beside the value that is
+           about to travel to it, so "selected element → selected value → exact
+           field" reads as one sentence. -->
+      <section class="card">
+        <div class="card-hd"><h2>Destination</h2></div>
+        <div class="card-bd">
+          <div class="kvlist tight">
+            <div class="kv"><span class="k">Node</span><span class="v" id="destNode">—</span></div>
+            <div class="kv"><span class="k">Field</span><span class="v" id="destField">—</span></div>
+            <div class="kv"><span class="k">Field ID</span><span class="v mono" id="destFieldId">—</span></div>
+            <!-- The design's `.outbound`: the ONE value that is actually about
+                 to travel, boxed away from the address above it. Which
+                 attribute it came from and what it contains are the same fact
+                 read at two grains, so they share the box. -->
+            <div class="kv outbound"><span class="k">Selected value</span><span class="v accent" id="destAttr">—</span><span class="v mono wrap" id="destValue">—</span></div>
+          </div>
+          <div class="tfstate" id="destState">—</div>
+        </div>
+      </section>
+
+      <!-- §21: "Send Selected Attribute", singular — the system sends exactly
+           ONE radio-selected value. -->
+      <div class="cta">
+        <button class="btn primary lg" type="button" id="sendAttr" disabled>
+          <span class="bicon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9">
+              <path d="M3.6 11.4 20.5 3.5l-7.9 16.9-2-6.9z"></path>
+            </svg>
+          </span>Send selected attribute</button>
       </div>
+      <div class="status" id="sendStatus"></div>
     </section>
 
     <!-- ══ CONNECTION ═══════════════════════════════════════════════════
-         «Connection فقط Connection است.» Backend location, credentials, and
-         the state that results from them. Nothing about Session Handoff, the
-         Remote Browser, saved workflows or live runs belongs in here — putting
-         them back would rebuild the Automation Helper panel this replaces.
-
-         Local vs Remote here is §1's distinction and only that: where the
-         BACKEND lives. It says nothing about where the browser runs. -->
+         «Connection فقط Connection است.» Backend location, credentials, and the
+         state that results from them. Nothing about Session Handoff, the Remote
+         Browser, saved workflows or live runs belongs here — and the Browser
+         Environment does not either: that is chosen at the start of the
+         targeting flow, not configured as a connection setting. -->
     <section class="panel" id="p-connection">
-      <p class="lede">Choose where the extension should send inspected data.</p>
 
-      <div class="sub first">
-        <h3>Backend connection</h3>
-        <!-- Radio, not a dropdown: both options and both URLs stay readable at
-             once, so the user can see which machine they are about to talk to
-             without opening anything. -->
-        <label class="modecard" for="modeLocal">
-          <input type="radio" name="abmode" id="modeLocal">
-          <span class="modeicon">🖥</span>
-          <span class="modemeta">
-            <span class="modename">Local Backend</span>
-            <span class="modeurl" id="modeLocalUrl">http://127.0.0.1:3000</span>
-          </span>
-        </label>
-        <label class="modecard" for="modeRemote">
-          <input type="radio" name="abmode" id="modeRemote">
-          <span class="modeicon">🌐</span>
-          <span class="modemeta">
-            <span class="modename">Remote Backend</span>
-            <span class="modeurl" id="modeRemoteUrl">https://your-server.com</span>
-          </span>
-        </label>
-      </div>
-
-      <div class="sub">
-        <h3>Connection details</h3>
-        <label class="field">
-          <span>Base URL</span>
-          <input id="baseUrl" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
-        </label>
-        <div class="hintline">The base URL of your backend server.</div>
-      </div>
-
-      <div class="sub">
-        <h3>Authentication</h3>
-        <p class="lede">Provide the required credentials to authorize the connection.</p>
-        <label class="field">
-          <span>API Key</span>
-          <input id="apiKey" type="password" placeholder="••••••••••••" autocomplete="off">
-        </label>
-        <!-- The Authorization Code is a ONE-TIME pairing credential, not a
-             password. It is scoped server-side to a single Target Field, which
-             is the only reason this extension can never aim a pick at a field
-             the user did not offer (§8). Once paired, ordinary sends use the
-             API Key plus the bound field, and this box is only needed again to
-             move to a different field. -->
-        <label class="field">
-          <span>Authorization Code</span>
-          <input id="inspCode" type="text" placeholder="ABCD-8F21" autocomplete="off"
-                 autocapitalize="characters" spellcheck="false" maxlength="9">
-        </label>
-        <div class="row">
-          <button class="btn primary" type="button" id="connect">🔗 Connect</button>
-        </div>
-        <div class="status" id="inspPairStatus"></div>
-      </div>
-
-      <div class="sub">
-        <h3>Connection status</h3>
-        <div class="insp">
-          <div class="inspline">
-            <span class="ilabel">Status</span>
-            <span class="ivalue" id="connState">—</span>
-          </div>
-          <div class="inspline">
-            <span class="ilabel">Backend</span>
-            <span class="ivalue mono" id="connBackend">—</span>
-          </div>
-          <div class="inspline">
-            <span class="ilabel">Authorization</span>
-            <span class="ivalue" id="connAuth">—</span>
+      <section class="card">
+        <div class="card-hd"><h2>Backend connection</h2></div>
+        <div class="card-bd">
+          <p class="lede">Choose where the extension should send inspected data.</p>
+          <!-- Two cards side by side, as approved: both options and both URLs
+               stay readable at once, so the user can see which machine they are
+               about to talk to without opening anything. The whole card is the
+               <label>, so the click target is the card and not a 13px dot. -->
+          <div class="modegrid">
+            <label class="modecard" for="modeLocal">
+              <input type="radio" name="abmode" id="modeLocal">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="modemeta">
+                <span class="modename">Local Backend</span>
+                <span class="modeurl" id="modeLocalUrl">http://127.0.0.1:3000</span>
+              </span>
+            </label>
+            <label class="modecard" for="modeRemote">
+              <input type="radio" name="abmode" id="modeRemote">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="modemeta">
+                <span class="modename">Remote Backend</span>
+                <span class="modeurl" id="modeRemoteUrl">https://your-server.com</span>
+              </span>
+            </label>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div class="sub">
-        <h3>Connected to target</h3>
-        <!-- §26: «The target confirmation is essential.» A connection that is
-             up but pointed somewhere unexpected is worse than no connection,
+      <section class="card">
+        <div class="card-hd"><h2>Connection details</h2></div>
+        <div class="card-bd">
+          <label class="field stack">
+            <span>Base URL</span>
+            <input id="baseUrl" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="hintline">The base URL of your backend server.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hd"><h2>Authentication</h2></div>
+        <div class="card-bd">
+          <p class="lede">Provide the required credentials to authorize the connection.</p>
+          <label class="field inline">
+            <span>API key</span>
+            <span class="ibox">
+              <input id="apiKey" type="password" placeholder="••••••••••••" autocomplete="off">
+              <button class="peek" type="button" id="apiKeyPeek" title="Show or hide" aria-label="Show or hide the API key">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"></path>
+                  <circle cx="12" cy="12" r="2.8"></circle><path d="M3.5 20.5 20.5 3.5"></path>
+                </svg>
+              </button>
+            </span>
+          </label>
+          <!-- §7 — The Authorization Code is a ONE-TIME pairing credential, not
+               a password. It is scoped server-side to a single Target Field,
+               which is the only reason this extension can never aim a pick at a
+               field the user did not offer (§8). Once paired, ordinary sends use
+               the API Key plus the bound field, and this box is only needed
+               again to move to a DIFFERENT field.
+
+               REMOTE BROWSER targets never need one at all — the server owns
+               that browser and binds the Inspector itself. -->
+          <label class="field inline">
+            <span>Authorization code</span>
+            <span class="ibox">
+              <input id="inspCode" type="text" placeholder="ABCD-8F21" autocomplete="off"
+                     autocapitalize="characters" spellcheck="false" maxlength="9">
+            </span>
+          </label>
+          <div class="cta">
+            <button class="btn primary lg" type="button" id="connect">
+              <span class="bicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9">
+                  <path d="M9.6 14.4 6.8 17.2a3.4 3.4 0 0 1-4.8-4.8l3.4-3.4"></path>
+                  <path d="M14.4 9.6l2.8-2.8a3.4 3.4 0 0 1 4.8 4.8l-3.4 3.4"></path>
+                  <path d="M9 15l6-6"></path>
+                </svg>
+              </span>Connect</button>
+          </div>
+          <div class="status" id="inspPairStatus"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hd"><h2>Connection status</h2></div>
+        <div class="card-bd">
+          <div class="statebox">
+            <div class="tfstate" id="connState">—</div>
+            <div class="splitrow">
+              <div class="idrow">
+                <span class="idicon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <rect x="2.8" y="4" width="18.4" height="6.4" rx="1.6"></rect>
+                    <rect x="2.8" y="13.6" width="18.4" height="6.4" rx="1.6"></rect>
+                    <path d="M6.2 7.2h.01M6.2 16.8h.01"></path>
+                  </svg>
+                </span>
+                <span class="idmeta">
+                  <span class="idlabel">Backend</span>
+                  <span class="ivalue mono" id="connBackend">—</span>
+                </span>
+              </div>
+              <div class="idrow">
+                <span class="idicon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <path d="M12 3.2 19.4 6v5.4c0 4.2-3 7.4-7.4 9.4-4.4-2-7.4-5.2-7.4-9.4V6z"></path>
+                    <path d="M9.2 12.2l2 2 3.6-3.8"></path>
+                  </svg>
+                </span>
+                <span class="idmeta">
+                  <span class="idlabel">Authorization</span>
+                  <span class="ivalue" id="connAuth">—</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hd"><h2>Connected to target</h2></div>
+        <!-- §26: «The target confirmation is essential.» A connection that is up
+             but pointed somewhere unexpected is worse than no connection,
              because the send succeeds. -->
-        <div class="insp tree">
-          <div class="inspline">
-            <span class="ilabel">Node</span>
-            <span class="ivalue" id="ctNode">—</span>
+        <div class="card-bd">
+          <div class="tree">
+            <div class="idrow">
+              <span class="idicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <circle cx="12" cy="5" r="2.4"></circle><circle cx="5.5" cy="18" r="2.4"></circle>
+                  <circle cx="18.5" cy="18" r="2.4"></circle>
+                  <path d="M12 7.4v4.2M5.5 15.6v-2a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v2"></path>
+                </svg>
+              </span>
+              <span class="idmeta">
+                <span class="idlabel">Node</span>
+                <span class="ivalue strong" id="ctNode">—</span>
+              </span>
+            </div>
+            <div class="idrow">
+              <span class="idicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <rect x="4" y="3.5" width="16" height="17" rx="2.5"></rect>
+                  <circle cx="12" cy="10.5" r="2.2"></circle>
+                  <path d="M8.4 16.4c.9-1.6 2.1-2.4 3.6-2.4s2.7.8 3.6 2.4"></path>
+                </svg>
+              </span>
+              <span class="idmeta">
+                <span class="idlabel">Field</span>
+                <span class="ivalue strong" id="ctField">—</span>
+              </span>
+            </div>
+            <div class="idrow">
+              <span class="idicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M9 3.5 7 20.5M17 3.5l-2 17M3.8 9h16.4M3 15h16.4"></path>
+                </svg>
+              </span>
+              <span class="idmeta">
+                <span class="idlabel">Field ID</span>
+                <span class="ivalue mono" id="ctFieldId">—</span>
+              </span>
+            </div>
+            <!-- Same reading as the Inspect tab's "Browser" row, repeated here so
+                 the two cards can never disagree about which environment the
+                 pick is happening in. Distinct from "Backend" above, which says
+                 where the SERVER is. -->
+            <div class="idrow">
+              <span class="idicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <rect x="2.8" y="4.5" width="18.4" height="12" rx="2"></rect>
+                  <path d="M9 20h6M12 16.5V20"></path>
+                </svg>
+              </span>
+              <span class="idmeta">
+                <span class="idlabel">Browser</span>
+                <span class="ivalue" id="ctEnv">—</span>
+              </span>
+            </div>
+            <!-- The DURABLE pairing, as opposed to the ADDRESS in "Field ID".
+                 Answers the only question the operator actually cares about
+                 here: will another Authorization Code be asked for next time?
+                 The address expires in hours and is re-minted on every NDV open;
+                 the pairing lasts for days and is what makes «دفعات بعد … دیگر
+                 نیازی به Authorization Code جدید نیست» true. -->
+            <div class="idrow">
+              <span class="idicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M9.6 14.4 6.8 17.2a3.4 3.4 0 0 1-4.8-4.8l3.4-3.4"></path>
+                  <path d="M14.4 9.6l2.8-2.8a3.4 3.4 0 0 1 4.8 4.8l-3.4 3.4"></path>
+                </svg>
+              </span>
+              <span class="idmeta">
+                <span class="idlabel">Pairing</span>
+                <span class="ivalue" id="ctPairing">—</span>
+              </span>
+            </div>
           </div>
-          <div class="inspline">
-            <span class="ilabel">Field</span>
-            <span class="ivalue" id="ctField">—</span>
-          </div>
-          <div class="inspline">
-            <span class="ilabel">Field ID</span>
-            <span class="ivalue mono" id="ctFieldId">—</span>
-          </div>
-          <!-- Same reading as the Inspect tab's "Browser" row, repeated here so
-               the two cards can never disagree about which environment the pick
-               is happening in. Distinct from "Backend" above, which says where
-               the SERVER is — that one is derived from a loopback URL and has
-               nothing to do with which browser does the targeting. -->
-          <div class="inspline">
-            <span class="ilabel">Browser</span>
-            <span class="ivalue" id="ctEnv">—</span>
-          </div>
-          <!-- The DURABLE pairing, as opposed to the ADDRESS in "Field ID".
-               Answers the only question the operator actually cares about here:
-               will another Authorization Code be asked for next time? The
-               address expires in hours and is re-minted on every NDV open; the
-               pairing lasts for days and is what makes the requirement
-               «دفعات بعد ... دیگر نیازی به Authorization Code جدید نیست» true. -->
-          <div class="inspline">
-            <span class="ilabel">Pairing</span>
-            <span class="ivalue" id="ctPairing">—</span>
+          <div class="tfstate" id="ctState">—</div>
+          <div class="cta end">
+            <button class="btn ghost sm" type="button" id="inspUnpair" hidden>Disconnect</button>
           </div>
         </div>
-        <div class="tfstate" id="ctState">—</div>
-        <div class="row spaced">
-          <button class="btn ghost sm" type="button" id="inspUnpair" hidden>Disconnect</button>
-        </div>
-      </div>
+      </section>
 
-      <div class="hintline note">
-        ℹ Inspected data will be sent to the configured backend and mapped to the target field.
-      </div>
+      <p class="note">
+        <span class="nicon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7">
+            <circle cx="12" cy="12" r="9"></circle><path d="M12 10.6v6M12 7.6h.01"></path>
+          </svg>
+        </span>
+        Inspected data will be sent to the configured backend and mapped to the target field.
+      </p>
     </section>
 
   </div>
 
   <!-- The shared status line, deliberately OUTSIDE the panels.
-       popup.js has one setStatus() writing to #status and it is called from
-       both tabs ("Saved.", "Connected.", "Connection failed: …"). Inside a
-       panel it would answer "did my key work?" into a tab the user is not
-       looking at — a silent failure. -->
+       popup.js has one setStatus() writing to #status and it is called from both
+       tabs ("Saved.", "Connected.", "Connection failed: …"). Inside a panel it
+       would answer "did my key work?" into a tab the user is not looking at — a
+       silent failure. -->
   <footer class="foot">
     <div class="status" id="status"></div>
   </footer>
