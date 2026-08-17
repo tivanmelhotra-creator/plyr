@@ -1,38 +1,221 @@
-* { box-sizing: border-box; }
-:root {
-  --bg: #0f1420;
-  --card: #19202e;
-  --line: #2a3346;
-  --text: #e6ecf5;
-  --muted: #8a98ad;
-  --accent: #ff8a3d;
-  --ok: #2ec27e;
-  --bad: #ff5c6c;
-  --warn: #f2b53c;
+/* ============================================================
+   popup.css — the Element Inspector design system.
+
+   SOURCE OF TRUTH
+   ───────────────
+   The two supplied design documents for this popup:
+
+     inspect.html      → the INSPECT tab
+     connection.html   → the CONNECTION tab
+
+   Every token below is taken from their `:root`, not approximated:
+
+     --bg      #0a0a0a   the page behind the cards
+     --panel   #1a1a1a   the title bar and the tab strip
+     --panel2  #131313   every card
+     --panel3  #0e0e0e   the footnote box
+     --border  #2a2a2a   1px hairline, every border
+     --text    #ffffff   primary
+     --muted   #a0a0a0   labels and secondary values
+     --dim     #666666   de-emphasised affordances
+     --orange  #ff6600   card titles, active tab, primary buttons, selection
+     --green   #00c853   connected / valid / active
+     --radius  4px       cards AND controls — one radius, not two
+
+   TYPOGRAPHY IS THE HIERARCHY
+   ───────────────────────────
+   The design pairs two families and uses the switch between them to carry
+   meaning, so it is applied by ROLE rather than per-component:
+
+     Hanken Grotesk   prose — human-readable names, ledes, hints
+     JetBrains Mono   every label, every technical identity, every button
+
+   `.caps` is the design's own recurring atom: JetBrains Mono 700 / 10px /
+   .1em / uppercase. Card titles, tab labels, field labels and the small
+   key column are all that same atom, which is why it is defined once.
+
+   FONTS ARE BUNDLED, NOT FETCHED
+   ──────────────────────────────
+   The design documents pull both families from fonts.googleapis.com. A
+   `<link>` to a remote stylesheet cannot work here, for three separate
+   reasons, any one of which is decisive:
+
+     · MV3's default extension CSP allows `style-src 'self'` only, so the
+       stylesheet is blocked outright and the popup silently falls back to
+       system fonts;
+     · an extension popup must render with no network — offline, on a
+       captive portal, behind a firewall — and this one exists to talk to
+       `http://127.0.0.1:3000`, which needs no internet at all;
+     · it would tell Google the IP address of every user every time they
+       open the popup, which is a tracking beacon nobody asked for.
+
+   So both families are vendored into popup/fonts/ as the woff2 the Google
+   CSS itself points at, and declared below. They are variable fonts, so one
+   file per family covers 400–700 and the whole weight range the design uses.
+   Local names come first in every stack, and a system fallback follows, so
+   a missing file degrades to the right SHAPE of font rather than to nothing.
+
+   PROPORTIONS
+   ───────────
+   440px wide, from the design's `--w`. The title bar and tab strip are
+   `position: sticky` in the design; here they are flex-fixed instead and
+   .panels owns the scroll — Chrome caps a popup at 600px and scrolls the
+   whole document past that, which would carry a sticky strip off the top.
+   Same result, achieved in the one way that survives the popup's own
+   height limit.
+   ============================================================ */
+
+/* ── The vendored families ─────────────────────────────────────────────────
+   `font-display: swap` is deliberate even for a local file: it renders the
+   fallback immediately rather than showing a blank popup for a frame. */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fonts/hanken-grotesk-latin.woff2') format('woff2');
 }
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-latin.woff2') format('woff2');
+}
+
+* { box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0a;
+  --panel: #1a1a1a;
+  --panel2: #131313;
+  --panel3: #0e0e0e;
+  --border: #2a2a2a;
+  --text: #fff;
+  --muted: #a0a0a0;
+  --dim: #666;
+  --orange: #ff6600;
+  --orange-text: #1a0a00;
+  --orange-line: #55301d;
+  --orange-tint: #120e0b;
+  --green: #00c853;
+  --danger: #ff6b63;
+  --radius: 4px;
+  --sans: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 body {
   margin: 0;
-  /* 360 rather than the Chrome minimum: the Connection tab stacks two mode
-     cards that each carry a full URL, and a narrower popup wrapped them onto a
-     second line where they stopped reading as one choice. */
-  width: 360px;
-  font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  /* The design's --w. Wider than a minimal popup because the Connection tab
+     keeps a full Base URL on one line and the attribute table keeps name and
+     value side by side without either being truncated to nothing. */
+  width: 440px;
+  height: 600px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
   background: var(--bg);
   color: var(--text);
-  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
 }
+
+/* The design's recurring label atom. Defined once, applied by role. */
+.card-hd h2,
+.tabs label,
+.field.stack span,
+.field.inline > span:first-child,
+.legend .lg,
+.kv .k,
+.idlabel,
+.btn.ghost,
+.btn.primary {
+  font-family: var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+/* ── Title bar ─────────────────────────────────────────────────────────────
+   48px on --panel with a hairline under it, exactly as both documents open.
+
+   The documents also place a ⚙ / ? / ✕ trio at the right. All three are inert
+   in the mockups, and all three would stay inert here: a Chrome popup already
+   dismisses itself on click-away, and this extension ships no options page —
+   its settings ARE the Connection tab, one click away in the strip directly
+   below. Three buttons that do nothing teach a user that this popup's
+   controls do nothing.
+   What occupies that corner instead is the live backend indicator, which is
+   the one piece of information a user wants before they read anything else:
+   whether the thing they are about to send to is reachable. */
+.hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 48px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--orange-line);
+  border-radius: 3px;
+  color: var(--orange);
+}
+.hdr h1 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: 700 14px/20px var(--mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--orange);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Owned by popup.js, which writes `conn ok` / `conn bad`. The dot is drawn
+   with ::before so one element carries both the light and its label. */
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font: 10px/12px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.conn::before {
+  content: '';
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.conn.ok { color: var(--green); }
+.conn.ok::before { background: var(--green); box-shadow: 0 0 7px #00c85366; }
+.conn.bad { color: var(--danger); }
+.conn.bad::before { background: var(--danger); }
 
 /* ── Tabs, with no JavaScript ─────────────────────────────────────────────
    Two radios drive two panels through `:checked ~ .panels`. An MV3 popup runs
    under a CSP that refuses inline handlers, and popup.js resolves every id in
-   one eager map with no null guards — so the panels must all EXIST at load and
+   one eager map with no null guards — so both panels must EXIST at load and
    only their visibility may change. `display: none` is right here and not
-   `visibility`: a hidden panel must not reserve height, or the popup grows a
-   scrollbar for content nobody is looking at.
+   `visibility`: a hidden panel must not reserve height.
 
    The radios are visually hidden but must stay focusable, so they are moved
-   off-screen rather than given `display: none` (which would drop them out of
-   the tab order and make the strip unreachable by keyboard). */
+   off-screen rather than given `display: none`, which would drop them out of
+   the tab order and make the strip unreachable by keyboard. */
 .tabin {
   position: absolute;
   opacity: 0;
@@ -42,26 +225,33 @@ body {
 }
 .tabs {
   display: flex;
-  border-bottom: 1px solid var(--line);
-  padding: 0 6px;
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
+/* `flex: 1` and centred, as the design has them: two equal halves rather than
+   two left-aligned words, so the strip reads as a two-state switch. */
 .tabs label {
   flex: 1;
-  text-align: center;
-  padding: 9px 4px;
-  font-size: 11px;
-  letter-spacing: .06em;
-  text-transform: uppercase;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
   color: var(--muted);
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   user-select: none;
+  transition: color .12s;
 }
 .tabs label:hover { color: var(--text); }
 
-/* Only one panel is on screen at a time. */
-.panel { display: none; padding: 12px; }
+.panels { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+
+/* Only one panel is on screen at a time. 12px gutter and 12px between cards,
+   from the design's `main{padding:12px;gap:12px}`. */
+.panel { display: none; padding: 12px 12px 20px; }
 
 #tab-inspect:checked    ~ .panels #p-inspect,
 #tab-connection:checked ~ .panels #p-connection { display: block; }
@@ -70,179 +260,489 @@ body {
    the two labels are the only children of .tabs, in document order. */
 #tab-inspect:checked    ~ .tabs label:nth-of-type(1),
 #tab-connection:checked ~ .tabs label:nth-of-type(2) {
-  color: var(--text);
-  border-bottom-color: var(--accent);
+  color: var(--orange);
+  border-bottom-color: var(--orange);
 }
 
 /* Keyboard users need to see where they are before they press an arrow key. */
 .tabin:focus-visible ~ .tabs label { outline: none; }
 #tab-inspect:focus-visible    ~ .tabs label:nth-of-type(1),
 #tab-connection:focus-visible ~ .tabs label:nth-of-type(2) {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  border-radius: 4px;
+  outline: 1px solid var(--orange);
+  outline-offset: -3px;
 }
 
-/* One sentence at the top of each section saying what it is for. */
-.lede {
-  margin: 0 0 10px;
-  font-size: 11px;
-  line-height: 1.5;
+/* ── Cards ────────────────────────────────────────────────────────────────
+   The unit of composition in both documents: a bordered 4px card on the
+   darker page, titled with the uppercase mono atom in orange. */
+.card {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+/* The last card keeps its gap. Collapsing it to 0 put the card's bottom border
+   flush against the footer's top hairline, reading as one thick seam and making
+   the card look clipped rather than finished — and when the panel is scrolled to
+   the end there was no margin to show the list had actually ended. */
+.card:last-of-type { margin-bottom: 4px; }
+.card-hd { padding: 12px 12px 0; }
+.card-hd h2 {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
+  color: var(--orange);
+}
+/* The design's second line under a title — "ACTUAL ATTRIBUTES DISCOVERED FROM
+   THIS ELEMENT". Prose, not a label, so it drops out of the mono atom. */
+.hnote {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--muted);
 }
-
-/* A second job inside the same panel: divider, not a new card. */
-.sub { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
-.sub.first { margin-top: 0; padding-top: 0; border-top: none; }
-.sub h3 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  color: var(--muted);
-  margin: 0 0 8px;
+.card-bd { padding: 10px 12px 12px; }
+/* Row lists run edge to edge so their hairlines meet the card border, exactly
+   as SELECTED ELEMENT and ATTRIBUTES do in the design. */
+.card-bd.flush { padding: 0; }
+.card-ft {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
 }
+.counts { margin-left: auto; font: 10px/12px var(--mono); color: var(--muted); }
 
-/* A cross-tab pointer. It is a real <label for>, so it switches tabs from
-   anywhere in the document without any script. */
-.link {
-  color: var(--accent);
+.lede { margin: 4px 0 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+.card-hd + .card-bd .lede { margin-top: 0; }
+
+/* The empty-state line under the target card. It is a <label for="tab-connection">
+   — the one place a destination can be established — so it must read as
+   actionable without becoming a second button competing with INSPECT ELEMENT
+   directly below it. Hence a text-weight affordance: muted until hovered,
+   orange on hover, and no border or fill of its own. */
+.hintline {
+  display: block;
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
   cursor: pointer;
-  text-decoration: underline;
 }
-.jump { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
-.hintline.note {
-  margin-top: 12px;
-  padding: 7px 8px;
-  background: var(--card);
-  border-left: 2px solid var(--accent);
-  border-radius: 4px;
-}
-.row.spaced { margin-top: 8px; }
+.hintline:hover { color: var(--orange); }
+.undercta { margin: 6px 0 0; text-align: center; font-size: 12px; line-height: 16px; color: var(--muted); }
+.undercta b { color: var(--text); font-weight: 600; }
+.empty { margin: 0; padding: 14px; font-size: 12px; line-height: 16px; color: var(--muted); }
 
-/* The shared status line. It sits below the panels and is written by one
-   setStatus() that both tabs call, so it must never be inside a panel that
-   could be hidden when the message arrives. min-height keeps the popup from
-   changing height as messages come and go. */
-.foot {
+/* The design's footnote box: --panel3, hairline, mono-free prose. */
+.note {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  background: var(--panel3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.nicon { display: flex; color: var(--orange); margin-top: 1px; }
+
+/* ── Identity rows: icon + label above value ──────────────────────────────
+   The design's `.meta-row`: an 18px glyph column, then a mono label with the
+   human-readable value beneath it. The names carry the stronger hierarchy;
+   the technical Field ID stays clearly visible but visually secondary. */
+.idrow {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 5px 0;
+}
+.idicon { display: flex; justify-content: center; color: var(--muted); margin-top: 2px; }
+.idmeta { display: flex; flex-direction: column; min-width: 0; }
+.idlabel { font-size: 10px; font-weight: 400; line-height: 12px; letter-spacing: .04em; color: var(--muted); }
+.ivalue {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text);
+  min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ivalue.strong { font-weight: 500; }
+/* The design lets the Field ID wrap rather than truncate — an id you can only
+   see two thirds of cannot do its one job, which is confirming a match. */
+.ivalue.mono {
+  font: 12px/16px var(--mono);
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+.ivalue.ok { color: var(--green); }
+.ivalue.warn { color: var(--orange); }
+.ivalue.none { color: var(--muted); font-style: italic; }
+
+.tree { display: grid; }
+
+/* The one-line verdict under a card: connected / stale / not connected, drawn
+   as the design's status line — a glowing dot and mono text above a hairline.
+   Kept visually distinct from the label:value rows because it is the sentence
+   a user reads first. */
+.tfstate {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font: 11px/14px var(--mono);
+  color: var(--muted);
+}
+.tfstate::before {
+  content: '';
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.tfstate:empty { display: none; }
+.tfstate.ok { color: var(--green); }
+.tfstate.ok::before { background: var(--green); box-shadow: 0 0 7px #00c85366; }
+.tfstate.warn { color: var(--orange); }
+.tfstate.warn::before { background: var(--orange); box-shadow: 0 0 7px #ff660055; }
+.tfstate.none { color: var(--muted); }
+
+/* CONNECTION STATUS: the verdict, then the two facts behind it side by side,
+   as the design's `.status-grid`. */
+.statebox { display: block; }
+.statebox .tfstate { margin: 0; padding: 0; border-top: 0; font-size: 11px; }
+.splitrow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.splitrow .idrow { padding: 0; min-width: 0; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────
+   The design's primary is a full-width solid orange bar, 40px, with dark
+   text — `color:#1a0a00`, not white. That dark-on-orange pairing is what
+   keeps it from vibrating against the near-black page, so it is kept. */
+.cta { display: flex; gap: 8px; align-items: stretch; margin-top: 12px; }
+.cta.end { justify-content: flex-end; }
+.card-bd .cta { margin-top: 10px; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 11px;
+  background: #151515;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s, filter .12s;
+}
+.btn:hover { border-color: #444; background: #1a1a1a; }
+.btn:focus-visible { outline: 1px solid var(--orange); outline-offset: 1px; }
+.btn.primary {
+  flex: 1;
+  min-height: 40px;
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--orange-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: .06em;
+}
+.btn.primary:hover { filter: brightness(1.06); background: var(--orange); border-color: var(--orange); }
+.btn.lg { min-height: 40px; }
+.btn.ghost {
+  height: 28px;
+  background: #101010;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  letter-spacing: .06em;
+}
+.btn.ghost:hover { border-color: #444; background: #151515; }
+.btn.sm { height: 30px; font-size: 10px; font-weight: 600; letter-spacing: .05em; }
+.btn.xs { height: 28px; padding: 0 10px; }
+.btn.icon { flex: 0 0 40px; min-height: 40px; padding: 0; color: var(--muted); }
+.btn.icon:hover { color: var(--text); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary:disabled:hover { filter: none; }
+.bicon { display: flex; }
+
+/* ── Backend mode cards ───────────────────────────────────────────────────
+   The design's `.option`: a 16px drawn radio, then name over URL, on #101010,
+   turning orange-tinted when active. Side by side rather than stacked so both
+   URLs stay readable at once — the user can see which machine they are about
+   to talk to without opening anything. The whole card is the <label>. */
+.modegrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.modecard {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px;
+  background: #101010;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color .12s, background .12s;
+}
+.modecard:hover { border-color: #444; }
+/* The native input is replaced by a drawn ring: the design's ring-and-fill is
+   not reachable with `accent-color` alone, and the input must stay focusable. */
+.modecard input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.dot {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #777;
+  border-radius: 50%;
+  margin-top: 2px;
+  position: relative;
+}
+.modemeta { display: flex; flex-direction: column; min-width: 0; }
+.modename { font-size: 13px; line-height: 18px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.modeurl {
+  font: 11px/14px var(--mono);
+  color: var(--muted);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+/* :has() is why the selected card can be tinted with no JavaScript. It is
+   supported in every Chromium that supports MV3. */
+.modecard:has(input:checked) { border-color: var(--orange); background: var(--orange-tint); }
+.modecard:has(input:checked) .dot { border-color: var(--orange); }
+.modecard:has(input:checked) .dot::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--orange);
+}
+.modecard:has(input:checked) .modeurl { color: var(--orange); }
+.modecard:has(input:focus-visible) { outline: 1px solid var(--orange); outline-offset: 1px; }
+
+/* ── Fields ───────────────────────────────────────────────────────────────
+   The design stacks every label above its box and gives the box a 34px height
+   on #0f0f0f with a mono value. Both arrangements in the markup are kept —
+   Base URL stacks, API key and Authorization code label beside — but they
+   share one box style so the three inputs cannot drift apart. */
+.field { display: block; margin-top: 10px; }
+.card-hd + .card-bd > .field:first-child { margin-top: 0; }
+.field.stack span,
+.field.inline > span:first-child {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+.field.inline > span:first-child { color: var(--muted); }
+.ibox, .field.stack .ibox { position: relative; display: flex; min-width: 0; }
+.field input {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 9px;
+  background: #0f0f0f;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: 12px/16px var(--mono);
+}
+.field.inline input { padding-right: 34px; }
+.field input::placeholder { color: var(--dim); }
+.field input:focus { outline: none; border-color: var(--orange); }
+.peek {
+  position: absolute;
+  right: 5px; top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  padding: 5px;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.peek:hover { color: var(--text); }
+.peek.on { color: var(--orange); }
+.peek:focus-visible { outline: 1px solid var(--orange); outline-offset: 0; }
+
+/* ── SELECTED ELEMENT rows ────────────────────────────────────────────────
+   The design's `.selected-item`: a 110px mono key column, then the value, one
+   hairline per row. Driven entirely by the checkbox state, so these rows are
+   created and destroyed by popup.js rather than declared here. */
+.kvlist { display: block; }
+.kv {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
   padding: 8px 12px;
-  border-top: 1px solid var(--line);
-  min-height: 30px;
+  border-bottom: 1px solid var(--border);
+}
+.kv:last-child { border-bottom: 0; }
+.kv .k { font-size: 10px; font-weight: 400; line-height: 12px; letter-spacing: .04em; color: var(--muted); }
+.kv .v {
+  min-width: 0;
+  font: 12px/16px var(--mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.kv .v.none { color: var(--muted); font-style: italic; font-family: var(--sans); }
+
+/* DESTINATION uses the same key:value idea at the design's tighter 72px
+   gutter, with no hairlines — it is a restatement, not a table. */
+.kvlist.tight { display: grid; gap: 8px; padding: 0; }
+.kvlist.tight .kv {
+  grid-template-columns: 92px minmax(0, 1fr);
+  padding: 0;
+  border-bottom: 0;
+}
+.kvlist.tight .kv .v { font-family: var(--sans); font-size: 13px; line-height: 18px; }
+.kvlist.tight .kv .v.mono { font: 12px/16px var(--mono); }
+
+/* The design's `.outbound` — the one value that is actually about to travel,
+   boxed in warm-tinted charcoal so it separates from the address above it. */
+.kvlist.tight .kv.outbound {
+  display: block;
+  margin-top: 2px;
+  padding: 10px;
+  background: #110e0c;
+  border: 1px solid #3a261b;
+  border-radius: 3px;
+}
+.kv.outbound .k { display: block; margin-bottom: 4px; }
+.kv.outbound .v { color: var(--text); }
+.kv .v.accent { font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--orange); }
+
+/* ── ATTRIBUTES table ─────────────────────────────────────────────────────
+   The design's `.row` grid, and the column order the specification fixes:
+
+     [checkbox] [radio] name … value
+
+   The two controls are drawn rather than native: the design's filled orange
+   square and orange ring cannot be produced with `accent-color`, and drawing
+   them keeps the "these do different things" reading that identical native
+   controls destroy. The real inputs stay in the DOM, focusable, so the browser
+   still enforces "one radio per group" for us. */
+.legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.legend .lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 12px;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+.swatch { flex: 0 0 8px; width: 8px; height: 8px; display: inline-block; }
+.swatch.cb { border: 1px solid var(--orange); background: var(--orange); }
+.swatch.rd { border: 1px solid #888; border-radius: 50%; }
+
+.attrs { display: block; }
+.arow {
+  display: grid;
+  grid-template-columns: 18px 18px minmax(82px, 120px) minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid #232323;
+}
+.arow:last-child { border-bottom: 0; }
+.arow:hover { background: #ffffff05; }
+.arow.sending { background: var(--orange-tint); }
+
+.ctl { position: relative; display: flex; }
+.ctl input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.ctl .mark { display: block; width: 14px; height: 14px; pointer-events: none; }
+.ctl.check .mark { border: 1px solid #777; border-radius: 2px; background: transparent; }
+.ctl.check input:checked ~ .mark {
+  background: var(--orange);
+  border-color: var(--orange);
+  /* The tick is a background image rather than a glyph: a text ✓ inherits the
+     page font metrics and lands off-centre at 14px. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.4 8.4l3 3 6.2-6.6' fill='none' stroke='%231a0a00' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 14px 14px;
+}
+.ctl.radio .mark { border: 1px solid #777; border-radius: 50%; }
+.ctl.radio input:checked ~ .mark { border-color: var(--orange); }
+.ctl.radio input:checked ~ .mark::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--orange);
+}
+.ctl input:focus-visible ~ .mark { outline: 1px solid var(--orange); outline-offset: 2px; }
+.ctl input:disabled { cursor: default; }
+.ctl input:disabled ~ .mark { opacity: .3; }
+
+/* The design dims an attribute's NAME and keeps its VALUE white, then lifts the
+   name to white on the rows that are checked — so the shown set is legible as a
+   set while scanning, without a second colour. */
+.aname {
+  font: 11px/14px var(--mono);
+  color: var(--muted);
+  min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.arow:has(.ctl.check input:checked) .aname { color: var(--text); }
+/* data-* rows are the site's own data hooks — the ones a user is usually
+   hunting for — so they keep a tint of the accent rather than a fourth hue. */
+.aname.data { color: #d98b52; }
+.arow:has(.ctl.check input:checked) .aname.data { color: var(--orange); }
+.avalue {
+  min-width: 0;
+  font: 12px/16px var(--mono);
+  color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.avalue.empty { color: var(--dim); font-style: italic; font-family: var(--sans); }
+
+/* ── Status lines ─────────────────────────────────────────────────────── */
+.status { margin-top: 8px; font: 11px/14px var(--mono); min-height: 14px; }
+.status:empty { min-height: 0; margin-top: 0; }
+.status.ok { color: var(--green); }
+.status.bad { color: var(--danger); }
+.status.warn { color: var(--orange); }
+
+.foot {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  min-height: 32px;
 }
 .foot .status { margin-top: 0; }
 
-.hdr {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
-}
-.hdr h1 { font-size: 14px; margin: 0; flex: 1; }
-.logo { font-size: 18px; }
-.conn { font-size: 11px; color: var(--muted); }
-.conn.ok { color: var(--ok); }
-.conn.bad { color: var(--bad); }
-
-.field { display: block; margin-bottom: 8px; }
-.field span { display: block; color: var(--muted); margin-bottom: 3px; font-size: 11px; }
-.field input {
-  width: 100%;
-  padding: 6px 8px;
-  background: #0c1119;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--text);
-  font-size: 12px;
-}
-.field input:focus { outline: none; border-color: var(--accent); }
-.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.btn {
-  flex: 1;
-  min-width: 80px;
-  padding: 7px 10px;
-  background: var(--line);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
-}
-.btn:hover { border-color: var(--accent); }
-.btn.primary { background: var(--accent); color: #1a1005; font-weight: 600; }
-.btn.ghost { background: transparent; border: 1px solid var(--line); }
-.btn.sm { flex: 0 1 auto; padding: 5px 9px; font-size: 11px; }
-.btn.xs { padding: 2px 6px; font-size: 10px; }
-.btn:disabled { opacity: .55; cursor: default; }
-
-.status { margin-top: 8px; font-size: 11px; min-height: 14px; }
-.status.ok { color: var(--ok); }
-.status.bad { color: var(--bad); }
-.status.warn { color: var(--warn); }
-
-/* ── Backend connection cards ─────────────────────────────────────────────
-   Radio, not a dropdown: both options and both URLs stay on screen, so the
-   user can see which machine they are about to talk to without opening
-   anything. The whole card is the <label>, so the click target is the card
-   rather than an 13px dot. */
-.modecard {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  margin-bottom: 8px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.modecard:hover { border-color: var(--muted); }
-.modecard input { accent-color: var(--accent); margin: 0; flex: 0 0 auto; }
-.modeicon { font-size: 16px; flex: 0 0 auto; }
-.modemeta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.modename { font-size: 12px; color: var(--text); }
-.modeurl {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10px;
-  color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-/* :has() is the reason the selected card can be tinted without JavaScript. It
-   is supported in every Chromium that supports MV3, so there is no version of
-   this extension where the fallback would be needed. */
-.modecard:has(input:checked) { border-color: var(--accent); }
-.modecard:has(input:checked) .modeurl { color: var(--accent); }
-.modecard:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-/* ── Target Field / status lines ──────────────────────────────────────────
-   Read-only lines answering the questions a user has BEFORE picking: which
-   node, which field, and which exact Field ID. Guessing any of those is how a
-   pick ends up somewhere unexpected. */
-.insp { margin-bottom: 8px; }
-.insp.tree { border-left: 1px dotted var(--line); padding-left: 10px; }
-.inspline {
-  display: flex; align-items: center; gap: 8px;
-  padding: 3px 0; font-size: 11px;
-}
-.ilabel { flex: 0 0 78px; color: var(--muted); }
-.ivalue {
-  flex: 1; min-width: 0; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.ivalue.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10px; color: var(--muted); }
-.ivalue.ok { color: var(--ok); }
-.ivalue.warn { color: var(--warn); }
-.ivalue.none { color: var(--muted); font-style: italic; }
-
-/* The one-line verdict under a card: connected / stale / not connected. Kept
-   visually distinct from the label:value lines above it because it is the
-   sentence a user reads first. */
-.tfstate { margin-top: 6px; font-size: 11px; color: var(--muted); }
-.tfstate.ok { color: var(--ok); }
-.tfstate.warn { color: var(--warn); }
-.tfstate.none { color: var(--muted); font-style: italic; }
-
-.hintline { margin-top: 6px; font-size: 10px; line-height: 1.5; color: var(--muted); }
-.hintline b { color: var(--text); font-weight: 600; }
+/* A thin scrollbar so the panel does not gain a fat grey Chrome default that
+   would sit against the cards. */
+.panels::-webkit-scrollbar { width: 8px; }
+.panels::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.panels::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+.panels::-webkit-scrollbar-track { background: transparent; }

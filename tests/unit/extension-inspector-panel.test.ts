@@ -31,6 +31,16 @@ import vm from 'vm';
 // the observable contract fails.
 // ════════════════════════════════════════════════════════════════
 
+/**
+ * The picker's width, from `--w` in the supplied picker.html design document.
+ *
+ * The harness has no layout engine, so the fake box below has to be told a
+ * width; using the design's number keeps the fake consistent with the real CSS
+ * instead of quietly disagreeing with it. The assertion that the SHIPPED
+ * stylesheet declares this width reads the stylesheet itself — see panelCss().
+ */
+const PANEL_W = 330;
+
 /* ---------------------------------------------------------------
    A fake DOM, recording exactly the properties the panel sets.
    --------------------------------------------------------------- */
@@ -53,6 +63,35 @@ class FakeNode {
   listeners: Record<string, Array<(e: unknown) => void>> = {};
 
   constructor(tagName = 'div') { this.tagName = tagName.toUpperCase(); }
+
+  /**
+   * The size the panel measures itself at. Only the panel's own `.wrap` is ever
+   * measured, so a single settable box is enough — and it has to be settable,
+   * because the whole point of the clamp is that a TALL panel (a pick with many
+   * attributes) is the one that used to fall off the bottom of the screen.
+   */
+  rect = { width: PANEL_W, height: 420 };
+  getBoundingClientRect() {
+    return {
+      left: 0, top: 0, width: this.rect.width, height: this.rect.height,
+      right: this.rect.width, bottom: this.rect.height,
+    };
+  }
+
+  /** Pointer capture is a no-op here; the panel must not depend on it working. */
+  capturedPointer: number | null = null;
+  setPointerCapture(id: number) { this.capturedPointer = id; }
+  releasePointerCapture() { this.capturedPointer = null; }
+
+  get classList() {
+    const self = this;
+    const parts = () => self.className.split(/\s+/).filter(Boolean);
+    return {
+      add(c: string) { if (parts().indexOf(c) < 0) self.className = parts().concat(c).join(' '); },
+      remove(c: string) { self.className = parts().filter((p) => p !== c).join(' '); },
+      contains(c: string) { return parts().indexOf(c) >= 0; },
+    };
+  }
 
   setAttribute(k: string, v: string) { this.attrs[k] = v; }
   getAttribute(k: string) { return this.attrs[k] != null ? this.attrs[k] : null; }
@@ -164,6 +203,27 @@ interface Harness {
   reply: { value: unknown };
   confirmButton(): FakeNode;
   timeouts: number;
+
+  // ── Position and drag ──────────────────────────────────────────────────────
+  /** The panel's outer box, i.e. the thing being positioned. */
+  wrap(): FakeNode;
+  /** The header strip — the drag handle. */
+  header(): FakeNode;
+  /** Where the panel is now, in viewport coordinates. */
+  pos(): { left: number; top: number };
+  size(): { w: number; h: number };
+  /** Set the height the next pick's panel will measure at. */
+  setPanelHeight(h: number): void;
+  /** Resize the viewport (call fireResize() to notify the panel). */
+  viewport(w: number, h: number): void;
+  fireResize(): void;
+  /** A complete drag: press at `from`, move through each point, release. */
+  drag(from: { x: number; y: number }, ...to: Array<{ x: number; y: number }>): void;
+  /** A drag that is begun but not finished, optionally pressed on another node. */
+  dragStart(at: { x: number; y: number }, over?: FakeNode): void;
+  dragMove(at: { x: number; y: number }): void;
+  /** What the picker has left in chrome.storage.local for the popup. */
+  stored: Record<string, unknown>;
 }
 
 const SOURCE = resolve(__dirname, '../../extension/content/inspector.js');
@@ -203,6 +263,11 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
   // fake needs the listener seam too.
   const winListeners: Record<string, Array<(e: unknown) => void>> = {};
   const windowFake: Record<string, unknown> = {
+    // A real viewport, so the panel's placement can be checked against numbers
+    // rather than merely asserted to exist. Mutable: shrinking these and firing
+    // `resize` is how the "window got smaller after the panel opened" case — the
+    // one that stranded the Confirm button off-screen — is reproduced.
+    innerWidth: 1280,
     innerHeight: 800,
     addEventListener: (t: string, fn: (e: unknown) => void) => { (winListeners[t] ||= []).push(fn); },
     removeEventListener: (t: string, fn: (e: unknown) => void) => {
@@ -212,6 +277,9 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
       if (i >= 0) l.splice(i, 1);
     },
   };
+  // The picker leaves each pick in storage for the popup to read, because at the
+  // moment of a pick the popup is closed and cannot be messaged.
+  const stored: Record<string, unknown> = {};
   const chromeFake = {
     runtime: {
       lastError: undefined as { message?: string } | undefined,
@@ -220,6 +288,15 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
         if (cb) cb(reply.value);
       },
       onMessage: { addListener: () => {} },
+    },
+    storage: {
+      local: {
+        set: (obj: Record<string, unknown>, cb?: () => void) => {
+          Object.assign(stored, obj);
+          if (cb) cb();
+        },
+        get: (_k: unknown, cb: (v: Record<string, unknown>) => void) => cb(stored),
+      },
     },
   };
 
@@ -283,7 +360,70 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     return findAll(host!, (n) => n.className === 'go')[0]!;
   }
 
+  /** The panel's own outer box — the thing that gets positioned. */
+  function wrap(): FakeNode {
+    const host = panelHost();
+    return findAll(host!, (n) => n.className === 'wrap')[0]!;
+  }
+
+  /** The header strip: the drag handle, and the only one. */
+  function header(): FakeNode {
+    const host = panelHost();
+    return findAll(host!, (n) => n.className.indexOf('hd') === 0)[0]!;
+  }
+
+  /** Where the panel currently is, in viewport coordinates. */
+  function pos(): { left: number; top: number } {
+    const s = wrap().style;
+    return { left: parseFloat(s.left || 'NaN'), top: parseFloat(s.top || 'NaN') };
+  }
+
+  /**
+   * The stylesheet the panel actually ships into its shadow root.
+   *
+   * Needed because `size()` below reports the FAKE box — the harness has no
+   * layout engine, so it hands back whatever `rect` was set to. That fake is the
+   * right tool for the clamp tests (they need to control the panel's height in
+   * order to test a panel taller than the viewport), but it makes the fake the
+   * only authority on the panel's WIDTH, which is not a fact the harness should
+   * get to invent. The declared width has to be read from the real CSS.
+   */
+  function panelCss(): string {
+    const host = panelHost();
+    const style = findAll(host!, (n) => n.tagName === 'STYLE')[0];
+    return style ? style.textContent : '';
+  }
+
   return {
+    wrap,
+    header,
+    pos,
+    panelCss,
+    /** The panel's box as the code measures it, so tests and code agree. */
+    size: () => ({ w: wrap().rect.width, h: wrap().rect.height }),
+    /** Pretend the pick produced a panel of this height, before picking. */
+    setPanelHeight(h: number) { FakeNode.prototype.rect = { width: PANEL_W, height: h }; },
+    viewport(w: number, hh: number) {
+      windowFake.innerWidth = w;
+      windowFake.innerHeight = hh;
+    },
+    fireResize() { (winListeners.resize || []).slice().forEach((fn) => fn({})); },
+    /** One complete header drag: press, move (possibly several), release. */
+    drag(from: { x: number; y: number }, ...to: Array<{ x: number; y: number }>) {
+      const hd = header();
+      hd.fire('pointerdown', { button: 0, pointerId: 7, clientX: from.x, clientY: from.y });
+      to.forEach((p) => hd.fire('pointermove', { pointerId: 7, clientX: p.x, clientY: p.y }));
+      hd.fire('pointerup', { pointerId: 7 });
+    },
+    dragStart(at: { x: number; y: number }, over?: FakeNode) {
+      (over || header()).fire('pointerdown', {
+        button: 0, pointerId: 7, clientX: at.x, clientY: at.y,
+      });
+    },
+    dragMove(at: { x: number; y: number }) {
+      header().fire('pointermove', { pointerId: 7, clientX: at.x, clientY: at.y });
+    },
+    stored,
     start: () => api.start(),
     stop: () => api.stop(),
     isActive: () => api.isActive(),
@@ -331,7 +471,13 @@ function buyLink() {
 }
 
 let h: Harness;
-beforeEach(() => { h = boot(); });
+beforeEach(() => {
+  // The panel height is a prototype-level default so a test can change it before
+  // picking; reset it, or a tall-panel test would silently set the size for every
+  // test that ran afterwards.
+  FakeNode.prototype.rect = { width: PANEL_W, height: 420 };
+  h = boot();
+});
 
 describe('inspector panel: the harness runs the real source', () => {
   it('exposes the real lifecycle and reacts to it', () => {
@@ -695,5 +841,420 @@ describe('inspector panel: both states reset between picks', () => {
     const armed = h.rows().filter((r) => r.radio.checked);
     expect(armed).toHaveLength(1);
     expect(armed[0]!.radio.disabled).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// WHERE THE PANEL OPENS
+//
+// The reported bug: the picker opened partly outside the viewport, so Cancel and
+// Confirm — the only two ways to resolve a pick — could not be clicked. The panel
+// was pinned with a hard-coded `right:16px; bottom:16px` in CSS and its real size
+// was never compared against the window, so any viewport shorter than the panel
+// pushed the footer below the fold.
+//
+// These tests are written against COORDINATES rather than against the CSS text,
+// because the fix is arithmetic: the panel must be inside the viewport for panels
+// of any height, in windows of any size. Asserting the stylesheet says "left"
+// would pass for an implementation that computes the wrong left.
+//
+// The size is NOT asserted to have changed, and must not: the issue was never
+// that the picker was too small or too large.
+// ════════════════════════════════════════════════════════════════
+describe('picker position: the whole panel is always on screen', () => {
+  const EDGE = 12;
+
+  /** Every corner of the panel, given where it is and how big it measures. */
+  function box() {
+    const p = h.pos();
+    const s = h.size();
+    return { left: p.left, top: p.top, right: p.left + s.w, bottom: p.top + s.h };
+  }
+
+  it('is positioned in left/top, which is what makes it clampable at all', () => {
+    h.start();
+    h.pick(buyLink());
+    // right/bottom pinning was the root cause: it leaves no coordinate to
+    // compare against the viewport and nothing for a drag to write.
+    const s = h.wrap().style;
+    expect(s.left).toMatch(/px$/);
+    expect(s.top).toMatch(/px$/);
+    expect(Number.isFinite(h.pos().left)).toBe(true);
+    expect(Number.isFinite(h.pos().top)).toBe(true);
+  });
+
+  it('opens fully inside a normal viewport', () => {
+    h.start();
+    h.pick(buyLink());
+    const b = box();
+    expect(b.left).toBeGreaterThanOrEqual(EDGE);
+    expect(b.top).toBeGreaterThanOrEqual(EDGE);
+    expect(b.right).toBeLessThanOrEqual(1280 - EDGE);
+    expect(b.bottom).toBeLessThanOrEqual(800 - EDGE);
+  });
+
+  it('keeps the footer on screen when the panel is TALLER than it is deep', () => {
+    // The exact reported failure. A pick with many attributes makes a tall panel;
+    // in a short window the old code left Confirm and Cancel below the bottom
+    // edge, which is a dead end — the rows are visible and cannot be acted on.
+    h.setPanelHeight(700);
+    h.viewport(1280, 560);
+    h.start();
+    h.pick(buyLink());
+    expect(h.pos().top).toBeGreaterThanOrEqual(EDGE);
+    // Not off the top either: the header is the drag handle and the only way out
+    // of a bad position, so it must never be the part that is lost.
+    expect(h.pos().top).toBeLessThan(560);
+  });
+
+  it('never pushes the header off the top, even in an absurdly short window', () => {
+    h.setPanelHeight(900);
+    h.viewport(1280, 200);
+    h.start();
+    h.pick(buyLink());
+    // Clamping only against the bottom edge would give a negative top here and
+    // put the drag handle out of reach — losing the bottom of a scrollable list
+    // is recoverable; losing the header is not.
+    expect(h.pos().top).toBeGreaterThanOrEqual(EDGE);
+    expect(h.pos().left).toBeGreaterThanOrEqual(EDGE);
+  });
+
+  it('fits itself into a narrow viewport rather than hanging off the right', () => {
+    h.viewport(420, 800);
+    h.start();
+    h.pick(buyLink());
+    expect(h.pos().left).toBeGreaterThanOrEqual(EDGE);
+    expect(h.pos().left).toBeLessThan(420);
+  });
+
+  it('re-clamps when the window shrinks AFTER the panel opened', () => {
+    h.start();
+    h.pick(buyLink());
+    const before = h.pos();
+    expect(before.left).toBeGreaterThan(400);   // parked bottom-right by default
+
+    // Smaller than the panel's default corner, but still big enough to hold it:
+    // this is the ordinary "user narrowed the window" case, where nothing needs
+    // to be sacrificed and so nothing may be.
+    h.viewport(600, 600);
+    h.fireResize();
+
+    const b = box();
+    expect(b.left).toBeGreaterThanOrEqual(EDGE);
+    expect(b.top).toBeGreaterThanOrEqual(EDGE);
+    expect(b.right).toBeLessThanOrEqual(600 - EDGE);
+    expect(b.bottom).toBeLessThanOrEqual(600 - EDGE);
+    // It genuinely moved — a no-op that happened to satisfy the bounds would be
+    // indistinguishable from the bug otherwise.
+    expect(b.left).toBeLessThan(before.left);
+  });
+
+  it('sacrifices the bottom, never the header, when it cannot fit at all', () => {
+    h.start();
+    h.pick(buyLink());
+    // A viewport shorter than the panel. Something has to go off-screen; the rows
+    // scroll, so losing their bottom is recoverable — losing the header takes the
+    // drag handle and both header buttons with it.
+    h.viewport(1280, 300);
+    h.fireResize();
+    expect(h.pos().top).toBe(EDGE);
+    expect(h.pos().left).toBeGreaterThanOrEqual(EDGE);
+  });
+
+  it('is the width the design document specifies, and only that width', () => {
+    h.start();
+    h.pick(buyLink());
+    // §16 forbids resizing the picker to work around the position bugs —
+    // «resize یا افزایش ابعاد انجام نده» — and names one exception: «مگر اینکه
+    // extension/UI_UX صراحتاً ابعاد دیگری برای Picker تعریف کرده باشد». The
+    // supplied picker.html sets `--w:330px`, which is that exception: an explicit
+    // dimension in the design, not a workaround for visibility. The two bugs were
+    // fixed by clamping and dragging, which is what §16 is actually protecting.
+    //
+    // Pinned to an exact number for the same reason as before: so a future
+    // attempt to "fix" an off-screen panel by shrinking or growing it fails here
+    // instead of silently redesigning the tool.
+    //
+    // Read from the shipped stylesheet, not from h.size(): the harness's fake DOM
+    // has no layout engine, so h.size() returns whatever `rect` was set to and
+    // would agree with any number asked of it. The stylesheet is the only place
+    // the width is actually decided.
+    expect(h.panelCss()).toContain(`width:${PANEL_W}px`);
+    // And it must still be allowed to shrink. A hard 330px in a 300px-wide window
+    // would push the panel's own right edge off-screen — the exact class of bug
+    // this suite exists to prevent — so the design's max-width escape hatch is
+    // part of the requirement, not an optional extra.
+    expect(h.panelCss()).toMatch(/max-width:calc\(100vw - \d+px\)/);
+  });
+
+  it('clips long attribute values to one line instead of wrapping them', () => {
+    h.start();
+    h.pick(buyLink());
+
+    /*
+     * Attribute values are arbitrary page strings: hrefs with query strings,
+     * XPaths, long class lists. Letting them wrap seemed generous but produced
+     * two visible faults at 330px — values broken mid-token ("…chec / kout?sku=A1")
+     * and rows of differing heights, which destroyed the alignment of the key
+     * column that makes a long list scannable.
+     *
+     * The design's own `.v` rule is nowrap + ellipsis, so this is also the
+     * specified behaviour and not merely a preference.
+     */
+    const css = h.panelCss();
+    const vRule = /\.v\{[^}]*\}/.exec(css);
+    expect(vRule, '.v rule must exist in the picker stylesheet').not.toBeNull();
+    expect(vRule![0]).toContain('white-space:nowrap');
+    expect(vRule![0]).toContain('text-overflow:ellipsis');
+    // break-all is what caused the mid-word breaks; its absence is the fix.
+    expect(vRule![0]).not.toContain('word-break:break-all');
+
+    /*
+     * Clipping only stays acceptable while the whole value is still recoverable,
+     * because the clipped tail is frequently the part being hunted (`?sku=A1`).
+     * The tooltip is that escape hatch, so it is part of the requirement rather
+     * than a nicety.
+     */
+    // Asserted on every non-empty row rather than on one hand-picked long value:
+    // which value happens to be long is a property of the fixture, but the
+    // tooltip has to be there for all of them, since any of them can be clipped
+    // by a narrow viewport.
+    const withValues = h.rows().filter((r) => {
+      const cell = r.label.childNodes[1];
+      return cell && cell.className === 'v';
+    });
+    expect(withValues.length, 'the fixture must render some non-empty rows').toBeGreaterThan(0);
+    for (const r of withValues) {
+      const cell = r.label.childNodes[1];
+      expect(cell.title, `row "${r.key}" must carry its full value as a tooltip`)
+        .toBe(cell.textContent);
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// DRAGGING THE PANEL
+//
+// The second reported bug: the picker could not be moved at all, so when it
+// covered the element being inspected there was nothing the user could do. There
+// was no pointer handler on the header — and because position was expressed in
+// right/bottom, writing `style.left` would not have moved it anyway.
+//
+// The rule being defended is narrow: the HEADER drags, the BODY does not. A
+// draggable body would turn every attempt to tick a checkbox or select a value
+// into a window move.
+// ════════════════════════════════════════════════════════════════
+describe('picker drag: the header moves it, the body does not', () => {
+  const EDGE = 12;
+
+  it('moves by exactly the pointer delta', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+
+    // Press somewhere on the header, move 120 left and 90 up.
+    h.drag({ x: from.left + 40, y: from.top + 10 },
+           { x: from.left + 40 - 120, y: from.top + 10 - 90 });
+
+    expect(h.pos().left).toBe(from.left - 120);
+    expect(h.pos().top).toBe(from.top - 90);
+  });
+
+  it('does not jump under the cursor on the first frame', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    // Press and move by ZERO: the panel must not move. This is what the grab
+    // offset is for — anchoring from the press point rather than from the
+    // panel's corner, which would snap it to the cursor.
+    h.drag({ x: from.left + 200, y: from.top + 15 },
+           { x: from.left + 200, y: from.top + 15 });
+    expect(h.pos()).toEqual(from);
+  });
+
+  it('cannot be dragged out of the viewport', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    // A hard throw at the top-left corner, well past it.
+    h.drag({ x: from.left + 20, y: from.top + 10 }, { x: -4000, y: -4000 });
+    expect(h.pos().left).toBeGreaterThanOrEqual(EDGE);
+    expect(h.pos().top).toBeGreaterThanOrEqual(EDGE);
+
+    // And at the bottom-right.
+    const now = h.pos();
+    h.drag({ x: now.left + 20, y: now.top + 10 }, { x: 9000, y: 9000 });
+    const s = h.size();
+    expect(h.pos().left + s.w).toBeLessThanOrEqual(1280 - EDGE + 1);
+    expect(h.pos().top + s.h).toBeLessThanOrEqual(800 - EDGE + 1);
+  });
+
+  it('stays clamped DURING the drag, not merely once it ends', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    h.dragStart({ x: from.left + 20, y: from.top + 10 });
+    // Mid-gesture, still held down, dragged off the top-left.
+    h.dragMove({ x: -2000, y: -2000 });
+    expect(h.pos().left).toBeGreaterThanOrEqual(EDGE);
+    expect(h.pos().top).toBeGreaterThanOrEqual(EDGE);
+  });
+
+  it('suppresses the browser default so dragging selects no text', () => {
+    h.start();
+    h.pick(buyLink());
+    let prevented = false;
+    const hd = h.header();
+    (hd.listeners.pointerdown || []).forEach((fn) => fn({
+      button: 0, pointerId: 7, clientX: 100, clientY: 100,
+      preventDefault() { prevented = true; }, stopPropagation() {}, target: hd,
+    }));
+    // Without this the press would begin a text selection that then follows the
+    // cursor across the page for the whole gesture.
+    expect(prevented).toBe(true);
+  });
+
+  it('ignores the right mouse button', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    const hd = h.header();
+    hd.fire('pointerdown', { button: 2, pointerId: 7, clientX: from.left + 20, clientY: from.top + 10 });
+    hd.fire('pointermove', { pointerId: 7, clientX: 0, clientY: 0 });
+    // A right-click opens a context menu; it must not silently begin a move that
+    // ends on the user's next click.
+    expect(h.pos()).toEqual(from);
+  });
+
+  it('does not drag when the press lands on a header BUTTON', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    // "Pick again" / ✕ stop the gesture before it reaches the handle. Without
+    // this a press that wanders a pixel — most presses — would move the panel and
+    // swallow the click, exactly when the user is escaping a bad pick.
+    const button = h.header().childNodes.filter((c) => c.tagName === 'BUTTON')[0]!;
+    let stopped = false;
+    (button.listeners.pointerdown || []).forEach((fn) => fn({
+      button: 0, pointerId: 7, clientX: from.left + 300, clientY: from.top + 10,
+      preventDefault() {}, stopPropagation() { stopped = true; }, target: button,
+    }));
+    expect(stopped).toBe(true);
+  });
+
+  it('the ROWS are not a drag handle', () => {
+    h.start();
+    h.pick(buyLink());
+    // The body must stay inert: ticking a checkbox and selecting a value to copy
+    // are both drags in the ordinary sense, and neither may move the window.
+    const rowNode = h.row('href').label.parentElement!;
+    expect(rowNode.listeners.pointerdown).toBeUndefined();
+    expect(rowNode.listeners.mousedown).toBeUndefined();
+  });
+
+  it('keeps where the user put it across the next pick', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    h.drag({ x: from.left + 20, y: from.top + 10 }, { x: from.left + 20 - 200, y: from.top + 10 - 150 });
+    const moved = h.pos();
+
+    // Pick something else. Snapping back to the corner would undo a deliberate
+    // action — and the reason people move the panel is that the corner covers
+    // what they are inspecting, which is still true a moment later.
+    h.pick(buyLink());
+    expect(h.pos()).toEqual(moved);
+  });
+
+  it('releases the drag when the pointer is cancelled', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    h.dragStart({ x: from.left + 20, y: from.top + 10 });
+    h.header().fire('pointercancel', { pointerId: 7 });
+    // Nothing should follow the cursor with no button held.
+    h.dragMove({ x: from.left + 500, y: from.top + 500 });
+    expect(h.pos()).toEqual(from);
+  });
+
+  it('marks the header while dragging and unmarks it after', () => {
+    h.start();
+    h.pick(buyLink());
+    const from = h.pos();
+    h.dragStart({ x: from.left + 20, y: from.top + 10 });
+    expect(h.header().className).toContain('dragging');
+    h.header().fire('pointerup', { pointerId: 7 });
+    expect(h.header().className).not.toContain('dragging');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// THE PICK REACHES THE POPUP
+//
+// The popup's SELECTED ELEMENT and ATTRIBUTES sections describe the same pick
+// this panel shows. It cannot be handed over by a message: the picker's first
+// action is moving the mouse onto the page, which closes the popup. So the pick
+// is left in storage and read back when the popup opens.
+// ════════════════════════════════════════════════════════════════
+describe('picker → popup handoff', () => {
+  function saved() {
+    return h.stored.ab_lastPick as {
+      element: Record<string, unknown>;
+      rows: Array<{ key: string }>;
+      display: string[];
+      sendKey: string;
+    } | null;
+  }
+
+  it('publishes the pick, its rows and both selection states', () => {
+    h.start();
+    h.pick(buyLink());
+    const s = saved()!;
+    expect(s).toBeTruthy();
+    expect(s.element.tag).toBe('a');
+    expect(s.rows.length).toBeGreaterThan(3);
+    // Both states travel, separately — which is the whole point of their being
+    // two: `display` is what to look at, `sendKey` is what leaves.
+    expect(s.display).toContain('css');
+    expect(s.sendKey).toBeTruthy();
+  });
+
+  it('records display keys in PANEL ORDER, not tick order', () => {
+    h.start();
+    h.pick(buyLink());
+    h.tick('data-sku');          // late tick on an EARLY row…
+    h.tick('Tag Name');          // …and one on the earliest row of all
+    const order = saved()!.display;
+    const rowOrder = h.rows().map((r) => r.key);
+    const asRendered = rowOrder.filter((k) => {
+      const row = h.row(k);
+      return row.checkbox.checked;
+    });
+    // What the popup restores must be in the order the user read it in.
+    expect(order.length).toBe(asRendered.length);
+    expect(order[0]).toBe('tag');
+  });
+
+  it('follows the armed radio when the outbound choice changes', () => {
+    h.start();
+    h.pick(buyLink());
+    h.arm('data-sku');
+    expect(saved()!.sendKey).toBe('data-sku');
+  });
+
+  it('clears the published pick when the user cancels', () => {
+    h.start();
+    h.pick(buyLink());
+    expect(saved()).toBeTruthy();
+    h.stop();
+    // Cancelling must mutate no target and leave no data. A pick left behind
+    // would reappear in the popup as though it were still current — showing the
+    // user a value they had explicitly walked away from.
+    expect(saved()).toBeNull();
+  });
+
+  it('works on a browser with no storage available', () => {
+    // The handoff is a convenience; the panel itself must not depend on it.
+    expect(() => { h.start(); h.pick(buyLink()); }).not.toThrow();
   });
 });
