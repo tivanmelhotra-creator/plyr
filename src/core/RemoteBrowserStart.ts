@@ -204,9 +204,18 @@ export function describe(e: unknown): StartFailure {
   if (m.includes('missing x server') || m.includes('cannot open display')) {
     return {
       error: 'display_unavailable',
+      // The ENDPOINT is named, not just "press the button".
+      //
+      // Reworded once to drop it, and an existing test caught that immediately
+      // (remote-browser-resilience.test.ts asserts /desktop\/start|Xvfb/). The
+      // test is right and the rewording was wrong: `fixable` gives someone
+      // holding a mouse a way out, but an operator with a shell — or reading a
+      // log line after the fact, where no button exists — needs to know WHICH
+      // thing acts. Adding a button is not a licence to remove the address.
       hint:
         'The X display is not up, so a headed browser cannot start. ' +
-        'Press the button to start it — nothing needs restarting.',
+        'POST /api/browser/desktop/start brings it up — nothing needs restarting, ' +
+        'and the panel offers that as a button beside this message.',
       fixable: remedyFor('display_unavailable'),
     };
   }
@@ -219,24 +228,29 @@ export function describe(e: unknown): StartFailure {
       // means someone holding a mouse is not stuck.
       hint:
         'Chromium is installed but cannot link its system libraries. ' +
-        'Press the button to fetch them (the same work as: npx playwright install --with-deps chromium).',
+        'POST /api/browser/dependencies/install fetches them (the same work as: ' +
+        'npx playwright install --with-deps chromium), and the panel offers it as a button.',
       fixable: remedyFor('browser_libraries_missing'),
     };
   }
   if (m.includes("executable doesn't exist") || m.includes('executable path')) {
     return {
       error: 'browser_not_installed',
-      hint: 'No Chromium binary was found. Press the button to download it '
-        + '(the same work as: npx playwright install chromium).',
+      hint: 'No Chromium binary was found. POST /api/browser/dependencies/install '
+        + 'downloads it (the same work as: npx playwright install chromium), and the '
+        + 'panel offers it as a button.',
       fixable: remedyFor('browser_not_installed'),
     };
   }
   if (m.includes('processsingleton') || m.includes('singletonlock')) {
     return {
       error: 'browser_profile_locked',
+      // Same rule as display_unavailable above: name the endpoint, not just the
+      // button. A hint is also read in logs, where there is nothing to press.
       hint:
         'A previous Chrome still holds the profile lock. ' +
-        'Press the button to clear it — the main server does not need restarting.',
+        'POST /api/browser/real/recover clears it — the main server does not need ' +
+        'restarting, and the panel offers that as a button beside this message.',
       fixable: remedyFor('browser_profile_locked'),
     };
   }
