@@ -215,6 +215,22 @@ interface Harness {
   /** The scrolling rows container — so tests can assert the list is not jumped. */
   list(): FakeNode;
 
+  // ── SELECTED ELEMENT (§17) ────────────────────────────────────────────────
+  /**
+   * The readout section: the ticked rows with their values shown IN FULL.
+   *
+   * Read as the user reads it — key/value pairs off the rendered DOM — rather
+   * than from the module's state, so these assertions describe what is on screen
+   * and survive any refactor that keeps the screen the same.
+   */
+  selected(): Array<{ key: string; value: string; sending: boolean; empty: boolean }>;
+  /** The section's own scroll container, for the reset and clamp assertions. */
+  selBox(): FakeNode;
+  /** Whether the section is on screen at all. */
+  selVisible(): boolean;
+  /** The "nothing ticked" message, or '' when values are being shown. */
+  selEmptyText(): string;
+
   /** The status line the user reads. */
   status(): { text: string; kind: string };
   /** Everything handed to chrome.runtime.sendMessage. */
@@ -439,6 +455,34 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     return style ? style.textContent : '';
   }
 
+  /** The SELECTED ELEMENT section, and the values it is rendering. */
+  function selBox(): FakeNode {
+    const host = panelHost();
+    if (!host) throw new Error('the panel has not been built');
+    const found = findAll(host, (n) => n.className === 'sel')[0];
+    if (!found) throw new Error('the panel rendered no SELECTED ELEMENT section');
+    return found;
+  }
+
+  function selected(): Array<{ key: string; value: string; sending: boolean; empty: boolean }> {
+    const host = panelHost();
+    if (!host) return [];
+    return findAll(host, (n) => n.className.split(/\s+/).indexOf('sitem') >= 0).map((item) => {
+      const k = item.childNodes.filter((c) => c.className.indexOf('sk') === 0)[0];
+      const v = item.childNodes.filter((c) => c.className.indexOf('sv') === 0)[0];
+      const keyText = k ? k.textContent : '';
+      return {
+        // The marker is part of the key's text, so it is stripped out of `key`
+        // and reported as `sending` instead — a test should assert the fact, not
+        // the punctuation carrying it.
+        key: keyText.replace(/\s*\u2192 sending$/, ''),
+        value: v ? v.textContent : '',
+        sending: /\u2192 sending$/.test(keyText),
+        empty: !!v && v.className.indexOf('empty') >= 0,
+      };
+    });
+  }
+
   return {
     wrap,
     header,
@@ -511,6 +555,20 @@ function boot(opts: { selectors?: boolean } = {}): Harness {
     list() {
       const host = panelHost();
       return findAll(host!, (n) => n.className === 'rows')[0]!;
+    },
+    selected,
+    selBox,
+    selVisible() {
+      const host = panelHost();
+      if (!host) return false;
+      const box = findAll(host, (n) => n.className === 'sel')[0];
+      return !!box && box.style.display !== 'none';
+    },
+    selEmptyText() {
+      const host = panelHost();
+      if (!host) return '';
+      const msg = findAll(host, (n) => n.className === 'sempty')[0];
+      return msg ? msg.textContent : '';
     },
     status() {
       const host = panelHost();
@@ -967,6 +1025,337 @@ describe('inspector panel: Select all / Clear are BULK DISPLAY only (§19)', () 
     // …and before the list in document order.
     const kids = h.wrap().childNodes;
     expect(kids.indexOf(bar)).toBeLessThan(kids.indexOf(h.list()));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// SELECTED ELEMENT, IN THE PICKER (§17)
+//
+// THE REPORTED BUG
+// ----------------
+// The picker showed a ticked value only as a clipped, single-line preview:
+// «چیزی که اونجا نمایش میده یه پیش نمایش نیم سطری هست». Every `.v` cell is
+// nowrap + ellipsis by design (equal row heights are what keep a long list
+// aligned and scannable), so at 330px a CSS Selector rendered as
+// "div.bubble > div.desc:nth-of…" and an XPath as "/html[1]/body[1]/div[1]…".
+// The full string lived only in a `title` tooltip.
+//
+// That is the wrong place for it. The value the user is committing to a node
+// field has to be READABLE — comparable against the other candidates, and
+// copyable — and the popup already renders exactly that, in full, in its
+// SELECTED ELEMENT card. The picker lacking the section meant the two surfaces
+// of one feature answered "what did I just select?" differently, and the
+// picker's answer was the truncated one, on the surface the user is actually
+// looking at while they tick.
+//
+// WHAT THESE TESTS PIN
+// --------------------
+// Not the CSS — that the section exists, is driven by the CHECKBOXES alone,
+// renders values WHOLE and untruncated, and keeps §16/§23 intact: it must never
+// become a view of the radio. The last part matters most, because "show the
+// selected things" and "show the thing being sent" are one refactor apart, and
+// collapsing them would silently redefine what the panel is claiming.
+// ════════════════════════════════════════════════════════════════
+describe('inspector panel: SELECTED ELEMENT shows ticked values in full (§17)', () => {
+  it('renders a section for the pick, above the rows that edit it', () => {
+    h.start();
+    h.pick(buyLink());
+
+    expect(h.selVisible()).toBe(true);
+    // Above the toolbar and the list: the readable statement of the pick comes
+    // first, the controls that change it follow. Below the scrolling list it
+    // would be off-screen exactly when a long list makes the clipping bite.
+    const kids = h.wrap().childNodes;
+    expect(kids.indexOf(h.selBox())).toBeLessThan(kids.indexOf(h.list()));
+    expect(kids.indexOf(h.selBox())).toBeLessThan(kids.indexOf(h.toolsAll().parentElement!));
+  });
+
+  it('shows nothing at all before an element has been picked', () => {
+    // Arming the picker describes no element yet, so there is nothing to state.
+    // An empty card above the rows would be furniture.
+    h.start();
+    expect(h.selVisible()).toBe(false);
+  });
+
+  it('starts by showing exactly the rows the pick pre-ticked', () => {
+    h.start();
+    h.pick(buyLink());
+
+    // ab-inspect's defaultSelection for this element is ['css', 'href'] — the
+    // same set the checkboxes open with, which is the whole contract: this
+    // section is the checkbox column, made readable.
+    expect(h.selected().map((s) => s.key)).toEqual(['CSS Selector', 'href']);
+    expect(h.rows().filter((r) => r.checkbox.checked).map((r) => r.key))
+      .toEqual(['CSS Selector', 'href']);
+  });
+
+  it('shows the WHOLE value, not the row\'s clipped preview', () => {
+    /*
+     * The point of the entire section. A selector long enough to be truncated in
+     * a 330px row must appear here complete — that is the difference between a
+     * user being able to verify what they are about to send and having to trust a
+     * tooltip.
+     */
+    const long = new FakeEl('div', {
+      class: 'bubble desc conversation-body streaming',
+      'data-source-line': '1-1',
+    });
+    long.innerText = 'Unsere Konversation wird kommentiert und kann einige Minuten dauern...';
+
+    h.start();
+    h.pick(long);
+    h.tick('Text');
+
+    const text = h.selected().filter((s) => s.key === 'Text')[0]!;
+    expect(text.value).toBe(
+      'Unsere Konversation wird kommentiert und kann einige Minuten dauern...',
+    );
+    // Explicitly NOT the row's presentation: no ellipsis, and nothing lost.
+    expect(text.value).not.toContain('\u2026');
+    expect(text.value.length).toBeGreaterThan(40);
+  });
+
+  it('is the value the ROW carries, so the two views cannot disagree', () => {
+    h.start();
+    h.pick(buyLink());
+    h.tick('XPath');
+
+    // The row clips visually but its `title` holds the full value; the readout
+    // must equal THAT, not some separately-derived string.
+    const cell = h.row('XPath').label.childNodes[1]!;
+    const shown = h.selected().filter((s) => s.key === 'XPath')[0]!;
+    expect(shown.value).toBe(cell.title);
+    expect(shown.value).toBe('//*[@id="buy"]');
+  });
+
+  it('follows the checkbox: ticking adds a value, un-ticking removes it', () => {
+    h.start();
+    h.pick(buyLink());
+
+    h.tick('XPath');
+    expect(h.selected().map((s) => s.key)).toContain('XPath');
+
+    h.tick('XPath');
+    expect(h.selected().map((s) => s.key)).not.toContain('XPath');
+
+    // §17's own example, in miniature: it must happen dynamically, on each
+    // change, rather than once when the panel opened.
+    h.tick('Class');
+    expect(h.selected().map((s) => s.key)).toContain('Class');
+  });
+
+  it('reacts to the row label too, which is the same checkbox', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clickLabel('ID');
+    expect(h.selected().map((s) => s.key)).toContain('ID');
+  });
+
+  it('lists values in PANEL order, not in the order they were ticked', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clearAll();
+
+    // Ticked bottom-up on purpose: tick order would render data-sku first.
+    h.tick('data-sku');
+    h.tick('Tag Name');
+
+    // Panel order keeps the readout stable — a section that reshuffled itself on
+    // every tick would be unreadable precisely while being edited.
+    expect(h.selected().map((s) => s.key)).toEqual(['Tag Name', 'CSS Selector', 'data-sku']);
+  });
+
+  it('shows every row after Select all', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+
+    expect(h.selected().map((s) => s.key)).toEqual([
+      'Tag Name', 'ID', 'Class', 'CSS Selector', 'XPath', 'Text', 'Role', 'href', 'data-sku',
+    ]);
+  });
+
+  it('explains itself when the user clears everything, rather than vanishing', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clearAll();
+
+    // Clear keeps the ARMED row visible (see the bulk-display suite), so the
+    // section still holds that one. Un-tick it and the readout is genuinely
+    // empty — a state the user produced and can undo, so it stays on screen and
+    // names the control that refills it.
+    h.tick('CSS Selector');
+
+    expect(h.selected()).toEqual([]);
+    expect(h.selVisible()).toBe(true);
+    expect(h.selEmptyText()).toMatch(/check a row/i);
+  });
+
+  it('renders a valueless row as empty instead of omitting it', () => {
+    // A boolean attribute like `reversed` is worth SEEING even though it has no
+    // value to send. Dropping it from the readout would make a ticked box
+    // correspond to nothing on screen.
+    h.start();
+    h.pick(new FakeEl('ol', { reversed: '', id: 'list' }));
+    h.selectAll();
+
+    const rev = h.selected().filter((s) => s.key === 'reversed')[0];
+    expect(rev, 'the valueless row must still appear').toBeTruthy();
+    expect(rev!.empty).toBe(true);
+  });
+
+  it('marks which single value is actually being sent', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+    h.arm('XPath');
+
+    const sending = h.selected().filter((s) => s.sending);
+    // Exactly one, and it is the armed row — the readout answers "which of these
+    // travels?" without the user having to look back at the radio column.
+    expect(sending.map((s) => s.key)).toEqual(['XPath']);
+  });
+
+  it('is NOT a view of the radio: every ticked value stays listed (§16/§23)', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+    h.arm('XPath');
+
+    // The obvious "simplification" is to show only what is being sent. That
+    // would destroy the section's purpose: the user ticks several candidates in
+    // order to COMPARE them before committing to one.
+    expect(h.selected().length).toBe(9);
+    expect(h.selected().map((s) => s.key)).toContain('href');
+    expect(h.selected().map((s) => s.key)).toContain('Text');
+  });
+
+  it('arming a row pulls it into the readout, because sending implies seeing', () => {
+    h.start();
+    h.pick(buyLink());
+    h.clearAll();
+    h.tick('CSS Selector');            // now genuinely nothing is shown
+    expect(h.selected()).toEqual([]);
+
+    h.arm('data-sku');
+
+    // The radio handler ticks the row it arms, so the value it is about to send
+    // cannot be one the panel is hiding.
+    const shown = h.selected();
+    expect(shown.map((s) => s.key)).toEqual(['data-sku']);
+    expect(shown[0]!.sending).toBe(true);
+  });
+
+  it('re-picking replaces the readout instead of accumulating picks', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+    expect(h.selected().length).toBe(9);
+
+    h.pick(new FakeEl('div', { 'data-y': 'z' }));
+
+    // Nothing from the previous element may survive: a stale value here would be
+    // a value the user believes belongs to the element they just picked.
+    expect(h.selected().map((s) => s.key)).not.toContain('href');
+    expect(h.selected().every((s) => s.value !== '/checkout')).toBe(true);
+  });
+
+  it('resets its own scroll on a new pick', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selBox().scrollTop = 90;
+
+    h.pick(new FakeEl('div', { 'data-y': 'z' }));
+
+    // The section scrolls independently of the rows, so it needs its own reset —
+    // otherwise a new pick opens part-way into the first value.
+    expect(h.selBox().scrollTop).toBe(0);
+  });
+
+  it('does not jump its scroll on a mere display toggle', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selBox().scrollTop = 40;
+
+    h.tick('XPath');
+
+    // Ticking a box while reading a long value must not throw away the reading
+    // position: the tick is how you ask to read, so it cannot also scroll away.
+    expect(h.selBox().scrollTop).toBe(40);
+  });
+
+  it('cannot grow tall enough to push the rows or the footer off screen', () => {
+    h.start();
+    h.pick(buyLink());
+
+    /*
+     * The section holds arbitrary page strings, so its natural height is
+     * unbounded. Inside a 70vh panel that would crowd out the attribute rows and
+     * the footer — reintroducing, by a different route, the exact "the Confirm
+     * button is unreachable" bug the position suite exists to prevent.
+     * A capped, independently scrolling box is what keeps it a readout.
+     */
+    const css = h.panelCss();
+    const rule = /\.sel\{[^}]*\}/.exec(css);
+    expect(rule, '.sel rule must exist in the picker stylesheet').not.toBeNull();
+    expect(rule![0]).toMatch(/max-height:\d+vh/);
+    expect(rule![0]).toContain('overflow:auto');
+    // And it must not be a flex item that grows: `flex:0 0 auto` is what stops it
+    // taking the space the rows need.
+    expect(rule![0]).toContain('flex:0 0 auto');
+  });
+
+  it('wraps long values rather than clipping them, unlike the rows', () => {
+    h.start();
+    h.pick(buyLink());
+
+    // The rows' `.v` is nowrap+ellipsis on purpose; this section is the place
+    // that must NOT be, or it would merely repeat the preview it exists to fix.
+    const css = h.panelCss();
+    const rule = /\.sv\{[^}]*\}/.exec(css);
+    expect(rule, '.sv rule must exist in the picker stylesheet').not.toBeNull();
+    expect(rule![0]).toContain('overflow-wrap:anywhere');
+    expect(rule![0]).not.toContain('white-space:nowrap');
+    expect(rule![0]).not.toContain('text-overflow:ellipsis');
+    // Selectable, because the reason to want a full value on screen is often to
+    // copy it — and the header's `user-select:none` must not reach down here.
+    expect(rule![0]).toContain('user-select:text');
+  });
+
+  it('renders values as text, never as markup', () => {
+    /*
+     * These strings come from an arbitrary page. The section is the one place
+     * that prints them at full length, so it is the most tempting place for an
+     * innerHTML "convenience" — and the one where it would hand the inspected
+     * site script execution inside our own closed-shadow UI.
+     */
+    const hostile = new FakeEl('div', {
+      'data-x': '<img src=x onerror=alert(1)>',
+      id: 'q',
+    });
+    h.start();
+    h.pick(hostile);
+    h.selectAll();
+
+    const shown = h.selected().filter((s) => s.key === 'data-x')[0]!;
+    // Present verbatim as TEXT: not stripped, not parsed.
+    expect(shown.value).toBe('<img src=x onerror=alert(1)>');
+    expect(h.panelCss()).not.toContain('innerHTML');
+  });
+
+  it('never sends more because more is displayed', () => {
+    h.start();
+    h.pick(buyLink());
+    h.selectAll();
+    h.arm('href');
+    h.confirm();
+
+    // The readout is a view. Exactly one value still travels, and it is the
+    // radio's — the guarantee that a bigger SELECTED ELEMENT never means a
+    // bigger payload.
+    const msg = h.sent[0]!;
+    expect(msg.sendAttribute).toEqual({ name: 'href', value: '/checkout' });
+    expect(msg.displayAttributes!.length).toBe(9);
   });
 });
 
