@@ -2930,6 +2930,39 @@
     return steps[0] || {};
   }
 
+  /**
+   * The off-screen-textarea copy, for every case the async API cannot serve.
+   *
+   * Pulled out of writeClipboard so it can be reached from BOTH failure paths.
+   * The API being absent (a plain-http origin) used to be the only one handled,
+   * but the commoner failure by far is `writeText()` REJECTING because the
+   * document is not focused — clicking a button in a dialog the browser has not
+   * yet given focus to. That path used to report failure without ever trying
+   * this, so a Base URL on a LAN address simply could not be copied.
+   *
+   * The node is removed in a `finally`: cleanup that only happens on success
+   * leaks a focus-stealing textarea into <body> exactly when things went wrong.
+   */
+  function legacyClipboardWrite(text) {
+    try {
+      if (!document.body || typeof document.execCommand !== 'function') return false;
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'readonly');
+      ta.setAttribute('aria-hidden', 'true');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      try {
+        ta.select();
+        return !!document.execCommand('copy');
+      } finally {
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+      }
+    } catch (e) { return false; }
+  }
+
   /** Copy `text` to the clipboard, with a fallback for non-secure contexts. */
   function writeClipboard(text) {
     var done = function (ok) {
@@ -2937,25 +2970,19 @@
     };
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () { done(true); },
-          function () { done(false); });
+        navigator.clipboard.writeText(text).then(
+          function () { done(true); },
+          // A rejection is not the end of the road: an unfocused document is the
+          // routine case, and document.execCommand still works there.
+          function () { done(legacyClipboardWrite(text)); }
+        );
         return true;
       }
     } catch (e) { /* fall through to the textarea path */ }
     // Fallback for non-secure contexts, where navigator.clipboard is absent.
-    try {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', 'readonly');
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = document.execCommand && document.execCommand('copy');
-      document.body.removeChild(ta);
-      done(!!ok);
-      return !!ok;
-    } catch (e2) { done(false); return false; }
+    var ok = legacyClipboardWrite(text);
+    done(ok);
+    return ok;
   }
 
   /** Copy ONE node's serialized step to the clipboard as JSON (Advanced ▸). */

@@ -57,6 +57,8 @@ class El {
   min = '';
   max = '';
   scrollTop = 0;
+  /** Set by select(); execCommand('copy') reads the last-selected node. */
+  selected = false;
   dataset: Record<string, string> = {};
   attrs: Record<string, string> = {};
   style: Record<string, unknown> = {
@@ -161,6 +163,10 @@ class El {
     return false;
   }
   focus() {}
+  // The legacy copy path is `appendChild → select() → execCommand('copy')`. The
+  // fake records the selection so execCommand can copy the SAME text a browser
+  // would, which is what makes "the fallback copied the right value" testable.
+  select() { this.selected = true; }
   closest() { return null; }
 }
 
@@ -261,6 +267,33 @@ interface Harness {
   /** Text of the message span, and of the <code> chip, in the row's output. */
   msgFor: (label: string) => string;
   codeFor: (label: string) => string;
+  /** The Base URL chip's text, or '' when no address was shown. */
+  baseFor: (label: string) => string;
+  /** The Copy buttons in one row's output, in render order. */
+  copiesFor: (label: string) => El[];
+  /** Everything that reached the clipboard, tagged with the path taken. */
+  clipboard: Array<{ text: string; via: 'api' | 'exec' }>;
+  /** Toasts the editor raised, as {text, kind}. */
+  toasts: Array<{ text: string; kind: string }>;
+  /** Replies for targetingStatus, consumed one per poll (last one repeats). */
+  statusQueue: Array<unknown>;
+  /** targetingStatus calls, so a test can prove the row polls at all. */
+  statusCalls: string[];
+  /** Run every pending interval once, then let its promise chain settle. */
+  tick: () => Promise<void>;
+  /** Pending intervals, so a test can prove a timer was cleared. */
+  intervals: () => number;
+  /** Textareas still parented to <body>: the fallback must clean up after itself. */
+  strayNodes: () => El[];
+  /**
+   * Break the clipboard the way a real browser does.
+   *  - noClipboardApi: navigator.clipboard absent (plain-http origin).
+   *  - clipboardFails: writeText() REJECTS (document not focused).
+   *  - execFails:      execCommand('copy') returns false.
+   */
+  breakClipboard: (how: { noClipboardApi?: boolean; clipboardFails?: boolean; execFails?: boolean }) => void;
+  /** Drop targetingStatus entirely, as an older inspector-client would. */
+  dropTargetingStatus: () => void;
 }
 
 function boot(opts: { client?: boolean } = {}): Harness {
@@ -268,6 +301,16 @@ function boot(opts: { client?: boolean } = {}): Harness {
   const docEl = new El('html');
   const minted: Record<string, Record<string, string>> = {};
   const authCalls: AuthCall[] = [];
+  const clipboard: Harness['clipboard'] = [];
+  const toasts: Harness['toasts'] = [];
+  const statusCalls: string[] = [];
+  const statusQueue: Array<unknown> = [];
+  // Intervals are captured rather than run: a 1000ms poll driven by real time
+  // would make every test that watches it slow AND flaky, and "the timer was
+  // cleared" is only observable if the harness owns the registry.
+  const timers: Array<{ fn: () => void; id: number }> = [];
+  let timerId = 1;
+  const broken = { noClipboardApi: false, clipboardFails: false, execFails: false };
 
   const doc = new El('#document');
   const documentFake: Record<string, unknown> = {
@@ -284,7 +327,17 @@ function boot(opts: { client?: boolean } = {}): Harness {
     removeEventListener: () => {},
     dispatchEvent: () => true,
     elementFromPoint: () => null,
-    execCommand: () => false,
+    // A browser copies whatever is SELECTED. Reading the last selected textarea
+    // (rather than trusting the call) is what lets a test catch a fallback that
+    // appends the node but forgets to put the value in it.
+    execCommand: (cmd: string) => {
+      if (String(cmd).toLowerCase() !== 'copy') return false;
+      if (broken.execFails) return false;
+      const ta = body.childNodes.filter((c) => c.selected).pop();
+      if (!ta) return false;
+      clipboard.push({ text: ta.value, via: 'exec' });
+      return true;
+    },
     exitFullscreen: () => {},
     fullscreenElement: null,
     activeElement: null,
@@ -302,6 +355,13 @@ function boot(opts: { client?: boolean } = {}): Harness {
     rows: () => [], row: () => ({ label: '', connect: null, out: null }),
     connectFor: () => new El(), outFor: () => new El(),
     msgFor: () => '', codeFor: () => '',
+    baseFor: () => '', copiesFor: () => [],
+    clipboard, toasts, statusQueue, statusCalls,
+    tick: async () => {},
+    intervals: () => timers.length,
+    strayNodes: () => [],
+    breakClipboard: (how) => { Object.assign(broken, how); },
+    dropTargetingStatus: () => {},
   };
 
   // A faithful stand-in for inspector-client.js: registerTarget mints an id the
@@ -334,6 +394,19 @@ function boot(opts: { client?: boolean } = {}): Harness {
       // testing the harness rather than the editor's .catch().
       return Promise.resolve().then(() => h.authReply(targetFieldId));
     },
+    /**
+     * The server is the only party that sees BOTH browsers, so this is how the
+     * dashboard learns the extension redeemed the code. Replies are queued; the
+     * last one repeats, so "not paired yet" can be held for several polls.
+     */
+    targetingStatus(targetFieldId: string) {
+      statusCalls.push(targetFieldId);
+      const next = statusQueue.length > 1 ? statusQueue.shift() : statusQueue[0];
+      return Promise.resolve().then(() => {
+        if (next instanceof Error) throw next;
+        return next === undefined ? { paired: false } : next;
+      });
+    },
   };
 
   const windowFake: Record<string, unknown> = {
@@ -349,8 +422,23 @@ function boot(opts: { client?: boolean } = {}): Harness {
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     API: { getUserId: () => 'local' },
     location: { href: 'http://localhost/', search: '' },
-    navigator: { platform: 'Linux', userAgent: 'node', clipboard: { writeText: () => Promise.resolve() } },
+    navigator: { platform: 'Linux', userAgent: 'node' },
   };
+  // Defined as a getter so a test can remove the whole API *after* boot, which
+  // is the plain-http case: `navigator.clipboard` is simply not there.
+  Object.defineProperty(windowFake.navigator as object, 'clipboard', {
+    configurable: true,
+    get() {
+      if (broken.noClipboardApi) return undefined;
+      return {
+        writeText: (text: string) => {
+          if (broken.clipboardFails) return Promise.reject(new Error('not focused'));
+          clipboard.push({ text: String(text), via: 'api' });
+          return Promise.resolve();
+        },
+      };
+    },
+  });
   if (opts.client !== false) windowFake.InspectorClient = inspectorClient;
 
   const store: Record<string, string> = {};
@@ -364,7 +452,18 @@ function boot(opts: { client?: boolean } = {}): Harness {
       removeItem: (k: string) => { delete store[k]; },
     },
     console,
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout, clearTimeout,
+    // The poll is captured, not scheduled. `tick()` drives it, so a test can
+    // say "one poll happened, and after the pairing landed no more did".
+    setInterval: (fn: () => void) => {
+      const id = timerId++;
+      timers.push({ fn, id });
+      return id;
+    },
+    clearInterval: (id: number) => {
+      const i = timers.findIndex((tm) => tm.id === id);
+      if (i >= 0) timers.splice(i, 1);
+    },
     JSON, Math, Date, String, Number, Boolean, Object, Array, Error, RegExp, Promise,
     isNaN, parseInt, parseFloat, encodeURIComponent, decodeURIComponent,
     CustomEvent: class { constructor(public type: string, public init?: unknown) {} },
@@ -381,7 +480,9 @@ function boot(opts: { client?: boolean } = {}): Harness {
     t: (k: string) => I18N.t(k),
     esc: (s: unknown) => String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    toast: () => {},
+    toast: (text: unknown, kind?: unknown) => {
+      toasts.push({ text: String(text == null ? '' : text), kind: String(kind == null ? '' : kind) });
+    },
   };
   vm.runInContext(readSrc('public/js/flow-editor.js'), ctx, { filename: 'flow-editor.js' });
 
@@ -429,6 +530,25 @@ function boot(opts: { client?: boolean } = {}): Harness {
     (findAll(h.outFor(label), matcher('.ndv-connect-msg'))[0]?.textContent) || '';
   h.codeFor = (label: string) =>
     (findAll(h.outFor(label), matcher('.ndv-connect-code'))[0]?.textContent) || '';
+  // The Base URL carries its own class so it is addressable independently of the
+  // code — the point of item 5 is that they are TWO values, not one blob.
+  h.baseFor = (label: string) =>
+    (findAll(h.outFor(label), matcher('.ndv-connect-base'))[0]?.textContent) || '';
+  h.copiesFor = (label: string) =>
+    findAll(h.outFor(label), matcher('.ndv-connect-copy'));
+
+  h.tick = async () => {
+    // A copy of the list: a handler that clears its own interval must not
+    // reshuffle the array being iterated.
+    timers.slice().forEach((tm) => {
+      if (timers.indexOf(tm) >= 0) tm.fn();
+    });
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  };
+  h.strayNodes = () => body.childNodes.filter((c) => c.tagName === 'TEXTAREA');
+  h.dropTargetingStatus = () => {
+    delete (inspectorClient as Record<string, unknown>).targetingStatus;
+  };
 
   return h;
 }
@@ -766,6 +886,381 @@ describe('flow-editor: connecting the Inspector to one field', () => {
       // Still pending: a second press would burn a second one-time code.
       expect(btn.disabled).toBe(true);
       if (release) (release as (v: unknown) => void)(null);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  // §5 — the code and the Base URL are BOTH shown, and BOTH copyable.
+  //
+  // The extension asks for two things before it can pair: an address to talk to
+  // and a code to prove the user opened the field. This row used to print only
+  // the code, which is a dead end — the operator has the secret and nowhere to
+  // spend it. And the one Copy it did have was fire-and-forget: on a plain-http
+  // LAN origin `navigator.clipboard` is undefined, so the button did nothing at
+  // all and said nothing about it.
+  // ══════════════════════════════════════════════════════════════
+  describe('§5 — both pairing values are shown and both can be copied', () => {
+    const SEL = () => L('extract-data', 'selector');
+    /** The reply shape the route actually sends, code AND address. */
+    const withBase = (id: string) => ({
+      code: 'ABCDEFGH', display: 'ABCD-EFGH',
+      baseUrl: 'https://auto.example.com', baseUrlSource: 'configured',
+      target: { targetFieldId: id }, expiresInMs: 300000,
+    });
+
+    it('shows the Base URL next to the code, not just the code', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      expect(h.codeFor(SEL())).toBe('ABCD-EFGH');
+      // Without this, the user holds a secret and no address to spend it at.
+      expect(h.baseFor(SEL())).toBe('https://auto.example.com');
+    });
+
+    it('gives each value its own Copy button', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // Two values, two buttons. One button for both would copy a blob that
+      // fits neither of the extension's two input boxes.
+      expect(h.copiesFor(SEL()).length).toBe(2);
+    });
+
+    it('labels each value so the two are not mixed up', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      const labels = findAll(h.outFor(SEL()), matcher('.ndv-connect-label'))
+        .map((n) => n.textContent);
+      expect(labels).toContain(T('tgt.authCode'));
+      expect(labels).toContain(T('tgt.baseUrl'));
+    });
+
+    it('copies the code when its Copy is pressed', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.copiesFor(SEL())[0]!.fire('click');
+      await settle();
+      expect(h.clipboard.map((c) => c.text)).toEqual(['ABCD-EFGH']);
+    });
+
+    it('copies the exact Base URL, with no trailing slash invented', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.copiesFor(SEL())[1]!.fire('click');
+      await settle();
+      // A pasted address that differs by one character is a failed pairing with
+      // no diagnostic, so this is asserted exactly rather than with `toContain`.
+      expect(h.clipboard.map((c) => c.text)).toEqual(['https://auto.example.com']);
+    });
+
+    it('falls back to execCommand when the clipboard API rejects', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // A rejection is what an unfocused document gives you — routine, not exotic.
+      h.breakClipboard({ clipboardFails: true });
+      h.copiesFor(SEL())[1]!.fire('click');
+      await settle();
+      expect(h.clipboard).toEqual([{ text: 'https://auto.example.com', via: 'exec' }]);
+    });
+
+    it('falls back to execCommand when there is no clipboard API at all', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // The plain-http LAN case — exactly when someone is copying a Base URL.
+      h.breakClipboard({ noClipboardApi: true });
+      h.copiesFor(SEL())[0]!.fire('click');
+      await settle();
+      expect(h.clipboard).toEqual([{ text: 'ABCD-EFGH', via: 'exec' }]);
+    });
+
+    it('leaves no textarea behind after the fallback runs', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.breakClipboard({ noClipboardApi: true });
+      h.copiesFor(SEL())[0]!.fire('click');
+      await settle();
+      // A leaked off-screen textarea steals focus and breaks the next keystroke.
+      expect(h.strayNodes()).toEqual([]);
+    });
+
+    it('removes the textarea even when execCommand itself fails', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.breakClipboard({ noClipboardApi: true, execFails: true });
+      h.copiesFor(SEL())[0]!.fire('click');
+      await settle();
+      expect(h.clipboard).toEqual([]);
+      // Cleanup must not be conditional on success.
+      expect(h.strayNodes()).toEqual([]);
+    });
+
+    it('shows one Copy when the server sent a code but no address', async () => {
+      h.openNode('extract-data');
+      h.authReply = (id) => ({ code: 'ABCDEFGH', display: 'ABCD-EFGH', target: { targetFieldId: id } });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // An address invented client-side would be shown with the same confidence
+      // as a configured one and be wrong more often, so none is shown.
+      expect(h.baseFor(SEL())).toBe('');
+      expect(h.copiesFor(SEL()).length).toBe(1);
+    });
+
+    it('renders the Base URL as text, never as markup', async () => {
+      h.openNode('extract-data');
+      h.authReply = (id) => ({
+        code: 'X', display: 'X', baseUrl: '<img src=x onerror=1>',
+        target: { targetFieldId: id },
+      });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      const chip = findAll(h.outFor(SEL()), matcher('.ndv-connect-base'))[0]!;
+      expect(chip.textContent).toBe('<img src=x onerror=1>');
+      expect(chip.innerHTML).toBe('');
+    });
+
+    it('marks the Copy buttons up as buttons, with an accessible name', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.copiesFor(SEL()).forEach((b) => {
+        // Inside the NDV a submit-type button would close the dialog.
+        expect(b.type).toBe('button');
+        // Two identically-named "Copy" buttons are indistinguishable to a
+        // screen reader, so each says WHICH value it copies.
+        expect(b.getAttribute('aria-label')).toContain(T('insp.copy'));
+      });
+      expect(h.copiesFor(SEL())[0]!.getAttribute('aria-label'))
+        .not.toBe(h.copiesFor(SEL())[1]!.getAttribute('aria-label'));
+    });
+
+    it('clears both values when a later attempt fails', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      expect(h.baseFor(SEL())).not.toBe('');
+      h.authReply = () => { throw new Error('nope'); };
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // A stale address next to an error message invites a retry against the
+      // wrong server.
+      expect(h.codeFor(SEL())).toBe('');
+      expect(h.baseFor(SEL())).toBe('');
+      expect(h.msgFor(SEL())).toBe(T('insp.codeFailed'));
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  // §9b — the box goes away when the extension accepts the code.
+  //
+  //   «توقع داشتم وقتی ارتباط برقرار میشه باکسی که کد اتورایز و بیس یو ار ال رو
+  //    نمایش میاد ... خارج میشد و انتظار یک الرت موفقیت بودم ولی هیچ اتفاقی
+  //    نیوفتاد»
+  //
+  // And nothing did: this row printed a code and then never asked about it
+  // again. The two browsers cannot see each other, so the server — the only
+  // party that sees both — has to be polled. The chooser dialog already did
+  // this; this row never had it.
+  // ══════════════════════════════════════════════════════════════
+  describe('§9b — the row notices the pairing and puts the box away', () => {
+    const SEL = () => L('extract-data', 'selector');
+    const withBase = (id: string) => ({
+      code: 'ABCDEFGH', display: 'ABCD-EFGH',
+      baseUrl: 'https://auto.example.com',
+      target: { targetFieldId: id }, expiresInMs: 300000,
+    });
+
+    it('starts asking the server about the code it just issued', async () => {
+      const id = h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();
+      // Polled with the SERVER's id for this field — a client-side id would ask
+      // about a destination that does not exist.
+      expect(h.statusCalls).toEqual([h.minted[id]!.selector!]);
+    });
+
+    it('does not poll before a code has been issued', async () => {
+      h.openNode('extract-data');
+      await h.tick();
+      // A row nobody pressed must not generate traffic.
+      expect(h.statusCalls).toEqual([]);
+      expect(h.intervals()).toBe(0);
+    });
+
+    it('keeps the box up while the extension has not paired yet', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.statusQueue.push({ paired: false });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();
+      await h.tick();
+      // Two polls, still unpaired: the code is the user's only way in and
+      // clearing it early would strand them.
+      expect(h.codeFor(SEL())).toBe('ABCD-EFGH');
+      expect(h.baseFor(SEL())).toBe('https://auto.example.com');
+      expect(h.statusCalls.length).toBe(2);
+    });
+
+    it('empties the box once the pairing lands', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.statusQueue.push({ paired: false }, { paired: true });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();                    // not yet
+      expect(h.codeFor(SEL())).toBe('ABCD-EFGH');
+      await h.tick();                    // paired
+      // The content was a ONE-TIME code and an address to spend it at. Both are
+      // spent; leaving them up invites a second, failing attempt.
+      expect(h.codeFor(SEL())).toBe('');
+      expect(h.baseFor(SEL())).toBe('');
+      expect(h.msgFor(SEL())).toBe('');
+      expect(h.copiesFor(SEL())).toEqual([]);
+    });
+
+    it('says out loud that the extension connected', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.statusQueue.push({ paired: true });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();
+      // «انتظار یک الرت موفقیت بودم» — a box that merely vanishes is
+      // indistinguishable from a box that crashed.
+      expect(h.toasts).toEqual([{ text: T('insp.pairedNow'), kind: 'ok' }]);
+      expect(h.toasts[0]!.text).not.toBe('insp.pairedNow');
+    });
+
+    it('stops polling after the pairing lands', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.statusQueue.push({ paired: true });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();
+      expect(h.intervals()).toBe(0);
+      const seen = h.statusCalls.length;
+      await h.tick();
+      // A timer that outlives its answer polls forever, once per open node.
+      expect(h.statusCalls.length).toBe(seen);
+      expect(h.toasts.length).toBe(1);
+    });
+
+    it('keeps polling through a failed poll', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.statusQueue.push(new Error('offline'), { paired: true });
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();                    // rejects
+      expect(h.codeFor(SEL())).toBe('ABCD-EFGH');
+      await h.tick();                    // recovers, pairs
+      // One dropped request must not strand the user with a live code and a
+      // dead watcher.
+      expect(h.codeFor(SEL())).toBe('');
+      expect(h.toasts.length).toBe(1);
+    });
+
+    it('stops watching when the node is closed underneath it', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      expect(h.intervals()).toBe(1);
+      (h.win.FlowEditor as { closeNdv: () => boolean }).closeNdv();
+      await h.tick();
+      // The id the timer holds is no longer a live destination, so it must not
+      // keep asking about it — one leaked timer per opened field otherwise.
+      expect(h.intervals()).toBe(0);
+    });
+
+    it('replaces the old watcher when a second code is issued', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // Two presses, one watcher: otherwise every retry doubles the polling and
+      // the toast fires once per stacked timer.
+      expect(h.intervals()).toBe(1);
+      h.statusQueue.push({ paired: true });
+      await h.tick();
+      expect(h.toasts.length).toBe(1);
+    });
+
+    it('does not start a watcher when the code could not be issued', async () => {
+      h.openNode('extract-data');
+      h.authReply = () => null;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      expect(h.msgFor(SEL())).toBe(T('insp.codeFailed'));
+      // Nothing was issued, so there is nothing to watch for.
+      expect(h.intervals()).toBe(0);
+    });
+
+    it('still shows the code when the client is too old to poll', async () => {
+      h.openNode('extract-data');
+      h.dropTargetingStatus();
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      // Degraded, not broken: the box simply stays up, and copying still works.
+      expect(h.codeFor(SEL())).toBe('ABCD-EFGH');
+      expect(h.baseFor(SEL())).toBe('https://auto.example.com');
+      expect(h.intervals()).toBe(0);
+      await h.tick();
+      expect(h.statusCalls).toEqual([]);
+    });
+
+    it('ignores an answer that does not say it paired', async () => {
+      h.openNode('extract-data');
+      h.authReply = withBase;
+      h.statusQueue.push(null);
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      await h.tick();
+      // An empty or malformed reply is not consent; treating it as success would
+      // clear a code the extension never received.
+      expect(h.codeFor(SEL())).toBe('ABCD-EFGH');
+      expect(h.toasts).toEqual([]);
+    });
+
+    it('watches each field separately', async () => {
+      const id = h.openNode('extract-data');
+      h.authReply = withBase;
+      h.connectFor(SEL()).fire('click');
+      await settle();
+      h.connectFor(L('extract-data', 'attribute')).fire('click');
+      await settle();
+      expect(h.intervals()).toBe(2);
+      h.statusQueue.push({ paired: true });
+      await h.tick();
+      // Both cleared, and each asked about its OWN destination.
+      expect(h.statusCalls.slice(0, 2).sort())
+        .toEqual([h.minted[id]!.attribute!, h.minted[id]!.selector!].sort());
+      expect(h.codeFor(SEL())).toBe('');
+      expect(h.codeFor(L('extract-data', 'attribute'))).toBe('');
     });
   });
 });
