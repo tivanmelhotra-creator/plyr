@@ -89,13 +89,52 @@ _domain_write() {
       ;;
   esac
 
+  # Already exactly right? Then write nothing at all.
+  #
+  # Not an optimisation. These startup scripts run on EVERY boot, and rewriting a
+  # file that already agrees has three costs an operator actually feels: the mtime
+  # that deployment tooling (and Coolify's change detection) watches moves for no
+  # reason; a `.env` mounted read-only makes the rewrite fail and abort a startup
+  # that had nothing to do; and any concurrent reader can observe the brief window
+  # where the file is being replaced. The condition is deliberately narrow —
+  # EXACTLY one PUBLIC_DOMAIN line with this value, and no BASE_URL at all — so a
+  # duplicate or a stale synonym is still cleaned up below.
+  # `grep -c` exits 1 when the count is zero, so the idiomatic `|| echo 0` guard
+  # produces the two-line string "0\n0" and the comparison silently never
+  # matches — measured, and the reason this is counted with -c into a variable
+  # instead. Counting through `grep | wc -l` keeps the exit status irrelevant.
+  # The patterns here MUST match the awk program below, spaces included, or a
+  # line written as `PUBLIC_DOMAIN = x` would be invisible to the count and
+  # visible to the rewrite (or the reverse), and the two halves of this function
+  # would disagree about whether the file is already correct.
+  domain_pd_count="$(grep -c '^[[:space:]]*PUBLIC_DOMAIN[[:space:]]*=' .env 2>/dev/null)" || domain_pd_count=0
+  domain_bu_count="$(grep -c '^[[:space:]]*BASE_URL[[:space:]]*=' .env 2>/dev/null)" || domain_bu_count=0
+  if [ "${domain_pd_count:-0}" = "1" ] && [ "${domain_bu_count:-0}" = "0" ] \
+    && grep -qxF "PUBLIC_DOMAIN=${domain_value}" .env 2>/dev/null; then
+    return 0
+  fi
+
   awk -v val="$domain_value" '
     # Drop every existing assignment of either name, then append one canonical
     # line. Leaving a stale BASE_URL behind would be worse than not writing at
     # all: the operator would see their new domain in .env and still be
     # advertised the old one, with no clue why.
-    /^[[:space:]]*PUBLIC_DOMAIN=/ { next }
-    /^[[:space:]]*BASE_URL=/      { next }
+    #
+    # This is also what makes PUBLIC_DOMAIN the single source of truth in the
+    # file rather than merely in the reader: config.ts accepts BASE_URL as a
+    # synonym, so a file containing both would resolve by precedence instead of
+    # by what the operator last typed.
+    #
+    # SPACE BEFORE THE "=" IS MATCHED DELIBERATELY. `PUBLIC_DOMAIN = https://x`
+    # is honoured by dotenv, and by the grep in _domain_current above, but an
+    # earlier version of this awk required the "=" to touch the name — so a
+    # hand-edited line written with spaces SURVIVED the cleanup and the canonical
+    # line was appended after it. The result was two live assignments of the same
+    # key, which is precisely the duplicate configuration this file exists to
+    # prevent, produced by the code meant to prevent it. Measured by test, not
+    # reasoned about: the leftover line was "  PUBLIC_DOMAIN = https://c…".
+    /^[[:space:]]*PUBLIC_DOMAIN[[:space:]]*=/ { next }
+    /^[[:space:]]*BASE_URL[[:space:]]*=/      { next }
     { print }
     END { printf "PUBLIC_DOMAIN=%s\n", val }
   ' .env > .env.domain.tmp && mv .env.domain.tmp .env

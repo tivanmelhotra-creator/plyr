@@ -22,7 +22,16 @@
 #        API_TOKEN=tok_xxxxxxxx...   (or leave empty -> auto-generated at boot)
 #        NODE_ENV=production
 #        APP_ENV=server            (headed browser -> extensions load)
+#        PUBLIC_DOMAIN=https://your-domain   <-- the domain you attached in 3.
 #      REDIS_URL is set below to the internal redis service.
+#
+#      PUBLIC_DOMAIN matters more here than anywhere else, and it is the ONE
+#      name to use for it. Coolify terminates your domain at its own proxy, so
+#      the container cannot see it: without this the panel has nothing to show
+#      beside the Authorization Code except an address on the internal docker
+#      network, which the Extension can never reach. Do not set BASE_URL as
+#      well — it is accepted only as a synonym when reading, and setting both
+#      is the duplicate configuration this project exists to avoid.
 #   5. Deploy. Open https://your-domain/ and log in with the API_TOKEN.
 #
 # Cloudflare note (if your domain is on Cloudflare):
@@ -70,6 +79,30 @@ services:
       # customise them; override in Coolify for production.
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-single}
       API_TOKEN: ${API_TOKEN:-}
+      # The address the Extension must connect to, shown beside the
+      # Authorization Code when pairing a Local Browser.
+      #
+      # WHY THIS LINE HAD TO BE ADDED. It was missing, and Coolify is the one
+      # deployment where its absence is guaranteed to hurt. Coolify terminates
+      # the public domain at Traefik and forwards to this container on an
+      # internal network, so from in here the only detectable addresses are the
+      # compose bridge IP and the container hostname — and NEITHER is reachable
+      # from the operator's browser. Without this the panel could only fall back
+      # to a detected address, which is exactly the "first system IP guessed as
+      # the Public URL behind Cloudflare / reverse proxy / Coolify / NAT" that
+      # this stack must never do.
+      #
+      # `${PUBLIC_DOMAIN:-}` is an interpolation, not a literal, and that
+      # distinction is load-bearing: Compose's `environment:` overrides
+      # `env_file:` and the Coolify UI's own variables, so a hardcoded blank
+      # would ERASE the value the operator was told to set. Resolving to empty
+      # instead leaves the server's detection path untouched.
+      #
+      # ONE NAME ON PURPOSE. PUBLIC_DOMAIN is the single source of truth;
+      # BASE_URL is only accepted as a read-time synonym by src/config.ts and is
+      # deliberately not plumbed here, so no deployment path can set one name
+      # while another path reads the other.
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
     # Coolify maps the public domain to this internal port via its proxy.
     # The magic label below tells Coolify which container port to expose.
     expose:
