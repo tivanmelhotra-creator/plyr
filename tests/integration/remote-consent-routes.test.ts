@@ -1,25 +1,29 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
-import { createModeRouter } from '../../src/Routes/mode.routes';
 import { remoteConsent } from '../../src/core/RemoteConsent';
 
 describe('Remote Consent Routes', () => {
   let app: Express;
 
-  beforeEach(() => {
-    remoteConsent.clear();
+  beforeAll(async () => {
+    const { createModeRoutes } = await import('../../src/Routes/mode.routes');
     app = express();
     app.use(express.json());
 
     // Mock authentication middleware
     app.use((req: any, _res, next) => {
       req.user = { id: 'test_user_1', apiKey: 'test_key_abc' };
+      req.apiKey = 'test_key_abc';
+      req.apiKeyUserId = 'test_user_1';
       next();
     });
 
-    const router = createModeRouter();
-    app.use('/', router);
+    app.use(createModeRoutes());
+  });
+
+  beforeEach(() => {
+    remoteConsent.clear();
   });
 
   it('returns pending consent when active', async () => {
@@ -32,6 +36,7 @@ describe('Remote Consent Routes', () => {
 
     const res = await request(app)
       .get('/inspector/consent/pending')
+      .set('x-api-key', 'test_key_abc')
       .set('X-Forwarded-For', '127.0.0.1');
 
     expect(res.status).toBe(200);
@@ -49,6 +54,7 @@ describe('Remote Consent Routes', () => {
 
     const res = await request(app)
       .post('/inspector/consent/accept')
+      .set('x-api-key', 'test_key_abc')
       .set('X-Forwarded-For', '127.0.0.1')
       .send({ offerId: offer.id });
 
@@ -66,6 +72,7 @@ describe('Remote Consent Routes', () => {
 
     const res = await request(app)
       .post('/inspector/consent/reject')
+      .set('x-api-key', 'test_key_abc')
       .set('X-Forwarded-For', '127.0.0.1')
       .send({ offerId: offer.id });
 
