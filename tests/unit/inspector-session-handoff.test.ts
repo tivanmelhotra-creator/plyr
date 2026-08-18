@@ -63,7 +63,16 @@ interface Harness {
   /** Send a message the way the popup / content script does, and await the reply. */
   send(msg: Msg): Promise<Record<string, unknown>>;
   /** Every request background.js actually made, in order. */
-  requests: Array<{ method: string; path: string; body: Record<string, unknown> | null; key: string }>;
+  requests: Array<{
+    method: string;
+    path: string;
+    body: Record<string, unknown> | null;
+    key: string;
+    /** `?environment=` — how the caller declared which browser it is. */
+    query: string;
+    /** The `x-browser-environment` header, sent alongside the query. */
+    declaredEnv: string;
+  }>;
   /** What was POSTed to /inspector/element, in order. */
   posted: Array<Record<string, unknown>>;
   storage: Record<string, unknown>;
@@ -98,6 +107,28 @@ interface Harness {
 interface WorkerOpts {
   /** Reuse another harness's backend + profile, to model an MV3 worker restart. */
   reuse?: Harness;
+  /**
+   * Model the copy the SERVER side-loads into the REMOTE browser.
+   *
+   * That copy — and only that copy — carries a generated `bootstrap.config.js`
+   * defining `AB_BOOTSTRAP` with `managed: true` (see
+   * src/core/InspectorExtension.ts). background.js uses exactly that to answer
+   * "which browser am I in?", because a user's own Chrome cannot obtain the file
+   * by configuring anything, which is what makes 'remote' unforgeable from the
+   * user side.
+   *
+   * It matters here because the remote-consent handshake is REMOTE-only by
+   * contract:
+   *
+   *   LOCAL  = API Key + Authorization Code      -> NO Remote Approval Alert
+   *   REMOTE = no API Key, no Authorization Code -> Remote Approval Alert
+   *
+   * A worker without this flag is a LOCAL browser and correctly refuses to list
+   * or answer consent at all, so the REMOTE tests below must opt in. Leaving it
+   * off by default keeps every other test in this file describing the ordinary
+   * hand-installed extension.
+   */
+  managed?: boolean;
 }
 
 function loadWorker(opts: WorkerOpts = {}): Harness {
@@ -152,14 +183,29 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
   // The endpoints the inspector path touches, answered by the REAL registries.
   async function fakeFetch(url: string, opts: Record<string, unknown> = {}) {
     const method = String(opts.method || 'GET').toUpperCase();
-    const path = url.replace(BASE, '');
+    // Split the query off the way a real server does. background.js declares its
+    // browser environment on GET /inspector/consent as `?environment=remote`
+    // (and as an `x-browser-environment` header), so a fake that compared the
+    // whole string against a bare path would 404 the request and make the REMOTE
+    // consent tests fail for a reason that has nothing to do with consent.
+    const raw = url.replace(BASE, '');
+    const qmark = raw.indexOf('?');
+    const path = qmark >= 0 ? raw.slice(0, qmark) : raw;
+    const query = new URLSearchParams(qmark >= 0 ? raw.slice(qmark + 1) : '');
     const headers = (opts.headers || {}) as Record<string, string>;
     // The route reads the key from the CREDENTIAL, never from the body. Captured
     // here so a test can prove the extension actually presented one.
     const key = headers['x-api-key'] || '';
     let body: Record<string, unknown> | null = null;
     if (opts.body) { try { body = JSON.parse(String(opts.body)); } catch { body = null; } }
-    requests.push({ method, path, body, key });
+    requests.push({
+      method,
+      path,
+      body,
+      key,
+      query: query.get('environment') || '',
+      declaredEnv: headers['x-browser-environment'] || '',
+    });
 
     const reply = (status: number, data: unknown) => ({
       ok: status >= 200 && status < 300,
@@ -207,7 +253,15 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
     // that grants. A convenience fake that returned the target in the list, or
     // granted on GET, would let a broken extension pass.
     if (method === 'GET' && path === '/inspector/consent') {
-      const requestsOut = consent.pendingFor(USER);
+      // The environment filter is passed through exactly as the real route does
+      // (query first, then header), so this fake cannot serve a remote prompt to
+      // a caller that declared itself local. Without it the fake would be MORE
+      // permissive than the server and the scoping could regress unseen.
+      const declared = String(
+        query.get('environment') || headers['x-browser-environment'] || '',
+      ).trim().toLowerCase();
+      const filter = declared === 'local' ? 'local' : (declared === 'remote' ? 'remote' : '');
+      const requestsOut = consent.pendingFor(USER, Date.now(), filter);
       return reply(200, { success: true, count: requestsOut.length, requests: requestsOut });
     }
 
@@ -284,9 +338,29 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
     console: { log: () => {}, warn: () => {}, error: () => {} },
     // `bootstrap.config.js` is absent from the authored extension (it is written
     // only into the server-seeded copy), so this must throw for it — the same
-    // normal case a hand-installed copy hits.
+    // normal case a hand-installed copy hits. With `managed: true` the harness
+    // supplies it instead, exactly as the server-seeded REMOTE copy does.
     importScripts: (file: string) => {
-      if (file === 'bootstrap.config.js') throw new Error('not found');
+      if (file === 'bootstrap.config.js') {
+        if (!opts.managed) throw new Error('not found');
+        // Field for field what bootstrapSource() emits in
+        // src/core/InspectorExtension.ts — but carrying THIS harness's backend
+        // rather than a literal 127.0.0.1:3000.
+        //
+        // applyBootstrapDefaults() writes these into empty storage keys, and the
+        // worker is loaded BEFORE worker() assigns ab_baseUrl/ab_apiKey, so a
+        // different address here would win the race and every request would go to
+        // an origin the fake fetch does not serve (observed as http_404 on a
+        // route that exists).
+        vm.runInContext(
+          `var AB_BOOTSTRAP = { baseUrl: ${JSON.stringify(BASE)},`
+          + ` apiKey: ${JSON.stringify(API_KEY)},`
+          + ` userId: ${JSON.stringify(USER)}, managed: true };`,
+          sandbox as never,
+          { filename: 'bootstrap.config.js' },
+        );
+        return;
+      }
       const p = resolve(__dirname, '../../extension', file);
       vm.runInContext(readFileSync(p, 'utf8'), sandbox as never, { filename: file });
     },
@@ -907,7 +981,12 @@ describe('REMOTE consent — the extension learns its destination without a code
    * has nothing to do with consent.
    */
   function worker(opts: WorkerOpts = {}): Harness {
-    const w = loadWorker(opts);
+    // `managed: true` — every test in THIS block describes the browser the
+    // server launched and side-loaded the extension into. That is the only
+    // browser the consent handshake is for, and background.js now refuses to
+    // list or answer prompts anywhere else (the reported defect was this Alert
+    // appearing in the operator's own Chrome during a LOCAL session).
+    const w = loadWorker({ managed: true, ...opts });
     w.storage.ab_baseUrl = BASE;
     w.storage.ab_apiKey = API_KEY;
     w.storage.ab_userId = USER;
@@ -1119,5 +1198,85 @@ describe('REMOTE consent — the extension learns its destination without a code
     await h.send({ type: 'AB_INSPECTOR_UNPAIR' });
     expect(h.storage.ab_targetFieldId).toBeFalsy();
     expect(h.storage.ab_pairingKey).toBeFalsy();
+  });
+
+  /* --------------------------------------------------------------------------
+     ...AND NOT IN THE OPERATOR'S OWN BROWSER
+
+     Same worker, same server, same pending prompt — only the browser differs.
+     `managed: false` is a hand-installed extension, i.e. the operator's personal
+     Chrome, which is where the Alert was reported appearing during a LOCAL
+     session minutes after they had already authorized with a code.
+     -------------------------------------------------------------------------- */
+
+  /** A LOCAL browser: no server-seeded bootstrap, so no `AB_BOOTSTRAP.managed`. */
+  function localWorker(opts: WorkerOpts = {}): Harness {
+    const w = loadWorker({ ...opts, managed: false });
+    w.storage.ab_baseUrl = BASE;
+    w.storage.ab_apiKey = API_KEY;
+    w.storage.ab_userId = USER;
+    return w;
+  }
+
+  it('a LOCAL browser is told nothing is pending, and asks the server nothing', async () => {
+    const h = localWorker();
+    h.askFor(h.openField());
+
+    const res = await h.send({ type: 'AB_CONSENT_LIST' });
+    // `ok` with an empty list, not an error: "nothing is pending for you" is the
+    // TRUTH in a local browser, which binds by redeeming an Authorization Code.
+    // An error would make the caller back off and retry as if broken.
+    expect(res.ok).toBe(true);
+    expect(res.requests).toEqual([]);
+    expect(res.count).toBe(0);
+    // The request is never made at all, so even a server that forgot to filter
+    // could not produce an Alert here.
+    expect(h.requests.some((r) => r.path === '/inspector/consent')).toBe(false);
+  });
+
+  it('a LOCAL browser cannot complete a remote grant even holding a valid handle', async () => {
+    // Gating only the LIST would leave the write to `ab_targetFieldId` reachable
+    // from a stale card left in a tab by an earlier remote session.
+    const h = localWorker();
+    const consentId = h.askFor(h.openField());
+
+    const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('wrong_environment');
+    // Nothing attached, and nothing even asked of the server.
+    expect(h.storage.ab_targetFieldId).toBeFalsy();
+    expect(h.requests.some((r) => r.path === '/inspector/consent/decide')).toBe(false);
+  });
+
+  it('the same prompt is still there for the REMOTE browser', async () => {
+    // Proves the refusal above is SCOPING and not destruction: a local browser
+    // declining to look must not consume or expire the question the server's
+    // browser still has to answer.
+    const shared = worker();
+    const consentId = shared.askFor(shared.openField());
+
+    const local = localWorker({ reuse: shared });
+    await local.send({ type: 'AB_CONSENT_LIST' });
+    await local.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+
+    const list = await shared.send({ type: 'AB_CONSENT_LIST' });
+    expect(list.count).toBe(1);
+    const ok = await shared.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    expect(ok.ok).toBe(true);
+    expect(ok.approved).toBe(true);
+  });
+
+  it('declares its environment on the wire when it does ask', async () => {
+    // The server filters on the DECLARED environment, so a client that polls
+    // without declaring is served remote prompts for backward compatibility —
+    // exactly the ungated behaviour that caused the report.
+    const h = worker();
+    h.askFor(h.openField());
+    await h.send({ type: 'AB_CONSENT_LIST' });
+
+    const asked = h.requests.filter((r) => r.path === '/inspector/consent');
+    expect(asked).toHaveLength(1);
+    expect(asked[0].query).toBe('remote');
+    expect(asked[0].declaredEnv).toBe('remote');
   });
 });

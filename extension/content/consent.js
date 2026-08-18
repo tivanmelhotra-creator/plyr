@@ -45,6 +45,38 @@
    because a refusal is visible. The server therefore withholds the address until
    a human answers, and this file never sees a targetFieldId until then.
 
+   WHY IT IS SCOPED TO REMOTE ONLY
+   -------------------------------
+   Reported afterwards: this Alert appeared in the operator's OWN Chrome during a
+   LOCAL session, minutes after they had already authorized with a code. The
+   contract it violated is:
+
+     LOCAL  = API Key + Authorization Code      -> NO Remote Approval Alert
+     REMOTE = no API Key, no Authorization Code -> Remote Approval Alert
+
+   Three things combined to cause it, and the fix had to address the one that is
+   actually this file's fault:
+
+     1. manifest.json injects this script into EVERY http/https page, so it also
+        runs in the user's personal Chrome. (Correct — the remote browser visits
+        arbitrary pages, so the prompt must be able to appear on any of them.)
+     2. GET /inspector/consent could only scope by account, and two browsers
+        signed into the same account look identical to it. (Fixed server-side:
+        prompts now carry an environment and are filtered.)
+     3. THIS poll loop had no environment gate and rendered every prompt handed
+        to it. That is the defect here.
+
+   So the loop now asks which browser it is in FIRST and, in a local browser,
+   never starts. The prompt itself is unchanged and is NOT removed: it remains
+   exactly the mechanism REMOTE depends on, since REMOTE deliberately has no code
+   to type. It is only prevented from appearing where it has no meaning.
+
+   The delay in the report — "minutes later" — was POLL_MS/POLL_MS_IDLE backoff
+   plus the visibilitychange pause below, playing against the server's 5-minute
+   consent TTL: a prompt stayed claimable long after the operator had moved on,
+   and surfaced whenever some background tab next became visible. Not starting
+   the loop removes that whole window rather than shortening it.
+
    RENDERING RULES
    ---------------
    Closed shadow root, `all:initial`, textContent only — never innerHTML. This
@@ -79,6 +111,17 @@
     shown: {},
     timer: null,
     stopped: false,
+    // Has the environment gate at the bottom of this file confirmed REMOTE?
+    //
+    // Starts false and is the ONLY thing that may set it true. It exists because
+    // the gate is asynchronous (a sendMessage round-trip) while the
+    // visibilitychange listener is not: a tab that loads hidden and is revealed
+    // before the gate answers would otherwise find `stopped === false` and
+    // `timer === null` and start polling — reintroducing the Alert in a local
+    // browser through the exact timing path that made the original report say
+    // "minutes later". `stopped` cannot serve this purpose because "not yet
+    // decided" and "decided: remote" must not look the same.
+    armed: false,
   };
 
   /* ----------------------------------------------------------
@@ -272,16 +315,52 @@
   // A tab that is not visible is not a tab anyone can answer a prompt in, and
   // the server expires prompts on its own. Pausing while hidden keeps a parked
   // background tab from polling forever.
+  //
+  // `state.armed` is checked as well as `state.stopped`: becoming visible must
+  // not be able to START the loop in a browser the gate has not yet cleared as
+  // REMOTE (see the comment on `armed`).
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
       if (state.timer) { clearTimeout(state.timer); state.timer = null; }
-    } else if (!state.timer && !state.stopped) {
+    } else if (state.armed && !state.timer && !state.stopped) {
       poll();
     }
   });
 
+  /* ----------------------------------------------------------
+     THE ENVIRONMENT GATE
+
+     Nothing above this point has run any network traffic or drawn anything: the
+     poll is what starts the whole mechanism, so gating its START is what scopes
+     the Alert to REMOTE.
+
+     Asked once per page load rather than re-checked each tick. The answer is a
+     property of WHICH BROWSER this is, which cannot change while a page is
+     loaded — re-asking every 4 seconds would add a message round-trip per tick
+     for a value that is fixed.
+
+     Any failure to get an answer means NO POLLING. If the service worker is
+     asleep, the extension was just reloaded, or the message errors, the safe
+     result is silence: a missing prompt in a remote browser is recoverable from
+     the dashboard, whereas a prompt in a local browser is the reported bug. The
+     next page load asks again, so this is not a permanent state.
+     ---------------------------------------------------------- */
   try {
-    if (!document.hidden) poll();
+    chrome.runtime.sendMessage({ type: 'AB_ENVIRONMENT' }, function (res) {
+      var err = chrome.runtime.lastError;
+      if (err || !res || !res.ok || res.environment !== 'remote') {
+        // Not the server's browser (or not answerable) — this file does nothing
+        // at all here. No poll, no timer, no prompt, and no Alert during a LOCAL
+        // session, which binds its target by redeeming an Authorization Code and
+        // needs none of this.
+        state.stopped = true;
+        return;
+      }
+      // Confirmed REMOTE: only now may the loop run, here or from the
+      // visibilitychange listener above.
+      state.armed = true;
+      if (!document.hidden) poll();
+    });
   } catch (e) {
     // Never let this take down the sibling content scripts in the same bundle.
     state.stopped = true;

@@ -46,6 +46,20 @@ const SRC = readFileSync(
   'utf8',
 );
 
+/**
+ * The service worker's source.
+ *
+ * Read at module scope because TWO describe blocks need it: the message-vocabulary
+ * seam below, and the LOCAL/REMOTE scoping block at the bottom. The scoping block
+ * asserts things that happen in the WORKER rather than in the page — the HTTP
+ * call that declares the environment, and the refusal to complete a remote grant
+ * from a local browser — and neither leaves a trace the fake DOM can observe.
+ */
+const BG = readFileSync(
+  resolve(__dirname, '../../extension/background.js'),
+  'utf8',
+);
+
 /* ---------------------------------------------------------------
    A fake DOM, recording exactly what the prompt sets.
    --------------------------------------------------------------- */
@@ -177,9 +191,32 @@ interface Harness {
   timerCount(): number;
   /** chrome.runtime.lastError for the next message reply. */
   lastError: { value: unknown };
+  /**
+   * Settle the `AB_ENVIRONMENT` gate the prompt asks on load.
+   *
+   * Needed only by tests that manipulate `lastError`, because the gate is a
+   * message like any other and would otherwise consume a failure the test meant
+   * for the POLL. Ordinary tests do not call it: their first `tick()` settles the
+   * gate as a side effect.
+   */
+  ready(): Promise<void>;
 }
 
-function boot(): Harness {
+/**
+ * How the worker answers `AB_ENVIRONMENT` — the gate the prompt asks before it
+ * does anything at all.
+ *
+ * `'remote'` is the default because that is the only browser this prompt is FOR,
+ * so it is the state every pre-existing behavioural test means to describe. The
+ * other values exist so the LOCAL scoping can be asserted rather than assumed:
+ *
+ *   'local'  — the operator's own Chrome: the reported bug, must stay silent
+ *   'none'   — the worker answered nothing (asleep / just reloaded)
+ *   'error'  — chrome.runtime.lastError on the gate message
+ */
+type EnvReply = 'remote' | 'local' | 'none' | 'error';
+
+function boot(env: EnvReply = 'remote'): Harness {
   const documentEl = new FakeNode('html');
   const sent: Array<Record<string, unknown>> = [];
   const listQueue: unknown[] = [];
@@ -208,6 +245,20 @@ function boot(): Harness {
         // synchronous reply the browser would never give.
         Promise.resolve().then(() => {
           if (!cb) return;
+          if (msg.type === 'AB_ENVIRONMENT') {
+            // Modelled the way the real worker replies, including the failure
+            // shapes: `lastError` set with no reply, and a reply that is absent
+            // entirely. Both must read as "do not poll".
+            if (env === 'error') {
+              lastError.value = { message: 'worker asleep' };
+              cb(undefined);
+              lastError.value = undefined;
+              return;
+            }
+            if (env === 'none') { cb(undefined); return; }
+            cb({ ok: true, environment: env });
+            return;
+          }
           if (msg.type === 'AB_CONSENT_LIST') {
             cb(listQueue.length ? listQueue.shift() : { ok: true, count: 0, requests: [] });
           } else if (msg.type === 'AB_CONSENT_DECIDE') {
@@ -262,6 +313,7 @@ function boot(): Harness {
       await settle();
     },
     timerCount: () => timers.length,
+    async ready() { await settle(); },
   };
   return h;
 }
@@ -472,6 +524,11 @@ describe('the in-page consent prompt', () => {
   it('survives a sleeping service worker and retries later', async () => {
     // MV3 workers idle out; the first poll after that fails with lastError.
     const h = boot();
+    // Let the environment gate answer BEFORE the worker "sleeps", so the failure
+    // below lands on the poll rather than on the gate. A gate that cannot be
+    // answered deliberately declines to poll at all (asserted separately), which
+    // is a different behaviour from the retry this test is about.
+    await h.ready();
     h.lastError.value = { message: 'Could not establish connection.' };
     await h.tick();
     expect(h.cards().length).toBe(0);
@@ -560,10 +617,7 @@ describe('the prompt and the worker agree on a message vocabulary', () => {
   //
   // No amount of server-side testing can catch that, so the seam itself is
   // asserted here: every type the content script sends must be handled.
-  const BG = readFileSync(
-    resolve(__dirname, '../../extension/background.js'),
-    'utf8',
-  );
+  // (`BG` is read at module scope — the scoping block below needs it too.)
 
   function typesSentBy(src: string): string[] {
     const out = new Set<string>();
@@ -587,5 +641,120 @@ describe('the prompt and the worker agree on a message vocabulary', () => {
     expect(SRC).toContain('AB_CONSENT_DECIDE');
     expect(BG).toContain("'AB_CONSENT_LIST'");
     expect(BG).toContain("'AB_CONSENT_DECIDE'");
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════
+   THE LOCAL / REMOTE BOUNDARY
+
+   Reported: this Alert appeared in the operator's OWN Chrome during a LOCAL
+   session, minutes after they had already authorized with an Authorization Code.
+   The contract being broken:
+
+     LOCAL  = API Key + Authorization Code      -> NO Remote Approval Alert
+     REMOTE = no API Key, no Authorization Code -> Remote Approval Alert
+
+   The Alert is NOT removed by these tests and must not be: REMOTE has no code to
+   type, so the prompt is the only thing that can supply its target. What is
+   asserted is that it is SCOPED — present in the server's browser, absent in the
+   operator's.
+   ════════════════════════════════════════════════════════════════ */
+describe('the consent prompt is scoped to the REMOTE browser', () => {
+  it('asks which browser it is in before polling for anything', async () => {
+    // Ordering, not just outcome. If the poll were issued first and filtered
+    // afterwards, a local browser would still have asked the server for pending
+    // approvals — and any server that answered (an older build, a route that
+    // forgot the filter) could still put an Alert on the operator's screen.
+    const h = boot('local');
+    await h.ready();
+    const types = h.sent.map((m) => m.type);
+    expect(types[0]).toBe('AB_ENVIRONMENT');
+    expect(types).not.toContain('AB_CONSENT_LIST');
+  });
+
+  it('never polls, and never draws anything, in a LOCAL browser', async () => {
+    const h = boot('local');
+    await h.tick();
+    await h.tick();
+
+    expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST')).toEqual([]);
+    expect(h.cards().length).toBe(0);
+    // No host element grafted onto the page at all: in a local session this
+    // file must leave the operator's pages exactly as it found them.
+    expect(h.host()).toBeNull();
+    // And no timer left behind, so it cannot wake up later — the "minutes
+    // later" shape of the original report.
+    expect(h.timerCount()).toBe(0);
+  });
+
+  it('does poll, and does draw, in the REMOTE browser', async () => {
+    // The other half of the contract. A gate that silenced both environments
+    // would "fix" the report by breaking REMOTE, whose only route to a target is
+    // this prompt.
+    const h = boot('remote');
+    h.queueList({ ok: true, count: 1, requests: [prompt()] });
+    await h.tick();
+
+    expect(h.sent.map((m) => m.type)).toContain('AB_CONSENT_LIST');
+    expect(h.cards().length).toBe(1);
+    expect(h.cards()[0].textContent).toContain('Search box');
+  });
+
+  it('stays silent when the worker cannot say which browser this is', async () => {
+    // Asleep worker / just-reloaded extension. Silence is the safe answer: a
+    // missing prompt in the remote browser is recoverable from the dashboard,
+    // an Alert in a local browser is the bug.
+    for (const mode of ['none', 'error'] as const) {
+      const h = boot(mode);
+      h.queueList({ ok: true, count: 1, requests: [prompt()] });
+      await h.tick();
+      await h.tick();
+      expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST')).toEqual([]);
+      expect(h.cards().length).toBe(0);
+    }
+  });
+
+  it('cannot be started by a hidden LOCAL tab later becoming visible', async () => {
+    // The race the `armed` flag exists for. The gate is asynchronous; the
+    // visibilitychange listener is not. A tab that loads hidden and is revealed
+    // before the gate answers would find "not stopped, no timer" and start
+    // polling — which is exactly how a prompt surfaced minutes after the
+    // operator had moved on.
+    const h = boot('local');
+    h.hidden.value = true;
+    await h.visibility();
+    h.hidden.value = false;
+    await h.visibility();
+    await h.tick();
+
+    expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST')).toEqual([]);
+    expect(h.cards().length).toBe(0);
+  });
+
+  it('declares its environment to the server when it does poll', () => {
+    // Source-level, because the HTTP call happens in the worker and not in the
+    // page. The server filters prompts by the DECLARED environment
+    // (src/core/RemoteTargetConsent.ts pendingFor), so a client that polls
+    // without declaring is served remote prompts for backward compatibility —
+    // which is precisely the ungated behaviour that caused the report.
+    expect(BG).toContain('x-browser-environment');
+    expect(BG).toContain('environment=');
+  });
+
+  it('refuses to complete a remote grant from a LOCAL browser', () => {
+    // Gating the LIST alone would leave the write to `ab_targetFieldId`
+    // reachable by a stale card left over from a previous remote session. In
+    // LOCAL the target may arrive ONLY by redeeming an Authorization Code.
+    expect(BG).toContain('wrong_environment');
+  });
+
+  it('decides the environment from the managed install, never from the URL', () => {
+    // «Backend Base URL != Browser Environment». A LOCAL browser is entitled to
+    // drive a REMOTE backend over a public domain, so inferring the environment
+    // from a loopback base URL would classify that session as remote and hand it
+    // the Alert. `AB_BOOTSTRAP.managed` is written only by the server that
+    // side-loaded the extension into the browser it launched itself, so a user's
+    // own Chrome cannot acquire it by configuring anything.
+    expect(BG).toContain('AB_BOOTSTRAP.managed === true');
   });
 });
