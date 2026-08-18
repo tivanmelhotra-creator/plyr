@@ -247,6 +247,25 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       });
     }
 
+    // ── Disconnect, server side ────────────────────────────────────────────
+    // Mirrors POST /inspector/targeting/unpair in mode.routes.ts, including
+    // the two halves that matter most: `unpair` drops the DURABLE pairing, and
+    // `unbindForUser` drops the LIVE bindings the extension's automatic
+    // binding adoption reads. Omitting the second half would leave this fake
+    // MORE permissive than the server — the next AB_INSPECTOR_SESSION would
+    // silently re-adopt the connection the user just disconnected, and the
+    // "Disconnect must actually disconnect" regression would pass unnoticed.
+    if (method === 'POST' && path === '/inspector/targeting/unpair') {
+      const pairingKey = String(body?.pairingKey || '');
+      if (!auth.isPairedForUser(USER, pairingKey)) {
+        return reply(200, { success: true, unpaired: 0, pairingKey });
+      }
+      consent.clearForPairing(USER, pairingKey);
+      const unpaired = auth.unpair(pairingKey);
+      auth.unbindForUser(USER, String(body?.targetFieldId || ''), pairingKey);
+      return reply(200, { success: true, unpaired, pairingKey });
+    }
+
     // ── The REMOTE consent handshake ──────────────────────────────────────
     // Mirrors mode.routes.ts, including the two properties that matter most:
     // the pending list withholds the address, and `decide` is the ONLY thing
@@ -729,17 +748,20 @@ describe('one code, one field — a pairing cannot be widened', () => {
   });
 });
 
-describe('unpairing is local, and touches nothing else', () => {
-  it('forgets the destination without revoking the server binding', async () => {
+describe('unpairing disconnects BOTH halves, and touches nothing else', () => {
+  it('forgets the destination AND drops the server binding', async () => {
     const id = await pairTo(h);
 
     const res = await h.send({ type: 'AB_INSPECTOR_UNPAIR' });
     expect(res.ok).toBe(true);
     expect(h.storage.ab_targetFieldId).toBeFalsy();
 
-    // The server keeps its binding until the field itself closes, so the user
-    // can re-aim at it without asking for a brand new code.
-    expect(h.auth.isAuthorized(API_KEY, USER, id)).toBe(true);
+    // The binding is adopted AUTOMATICALLY from the server's grant on the next
+    // session refresh — no code step remains to gate it. So if the server kept
+    // the binding here, Disconnect would silently re-attach itself one refresh
+    // later and be a button that does nothing. Disconnect must disconnect.
+    expect(h.auth.isAuthorized(API_KEY, USER, id)).toBe(false);
+    expect(h.auth.pairingsFor(API_KEY)).toHaveLength(0);
   });
 
   it('leaves the Handoff pairing completely alone', async () => {

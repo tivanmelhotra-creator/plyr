@@ -293,99 +293,32 @@
     </section>
 
     <!-- ══ CONNECTION ═══════════════════════════════════════════════════
-         «Connection فقط Connection است.» Backend location, credentials, and the
-         state that results from them. Nothing about Session Handoff, the Remote
-         Browser, saved workflows or live runs belongs here — and the Browser
-         Environment does not either: that is chosen at the start of the
+         Read-only STATE, nothing else. The connection itself is internal and
+         automatic: LOCAL BROWSER is the server-local runtime, seeded with the
+         loopback Base URL and the server's token, and Target This Field →
+         LOCAL BROWSER grants and adopts the binding without the user typing
+         anything. So this tab shows the result — ready / connected / which
+         Target Field — and offers the one action that remains, Disconnect.
+         Nothing about Session Handoff, saved workflows or live runs belongs
+         here, and the Browser Environment is chosen at the start of the
          targeting flow, not configured as a connection setting. -->
     <section class="panel" id="p-connection">
 
-      <section class="card">
-        <div class="card-hd"><h2>Backend connection</h2></div>
-        <div class="card-bd">
-          <p class="lede">Choose where the extension should send inspected data.</p>
-          <!-- Two cards side by side, as approved: both options and both URLs
-               stay readable at once, so the user can see which machine they are
-               about to talk to without opening anything. The whole card is the
-               <label>, so the click target is the card and not a 13px dot. -->
-          <div class="modegrid">
-            <label class="modecard" for="modeLocal">
-              <input type="radio" name="abmode" id="modeLocal">
-              <span class="dot" aria-hidden="true"></span>
-              <span class="modemeta">
-                <span class="modename">Local Backend</span>
-                <span class="modeurl" id="modeLocalUrl">http://127.0.0.1:3000</span>
-              </span>
-            </label>
-            <label class="modecard" for="modeRemote">
-              <input type="radio" name="abmode" id="modeRemote">
-              <span class="dot" aria-hidden="true"></span>
-              <span class="modemeta">
-                <span class="modename">Remote Backend</span>
-                <span class="modeurl" id="modeRemoteUrl">https://your-server.com</span>
-              </span>
-            </label>
-          </div>
-        </div>
-      </section>
+      <!-- ── NO CREDENTIAL FIELDS, EVER ────────────────────────────────────
+           «LOCAL UI نباید این موارد را داشته باشد: Base URL / API Key /
+           Authorization Code / Remote Approval — و کاربر نباید هیچ‌کدام را
+           وارد کند.»
 
-      <section class="card">
-        <div class="card-hd"><h2>Connection details</h2></div>
-        <div class="card-bd">
-          <label class="field stack">
-            <span>Base URL</span>
-            <input id="baseUrl" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
-          </label>
-          <p class="hintline">The base URL of your backend server.</p>
-        </div>
-      </section>
+           LOCAL BROWSER is the SERVER-LOCAL browser runtime: the browser runs
+           on the SAME server/infrastructure as Plyr, which side-loads this
+           extension and seeds it (bootstrap.config.js) with the loopback Base
+           URL and the server's own token. Detect → ensure ready → resolve the
+           internal backend context → resolve the target → connect is ALL
+           internal. There is nothing for the user to type, so there is no
+           field to type it into. The REMOTE runtime is seeded the same way.
 
-      <section class="card">
-        <div class="card-hd"><h2>Authentication</h2></div>
-        <div class="card-bd">
-          <p class="lede">Provide the required credentials to authorize the connection.</p>
-          <label class="field inline">
-            <span>API key</span>
-            <span class="ibox">
-              <input id="apiKey" type="password" placeholder="••••••••••••" autocomplete="off">
-              <button class="peek" type="button" id="apiKeyPeek" title="Show or hide" aria-label="Show or hide the API key">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6">
-                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"></path>
-                  <circle cx="12" cy="12" r="2.8"></circle><path d="M3.5 20.5 20.5 3.5"></path>
-                </svg>
-              </button>
-            </span>
-          </label>
-          <!-- §7 — The Authorization Code is a ONE-TIME pairing credential, not
-               a password. It is scoped server-side to a single Target Field,
-               which is the only reason this extension can never aim a pick at a
-               field the user did not offer (§8). Once paired, ordinary sends use
-               the API Key plus the bound field, and this box is only needed
-               again to move to a DIFFERENT field.
-
-               REMOTE BROWSER targets never need one at all — the server owns
-               that browser and binds the Inspector itself. -->
-          <label class="field inline">
-            <span>Authorization code</span>
-            <span class="ibox">
-              <input id="inspCode" type="text" placeholder="ABCD-8F21" autocomplete="off"
-                     autocapitalize="characters" spellcheck="false" maxlength="9">
-            </span>
-          </label>
-          <div class="cta">
-            <button class="btn primary lg" type="button" id="connect">
-              <span class="bicon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9">
-                  <path d="M9.6 14.4 6.8 17.2a3.4 3.4 0 0 1-4.8-4.8l3.4-3.4"></path>
-                  <path d="M14.4 9.6l2.8-2.8a3.4 3.4 0 0 1 4.8 4.8l-3.4 3.4"></path>
-                  <path d="M9 15l6-6"></path>
-                </svg>
-              </span>Connect</button>
-          </div>
-          <div class="status" id="inspPairStatus"></div>
-        </div>
-      </section>
-
+           What remains is READ-ONLY STATE: is it ready, and which Target
+           Field is it bound to. That is the whole of this tab. -->
       <section class="card">
         <div class="card-hd"><h2>Connection status</h2></div>
         <div class="card-bd">

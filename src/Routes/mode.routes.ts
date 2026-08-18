@@ -868,9 +868,16 @@ export const createModeRoutes = (): Router => {
    * REMOTE  — the server owns that Chromium and the extension inside it, so it
    *           binds the Inspector itself and returns `step: 'targeting'`. No
    *           code, exactly as the requirement states.
-   * LOCAL   — already paired? Re-point the existing pairing at the new address
-   *           and go straight to targeting. Not paired? Mint a code for THIS
-   *           field, and only this field.
+   * LOCAL   — the SERVER-LOCAL browser runtime: the browser runs on the SAME
+   *           server/infrastructure as this process, so the binding is internal
+   *           and automatic — the server grants it, exactly as it does for
+   *           REMOTE. NO Authorization Code is minted, ever: the PR16
+   *           code-typing flow implemented a rejected model (LOCAL = the user's
+   *           own browser elsewhere) and is removed from this route. A legacy
+   *           pairing that predates this change still works — the server
+   *           re-points it at the new address — but the code path itself is
+   *           never entered, because `planTargeting` never returns
+   *           `needsAuthorization` for a usable local environment.
    */
   router.post('/inspector/targeting/begin', (req: AuthenticatedRequest, res: Response) => {
     const userId = resolveUserId(req);
@@ -920,7 +927,7 @@ export const createModeRoutes = (): Router => {
     }
 
     // ── REMOTE: server-owned browser, server-granted binding, no code ────────
-    if (plan.serverMayGrant) {
+    if (environment === 'remote') {
       inspectorAuth.grant(
         // The remote Chromium runs the extension THIS server side-loaded, seeded
         // with THIS server's token (InspectorExtension.bootstrapSource). Granting
@@ -998,57 +1005,69 @@ export const createModeRoutes = (): Router => {
       return;
     }
 
-    // ── LOCAL, already paired: refresh the address, ask for nothing ──────────
-    if (!plan.needsAuthorization) {
+    // ── LOCAL: server-local browser runtime, INTERNAL + AUTOMATIC ───────────
+    //
+    // THE CORRECTED CONTRACT, verbatim:
+    //
+    //   «LOCAL BROWSER = SERVER-LOCAL BROWSER RUNTIME: the browser runtime runs
+    //    on the SAME server/infrastructure as Plyr. It must be completely
+    //    internal/automatic. The user must never enter a Base URL, an API Key,
+    //    an Authorization Code, or approve anything.»
+    //
+    // What that means for this branch: there is NO trust gap to bridge with a
+    // code, because there is no second machine. The server therefore binds the
+    // field itself — the same `grant` the REMOTE branch uses — and answers
+    // `step: 'targeting'`. A legacy pairing that predates this change is
+    // re-pointed at the new address first, so nothing that already worked stops
+    // working; the rest is a grant, not a rebind, so a field that was never
+    // paired is bound too.
+    //
+    // Deliberately NO RemoteTargetConsent.request here. The approval prompt is
+    // a REMOTE mechanism — it exists because the remote browser is a screen the
+    // operator can be asked on, and asking is how the destination attaches
+    // there. LOCAL is defined as the flow where nothing is asked: raising a
+    // prompt here is exactly the cross-trigger local-remote-isolation.test.ts
+    // exists to forbid.
+    if (paired) {
       // The pairing outlived the old address; this hands it the new one. Without
-      // it the user would be correctly told "no code needed" and then find that
+      // it the user would be correctly told "connected" and then find that
       // nothing could be delivered — trust with no address is not usable.
-      const rebound = inspectorAuth.rebindForUser(userId, target.targetFieldId, target.pairingKey);
-      res.json({
-        success: true,
-        environment,
-        step: 'targeting',
-        plan,
-        target,
-        paired: true,
-        rebound,
-        openRemoteBrowser: false,
-      });
-      return;
+      inspectorAuth.rebindForUser(userId, target.targetFieldId, target.pairingKey);
+    } else {
+      inspectorAuth.grant(
+        // Same reasoning as REMOTE: the client that submits is one this server
+        // seeded with its own token, so granting to that token is granting to
+        // the actual submitter, not to an arbitrary caller.
+        config.API_TOKEN,
+        userId,
+        target.targetFieldId,
+        target.pairingKey,
+      );
+      // The dashboard's own key may differ from the seeded one in a multi-key
+      // setup; bind it too so a pick made through it is not refused.
+      if (req.apiKey && req.apiKey !== config.API_TOKEN) {
+        inspectorAuth.grant(req.apiKey, userId, target.targetFieldId, target.pairingKey);
+      }
     }
-
-    // ── LOCAL, first time for THIS field: issue a code ───────────────────────
-    const offer = inspectorAuth.issue(userId, target.targetFieldId, Date.now(), target.pairingKey);
-    if (!offer) {
-      res.status(500).json({
-        success: false,
-        reason: 'ATTRIBUTE_SEND_FAILED',
-        error: 'The authorization code could not be issued. Try again.',
-      });
-      return;
-    }
-
-    // The code is half of what the operator needs; this is the other half.
-    // Sent alongside rather than left to the UI to guess, because only the
-    // server knows its own configured domain and listening port.
-    const base = advertisedBaseUrl(req);
 
     res.json({
       success: true,
       environment,
-      step: 'authorize',
+      step: 'targeting',
       plan,
       target,
-      paired: false,
+      paired: true,
       openRemoteBrowser: false,
-      code: offer.code,
-      display: formatPairingCode(offer.code),
-      expiresAt: offer.expiresAt,
-      expiresInMs: offer.expiresInMs,
-      baseUrl: base.baseUrl,
-      // How the address was arrived at, so the dialog can say "detected" rather
-      // than presenting a guess with the same confidence as a configured domain.
-      baseUrlSource: base.source,
+      // Explicitly null rather than absent: the isolation contract (no prompt
+      // in LOCAL) is asserted on this field, so it must exist to be checked.
+      consent: null,
+      // Informational, never requested from the user: where the automatic
+      // connection resolved to, and that nothing further is required. The popup
+      // renders this as "● Ready" / "● Connected" rather than a credential form.
+      internal: {
+        baseUrl: `http://127.0.0.1:${config.PORT}`,
+        requiresUserInput: false,
+      },
     });
   });
 
@@ -1110,7 +1129,15 @@ export const createModeRoutes = (): Router => {
     // detached, one press after detaching it.
     remoteTargetConsent.clearForPairing(userId, pairingKey);
 
-    res.json({ success: true, unpaired: inspectorAuth.unpair(pairingKey), pairingKey });
+    const unpaired = inspectorAuth.unpair(pairingKey);
+    // AND the live bindings. The extension's automatic binding adoption reads
+    // `authorized` (bindings), so removing only the pairing would let the next
+    // session refresh re-attach the connection the user just disconnected —
+    // and under the no-code contract there is no code entry left to correct
+    // it. Disconnect must actually disconnect.
+    inspectorAuth.unbindForUser(userId, String(body.targetFieldId || ''), pairingKey);
+
+    res.json({ success: true, unpaired, pairingKey });
   });
 
   // ════════════════════════════════════════════════════════════════

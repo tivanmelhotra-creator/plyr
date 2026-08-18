@@ -521,7 +521,68 @@ async function inspectorSession() {
   var chosen = await getTargetFieldId();
 
   var authorized = data.authorized || [];
+  var targets = data.targets || [];
+
+  // ── AUTOMATIC BINDING — the whole point of the no-code LOCAL contract ─────
+  //
+  // «Detect local browser runtime → ensure browser ready → resolve internal
+  // backend/runtime context → resolve target → Connected to Target → Ready to
+  // Send» is a flow with NO human step in it. The server half is already done:
+  // /inspector/targeting/begin granted a binding to THIS extension's key (the
+  // one the server seeded into this browser with bootstrap.config.js). What
+  // was missing is this half — the extension adopting that binding without
+  // being handed a code to transcribe.
+  //
+  // WHY IT CANNOT BE THE REJECTED "MOST RECENT TARGET" SHORTCUT
+  // The send-path comment below records why asking "what is the current
+  // target?" and adopting the answer was rejected: the extension would be
+  // CHOOSING the field. This is different in the one way that matters — the
+  // candidate must be a field the server has ALREADY BOUND TO THIS KEY
+  // (`authorized`), narrowed to the environment this browser actually is
+  // (browserEnvironment(), which a hand-installed copy cannot forge). The
+  // extension adopts the server's decision; it never invents one.
+  //
+  // Ties are broken by the freshest binding, which for this flow is the field
+  // the user just pressed "Target This Field → LOCAL BROWSER" on — pressing it
+  // on a new field mints a newer binding, which is exactly the «Target B →
+  // same browser, switch target» hand-off the contract requires.
+  var envHere = await browserEnvironment();
+  if (!chosen && authorized.length) {
+    var mine = targets.filter(function (t) {
+      return t && (!envHere || !t.environment || t.environment === envHere) &&
+        authorized.some(function (b) { return b && b.targetFieldId === t.targetFieldId; });
+    });
+    if (!mine.length) mine = targets.filter(function (t) {
+      return t && authorized.some(function (b) { return b && b.targetFieldId === t.targetFieldId; });
+    });
+    if (mine.length) {
+      var newest = null;
+      var newestBound = -1;
+      for (var i = 0; i < mine.length; i++) {
+        var bnd = null;
+        for (var j = 0; j < authorized.length; j++) {
+          if (authorized[j] && authorized[j].targetFieldId === mine[i].targetFieldId) { bnd = authorized[j]; break; }
+        }
+        var at = (bnd && bnd.boundAt) || 0;
+        if (at >= newestBound) { newestBound = at; newest = mine[i]; }
+      }
+      if (newest) {
+        await setTargetFieldId(newest.targetFieldId);
+        await setPairingKey(newest.pairingKey || '');
+        await setTargetEnvironment(newest.environment || '');
+        chosen = newest.targetFieldId;
+      }
+    }
+  }
+
   var isAuthorized = authorized.some(function (b) { return b.targetFieldId === chosen; });
+
+  // Read-only context for the popup's status rows. The popup no longer holds
+  // the settings (there is nothing to set), so the worker — the only place
+  // they still exist — reports them.
+  var ctxSettings = await getSettings();
+  res.baseUrl = normalizeBase(ctxSettings.baseUrl);
+  res.managed = envHere === 'remote';
 
   res.targetFieldId = chosen;
   res.authorized = isAuthorized;
@@ -627,9 +688,30 @@ async function inspectorPair(payload) {
  * `/inspector/targeting/unpair`; this is the extension's local half.
  */
 async function inspectorUnpair() {
+  var pairingKey = await getPairingKey();
+  var targetFieldId = await getTargetFieldId();
   await setTargetFieldId('');
   await setPairingKey('');
   await setTargetEnvironment('');
+
+  // Disconnect must ALSO drop the pairing server-side. Clearing only the local
+  // copy used to be enough when re-connecting required typing a code, but the
+  // binding is now adopted automatically from the server's grant — so a local-
+  // only clear would be re-adopted on the very next refresh, and Disconnect
+  // would be a button that does nothing. The route refuses pairings this user
+  // does not hold, so this cannot detach anyone else's.
+  if (pairingKey || targetFieldId) {
+    try {
+      var ctx = await inspectorContext();
+      if (!ctx.error) {
+        await apiFetch(
+          ctx.base + '/inspector/targeting/unpair',
+          { method: 'POST', body: JSON.stringify({ pairingKey: pairingKey, targetFieldId: targetFieldId }) },
+          ctx.apiKey
+        );
+      }
+    } catch (e) { /* the local clear already happened; the server copy expires */ }
+  }
   return { ok: true };
 }
 

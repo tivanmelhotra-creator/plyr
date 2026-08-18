@@ -453,6 +453,47 @@ export class InspectorAuthorizationRegistry {
     return removed;
   }
 
+  /**
+   * The binding half of an unpair — and the half that makes Disconnect REAL.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * `unpair()` alone drops the durable record but leaves the live BINDINGS —
+   * which are exactly what the extension's automatic binding adoption reads
+   * (extension/background.js inspectorSession). So a Disconnect that called
+   * only unpair() would be re-adopted on the very next session refresh: a
+   * button that looks like it works and does nothing. Under the no-code LOCAL
+   * contract that is not a papercut — there is no code entry to fall back on,
+   * so a Disconnect that re-attaches itself is a lie the UI cannot correct.
+   *
+   * Scoped by owner (userId) so one account's Disconnect cannot strip another
+   * account's binding to the same field, and by address/pairing so a field's
+   * OTHER pairings are untouched.
+   */
+  unbindForUser(userId: string, targetFieldId: string, pairingKey: string): number {
+    const owner = clean(userId, 200);
+    const target = clean(targetFieldId, 400);
+    const pk = clean(pairingKey, 600);
+    if (!owner) return 0;
+
+    let removed = 0;
+    for (const [clientId, mine] of this.bindings) {
+      for (const [t, b] of mine) {
+        if (b.userId !== owner) continue;
+        if (target && t !== target) continue;
+        if (!target && pk) {
+          const pairing = this.pairings.get(clientId)?.get(pk);
+          const historical = pairing ? pairing.targetFieldId : '';
+          if (t !== historical) continue;
+        }
+        mine.delete(t);
+        removed += 1;
+      }
+      if (!mine.size) this.bindings.delete(clientId);
+    }
+    return removed;
+  }
+
   /** Every field this key is paired with, for a status view. */
   pairingsFor(apiKey: string): Pairing[] {
     const mine = this.pairings.get(clientIdOf(clean(apiKey, 400)));

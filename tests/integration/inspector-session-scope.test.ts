@@ -79,7 +79,14 @@ beforeEach(() => {
   inspectorHub.clear();
 });
 
-/** The dashboard opens the chooser and picks LOCAL: a code comes back. */
+/**
+ * The dashboard opens the chooser and picks LOCAL. NOTE the corrected
+ * contract: begin now binds INTERNALLY (step 'targeting', no code), because
+ * LOCAL is the server-local runtime. These tests are about the SESSION's
+ * scope, not the pairing handshake, so where a test needs an unredeemed-code
+ * state it sources the code from the LEGACY /inspector/authorize route —
+ * which still exists for old clients — instead of from begin.
+ */
 function begin(key = DASH_KEY, body: Record<string, unknown> = {}) {
   return request(app)
     .post('/inspector/targeting/begin')
@@ -88,6 +95,15 @@ function begin(key = DASH_KEY, body: Record<string, unknown> = {}) {
       nodeId: 'node-7', fieldKey: 'selector', action: 'click', workflowId: 'wf1',
       environment: 'local', ...body,
     });
+}
+
+/** The legacy issuer: a code for a target the dashboard has open. */
+async function authorize(key = DASH_KEY, targetFieldId = '') {
+  const res = await request(app).post('/inspector/authorize')
+    .set('x-api-key', key).send({ targetFieldId });
+  expect(res.status).toBe(200);
+  expect(res.body.code).toMatch(/^[A-Z0-9]{8}$/);
+  return res;
 }
 
 /** The extension types the code in. */
@@ -138,13 +154,18 @@ function popupView(body: Record<string, unknown>, chosenTargetFieldId: string) {
   };
 }
 
-/** The full LOCAL pairing, dashboard → code → extension. */
+/**
+ * The full legacy LOCAL pairing: begin (which binds internally now), then a
+ * code issued via the legacy authorize route and redeemed by the extension's
+ * own key — the multi-account shape this file exists to test.
+ */
 async function pairedFlow() {
   const begun = await begin();
   expect(begun.status).toBe(200);
-  expect(begun.body.step).toBe('authorize');
+  expect(begun.body.step).toBe('targeting');
 
-  const paired = await pair(begun.body.code);
+  const issued = await authorize(DASH_KEY, begun.body.target.targetFieldId);
+  const paired = await pair(issued.body.code);
   expect(paired.status).toBe(200);
 
   const targetFieldId: string = paired.body.binding.targetFieldId;
@@ -195,7 +216,8 @@ describe('GET /inspector/session — one scope for both halves of the answer', (
   it('does not list the same target twice when both sides resolve to one account', async () => {
     // The ORDINARY case must be untouched: same key on both sides.
     const begun = await begin(DASH_KEY);
-    const paired = await pair(begun.body.code, DASH_KEY);
+    const issued = await authorize(DASH_KEY, begun.body.target.targetFieldId);
+    const paired = await pair(issued.body.code, DASH_KEY);
     const targetFieldId: string = paired.body.binding.targetFieldId;
 
     const res = await session(DASH_KEY);
@@ -292,9 +314,17 @@ describe('GET /inspector/targeting/status — the dashboard can see the pairing 
     expect(res.body.step).toBe('targeting');
   });
 
-  it('reports NOT paired while the code is still unredeemed', async () => {
+  it('reports NOT paired while a legacy code is still unredeemed', async () => {
+    // begin() pairs internally now, so the only way to reach an "unpaired"
+    // state is the one the popup's Disconnect also uses: drop the server-side
+    // pairing first. A legacy code issued afterwards is then genuinely
+    // unredeemed, and status must say so.
     const begun = await begin(DASH_KEY);
     const targetFieldId: string = begun.body.target.targetFieldId;
+    await request(app).post('/inspector/targeting/unpair')
+      .set('x-api-key', DASH_KEY)
+      .send({ pairingKey: begun.body.target.pairingKey });
+    await authorize(DASH_KEY, targetFieldId);
 
     const res = await request(app)
       .get('/inspector/targeting/status')

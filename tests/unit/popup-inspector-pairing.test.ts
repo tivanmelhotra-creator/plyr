@@ -290,24 +290,31 @@ describe('popup: the three connection states stay distinguishable', () => {
   it('connected: says picks are ready, and offers Disconnect', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected() });
     await h.settle();
-    expect(h.text('inspTarget')).toMatch(/connected to this field/i);
+    expect(h.text('inspTarget')).toMatch(/connected to target/i);
     expect(h.cls('inspTarget')).toContain('ok');          // the "good" tint
     expect(h.hidden('inspUnpair')).toBe(false);
-    // The Connection tab must reach the same verdict from the same reply.
-    expect(h.text('connAuth')).toBe('Valid');
+    // The Connection tab must reach the same verdict from the same reply — and
+    // under the no-code contract the authorization is INTERNAL: the server
+    // granted the binding, so the line says that rather than "Valid" (which
+    // implied a user-supplied credential had been checked).
+    expect(h.text('connAuth')).toMatch(/internal/i);
     await h.refresh();   // init is deliberately quiet; the user pressing ↻ is not
     expect(h.text('inspStatus')).toMatch(/ready/i);
     expect(h.text('inspStatus')).toContain('HTTP Request → url');
   });
 
-  it('never connected: asks for a code, and hides Disconnect', async () => {
+  it('never connected: points at Target This Field — NEVER at a code', async () => {
+    // «LOCAL UI نباید این موارد را داشته باشد: Base URL / API Key /
+    // Authorization Code» — so the not-connected message cannot ask for one.
+    // The only way to connect is the automatic flow, started from the project.
     const r = connected({ targetFieldId: '', authorized: false, target: null });
     const h = boot({ AB_INSPECTOR_SESSION: r });
     await h.settle();
     expect(h.text('inspTarget')).toMatch(/not connected/i);
     expect(h.hidden('inspUnpair')).toBe(true);
     await h.refresh();
-    expect(h.text('inspStatus')).toMatch(/Authorization Code/i);
+    expect(h.text('inspStatus')).toMatch(/target this field/i);
+    expect(h.text('inspStatus')).not.toMatch(/authorization code/i);
   });
 
   it('paired but the field has closed: says THAT, not "not connected"', async () => {
@@ -353,135 +360,51 @@ describe('popup: the three connection states stay distinguishable', () => {
   });
 });
 
-describe('popup: pairing is by CODE only (§8)', () => {
-  it('sends only the code — never a target of its own choosing', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, targetFieldId: 'node_n1__url__a1b2c3d4', target: { label: 'HTTP Request → url' } },
-    });
-    await h.settle();
+describe('popup: the connection is INTERNAL and AUTOMATIC — no code, ever (§8)', () => {
+  // WHY THIS DESCRIBE REPLACED "pairing is by CODE only"
+  // ----------------------------------------------------
+  // The corrected contract: LOCAL BROWSER is the SERVER-LOCAL browser runtime.
+  // The browser runs on the same server/infrastructure as Plyr, which seeds the
+  // extension with its own token — so the trust gap the Authorization Code
+  // existed to bridge does not exist, and the code form was REMOVED from the
+  // popup. §8 still holds, in a stronger form: the popup used to be forbidden
+  // from naming a target; now it cannot even ask, because the SERVER grants the
+  // binding and the worker adopts it. These tests pin the ABSENCE of the whole
+  // credential surface, which is what the requirement literally states.
 
-    h.el('inspCode').value = 'ABCD-EFGH';
-    h.el('connect').fire('click');
-    await h.settle();
-
-    const pair = h.sentOf('AB_INSPECTOR_PAIR');
-    expect(pair).toHaveLength(1);
-    // The whole point: a targetFieldId here would let the extension aim at a
-    // field the user never offered.
-    expect(Object.keys(pair[0]!.payload || {})).toEqual(['code']);
-    expect((pair[0]!.payload as Record<string, unknown>).code).toMatch(/ABCD-?EFGH/);
+  it('the popup declares no credential elements at all', () => {
+    // Asserted against the shipped HTML rather than the fake DOM, because ids
+    // the HTML no longer declares simply cannot regrow listeners in popup.js.
+    for (const dead of ['inspCode', 'connect', 'inspPairStatus', 'baseUrl', 'apiKey', 'modeLocal', 'modeRemote']) {
+      expect(HTML, `popup.html must NOT declare #${dead}`).not.toContain(`id="${dead}"`);
+    }
   });
 
-  it('names the field it connected to, rather than just "connected"', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, target: { label: 'HTTP Request → url' } },
-    });
+  it('popup.js never sends AB_INSPECTOR_PAIR — there is no code to redeem', async () => {
+    // Boot, refresh, disconnect — the full set of actions the popup still has.
+    const h = boot({ AB_INSPECTOR_SESSION: connected(), AB_INSPECTOR_UNPAIR: { ok: true } });
     await h.settle();
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('connect').fire('click');
+    await h.refresh();
+    h.el('inspUnpair').fire('click');
     await h.settle();
-    // Otherwise the user has to trust that the code pointed where they thought.
-    expect(h.text('inspPairStatus')).toContain('HTTP Request → url');
-    expect(h.cls('inspPairStatus')).toContain('ok');
-  });
-
-  it('refuses a malformed code locally, without a round trip', async () => {
-    const h = boot({ AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }) });
-    await h.settle();
-    h.el('inspCode').value = 'nope';
-    h.el('connect').fire('click');
-    await h.settle();
-
     expect(h.sentOf('AB_INSPECTOR_PAIR')).toHaveLength(0);
-    expect(h.cls('inspPairStatus')).toContain('bad');
-    expect(h.text('inspPairStatus')).toMatch(/8-character/i);
   });
 
-  it('shows the backend\'s specific refusal verbatim', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: {
-        ok: false, reason: 'AUTHORIZATION_EXPIRED',
-        error: 'That authorization code has expired. Ask for a new one.',
-      },
-    });
-    await h.settle();
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('connect').fire('click');
-    await h.settle();
-
-    // "expired" and "invalid" call for different actions, so a generic failure
-    // message would cost the user the right next step.
-    expect(h.text('inspPairStatus')).toMatch(/expired/i);
-    expect(h.cls('inspPairStatus')).toContain('bad');
+  it('popup.js contains no pairing-code vocabulary for the user', () => {
+    // The strings are the UI. A popup that renders "enter an Authorization
+    // Code" has re-grown the form in prose even if the input is gone.
+    expect(JS).not.toMatch(/enter an authorization code/i);
+    expect(JS).not.toMatch(/set the (base url|api key) first/i);
   });
 
-  it('re-enables the button after a refusal so the code can be retried', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: false, reason: 'INVALID_AUTHORIZATION_CODE', error: 'No.' },
-    });
+  it('never names a target of its own choosing on disconnect either', async () => {
+    // The half of §8 that survives: the popup still may not aim at a field.
+    const h = boot({ AB_INSPECTOR_SESSION: connected(), AB_INSPECTOR_UNPAIR: { ok: true } });
     await h.settle();
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('connect').fire('click');
+    h.el('inspUnpair').fire('click');
     await h.settle();
-    expect(h.el('connect').disabled).toBe(false);
-  });
-
-  it('clears the box after success, so a spent code cannot be re-sent', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, target: { label: 'HTTP Request → url' } },
-    });
-    await h.settle();
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('connect').fire('click');
-    await h.settle();
-    // The code is one-time; leaving it on screen invites a second, failing try.
-    expect(h.el('inspCode').value).toBe('');
-  });
-
-  it('re-reads the destination after pairing instead of trusting itself', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, target: { label: 'HTTP Request → url' } },
-    });
-    await h.settle();
-    const before = h.sentOf('AB_INSPECTOR_SESSION').length;
-
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('connect').fire('click');
-    await h.settle();
-
-    // The server is the authority on what this key may write to; a locally
-    // assumed success could show a destination that does not exist.
-    expect(h.sentOf('AB_INSPECTOR_SESSION').length).toBeGreaterThan(before);
-  });
-
-  it('submits on Enter, because the code is pasted and it expires', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, target: { label: 'X → y' } },
-    });
-    await h.settle();
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('inspCode').fire('keydown', { key: 'Enter' });
-    await h.settle();
-    expect(h.sentOf('AB_INSPECTOR_PAIR')).toHaveLength(1);
-  });
-
-  it('formats the code as it is typed, without changing what is sent', async () => {
-    const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, target: null },
-    });
-    await h.settle();
-    h.el('inspCode').value = 'abcdefgh';
-    h.el('inspCode').fire('input');
-    // Cosmetic grouping only — the server normalises separators away.
-    expect(h.el('inspCode').value).toBe('ABCD-EFGH');
+    const msg = h.sentOf('AB_INSPECTOR_UNPAIR')[0]!;
+    expect(msg.payload).toBeUndefined();
   });
 });
 
@@ -498,12 +421,16 @@ describe('popup: disconnecting', () => {
     expect(h.sentOf('AB_INSPECTOR_SESSION').length).toBeGreaterThan(before);
   });
 
-  it('tells the user how to get back, not just that it happened', async () => {
+  it('reports the disconnect without asking for a code to get back', async () => {
+    // The way back is automatic — Target This Field in the project — so the
+    // confirmation must not send the user hunting for a code that no longer
+    // exists anywhere in the product.
     const h = boot({ AB_INSPECTOR_SESSION: connected(), AB_INSPECTOR_UNPAIR: { ok: true } });
     await h.settle();
     h.el('inspUnpair').fire('click');
     await h.settle();
-    expect(h.text('inspPairStatus')).toMatch(/new code/i);
+    expect(h.text('status')).toMatch(/disconnected/i);
+    expect(h.text('status')).not.toMatch(/code/i);
   });
 
   it('carries no target id when disconnecting', async () => {
@@ -534,17 +461,15 @@ describe('popup: the Handoff subsystem is left alone', () => {
 
   it('the Inspector never speaks for the Handoff subsystem', async () => {
     // The strongest form of "left alone" this popup can demonstrate: booting it
-    // and driving a full pair+unpair emits no handoff traffic whatsoever. It
-    // cannot disturb a subsystem it never addresses.
+    // and driving a refresh + disconnect (the actions it still has) emits no
+    // handoff traffic whatsoever. It cannot disturb a subsystem it never
+    // addresses.
     const h = boot({
-      AB_INSPECTOR_SESSION: connected({ targetFieldId: '', authorized: false, target: null }),
-      AB_INSPECTOR_PAIR: { ok: true, target: { label: 'X → y' } },
+      AB_INSPECTOR_SESSION: connected(),
       AB_INSPECTOR_UNPAIR: { ok: true },
     });
     await h.settle();
-    h.el('inspCode').value = 'ABCDEFGH';
-    h.el('connect').fire('click');
-    await h.settle();
+    await h.refresh();
     h.el('inspUnpair').fire('click');
     await h.settle();
 
@@ -552,7 +477,6 @@ describe('popup: the Handoff subsystem is left alone', () => {
     expect(handoff).toEqual([]);
     // And it definitely did do the inspector work, so the emptiness above is
     // "sent nothing about handoff", not "sent nothing at all".
-    expect(h.sentOf('AB_INSPECTOR_PAIR')).toHaveLength(1);
     expect(h.sentOf('AB_INSPECTOR_UNPAIR')).toHaveLength(1);
   });
 
@@ -588,12 +512,16 @@ describe('popup: the Handoff subsystem is left alone', () => {
 });
 
 describe('popup: an unreachable or unconfigured project', () => {
-  it('says what to fix rather than showing a bare failure', async () => {
+  it('says what is happening rather than pointing at a field that is gone', async () => {
+    // no_api_key used to mean "go type the key in". There is no key field
+    // anymore — the server runtime seeds it — so a missing key means this copy
+    // has not been seeded yet, and that is what the user is told.
     const h = boot({ AB_INSPECTOR_SESSION: { ok: false, error: 'no_api_key' } });
     await h.settle();
     h.el('inspRefresh').fire('click');
     await h.settle();
-    expect(h.text('inspStatus')).toMatch(/api key/i);
+    expect(h.text('inspStatus')).toMatch(/server runtime/i);
+    expect(h.text('inspStatus')).not.toMatch(/set the api key/i);
   });
 
   it('still reports the connection state it knows locally', async () => {
@@ -636,17 +564,17 @@ describe('popup: Browser Environment', () => {
   it('names the LOCAL browser in full, on both cards', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected({ environment: 'local' }) });
     await h.settle();
-    // "Local Browser", not a bare "local": the word Browser is what keeps it
-    // from being read as the backend-location setting shown just above.
-    expect(h.text('inspEnv')).toBe('Local Browser');
-    expect(h.text('ctEnv')).toBe('Local Browser');
+    // "LOCAL BROWSER" — spelled exactly as the product contract prints it, and
+    // with the word Browser so it cannot be read as a backend-location setting.
+    expect(h.text('inspEnv')).toBe('LOCAL BROWSER');
+    expect(h.text('ctEnv')).toBe('LOCAL BROWSER');
   });
 
   it('names the REMOTE browser in full, on both cards', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected({ environment: 'remote' }) });
     await h.settle();
-    expect(h.text('inspEnv')).toBe('Remote Browser');
-    expect(h.text('ctEnv')).toBe('Remote Browser');
+    expect(h.text('inspEnv')).toBe('REMOTE BROWSER');
+    expect(h.text('ctEnv')).toBe('REMOTE BROWSER');
   });
 
   it('shows a dash rather than guessing when the environment is unknown', async () => {
@@ -668,21 +596,27 @@ describe('popup: Browser Environment', () => {
 });
 
 describe('popup: the durable pairing', () => {
-  it('states that no code will be needed next time', async () => {
+  it('reads "Ready to Send" — the no-code answer to "will I be asked?"', async () => {
+    // The line used to answer "will another code be requested?" — a question
+    // that no longer exists, because no code is ever requested. What survives
+    // is the durable half of the fact: this field is bound, and a send will
+    // not stop to ask for anything.
     const h = boot({
       AB_INSPECTOR_SESSION: connected({ environment: 'local', paired: true }),
     });
     await h.settle();
-    expect(h.text('ctPairing')).toMatch(/no code needed/i);
+    expect(h.text('ctPairing')).toMatch(/ready to send/i);
+    expect(h.text('ctPairing')).not.toMatch(/code/i);
     expect(h.cls('ctPairing')).toContain('ok');
   });
 
-  it('warns that a code WILL be requested when the field is not paired', async () => {
+  it('reports "not connected" — never "a code will be requested"', async () => {
     const h = boot({
       AB_INSPECTOR_SESSION: connected({ environment: 'local', paired: false }),
     });
     await h.settle();
-    expect(h.text('ctPairing')).toMatch(/code will be requested/i);
+    expect(h.text('ctPairing')).toMatch(/not connected/i);
+    expect(h.text('ctPairing')).not.toMatch(/code/i);
   });
 
   it('says a pairing is not required at all for the Remote Browser', async () => {
@@ -699,15 +633,15 @@ describe('popup: the durable pairing', () => {
     // The node was re-opened, so the ADDRESS this extension holds is no longer
     // live (`authorized: false`, no `target`). The PAIRING is untouched, and
     // the operator must be told so: this is the exact state in which the old
-    // popup wrongly implied another code was coming.
+    // popup wrongly implied more work was coming.
     const h = boot({
       AB_INSPECTOR_SESSION: connected({
         environment: 'local', paired: true, authorized: false, target: null,
       }),
     });
     await h.settle();
-    expect(h.text('ctPairing')).toMatch(/no code needed/i);
+    expect(h.text('ctPairing')).toMatch(/ready to send/i);
     // …while the connection line still reports the address honestly.
-    expect(h.text('ctState')).not.toMatch(/no code needed/i);
+    expect(h.text('ctState')).not.toMatch(/ready to send/i);
   });
 });

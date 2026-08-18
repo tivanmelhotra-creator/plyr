@@ -15,10 +15,16 @@ import request from 'supertest';
 //
 // So these go over the wire and assert on the HTTP contract:
 //
-//   REMOTE  → 200, step 'targeting', no `code` in the body, openRemoteBrowser
-//   LOCAL   → 200, step 'authorize', a `code` — but only the FIRST time
+//   REMOTE  → 200, step 'targeting', no `code`, openRemoteBrowser, a consent
+//   LOCAL   → 200, step 'targeting', no `code`, consent NULL, granted
+//             internally — the FIRST time and every time.
 //
-// The scenario the operator wrote out by hand is at the bottom, end to end.
+// LOCAL is the SERVER-LOCAL browser runtime: the browser runs on the same
+// server/infrastructure as this process, so there is no trust gap and no
+// Authorization Code is ever minted. The legacy /inspector/authorize +
+// /inspector/pair routes still exist for older clients, and these tests use
+// them to set up durable pairings — but `begin` must never route LOCAL
+// through them.
 // ════════════════════════════════════════════════════════════════
 
 const KEY_A = 'test_key_123'; // seeded by tests/integration/setup.ts
@@ -92,6 +98,21 @@ function send(key: string, targetFieldId: string) {
   });
 }
 
+/**
+ * The LEGACY code flow — still live for old clients, and the only way to
+ * create a durable pairing for an arbitrary key from a test. `begin` itself
+ * must never route LOCAL through this; the tests below assert exactly that.
+ */
+async function legacyPair(key: string, targetFieldId: string) {
+  const issued = await request(app).post('/inspector/authorize')
+    .set('x-api-key', KEY_A).send({ targetFieldId });
+  expect(issued.status).toBe(200);
+  expect(issued.body.code).toMatch(/^[A-Z0-9]{8}$/);
+  const done = await request(app).post('/inspector/pair')
+    .set('x-api-key', key).send({ code: issued.body.code });
+  expect(done.status).toBe(200);
+}
+
 // ════════════════════════════════════════════════════════════════
 // Step one — the chooser
 // ════════════════════════════════════════════════════════════════
@@ -105,17 +126,18 @@ describe('GET /inspector/targeting/options', () => {
 
   it('creates NOTHING — opening a chooser the user may cancel is a read', async () => {
     await options();
-    // No destination was minted and no code was put on screen. Otherwise every
-    // stray click on the crosshair would leak a target and a pending code.
     expect(targetFields.list('local')).toHaveLength(0);
     expect(inspectorAuth.pendingCount()).toBe(0);
   });
 
-  it('warns that LOCAL will ask for a code on a field that is not yet paired', async () => {
+  it('warns about NOTHING — no environment ever asks for a code', async () => {
+    // The inversion this task pins: LOCAL used to carry needsAuthorization
+    // true. The chooser must not advertise a credential step the contract
+    // forbids.
     const res = await options();
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
     const remote = res.body.options.find((o: { id: string }) => o.id === 'remote');
-    expect(local.needsAuthorization).toBe(true);
+    expect(local.needsAuthorization).toBe(false);
     expect(remote.needsAuthorization).toBe(false);
   });
 
@@ -166,8 +188,6 @@ describe('POST /inspector/targeting/begin — REMOTE BROWSER', () => {
   });
 
   it('binds the caller so a pick actually lands, with no pairing step', async () => {
-    // The half that would be easy to miss: "no code needed" is worthless if the
-    // submit is then refused as unauthorized.
     const res = await begin({ environment: 'remote' });
     const sent = await send(KEY_A, res.body.target.targetFieldId);
     expect(sent.status).toBe(200);
@@ -188,18 +208,28 @@ describe('POST /inspector/targeting/begin — REMOTE BROWSER', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// Step two — LOCAL
+// Step two — LOCAL, the SERVER-LOCAL runtime
 // ════════════════════════════════════════════════════════════════
 
 describe('POST /inspector/targeting/begin — LOCAL BROWSER, first time', () => {
-  // [REQ] «اگر این Target Field قبلاً pair نشده باشد، همان لحظه یک
-  //        Authorization Code مخصوص همان Target Field صادر شود.»
-  it('issues a code, and does NOT open the server browser', async () => {
+  // [REQ] «LOCAL UI نباید … Authorization Code … و کاربر نباید هیچ‌کدام را
+  //        وارد کند.» — not even the first time, not even one.
+  it('grants the binding INTERNALLY and issues NO code, ever', async () => {
     const res = await begin({ environment: 'local' });
     expect(res.status).toBe(200);
-    expect(res.body.step).toBe('authorize');
-    expect(res.body.code).toMatch(/^[A-Z0-9]{8}$/);
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.consent).toBeNull();
     expect(res.body.openRemoteBrowser).toBe(false);
+    expect(res.body.paired).toBe(true);
+    expect(inspectorAuth.pendingCount()).toBe(0);
+  });
+
+  it('answers where the automatic connection resolved to — as information, not a form', async () => {
+    const res = await begin({ environment: 'local' });
+    expect(res.body.internal).toBeDefined();
+    expect(res.body.internal.requiresUserInput).toBe(false);
+    expect(String(res.body.internal.baseUrl)).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 
   it('records LOCAL on the destination', async () => {
@@ -207,97 +237,89 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, first time', () => 
     expect(res.body.target.environment).toBe('local');
   });
 
-  it('refuses the pick until the code has been redeemed', async () => {
-    // The code has to mean something. If a submit worked before pairing, the
-    // whole authorize step would be theatre.
+  it('lets the granted key send IMMEDIATELY — Ready to Send, no further step', async () => {
+    // «Detect → ensure ready → resolve internal context → resolve target →
+    // Connected to Target → Ready to Send» ends here: the pick goes through.
+    const res = await begin({ environment: 'local' });
+    const sent = await send(KEY_A, res.body.target.targetFieldId);
+    expect(sent.status).toBe(200);
+    expect(sent.body.delivery.environment).toBe('local');
+  });
+
+  it('still refuses a key that was never granted — automatic is not anonymous', async () => {
+    // The grant is scoped to the server's own token and the caller's key. A
+    // stranger's key naming the same field must still bounce, or the binding
+    // would mean nothing.
     const res = await begin({ environment: 'local' });
     const sent = await send(KEY_B, res.body.target.targetFieldId);
     expect(sent.status).toBe(409);
     expect(sent.body.reason).toBe('TARGET_NOT_AUTHORIZED');
   });
 
-  it('issues a code scoped to THAT field only', async () => {
+  it('grants per FIELD: a different field is a different binding', async () => {
+    // Isolation is preserved WITHOUT codes: targeting node-7 grants node-7's
+    // field, and says nothing about node-9's.
     const first = await begin({ environment: 'local', nodeId: 'node-7' });
     const second = await begin({
       environment: 'local', nodeId: 'node-9', fieldKey: 'url', action: 'goto',
     });
 
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: first.body.code });
-
-    // Paired with the first field…
-    expect((await send(KEY_B, first.body.target.targetFieldId)).status).toBe(200);
-    // …and pointedly not with the second.
-    expect((await send(KEY_B, second.body.target.targetFieldId)).body.reason)
-      .toBe('TARGET_NOT_AUTHORIZED');
+    expect((await send(KEY_A, first.body.target.targetFieldId)).status).toBe(200);
+    expect((await send(KEY_A, second.body.target.targetFieldId)).status).toBe(200);
+    // The bindings are distinct — neither id works for the other field.
+    expect(first.body.target.targetFieldId).not.toBe(second.body.target.targetFieldId);
   });
 });
 
-describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
-  /** Pair KEY_B with the default field, the way the extension does. */
-  async function pairLocal(body: Record<string, unknown> = {}) {
+describe('POST /inspector/targeting/begin — LOCAL BROWSER, with a legacy pairing', () => {
+  /**
+   * Pair KEY_B through the LEGACY code route (as an old extension would), then
+   * target the same field again: the pairing must be re-pointed at the fresh
+   * address, not replaced by a new code.
+   */
+  async function beginThenLegacyPair(body: Record<string, unknown> = {}) {
     const res = await begin({ environment: 'local', ...body });
-    expect(res.body.step).toBe('authorize');
-    const done = await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: res.body.code });
-    expect(done.status).toBe(200);
+    await legacyPair(KEY_B, res.body.target.targetFieldId);
     return res.body.target.targetFieldId as string;
   }
 
   // [REQ] «دفعات بعد برای همان Extension و همان Target Field، دیگر
   //        Authorization Code لازم نیست.»
-  it('asks for NO code the second time the same field is targeted', async () => {
-    await pairLocal();
+  it('asks for NOTHING the second time the same field is targeted', async () => {
+    await beginThenLegacyPair();
 
     const again = await begin({ environment: 'local' });
     expect(again.status).toBe(200);
     expect(again.body.step).toBe('targeting');
     expect(again.body.code).toBeUndefined();
     expect(again.body.paired).toBe(true);
+    expect(inspectorAuth.pendingCount()).toBe(0);
   });
 
   it('re-points the existing pairing at the NEW address', async () => {
-    // The half that is easy to get wrong: the trust survived, but `register()`
-    // minted a fresh id, so without a rebind nothing could be delivered and the
-    // user would be told "no code needed" over a dead channel.
-    const firstId = await pairLocal();
+    // The trust survived, but register() minted a fresh id — without a rebind
+    // nothing could be delivered and the user would be told \"connected\" over
+    // a dead channel.
+    const firstId = await beginThenLegacyPair();
     const again = await begin({ environment: 'local' });
 
     expect(again.body.target.targetFieldId).not.toBe(firstId);
-    expect(again.body.rebound).toBeGreaterThan(0);
     expect((await send(KEY_B, again.body.target.targetFieldId)).status).toBe(200);
   });
 
   it('survives the node being CLOSED in between', async () => {
-    // `target/release` fires on every NDV close, including the sendBeacon on
-    // page unload. It used to revoke the pairing, which is what made the code
-    // come back every single time.
-    const firstId = await pairLocal();
+    const firstId = await beginThenLegacyPair();
     await request(app).post('/inspector/target/release')
       .set('x-api-key', KEY_A).send({ targetFieldId: firstId });
 
     const again = await begin({ environment: 'local' });
     expect(again.body.step).toBe('targeting');
     expect(again.body.code).toBeUndefined();
-  });
-
-  it('still asks for a code for a DIFFERENT field', async () => {
-    await pairLocal();
-    const other = await begin({
-      environment: 'local', nodeId: 'node-9', fieldKey: 'url', action: 'goto',
-    });
-    expect(other.body.step).toBe('authorize');
-    expect(other.body.code).toMatch(/^[A-Z0-9]{8}$/);
-  });
-
-  it('still asks for a code in a different workflow', async () => {
-    await pairLocal({ workflowId: 'wf1' });
-    const elsewhere = await begin({ environment: 'local', workflowId: 'wf2' });
-    expect(elsewhere.body.step).toBe('authorize');
+    expect((await send(KEY_B, again.body.target.targetFieldId)).status).toBe(200);
   });
 
   it('shows the chooser that the field is already paired', async () => {
-    await pairLocal();
+    await beginThenLegacyPair();
     const res = await options();
     expect(res.body.paired).toBe(true);
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
@@ -310,25 +332,34 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('GET /inspector/targeting/status', () => {
-  it('reports "still waiting" while the code is untyped', async () => {
+  it('reports paired:true immediately for LOCAL — there is nothing to wait for', async () => {
+    // The legacy \"still waiting for the code\" state cannot exist anymore:
+    // begin granted the binding in the same request that registered the field.
     const res = await begin({ environment: 'local' });
     const status = await request(app).get('/inspector/targeting/status')
       .set('x-api-key', KEY_A)
       .query({ targetFieldId: res.body.target.targetFieldId });
 
     expect(status.status).toBe(200);
-    expect(status.body.paired).toBe(false);
-    expect(status.body.step).toBe('authorize');
+    expect(status.body.paired).toBe(true);
+    expect(status.body.step).toBe('targeting');
     expect(status.body.environment).toBe('local');
   });
 
-  it('flips to "targeting" once the extension redeems the code', async () => {
-    // The dashboard cannot watch the extension directly — different browsers,
-    // which is the entire point of LOCAL — so the server is the only party that
-    // sees both sides.
+  it('flips to \"targeting\" once a legacy extension redeems a code', async () => {
+    // The legacy route still works end to end: a code issued by the OLD
+    // /inspector/authorize path and redeemed by an OLD client pairs the field.
     const res = await begin({ environment: 'local' });
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: res.body.code });
+    await request(app).post('/inspector/targeting/unpair')
+      .set('x-api-key', KEY_A)
+      .send({ pairingKey: res.body.target.pairingKey });
+    const waiting = await request(app).get('/inspector/targeting/status')
+      .set('x-api-key', KEY_A)
+      .query({ targetFieldId: res.body.target.targetFieldId });
+    expect(waiting.body.paired).toBe(false);
+    expect(waiting.body.step).toBe('authorize'); // legacy status vocabulary
+
+    await legacyPair(KEY_B, res.body.target.targetFieldId);
 
     const status = await request(app).get('/inspector/targeting/status')
       .set('x-api-key', KEY_A)
@@ -347,23 +378,38 @@ describe('GET /inspector/targeting/status', () => {
 });
 
 describe('POST /inspector/targeting/unpair', () => {
-  it('is the ONLY thing that makes the code come back', async () => {
+  it('drops the durable pairing — and LOCAL STILL issues no code afterwards', async () => {
+    // Unpair used to be \"the ONLY thing that makes the code come back\". There
+    // is no code to come back to: after unpairing, the next begin simply
+    // grants fresh — automatically, as the contract demands.
     const res = await begin({ environment: 'local' });
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: res.body.code });
-    expect((await begin({ environment: 'local' })).body.step).toBe('targeting');
+    await legacyPair(KEY_B, res.body.target.targetFieldId);
+    // The return visit re-mints the address (register() on every NDV open), so
+    // it is THIS begin's id that is live from here on — the first one is stale.
+    const revisit = await begin({ environment: 'local' });
+    expect(revisit.body.step).toBe('targeting');
 
     const gone = await request(app).post('/inspector/targeting/unpair')
       .set('x-api-key', KEY_A)
       .send({ nodeId: 'node-7', fieldKey: 'selector', workflowId: 'wf1' });
-    expect(gone.body.unpaired).toBe(1);
+    // begin() now records the automatic grant under BOTH the server token's
+    // and the caller's clientId, so more than one record goes — the exact
+    // count is an implementation detail. What matters is that the pairing is
+    // genuinely gone afterwards.
+    expect(gone.body.unpaired).toBeGreaterThan(0);
+    const waiting = await request(app).get('/inspector/targeting/status')
+      .set('x-api-key', KEY_A)
+      .query({ targetFieldId: revisit.body.target.targetFieldId });
+    expect(waiting.body.paired).toBe(false);
 
-    expect((await begin({ environment: 'local' })).body.step).toBe('authorize');
+    const next = await begin({ environment: 'local' });
+    expect(next.body.step).toBe('targeting');
+    expect(next.body.code).toBeUndefined();
+    // And the freshly-granted caller can still send.
+    expect((await send(KEY_A, next.body.target.targetFieldId)).status).toBe(200);
   });
 
   it('reports nothing removed for a pairing this user does not hold', async () => {
-    // Answering identically for "not yours" and "does not exist" is deliberate:
-    // otherwise the route would confirm whether an arbitrary key is in use.
     const res = await request(app).post('/inspector/targeting/unpair')
       .set('x-api-key', KEY_A).send({ pairingKey: 'tf:wf9:nope:nope' });
     expect(res.body.unpaired).toBe(0);
@@ -371,43 +417,44 @@ describe('POST /inspector/targeting/unpair', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// The operator's own scenario, end to end
+// The operator's scenario, end to end, on the corrected contract
 // ════════════════════════════════════════════════════════════════
 
-describe('the scenario from the requirement, start to finish', () => {
-  it('pairs product_selector once, then never again — but product_url still pairs', async () => {
-    // 1. First target chosen with LOCAL BROWSER: a code is issued.
+describe('the corrected scenario, start to finish', () => {
+  it('targets product_selector, closes, re-opens, then targets product_url — with ZERO codes', async () => {
+    // 1. First target chosen with LOCAL BROWSER: bound at once, no code.
     const first = await begin({
       environment: 'local', nodeId: 'node-8f21', fieldKey: 'selector', action: 'click',
     });
-    expect(first.body.step).toBe('authorize');
-
-    // 2. The user types it into the extension.
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: first.body.code });
+    expect(first.body.step).toBe('targeting');
+    expect(first.body.code).toBeUndefined();
+    expect(first.body.consent).toBeNull();
+    expect((await send(KEY_A, first.body.target.targetFieldId)).status).toBe(200);
 
     // The node is closed, as it would be in real use.
     await request(app).post('/inspector/target/release')
       .set('x-api-key', KEY_A)
       .send({ targetFieldId: first.body.target.targetFieldId });
 
-    // 3. Next time, the SAME Target Field: no new code.
+    // 2. Next time, the SAME Target Field: still no code, still works.
     const secondVisit = await begin({
       environment: 'local', nodeId: 'node-8f21', fieldKey: 'selector', action: 'click',
     });
     expect(secondVisit.body.step).toBe('targeting');
     expect(secondVisit.body.code).toBeUndefined();
-    // …and it genuinely works, rather than merely claiming to.
-    expect((await send(KEY_B, secondVisit.body.target.targetFieldId)).status).toBe(200);
+    expect((await send(KEY_A, secondVisit.body.target.targetFieldId)).status).toBe(200);
 
-    // 4. But a NEW target requires new Authorization/Pairing.
+    // 3. A NEW target is a fresh automatic grant — no code for it either, and
+    //    it does not disturb the first field's binding.
     const newTarget = await begin({
       environment: 'local', nodeId: 'node-92aa', fieldKey: 'url', action: 'goto',
     });
-    expect(newTarget.body.step).toBe('authorize');
-    expect(newTarget.body.code).toMatch(/^[A-Z0-9]{8}$/);
-    expect((await send(KEY_B, newTarget.body.target.targetFieldId)).body.reason)
-      .toBe('TARGET_NOT_AUTHORIZED');
+    expect(newTarget.body.step).toBe('targeting');
+    expect(newTarget.body.code).toBeUndefined();
+    expect((await send(KEY_A, newTarget.body.target.targetFieldId)).status).toBe(200);
+
+    // 4. Through all of it, no pending code was ever minted.
+    expect(inspectorAuth.pendingCount()).toBe(0);
   });
 
   it('keeps the two environments’ concerns apart on one field', async () => {

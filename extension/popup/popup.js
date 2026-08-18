@@ -7,16 +7,20 @@
 
      INSPECT     — the Target Field, the picker, the picked element, its real
                    attributes, the destination, and the send
-     CONNECTION  — where the backend is, the credentials, and the resulting state
+     CONNECTION  — READ-ONLY connection state, and Disconnect
 
    The presentation is the approved design in extension/UI_UX. The BEHAVIOUR is
-   the behaviour that was already here and in the PRs before it — mapped into the
-   new UI, not simplified to fit it:
+   the corrected LOCAL/REMOTE contract:
 
-     * pairing is by CODE ONLY, and the code decides the field (§8)
-     * REMOTE BROWSER targets need no Authorization Code
-     * LOCAL BROWSER + a new Target Field needs one, once
-     * the same extension + the same Target Field never needs a second one
+     * the connection is INTERNAL and AUTOMATIC for BOTH environments. LOCAL
+       BROWSER is the SERVER-LOCAL browser runtime — the browser runs on the
+       same server/infrastructure as Plyr, which seeds this extension
+       (bootstrap.config.js) with the loopback Base URL and its own token.
+       No code is ever issued or typed; the server grants the binding and the
+       worker adopts it (§8 still holds: the SERVER decides the field, never
+       this popup)
+     * REMOTE BROWSER is the same seeded copy inside the server-run Chromium
+     * the same extension + the same Target Field never asks twice
      * Browser Environment, Session/Handoff and targetFieldId stay three
        separate concepts, and only the first and third are visible here
      * CHECKBOX = what appears in SELECTED ELEMENT (many)
@@ -56,12 +60,6 @@
 
   var Core = (typeof window !== 'undefined' && window.ABCore) ? window.ABCore : null;
 
-  // The default backends the two mode cards offer. LOCAL is 127.0.0.1 rather
-  // than "localhost" because that is what the spec prints and what a user will
-  // compare against; the two are not always the same host in practice.
-  var LOCAL_URL = 'http://127.0.0.1:3000';
-  var REMOTE_URL = 'https://your-server.com';
-
   // Where content/inspector.js leaves the last pick. Storage, not a message: the
   // popup is CLOSED at the moment of the pick, so there is nobody to message.
   var PICK_KEY = 'ab_lastPick';
@@ -72,11 +70,10 @@
   // A single missing id throws here and blanks the whole popup.
   var els = {
     conn: $('conn'), status: $('status'),
-    // ── Connection tab
-    modeLocal: $('modeLocal'), modeRemote: $('modeRemote'),
-    modeLocalUrl: $('modeLocalUrl'), modeRemoteUrl: $('modeRemoteUrl'),
-    baseUrl: $('baseUrl'), apiKey: $('apiKey'), apiKeyPeek: $('apiKeyPeek'),
-    inspCode: $('inspCode'), connect: $('connect'), inspPairStatus: $('inspPairStatus'),
+    // ── Connection tab — READ-ONLY STATE ONLY. There are deliberately no
+    //    credential ids here: no Base URL, no API Key, no Authorization Code,
+    //    no mode chooser. «LOCAL UI نباید این موارد را داشته باشد … و کاربر
+    //    نباید هیچ‌کدام را وارد کند.» popup-tabs.test.ts pins their ABSENCE.
     connState: $('connState'), connBackend: $('connBackend'), connAuth: $('connAuth'),
     ctNode: $('ctNode'), ctField: $('ctField'), ctFieldId: $('ctFieldId'),
     // Browser Environment and the durable pairing — the two facts the address
@@ -111,7 +108,6 @@
   }
   function setStatus(text, kind) { write(els.status, text, kind); }
   function setInspStatus(text, kind) { write(els.inspStatus, text, kind); }
-  function setPairStatus(text, kind) { write(els.inspPairStatus, text, kind); }
   function setSendStatus(text, kind) { write(els.sendStatus, text, kind); }
 
   // A value line: one place that decides the tint, so "unknown" never renders as
@@ -139,150 +135,32 @@
   }
 
   /* ============================================================
-     CONNECTION — backend location and credentials.
+     CONNECTION — READ-ONLY STATE. There is nothing to type and no Connect
+     button, because the connection is INTERNAL and AUTOMATIC:
 
-     Local vs Remote here is §1's distinction and ONLY that: where the BACKEND
-     lives. It says nothing about where the browser runs. The Remote Browser and
-     the Session Handoff are a separate subsystem with its own UI in the web app,
-     and conflating the two is what made the old popup confusing.
+       LOCAL BROWSER  = the SERVER-LOCAL browser runtime. The browser runs on
+                        the SAME server/infrastructure as Plyr, which side-loads
+                        this extension and seeds it (bootstrap.config.js) with
+                        the loopback Base URL and its own token. Target This
+                        Field → LOCAL BROWSER → the server grants the binding →
+                        the worker adopts it (background.js inspectorSession) →
+                        Connected to Target. No Base URL, no API Key, no
+                        Authorization Code is ever asked for.
+       REMOTE BROWSER = the same seeded copy, inside the server-run Chromium.
+
+     What this tab shows is the RESULT of that: is it ready, and which Target
+     Field is it bound to. The status is refreshed as the popup opens, not
+     behind a button.
      ============================================================ */
 
-  // Which card is lit is derived from the URL, never stored separately: two
-  // sources for one fact drift, and then the popup claims "Local" while sending
-  // to a remote host.
-  function modeOf(url) {
-    var u = String(url || '').trim();
-    if (!u) return '';
-    return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(u) ? 'local' : 'remote';
-  }
-
-  function syncModeCards() {
-    var mode = modeOf(els.baseUrl.value);
-    els.modeLocal.checked = mode === 'local';
-    els.modeRemote.checked = mode === 'remote';
-    // Each card shows the URL it would select, so the choice is legible before it
-    // is made. Once a real URL is in the box, the matching card shows THAT rather
-    // than the placeholder it started from.
-    els.modeLocalUrl.textContent = mode === 'local' ? els.baseUrl.value.trim() : LOCAL_URL;
-    els.modeRemoteUrl.textContent = mode === 'remote' ? els.baseUrl.value.trim() : REMOTE_URL;
-  }
-
-  // Picking a card fills the Base URL in, because a card that only set a hidden
-  // preference would leave the visible URL contradicting it.
-  async function chooseMode(mode) {
-    var current = els.baseUrl.value.trim();
-    if (modeOf(current) === mode && current) { syncModeCards(); return; }
-    els.baseUrl.value = mode === 'local' ? LOCAL_URL : (mode === 'remote' && current && modeOf(current) === 'remote' ? current : REMOTE_URL);
-    syncModeCards();
-    await saveSettings(true);
-  }
-
-  function applySettings(s) {
-    els.baseUrl.value = (s && s.ab_baseUrl) || '';
-    els.apiKey.value = (s && s.ab_apiKey) || '';
-    syncModeCards();
-  }
-
-  async function loadSettings() {
-    applySettings(await get(['ab_baseUrl', 'ab_apiKey']));
-  }
-
-  // Saved on every edit, not behind a Save button. The old popup had one, and a
-  // user who typed a key and pressed Connect without pressing Save first got a
-  // failure that blamed the key.
-  async function saveSettings(quiet) {
-    await set({ ab_baseUrl: els.baseUrl.value.trim(), ab_apiKey: els.apiKey.value });
-    if (!quiet) setStatus('Saved.', 'ok');
-  }
-
-  // The eye in the approved design. A key that cannot be read back cannot be
-  // checked against the one in the project, and the alternative — retyping it —
-  // is how a working key gets replaced by a typo.
-  function togglePeek() {
-    var hidden = els.apiKey.type === 'password';
-    els.apiKey.type = hidden ? 'text' : 'password';
-    els.apiKeyPeek.classList.toggle('on', hidden);
-  }
-
-  /* ----------------------------------------------------------
-     CONNECT — one button doing the two things the user means by it.
-
-     Pressing Connect with a code in the box PAIRS: the code is redeemed by the
-     backend, which decides the field. Nothing here names a target — an extension
-     that could pick its own destination could aim a pick at a field the user
-     never offered (§8), so the message body carries only the code.
-
-     Pressing Connect with the box empty just re-tests the backend, which is what
-     a user with an already-paired extension means by it — and what a REMOTE
-     BROWSER target needs, since no code is ever issued for one.
-     ---------------------------------------------------------- */
-  async function connect() {
-    await saveSettings(true);
-
-    var code = els.inspCode.value.trim();
-    if (!code) { await testConnection(); return; }
-
-    if (Core && Core.looksLikePairingCode && !Core.looksLikePairingCode(code)) {
-      setPairStatus('Enter the 8-character code shown on the field (like ABCD-EFGH).', 'bad');
-      return;
-    }
-
-    els.connect.disabled = true;
-    setPairStatus('Connecting\u2026', '');
-    var res = await bg({ type: 'AB_INSPECTOR_PAIR', payload: { code: code } });
-    els.connect.disabled = false;
-
-    if (!res || !res.ok) {
-      // The worker forwards the server's specific §27 reason. Showing it verbatim
-      // is the difference between "check what you typed" and "ask for a fresh
-      // code", which are different actions.
-      setPairStatus((res && (res.error || res.reason)) || 'The code was refused.', 'bad');
-      await refreshInspector(true);
-      return;
-    }
-
-    // Name what was connected. A bare "connected" leaves the user to trust that
-    // the code pointed where they thought it did.
-    var name = targetName(res.target);
-    setPairStatus('Connected' + (name ? ' to ' + name : '') + '.', 'ok');
-    els.inspCode.value = '';
-    await refreshInspector(true);
-  }
-
-  async function testConnection() {
-    setStatus('Testing\u2026', 'warn');
-    var r = await bg({ type: 'AB_CHECK' });
-    if (r && r.ok) {
-      // No identity is read out of this. GET /me proves the key works; who the
-      // key belongs to is the backend's business, not something to echo into a
-      // field the user could then edit.
-      setStatus('Connected.', 'ok');
-    } else {
-      setStatus('Connection failed: ' + reason(r), 'bad');
-    }
-    await refreshInspector(true);
-  }
-
-  function reason(r) {
-    if (!r) return 'unknown';
-    if (r.error === 'no_base_url') return 'set the Base URL first';
-    if (r.error === 'no_api_key') return 'set the API Key first';
-    return r.error || ('http_' + r.status) || 'unknown';
-  }
-
+  // Disconnected is the one ACTION left: it drops the server-side pairing (the
+  // worker posts /inspector/targeting/unpair) so the automatic binding cannot
+  // silently re-attach it, then clears the local copy.
   async function unpairInspector() {
+    setStatus('Disconnecting\u2026', 'warn');
     await bg({ type: 'AB_INSPECTOR_UNPAIR' });
-    setPairStatus('Disconnected. Enter a new code to connect again.', '');
+    setStatus('Disconnected.', '');
     await refreshInspector(true);
-  }
-
-  // Cosmetic only — the server normalises separators away, so a dash the user
-  // types, or does not type, changes nothing about whether the code works.
-  function onCodeInput() {
-    var raw = (Core && Core.normalizePairingCode)
-      ? Core.normalizePairingCode(els.inspCode.value)
-      : String(els.inspCode.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    els.inspCode.value = raw.length > 4 ? raw.slice(0, 4) + '-' + raw.slice(4, 8) : raw;
   }
 
   /* ============================================================
@@ -360,7 +238,9 @@
       if (!targets.length) {
         setInspStatus('No field is waiting. Open a node in the project, then connect.', 'warn');
       } else if (!paired) {
-        setInspStatus('Not connected yet \u2014 enter an Authorization Code in Connection.', 'warn');
+        // No code, no credential: the connection is automatic. The only thing
+        // the user can do from here is start it — Target This Field in the app.
+        setInspStatus('Not connected yet \u2014 press Target This Field in the project.', 'warn');
       } else if (!live) {
         // The pairing survived, the field did not. Saying "not connected" here
         // would send the user looking for the wrong problem.
@@ -375,8 +255,10 @@
 
   function unreachableText(res) {
     var err = (res && res.error) || 'unreachable';
-    if (err === 'no_base_url') return 'Set the Base URL first.';
-    if (err === 'no_api_key') return 'Set the API Key first.';
+    // There is no Base URL or API Key field to point at anymore — those are
+    // seeded by the server runtime (bootstrap.config.js). If they are missing,
+    // this is a hand-installed copy, and the fix is the server-seeded copy.
+    if (err === 'no_base_url' || err === 'no_api_key') return 'Waiting for the server runtime to seed this extension.';
     return 'Cannot reach the project (' + err + ').';
   }
 
@@ -412,8 +294,8 @@
     // words for an unrelated fact: where the BACKEND lives. Spelling out
     // "Browser" is what stops the two being read as one setting.
     var env = (res && res.environment) || (target && target.environment) || '';
-    var envText = env === 'local' ? 'Local Browser'
-      : env === 'remote' ? 'Remote Browser' : '';
+    var envText = env === 'local' ? 'LOCAL BROWSER'
+      : env === 'remote' ? 'REMOTE BROWSER' : '';
     value(els.inspEnv, envText, envText ? '' : 'none');
     value(els.ctEnv, envText, envText ? '' : 'none');
 
@@ -428,19 +310,23 @@
     // A REMOTE field shows "not required" rather than "paired": no code was ever
     // issued for it, and claiming a pairing that does not exist would be as
     // misleading as hiding one that does.
+    // "Ready to Send" — no code is ever requested, so the answer to "will I be
+    // asked for anything?" is always no. The durable pairing still outlives the
+    // address: re-opening the node re-mints the address and the server re-points
+    // the same pairing at it, which is why the same field never asks twice.
     var durable = !!(res && res.paired);
     var pairText = durable
-      ? '\u25cf Paired \u2014 no code needed next time'
+      ? '\u25cf Ready to Send'
       : env === 'remote'
         ? 'Not required for Remote Browser'
-        : '\u25cb Not paired \u2014 a code will be requested';
+        : '\u25cb Not connected to a target yet';
     value(els.ctPairing, pairText, durable ? 'ok' : env === 'remote' ? '' : 'none');
 
     var text = live
-      ? '\u25cf Connected to this Field'
+      ? '\u25cf Connected to Target'
       : paired
         ? '\u25cf Connected, but that field is no longer open'
-        : '\u25cb Not connected \u2014 enter an Authorization Code';
+        : '\u25cb Not connected to a target yet';
     var tone = live ? 'ok' : paired ? 'warn' : 'none';
     stateLine(els.inspTarget, text, tone);
     stateLine(els.ctState, live ? '\u25cf Connection active' : text, tone);
@@ -453,10 +339,15 @@
 
   function paintConnection(res, paired, live, target) {
     var reachable = !!(res && res.ok);
-    var url = els.baseUrl.value.trim();
+    // The Backend row is READ-ONLY and reported by the worker — the popup holds
+    // no settings of its own anymore.
+    var url = (res && res.baseUrl) || '';
 
     if (reachable) {
-      stateLine(els.connState, '\u25cf Connected', 'ok');
+      // The headline the contract asks for: «LOCAL BROWSER ● Ready» / «●
+      // Connected». Automatic is not a state the user can toggle, it is the
+      // way the connection is made — so that is what the line says.
+      stateLine(els.connState, live ? '\u25cf Connected' : '\u25cf Ready \u2014 automatic', 'ok');
       els.conn.textContent = '\u25cf online';
       els.conn.className = 'conn ok';
     } else {
@@ -466,22 +357,24 @@
     }
     monoValue(els.connBackend, url, url ? '' : 'none');
 
-    // "Reachable" and "authorized for the field I am pointed at" are different
-    // failures with different fixes, so they get different lines. A backend that
-    // answers but refuses this field is the case that a single "Connected" would
-    // hide until the first send failed.
+    // "Reachable" and "bound to the field I am pointed at" are different
+    // states, so they get different lines. Authorization is internal now — the
+    // server granted the binding and the worker adopted it — so a live target
+    // reads "Internal", never "enter a key".
     if (!reachable) value(els.connAuth, 'unknown', 'none');
-    else if (live) value(els.connAuth, 'Valid', 'ok');
+    else if (live) value(els.connAuth, 'Internal \u2014 granted', 'ok');
     else if (paired) value(els.connAuth, 'Field no longer open', 'warn');
-    else value(els.connAuth, 'Not authorized yet', 'none');
+    else value(els.connAuth, 'Waiting for a Target Field', 'none');
 
     void target;
   }
 
   function shortError(res) {
     var err = (res && res.error) || 'unreachable';
-    if (err === 'no_base_url') return 'No Base URL';
-    if (err === 'no_api_key') return 'No API Key';
+    // A hand-installed copy with no seeded context and no saved settings is the
+    // only way these fire, and there is no field here to fix them in — the fix
+    // is the server-seeded copy. Say that, not "set the Base URL".
+    if (err === 'no_base_url' || err === 'no_api_key') return 'Waiting for the server runtime';
     return 'Not connected';
   }
 
@@ -898,7 +791,7 @@
     if (!current.live) {
       stateLine(els.destState, current.paired
         ? '\u25cf Connected, but that field is no longer open'
-        : '\u25cb Not connected \u2014 enter an Authorization Code',
+        : '\u25cb Not connected to a target yet',
       current.paired ? 'warn' : 'none');
     } else if (!row) {
       stateLine(els.destState, 'Select one attribute to send.', 'none');
@@ -926,8 +819,8 @@
     if (!row.value) { setSendStatus('That attribute has no value to send \u2014 choose another.', 'bad'); return; }
     if (!current.live) {
       setSendStatus(current.paired
-        ? 'The connected field is no longer open. Connect again.'
-        : 'This Inspector is not connected to a Field. Enter an Authorization Code first.', 'bad');
+        ? 'The connected field is no longer open. Target it again from the project.'
+        : 'This Inspector is not connected to a Field. Press Target This Field in the project first.', 'bad');
       return;
     }
 
@@ -956,7 +849,7 @@
     if (!res || !res.ok) {
       // The backend refuses with an actionable §27 reason ("this Inspector is not
       // authorized for that Field"). Showing it verbatim is the difference
-      // between the user knowing to enter an Authorization Code and the user
+      // between the user knowing to re-target the field and the user
       // thinking it is broken.
       setSendStatus((res && (res.error || res.reason)) || 'Unable to send attribute. Retry the send operation.', 'bad');
       return;
@@ -994,20 +887,7 @@
   }
 
   // ---- wire up ---------------------------------------------------------
-  els.baseUrl.addEventListener('input', function () { syncModeCards(); });
-  els.baseUrl.addEventListener('change', function () { saveSettings(true); });
-  els.apiKey.addEventListener('change', function () { saveSettings(true); });
-  els.apiKeyPeek.addEventListener('click', togglePeek);
-  els.modeLocal.addEventListener('change', function () { chooseMode('local'); });
-  els.modeRemote.addEventListener('change', function () { chooseMode('remote'); });
-  els.connect.addEventListener('click', connect);
   els.inspUnpair.addEventListener('click', unpairInspector);
-  els.inspCode.addEventListener('input', onCodeInput);
-  // Enter submits: the code is usually pasted, and it expires, so reaching for
-  // the mouse afterwards is friction on a credential with a clock on it.
-  els.inspCode.addEventListener('keydown', function (ev) {
-    if (ev.key === 'Enter') { ev.preventDefault(); connect(); }
-  });
   els.inspect.addEventListener('click', startInspector);
   els.inspRefresh.addEventListener('click', function () { refreshInspector(false); });
   els.attrAll.addEventListener('click', function () { tickAll(true); });
@@ -1028,11 +908,12 @@
      two cannot land in either order, so there is no window where the attribute
      rows are on screen and the destination they would be sent to is not.
      ---------------------------------------------------------- */
-  get(['ab_baseUrl', 'ab_apiKey', PICK_KEY]).then(function (s) {
-    applySettings(s);
+  get([PICK_KEY]).then(function (s) {
     applyPick(s);
     renderAttrs();
     renderSelected();
+    // Quiet on open: the state appears as the runtime reports it, with no red
+    // error and no credential prompt — there is nothing to configure.
     return refreshInspector(true);
   });
 })();

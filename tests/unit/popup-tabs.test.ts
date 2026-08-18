@@ -338,17 +338,31 @@ describe('§5 — removing the tabs did NOT remove the capabilities', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('§6 — Connection is only Connection', () => {
-  it('holds the backend location, the credentials and the resulting state', () => {
+  it('holds only READ-ONLY state — never a credential field', () => {
     const p = panel('p-connection');
+    // «LOCAL UI نباید این موارد را داشته باشد: Base URL / API Key /
+    // Authorization Code / Remote Approval — و کاربر نباید هیچ‌کدام را وارد
+    // کند.» LOCAL BROWSER is the SERVER-LOCAL runtime: the backend location
+    // and the key are seeded internally (bootstrap.config.js), the binding is
+    // granted server-side, and the extension adopts it automatically. There is
+    // nothing to type, so there is no field to type it into.
+    for (const dead of [
+      'modeLocal', 'modeRemote', 'modeLocalUrl', 'modeRemoteUrl', // backend location cards
+      'baseUrl', 'apiKey', 'apiKeyPeek',                          // how to reach it
+      'inspCode', 'connect', 'inspPairStatus',                    // one-time pairing form
+    ]) {
+      expect(p, `Connection must NOT contain #${dead}`).not.toContain(`id="${dead}"`);
+    }
+    // What remains: is it ready, and which Target Field is it bound to.
     for (const id of [
-      'modeLocal', 'modeRemote',   // where the backend is (§1's only Local/Remote)
-      'baseUrl', 'apiKey',         // how to reach it
-      'inspCode', 'connect',       // one-time pairing to a Target Field
       'connState', 'connBackend', 'connAuth',
       'ctNode', 'ctField', 'ctFieldId',
     ]) {
       expect(p, `Connection must contain #${id}`).toContain(`id="${id}"`);
     }
+    // And no input element may survive anywhere in the panel.
+    expect(p).not.toMatch(/<input(?![^>]*type="radio")/);
+    expect(p).not.toMatch(/<textarea|<select/);
   });
 
   it('hosts no Handoff, Session or Run control', () => {
@@ -367,16 +381,22 @@ describe('§6 — Connection is only Connection', () => {
     expect(p).not.toMatch(/workflow/i);
   });
 
-  it('offers Local and Remote as the location of the BACKEND, nothing else', () => {
+  it('does not ask where the backend is — the runtime answers that itself', () => {
     const p = panel('p-connection');
+    // «Base URL internal automatic». The Local/Remote BACKEND chooser was the
+    // user-facing half of the old credential form; with the runtime seeded
+    // server-side there is nothing left to choose, so neither card may remain.
     // The three concepts that must not be conflated: BrowserMode/Remote Browser
     // decides the execution environment, TargetField decides where data lands,
     // and the Inspector sends one value. Only the last two are this popup's
-    // business, and the Local/Remote choice here is §1's — a URL.
-    expect(p).toMatch(/Local Backend/);
-    expect(p).toMatch(/Remote Backend/);
+    // business.
+    expect(p).not.toMatch(/Local Backend/);
+    expect(p).not.toMatch(/Remote Backend/);
     expect(p).not.toMatch(/Remote Browser/i);
     expect(p).not.toMatch(/move (a |your )?(running )?session/i);
+    // And no Authorization Code vocabulary either — pairing is automatic now.
+    expect(p).not.toMatch(/Authorization Code/i);
+    expect(p).not.toMatch(/API\s*Key/i);
   });
 
   it('shows the exact Target Field id, which is what a send is aimed at', () => {

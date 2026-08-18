@@ -555,14 +555,16 @@ describe('6. the Base URL and the Browser Environment are not the same choice', 
     }
   });
 
-  it('LOCAL may require one, and only until the field is paired', async () => {
+  it('LOCAL never requires one — it is the SERVER-LOCAL runtime now', async () => {
     const { planTargeting } = await import('../../src/core/BrowserEnvironment');
+    // The corrected contract: LOCAL = the browser runtime on the SAME server as
+    // Plyr, bound internally and automatically. Base URL, API Key and
+    // Authorization Code are all resolved by the server, so no plan may ask the
+    // user for one — paired or not.
     const unpaired = planTargeting({ environment: 'local', paired: false });
     const paired = planTargeting({ environment: 'local', paired: true });
-    expect(unpaired.needsAuthorization).toBe(true);
-    // Durable pairing: the second time the same field is targeted, no code. This
-    // is the "asks for a code every single time" behaviour the requirement
-    // explicitly forbids.
+    expect(unpaired.needsAuthorization).toBe(false);
+    expect(unpaired.step).toBe('targeting');
     expect(paired.needsAuthorization).toBe(false);
   });
 
@@ -575,8 +577,10 @@ describe('6. the Base URL and the Browser Environment are not the same choice', 
     const plan = planTargeting({ environment: 'local', paired: false, localAvailable: false });
     expect(plan.environment).toBe('local');
     expect(plan.note).toBe('local_unavailable');
-    // And it stays honest about the work still outstanding.
-    expect(plan.needsAuthorization).toBe(true);
+    // And the note is the whole message: an unavailable runtime is not a code
+    // problem, so needsAuthorization stays false — typing a code would not fix
+    // it, and asking would be the credential UI this contract removes.
+    expect(plan.needsAuthorization).toBe(false);
     expect(plan.opensRemoteBrowser).toBe(false);
   });
 

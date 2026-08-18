@@ -507,23 +507,32 @@ describe('7. a prompt about an unpaired field is withdrawn', () => {
 // 8. LOCAL is untouched — the separation the mission insists on
 // ════════════════════════════════════════════════════════════════
 
-describe('8. LOCAL still uses a code, and raises no prompt', () => {
-  // [REQ] «LOCAL BROWSER → may need an Authorization Code; REMOTE BROWSER →
-  //        never needs one.» The fix must not blur the two.
+describe('8. LOCAL needs no code either, and raises no prompt', () => {
+  // [REQ] The corrected contract: LOCAL = the SERVER-LOCAL browser runtime —
+  //       «کاربر نباید هیچ‌کدام را وارد کند» — no Base URL, no API Key, no
+  //       Authorization Code, no approval. REMOTE keeps the prompt. The fix
+  //       must not blur the two in EITHER direction: no prompt may reach
+  //       LOCAL, and no code may be minted for it.
 
-  it('LOCAL issues a code and asks the server browser nothing', async () => {
+  it('LOCAL binds internally and asks for NOTHING', async () => {
     const res = await begin({ environment: 'local' });
-    expect(res.body.step).toBe('authorize');
-    expect(res.body.code).toMatch(/^[A-Z0-9]{8}$/);
-    expect(res.body.consent).toBeUndefined();
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.code).toBeUndefined();
+    // Explicitly null — the route serialises it so the isolation contract has
+    // a field to assert on, not merely an absence.
+    expect(res.body.consent).toBeNull();
+    expect(inspectorAuth.pendingCount()).toBe(0);
     expect((await asked()).body.count).toBe(0);
   });
 
-  it('LOCAL still shows the Base URL beside the code', async () => {
+  it('LOCAL reports where the automatic connection resolved — without asking for it', async () => {
+    // The Base URL is INTERNAL now: resolved by the server, reported as
+    // information, and `requiresUserInput` is the explicit promise that the
+    // user is never shown a form for it.
     const res = await begin({ environment: 'local' });
-    expect(typeof res.body.baseUrl).toBe('string');
-    expect(res.body.baseUrl.length).toBeGreaterThan(0);
-    expect(res.body.baseUrlSource).toBeTruthy();
+    expect(res.body.internal).toBeDefined();
+    expect(String(res.body.internal.baseUrl)).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(res.body.internal.requiresUserInput).toBe(false);
   });
 
   it('REMOTE never opens a code path, paired or not', async () => {

@@ -12,25 +12,27 @@ import {
 //
 // WHAT THIS FILE IS ACTUALLY PROTECTING
 // -------------------------------------
-// The requirement is a decision table, and decision tables fail quietly. The
-// two ways to get it wrong are symmetrical and both invisible at a glance:
+// The requirement is a decision table, and decision tables fail quietly.
 //
-//   * ask for an Authorization Code when one is not needed — the papercut the
-//     user complained about, a code on every single re-open;
-//   * skip a code when one IS needed — which would mean an unpaired extension
-//     silently writing into a field.
+//   LOCAL  = the SERVER-LOCAL browser runtime. The browser runs on the SAME
+//            server/infrastructure as Plyr, so the binding is internal and
+//            automatic: no Base URL, no API Key, no Authorization Code is
+//            ever asked for. The planner must NEVER route a usable LOCAL to
+//            the legacy `authorize` step — that step implemented the rejected
+//            PR16 model (LOCAL = the user's own browser elsewhere, paired by
+//            a typed code) and is gone from this contract.
+//   REMOTE = the server-owned Chromium. Same conclusion, plus the browser
+//            itself is opened. Remote Approval (the consent prompt) is
+//            REMOTE-only; nothing here may produce it for LOCAL.
 //
 // `planTargeting` is pure, so every branch can be pinned down here with no
-// browser, no socket and no clock. That is the whole reason it was written as a
-// total function instead of being spread across the routes.
+// browser, no socket and no clock.
 //
 // The cases the operator stated in prose are marked [REQ].
 // ════════════════════════════════════════════════════════════════
 
 describe('the two environments, and nothing else', () => {
   it('offers exactly LOCAL and REMOTE', () => {
-    // Not a tautology: the requirement names two options and the chooser is
-    // generated from this list, so a third sneaking in would show up on screen.
     expect([...BROWSER_ENVIRONMENTS]).toEqual(['local', 'remote']);
   });
 
@@ -57,9 +59,6 @@ describe('coercing a request body into an environment', () => {
   });
 
   it('falls back to REMOTE for anything unrecognised', () => {
-    // Remote is the environment with no prerequisites — no extension, no agent,
-    // no pairing. Degrading into it is honest; degrading into `local` would
-    // promise a browser that may not be there.
     expect(normalizeBrowserEnvironment(undefined)).toBe('remote');
     expect(normalizeBrowserEnvironment(null)).toBe('remote');
     expect(normalizeBrowserEnvironment('nonsense')).toBe('remote');
@@ -82,8 +81,6 @@ describe('REMOTE BROWSER', () => {
   });
 
   it('goes straight to targeting even when local is off or unreachable', () => {
-    // Remote must not be collateral damage from the local switch: those flags
-    // describe a browser remote does not use.
     const plan = planTargeting({
       environment: 'remote',
       paired: false,
@@ -97,26 +94,27 @@ describe('REMOTE BROWSER', () => {
   it('opens the server browser, and lets the server bind without a code', () => {
     const plan = planTargeting({ environment: 'remote', paired: false });
     expect(plan.opensRemoteBrowser).toBe(true);
-    // Not a shortcut — the server launched that Chromium and seeded the
-    // extension inside it with its own token, so there is only one machine and
-    // no trust gap for a code to bridge.
     expect(plan.serverMayGrant).toBe(true);
     expect(plan.note).toBe('server_owned_browser');
   });
 });
 
-describe('LOCAL BROWSER', () => {
-  // [REQ] First use of a field: the code is issued at that moment.
-  it('asks for an Authorization Code the FIRST time a field is targeted', () => {
+describe('LOCAL BROWSER — the SERVER-LOCAL runtime, automatic and codeless', () => {
+  // [REQ] «LOCAL UI نباید این موارد را داشته باشد: Base URL / API Key /
+  //        Authorization Code / Remote Approval — و کاربر نباید هیچ‌کدام را
+  //        وارد کند.»
+  it('NEVER asks for an Authorization Code — not even the first time', () => {
     const plan = planTargeting({ environment: 'local', paired: false });
-    expect(plan.step).toBe('authorize');
-    expect(plan.needsAuthorization).toBe(true);
-    expect(plan.note).toBe('pairing_required');
+    // The single most important assertion in this file: the legacy `authorize`
+    // step must not be produced for a usable LOCAL, by any path.
+    expect(plan.step).toBe('targeting');
+    expect(plan.needsAuthorization).toBe(false);
+    expect(plan.note).toBe('server_local_browser');
   });
 
   // [REQ] «دفعات بعد برای همان Extension و همان Target Field، دیگر
-  //        Authorization Code لازم نیست.»
-  it('asks for NOTHING once that field is already paired', () => {
+  //        Authorization Code لازم نیست.» — trivially true now: there is none.
+  it('stays on targeting once that field is already paired', () => {
     const plan = planTargeting({ environment: 'local', paired: true });
     expect(plan.step).toBe('targeting');
     expect(plan.needsAuthorization).toBe(false);
@@ -124,19 +122,20 @@ describe('LOCAL BROWSER', () => {
   });
 
   it('never opens the server browser', () => {
-    // The bug this whole change exists to fix: the user already has the page
-    // open in their own Chrome, and a server window they did not ask for is
-    // both useless and confusing.
+    // LOCAL does not mean "open a second window on the server" — the runtime
+    // is already there. A window the user did not ask for is both useless and
+    // confusing.
     for (const paired of [true, false]) {
       expect(planTargeting({ environment: 'local', paired }).opensRemoteBrowser).toBe(false);
     }
   });
 
-  it('never lets the server bind on the user’s behalf', () => {
-    // The server does not own the user's browser, so it cannot vouch for what
-    // is running in it. Only a code the human types can.
+  it('lets the server bind internally, exactly like REMOTE', () => {
+    // One machine, one token, no trust gap — the same property that made
+    // REMOTE codeless. serverMayGrant is what the begin route reads to decide
+    // it may grant the binding itself instead of minting a code.
     for (const paired of [true, false]) {
-      expect(planTargeting({ environment: 'local', paired }).serverMayGrant).toBe(false);
+      expect(planTargeting({ environment: 'local', paired }).serverMayGrant).toBe(true);
     }
   });
 });
@@ -149,29 +148,29 @@ describe('LOCAL when it cannot be used', () => {
     // page — the exact lie this subsystem exists to prevent.
     expect(plan.environment).toBe('local');
     expect(plan.note).toBe('local_disabled');
-    expect(plan.step).toBe('authorize');
     expect(plan.opensRemoteBrowser).toBe(false);
+    // Disabled is NOT a code problem: needsAuthorization stays false, because
+    // typing a code would not turn the runtime on.
+    expect(plan.needsAuthorization).toBe(false);
   });
 
   it('reports local_unavailable when local is on but nothing is connected', () => {
     const plan = planTargeting({ environment: 'local', paired: false, localAvailable: false });
     expect(plan.environment).toBe('local');
     expect(plan.note).toBe('local_unavailable');
+    expect(plan.needsAuthorization).toBe(false);
   });
 
   it('prefers local_disabled when both are false', () => {
-    // "Turned off on this server" is actionable by the operator; "nothing
-    // connected" is actionable by the user. Naming the outer cause first sends
-    // them to the right place.
     const plan = planTargeting({
       environment: 'local', paired: false, localEnabled: false, localAvailable: false,
     });
     expect(plan.note).toBe('local_disabled');
   });
 
-  it('still says a paired field would need no code, even while unreachable', () => {
-    // Unreachable is not "unpaired". Conflating them would throw away a pairing
-    // the user already earned, just because their browser was closed.
+  it('still refuses rather than re-pairing a paired-but-unreachable field', () => {
+    // Unreachable is not "unpaired". Conflating them would throw away a
+    // binding the user already has, just because the runtime is down.
     const plan = planTargeting({ environment: 'local', paired: true, localAvailable: false });
     expect(plan.needsAuthorization).toBe(false);
     expect(plan.note).toBe('local_unavailable');
@@ -194,21 +193,22 @@ describe('the chooser’s options', () => {
     expect(opts.map((o) => o.id)).toEqual(['local', 'remote']);
   });
 
-  it('warns that LOCAL will ask for a code, when it will', () => {
+  it('warns about NOTHING — neither environment ever asks for a code', () => {
+    // The inversion this change exists to pin: LOCAL used to carry
+    // needsAuthorization:true. Now no option does, so the chooser can never
+    // advertise a code the contract forbids.
     const [local, remote] = environmentOptions({ paired: false });
-    expect(local.needsAuthorization).toBe(true);
+    expect(local.needsAuthorization).toBe(false);
     expect(remote.needsAuthorization).toBe(false);
   });
 
-  it('drops that warning once the field is paired', () => {
+  it('marks an already-paired LOCAL field as paired', () => {
     const [local] = environmentOptions({ paired: true });
     expect(local.needsAuthorization).toBe(false);
     expect(local.paired).toBe(true);
   });
 
   it('treats REMOTE as always paired', () => {
-    // Truthful rather than cosmetic: the server grants the binding itself, so
-    // from the user's side there is nothing left to do.
     const [, remote] = environmentOptions({ paired: false });
     expect(remote.paired).toBe(true);
   });
@@ -217,16 +217,14 @@ describe('the chooser’s options', () => {
     const [local, remote] = environmentOptions({ paired: false, localEnabled: false });
     expect(local.available).toBe(false);
     expect(local.note).toBe('local_disabled');
-    // …and remote is untouched, so the user always has a way forward.
     expect(remote.available).toBe(true);
     expect(remote.note).toBe('');
   });
 
   it('never disagrees with what selecting it would actually do', () => {
-    // The property that matters most. A dialog promising "no code needed" that
-    // then produced one would be worse than no dialog, so the options are
-    // GENERATED from planTargeting rather than written alongside it — and this
-    // case fails if the two ever drift.
+    // A dialog promising "nothing needed" that then produced a code screen
+    // would be worse than no dialog, so the options are GENERATED from
+    // planTargeting — and this case fails if the two ever drift.
     for (const paired of [true, false]) {
       for (const localEnabled of [true, false]) {
         const opts = environmentOptions({ paired, localEnabled });

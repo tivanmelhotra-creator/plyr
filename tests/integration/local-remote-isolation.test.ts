@@ -115,12 +115,18 @@ describe('LOCAL must never raise a Remote approval prompt', () => {
     expect(remoteTargetConsent.pendingFor('local')).toHaveLength(0);
   });
 
-  it('LOCAL asks for an Authorization Code, and that is the whole handshake', async () => {
+  it('LOCAL is bound INTERNALLY — no code, no prompt, nothing to approve', async () => {
+    // The corrected contract: LOCAL = the SERVER-LOCAL browser runtime. The
+    // browser runs on the same server/infrastructure as Plyr, so the server
+    // grants the binding itself and the flow is step 'targeting' end to end.
+    // The old «LOCAL asks for an Authorization Code, and that is the whole
+    // handshake» model (PR16) is explicitly rejected and must not come back.
     const res = await begin('local');
 
-    expect(res.body.step).toBe('authorize');
-    expect(res.body.plan.needsAuthorization).toBe(true);
-    expect(res.body.plan.serverMayGrant).toBe(false);
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.plan.needsAuthorization).toBe(false);
+    expect(res.body.plan.serverMayGrant).toBe(true);
     expect(res.body.plan.opensRemoteBrowser).toBe(false);
   });
 

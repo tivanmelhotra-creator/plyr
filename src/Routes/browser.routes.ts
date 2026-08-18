@@ -1215,6 +1215,44 @@ export const createBrowserRoutes = (): Router => {
    */
   router.post('/browser/real/open', async (req, res) => {
     // ─────────────────────────────────────────────────────────────────────
+    // SELF-RECOVERING START — the same consent as /browser/start
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // REPORTED: opening the remote browser answered
+    //
+    //     remote_browser_disabled
+    //     The Remote Browser is switched off for this instance
+    //
+    // …even though /browser/start had already learned to turn it on itself.
+    // ROOT CAUSE: this route asked RealChrome for a context WITHOUT the
+    // auto-enable preamble that /browser/start has, so a stale
+    // REAL_CHROME_ENABLED=false in .env threw here and describe() dressed the
+    // throw as the refusal above. The user pressed "open the browser"; there
+    // is no reading of that under which "no, it is configured off" is a more
+    // useful answer than turning it on. Pressing open IS the consent — the
+    // value is recorded in .env too, so the next boot agrees, and the main
+    // application is NEVER killed or restarted: only the browser process
+    // starts.
+    if (!RealChrome.isEnabled()) {
+      const applied = await applySetting('REAL_CHROME_ENABLED', true);
+      console.log(
+        '[REAL-CHROME] enabled at runtime by POST /browser/real/open'
+        + (applied.persisted
+          ? (applied.unchanged ? ' (.env already said true)' : ' and written to .env')
+          : ` (NOT persisted: ${applied.persistError || 'unknown'})`),
+      );
+    }
+    try {
+      // Opening the browser after a deliberate /browser/stop must also re-arm
+      // the keeper, or the browser starts once and is never kept alive again.
+      const { setSelfHealEnabled } = await import('../core/SelfHeal');
+      setSelfHealEnabled(true);
+    } catch (e) {
+      // Re-arming the keeper must not block the open itself.
+      console.warn('[REAL-CHROME] could not re-arm self-heal before open:', (e as Error)?.message || e);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // BOUNDED, CONTAINED START
     // ─────────────────────────────────────────────────────────────────────
     //

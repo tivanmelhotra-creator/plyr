@@ -380,16 +380,23 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Step 2 — the Authorization Code (LOCAL, first time for this field)
+  // LEGACY — the Authorization Code screen (pre-no-code LOCAL servers only)
   // ---------------------------------------------------------------------------
 
   /**
    * Show the code and wait for the extension to accept it.
    *
-   * POLLED, not pushed. The dashboard cannot observe the extension directly —
-   * they are different browsers, which is the entire point of LOCAL — so the
-   * server, the only party that sees both sides, is asked. This also keeps
-   * working behind a proxy that breaks WebSockets.
+   * DEAD CODE against any current server. LOCAL is the SERVER-LOCAL browser
+   * runtime now: the server grants the binding internally and `begin` returns
+   * `step: 'targeting'`, so no code is ever minted for it (see
+   * src/core/BrowserEnvironment.ts — `authorize` is a legacy step the planner
+   * no longer produces). This screen survives only so a new dashboard talking
+   * to an OLD server still has a way to finish pairing; on a current server it
+   * is never rendered.
+   *
+   * POLLED, not pushed. The dashboard cannot observe the extension directly,
+   * so the server, the only party that sees both sides, is asked. This also
+   * keeps working behind a proxy that breaks WebSockets.
    */
   function renderAuthorize(panel, res, ctx) {
     var dlg = openDialog;

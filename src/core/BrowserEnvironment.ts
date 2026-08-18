@@ -89,9 +89,14 @@ export function normalizeBrowserEnvironment(
 /**
  * What the Targeting flow does next.
  *
- *   authorize — issue a code and wait for the user to type it into the
- *               extension. ONLY ever produced for LOCAL, and only when that
- *               Target Field is not already paired.
+ *   authorize — LEGACY shape, kept in the union so older cached plans still
+ *               typecheck. The planner no longer PRODUCES it for LOCAL: under
+ *               the corrected contract LOCAL BROWSER is the SERVER-LOCAL
+ *               browser runtime — same machine as Plyr, internal and
+ *               automatic — so there is no second browser to bridge with a
+ *               code, and no code is ever issued. (`/inspector/authorize` and
+ *               `/inspector/pair` still exist for older clients that already
+ *               hold a code screen; new clients never receive `authorize`.)
  *   targeting — go straight to picking. Nothing else is required.
  */
 export type TargetingStep = 'authorize' | 'targeting';
@@ -131,13 +136,20 @@ export interface TargetingPlan {
   /**
    * May the server bind this Inspector itself, with no code?
    *
-   * True only for `remote`, and it is not a shortcut — it is a statement about
-   * who owns the browser. The remote Chromium is launched BY this server, with
-   * a copy of the extension this server side-loaded and pre-seeded with its own
-   * token (see InspectorExtension.bootstrapSource). A code there would ask the
-   * user to copy a secret from one of the server's windows into another of the
-   * server's windows to prove they are themselves. The code exists to bridge a
-   * trust gap between two machines; in remote there is only one machine.
+   * True for BOTH environments under the corrected contract, and it is not a
+   * shortcut — it is a statement about who owns the browser:
+   *
+   *   remote — the remote Chromium is launched BY this server, with a copy of
+   *            the extension this server side-loaded and pre-seeded with its
+   *            own token (see InspectorExtension.bootstrapSource).
+   *   local  — the SERVER-LOCAL browser runtime: the browser runs on the SAME
+   *            server/infrastructure as Plyr. Same single machine, same
+   *            absence of a trust gap for a code to bridge.
+   *
+   * A code exists to bridge a trust gap between two machines. In both
+   * environments there is only one machine, so a code would ask the user to
+   * copy a secret from one of the server's windows into another of the
+   * server's windows to prove they are themselves.
    */
   serverMayGrant: boolean;
   /**
@@ -150,7 +162,8 @@ export interface TargetingPlan {
   | 'pairing_required'
   | 'server_owned_browser'
   | 'local_disabled'
-  | 'local_unavailable';
+  | 'local_unavailable'
+  | 'server_local_browser';
 }
 
 /**
@@ -159,10 +172,14 @@ export interface TargetingPlan {
  * REMOTE — never authorizes. The server owns the browser and the extension
  * inside it, so it binds the Inspector itself and goes straight to picking.
  *
- * LOCAL — authorizes ONLY on first use of that Target Field. A second run
- * against the same field skips the code entirely, which is the persistence the
- * requirement asks for; a DIFFERENT field is a different destination and gets
- * its own pairing, which is the isolation it asks for in the same breath.
+ * LOCAL — never authorizes EITHER. Under the corrected contract, LOCAL BROWSER
+ * is the SERVER-LOCAL BROWSER RUNTIME: the browser runs on the SAME
+ * server/infrastructure as Plyr, and the connection is internal and automatic.
+ * The PR16 flow (LOCAL = the user's own browser elsewhere, paired by a typed
+ * Authorization Code) was rejected: there is no second machine, so there is
+ * nothing for a code to prove. A DIFFERENT field still gets its own pairing
+ * record — the isolation the requirement asks for — it is simply granted by
+ * the server instead of typed by a human.
  *
  * `local_disabled` / `local_unavailable` are reported as NOTES on a plan that
  * still says `local`, rather than being silently rewritten to `remote`. A
@@ -184,7 +201,7 @@ export function planTargeting(conditions: TargetingConditions): TargetingPlan {
     };
   }
 
-  // ── LOCAL ────────────────────────────────────────────────────────────────
+  // ── LOCAL = SERVER-LOCAL browser runtime ───────────────────────────────────
   const enabled = conditions.localEnabled !== false;
   const available = conditions.localAvailable !== false;
 
@@ -193,8 +210,9 @@ export function planTargeting(conditions: TargetingConditions): TargetingPlan {
       environment,
       step: 'authorize',
       // Unreachable is NOT "already fine": the honest answer is that the user
-      // still has work to do before a pick can happen.
-      needsAuthorization: !conditions.paired,
+      // still has work to do before a pick can happen — but that work is never
+      // typing a code. The disabled/unavailable note is the whole message.
+      needsAuthorization: false,
       opensRemoteBrowser: false,
       serverMayGrant: false,
       note: !enabled ? 'local_disabled' : 'local_unavailable',
@@ -207,18 +225,20 @@ export function planTargeting(conditions: TargetingConditions): TargetingPlan {
       step: 'targeting',
       needsAuthorization: false,
       opensRemoteBrowser: false,
-      serverMayGrant: false,
+      serverMayGrant: true,
       note: 'already_paired',
     };
   }
 
+  // First time for THIS field: the server binds it internally. No code, no
+  // Base URL, no API Key, no Authorization field — nothing for the user to do.
   return {
     environment,
-    step: 'authorize',
-    needsAuthorization: true,
+    step: 'targeting',
+    needsAuthorization: false,
     opensRemoteBrowser: false,
-    serverMayGrant: false,
-    note: 'pairing_required',
+    serverMayGrant: true,
+    note: 'server_local_browser',
   };
 }
 
