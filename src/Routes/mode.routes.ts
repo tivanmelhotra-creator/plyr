@@ -42,6 +42,7 @@ import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
 import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
 import { inspectorAuth } from '../core/InspectorAuthorization';
+import { remoteConsent, isSameHostPeer, type ConsentRefusal } from '../core/RemoteConsent';
 import {
   planTargeting,
   environmentOptions,
@@ -217,6 +218,13 @@ const AUTHORIZATION_MESSAGES: Record<string, string> = {
     'Authorization code expired. Start a new Inspector authorization.',
 };
 
+const CONSENT_MESSAGES: Record<ConsentRefusal, string> = {
+  CONSENT_NOT_FOUND: 'Consent request not found or does not belong to this account.',
+  CONSENT_EXPIRED: 'Consent request has expired. Re-target the field from the workflow.',
+  CONSENT_SUPERSEDED: 'Consent request was superseded by a newer target field request.',
+  FORBIDDEN_PEER: 'Remote browser consent can only be granted from the server host.',
+};
+
 /**
  * Why a Target Field could not be registered.
  *
@@ -275,6 +283,13 @@ function advertisedBaseUrl(req: AuthenticatedRequest) {
       socket?: { encrypted?: boolean };
     }),
   });
+}
+
+function fromServerHost(req: AuthenticatedRequest): boolean {
+  const ip = String(
+    req.header('x-forwarded-for') || req.socket?.remoteAddress || '',
+  ).split(',')[0].trim();
+  return isSameHostPeer(ip);
 }
 
 /**
@@ -936,6 +951,15 @@ export const createModeRoutes = (): Router => {
         inspectorAuth.grant(req.apiKey, userId, target.targetFieldId, target.pairingKey);
       }
 
+      remoteConsent.open(userId, {
+        targetFieldId: target.targetFieldId,
+        nodeId: target.nodeId,
+        fieldKey: target.fieldKey,
+        workflowId: target.workflowId,
+        nodeName: target.label || target.nodeId,
+        fieldName: target.fieldKey,
+      });
+
       res.json({
         success: true,
         environment,
@@ -1056,6 +1080,57 @@ export const createModeRoutes = (): Router => {
       return;
     }
     res.json({ success: true, unpaired: inspectorAuth.unpair(pairingKey), pairingKey });
+  });
+
+  /**
+   * Remote Browser Consent routes
+   */
+  router.get('/inspector/consent/pending', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const offer = remoteConsent.getPending(userId);
+    res.json({
+      success: true,
+      offer: offer || null,
+    });
+  });
+
+  router.post('/inspector/consent/accept', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const offerId = String((req.body || {}).offerId || '');
+
+    if (!fromServerHost(req)) {
+      res.status(403).json({
+        success: false,
+        reason: 'FORBIDDEN_PEER',
+        error: CONSENT_MESSAGES.FORBIDDEN_PEER,
+      });
+      return;
+    }
+
+    const result = remoteConsent.accept(userId, offerId);
+    if (!result.success) {
+      res.status(400).json({
+        success: false,
+        reason: result.reason,
+        error: CONSENT_MESSAGES[result.reason],
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      target: result.offer.target,
+    });
+  });
+
+  router.post('/inspector/consent/reject', (req: AuthenticatedRequest, res: Response) => {
+    const userId = resolveUserId(req);
+    const offerId = String((req.body || {}).offerId || '');
+    const ok = remoteConsent.reject(userId, offerId);
+    res.json({
+      success: true,
+      rejected: ok,
+    });
   });
 
   /**
