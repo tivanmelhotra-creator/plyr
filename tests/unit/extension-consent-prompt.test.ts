@@ -548,3 +548,44 @@ describe('the shipped source keeps its safety contract', () => {
     expect(SRC).toContain("mode: 'closed'");
   });
 });
+
+describe('the prompt and the worker agree on a message vocabulary', () => {
+  // WHY THIS EXISTS
+  // A previous attempt at this feature (PR #13) shipped a banner that sent
+  // AB_CONSENT_PENDING / AB_CONSENT_ACCEPT / AB_CONSENT_REJECT while
+  // background.js listened for none of them. Every test it had passed, because
+  // they all exercised the server registry and never the extension. The banner
+  // was therefore inert in the browser: the operator saw nothing, and the
+  // original «Connection failed: network» remained.
+  //
+  // No amount of server-side testing can catch that, so the seam itself is
+  // asserted here: every type the content script sends must be handled.
+  const BG = readFileSync(
+    resolve(__dirname, '../../extension/background.js'),
+    'utf8',
+  );
+
+  function typesSentBy(src: string): string[] {
+    const out = new Set<string>();
+    const re = /type:\s*'(AB_[A-Z_]+)'/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) out.add(m[1]);
+    return [...out];
+  }
+
+  it('sends only message types the service worker actually handles', () => {
+    const sentTypes = typesSentBy(SRC);
+    expect(sentTypes.length).toBeGreaterThan(0);
+    const unhandled = sentTypes.filter((t) => !BG.includes(`'${t}'`));
+    expect(unhandled).toEqual([]);
+  });
+
+  it('has a worker handler for both halves of the handshake', () => {
+    // Listing questions and answering them are separate messages; shipping one
+    // without the other strands the prompt.
+    expect(SRC).toContain('AB_CONSENT_LIST');
+    expect(SRC).toContain('AB_CONSENT_DECIDE');
+    expect(BG).toContain("'AB_CONSENT_LIST'");
+    expect(BG).toContain("'AB_CONSENT_DECIDE'");
+  });
+});
