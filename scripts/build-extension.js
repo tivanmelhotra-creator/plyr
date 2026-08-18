@@ -32,7 +32,7 @@
  *   artifacts/element-inspector-extension/    <- Load unpacked points HERE
  *     manifest.json
  *     background.js
- *     content/{inspector,presence,recorder,selector}.js
+ *     content/{inspector,presence,recorder,selector,consent}.js
  *     lib/{ab-core,ab-handoff,ab-inspect}.js
  *     popup/{popup.html,popup.js,popup.css}
  *     icons/{icon16,icon48,icon128}.png

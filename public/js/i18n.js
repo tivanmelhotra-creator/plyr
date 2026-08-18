@@ -1369,6 +1369,8 @@
       'tgt.pairedNow': 'متصل شد. حالا المان را در مرورگر خود انتخاب کنید.',
       'tgt.readyLocal': 'آماده است. المان را در مرورگر خودتان انتخاب کنید.',
       'tgt.readyRemote': 'مرورگر ریموت در حال باز شدن است…',
+      'tgt.consentAsked': 'مرورگر ریموت از قبل باز است — در همان تب اجازهٔ اتصال را بدهید.',
+      'tgt.consentWaiting': 'هنوز منتظر اجازهٔ شما در تب مرورگر ریموت هستیم.',
       'tgt.failed': 'شروع هدف‌گیری ممکن نشد. دوباره تلاش کنید.',
       'tgt.unpair': 'قطع اتصال این فیلد',
       'tgt.unpaired': 'اتصال این فیلد قطع شد. دفعهٔ بعد کد تازه لازم است.',
@@ -2708,6 +2710,11 @@
       'tgt.pairedNow': 'Paired. Now pick the element in your browser.',
       'tgt.readyLocal': 'Ready. Pick the element in your own browser.',
       'tgt.readyRemote': 'Opening the Remote Browser…',
+      // The Remote Browser was ALREADY open, so it was not relaunched. What the
+      // operator has to do next is answer the prompt inside it — saying
+      // "opening…" here would be a lie about a tab that never appears.
+      'tgt.consentAsked': 'The Remote Browser is already open — allow the connection in that tab.',
+      'tgt.consentWaiting': 'Still waiting for you to allow the connection in the Remote Browser tab.',
       'tgt.failed': 'Targeting could not be started. Try again.',
       'tgt.unpair': 'Unpair this field',
       'tgt.unpaired': 'This field was unpaired. Next time a new code will be needed.',
