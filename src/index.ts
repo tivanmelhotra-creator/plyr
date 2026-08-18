@@ -97,7 +97,7 @@ app.use(express.json({ limit: config.MAX_REQUEST_BODY_SIZE }));
 // ============================================
 // CORS (F5) - explicit, configurable cross-origin control
 // ============================================
-// UI (same-origin), n8n and the browser extension may live on a different
+// UI (same-origin), external API clients and the browser extension may live on a different
 // origin. We echo back an allowed origin and short-circuit pre-flight.
 const corsAllowed = new Set(config.CORS_ALLOWED_ORIGINS);
 const corsAllowAny = corsAllowed.has('*');

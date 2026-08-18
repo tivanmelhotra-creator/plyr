@@ -2,7 +2,7 @@
  * tools/probe-ui-controls.js — LIVE proof that the picker's TOOLBAR BUTTONS work
  * when a real mouse clicks them in a real browser.
  *
- * WHY THIS EXISTS (docs/HANDOFF-BROWSER-PARITY.md §4.3b / §4.4b)
+ * WHY THIS EXISTS (browser-parity audit §4.3b / §4.4b)
  * ────────────────────────────────────────────────────────────────────────────
  * The user reported Back / Forward / Reload and the `+` (new tab) button as not
  * working. An audit found the wiring correct, and yet every instrument in the

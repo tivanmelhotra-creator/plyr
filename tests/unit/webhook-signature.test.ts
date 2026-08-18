@@ -7,7 +7,7 @@ import {
 } from '../../src/utils/signature';
 
 // Reference HMAC computed independently of the implementation, so the test
-// pins the exact wire format an n8n receiver would verify against.
+// pins the exact wire format an external receiver would verify against.
 const refHmac = (body: string, secret: string): string =>
   createHmac('sha256', secret).update(body, 'utf8').digest('hex');
 

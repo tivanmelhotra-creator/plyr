@@ -71,7 +71,7 @@
   /**
    * Tell the extension page WHICH site it is being opened for.
    *
-   * MEASURED (tools/probe-j2team-tmp.js, real J2TEAM Cookies):
+   * MEASURED with a transient probe against the real J2TEAM Cookies extension:
    *
    *   popup.html              → "Cookies for this page", no download at all
    *   popup.html?url=<base64> → "Cookies for 127.0.0.1",
@@ -83,7 +83,7 @@
    * exactly the reported bug. `?url=` is the extension's own convention for the
    * open-as-tab case; its own "open in tab" button builds the same link.
    *
-   * Two rules, both measured (tools/probe-b64-tmp.js):
+   * Two rules, both measured with a transient probe:
    *   1. btoa() THROWS on any code unit > 0xff, so encode `new URL(u).href`,
    *      which is always ASCII, not the raw text. Otherwise a Persian/IDN URL
    *      such as https://مهدی.com/ would throw and break "Open here" entirely.

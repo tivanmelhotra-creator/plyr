@@ -283,8 +283,8 @@ time" into "press the crosshair and you are already on the right page".
 | `public/js/i18n.js` | +20 `bvp.*` per dict; `cb.cssSelector*` relabelled |
 | `tools/patch-picker-i18n.py` | new, committed, idempotent |
 | `tests/unit/element-picker.test.ts` | new, 16 tests |
-| `docs/uiux/15-HANDOFF-...md` | this file |
-| `docs/uiux/14-HANDOFF-...md` | header marked SUPERSEDED |
+| `docs/uiux/15-HANDOFF-element-picker-automa-research.md` | this file |
+| `docs/uiux/14-HANDOFF-backend-ui-parity-condition-disclosure.md` | header marked SUPERSEDED |
 
 ---
 

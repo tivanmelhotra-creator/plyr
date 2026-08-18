@@ -337,7 +337,9 @@ source** · `onUpdate()`.
 * `docs/uiux/ndv-condition-final.webp` + `.md` (274 lines) — the Condition
   Builder, shared by `if` and `while`. **NOT yet rendered or compared.**
 * `docs/uiux/shell-editor-click-ndv.md` (257 lines) — **not yet read.**
-* `HANDOFF_NEXT_SESSION.md` (331 lines) — the original NDV design brief.
+* The original NDV design brief (331 lines, no longer in the tree; its
+  binding decisions were folded into `ndv-click-element-final.md` and
+  `ndv-condition-final.md`).
 
 ---
 

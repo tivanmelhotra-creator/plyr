@@ -481,7 +481,7 @@ describe('every click param the runtime reads is declared in the catalog', () =>
 });
 
 /**
- * MISSION 5 (MISSIONS.md) — the condition node's option set is measured against
+ * MISSION 5 — the condition node's option set is measured against
  * AutomaApp/automa, which is the project's accepted reference for node logic
  * (rule R1). Automa renders `conditionBuilder.compareTypes` as an <optgroup>
  * dropdown bucketed basic / number / text / boolean; a flat 26-entry list is a

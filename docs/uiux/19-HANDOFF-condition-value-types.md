@@ -1,7 +1,7 @@
 # Handoff 19 — Condition node: grouped value types (Automa parity, part 2)
 
 **Status:** ✅ Implemented
-**Mission:** `MISSIONS.md` § 5, part 2 — the last open mission
+**Mission:** condition value types, part 2 — the last open item of that mission
 **Reference:** `AutomaApp/automa` → `conditionBuilder.valueTypes`
 
 ---
@@ -54,7 +54,7 @@ node tools/probe-condition-value-types.js   # → 23/23 checks, VERDICT=PASS
 | 6 | The `IntersectionObserver` promise never settles for a **detached** element (when it does fire, it takes ~71 ms) | **yes** | a `setTimeout` backstop resolves `false` |
 | 7 | A runaway snippet (`while (true) {}`) wedges the page **permanently** — a later `evaluate('1+1')` never returns either | no (it hangs) | the call is raced against a timeout, and a timeout reports an unmet condition instead of retrying a page that is already lost |
 
-### Finding 5 overturned the plan in `MISSIONS.md`
+### Finding 5 overturned the original plan
 
 The mission text proposed `locator.boundingBox()` ∩ viewport for the in-screen
 test. **Measured, that is wrong.** For an element scrolled out of sight inside

@@ -877,8 +877,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   // WORKFLOW STORAGE (Step 17, category G2)
   // Saved, versioned, re-runnable workflows. Ownership is enforced by the auth
   // middleware via the :userId path param (strict API-key binding), so every
-  // workflow is scoped to its owner. The n8n node, the Chrome extension and the
-  // UI all read/write through these same endpoints.
+  // workflow is scoped to its owner. External API clients, the Chrome extension
+  // and the UI all read/write through these same endpoints.
   // ══════════════════════════════════════════════════════════
 
   // POST /workflows/:userId — create a new saved workflow (version 1).
@@ -1039,7 +1039,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // [Workspace] An INACTIVE workflow must not execute and must not create a
       // Job (docs/uiux/workspace-overview.md section 4). Enforced here, on the
       // server, so a disabled UI toggle is a convenience and not the guarantee:
-      // schedules, the n8n node and the Chrome extension all hit this same path.
+      // schedules, external API clients and the Chrome extension all hit this same path.
       if (wf.active === false) {
         return res.status(409).json({
           success: false,

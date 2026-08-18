@@ -13,28 +13,34 @@
 گیت‌هاب. اگر آدرس ریپو (`github.com/...`) را به‌عنوان image بدهید، Coolify نمی‌تواند
 آن را پیدا کند و وضعیت **Exited** می‌شود.
 
-این پروژه یک **GitHub Actions** دارد (`.github/workflows/docker-publish.yml`) که با هر
-push روی `main`، image را از روی `Dockerfile` می‌سازد و روی **GitHub Container
-Registry (ghcr.io)** منتشر می‌کند:
+این ریپو **در حال حاضر workflow انتشار image ندارد** — تنها workflow موجود
+`.github/workflows/ci.yml` است (typecheck + build + test + artifact افزونه). پس image را
+باید خودتان از روی `Dockerfile` همین ریپو بسازید و روی **GitHub Container
+Registry (ghcr.io)** منتشر کنید — مانند:
 
 ```
 ghcr.io/saeedkhoshafsar/plyr:latest
 ```
 
-> 📌 **اگر فایل workflow هنوز در ریپو نیست:** به‌دلیل محدودیت توکن، فایل
-> `.github/workflows/docker-publish.yml` ممکن است باید دستی اضافه شود. ساده‌ترین راه:
-> در گیت‌هاب → تب **Actions** → **New workflow** → **set up a workflow yourself** →
-> محتوای فایل را از همین ریپو (مسیر `.github/workflows/docker-publish.yml`) کپی کنید →
-> **Commit**. (یا اگر گیت لوکال دارید با scope `workflow`، همان فایل را push کنید.)
-> پس از اولین اجرا، طبق «مرحله ۰» package را Public کنید.
+> 📌 **ساخت و انتشار image (دستی — بدون CI):** روی ماشین خودتان:
+>
+> ```bash
+> echo "$GHCR_TOKEN" | docker login ghcr.io -u <USERNAME> --password-stdin
+> docker buildx build --platform linux/amd64,linux/arm64 \
+>   -t ghcr.io/<USERNAME>/plyr:latest --push .
+> ```
+>
+> اگر خودکارسازی می‌خواهید: گیت‌هاب → تب **Actions** → **New workflow** →
+> **set up a workflow yourself**، و همین دو دستور را با `docker/build-push-action`
+> بنویسید (پوش کردن فایل workflow به توکن با scope `workflow` نیاز دارد).
+> پس از اولین انتشار، طبق «مرحله ۰» package را Public کنید.
 
 ---
 
 ## مرحله ۰ — یک‌بار: image را بساز و عمومی کن
 
-1. کد را به `main` push کنید (همین حالا که این فایل را دارید یعنی انجام شده). برگهٔ
-   **Actions** در گیت‌هاب را باز کنید و منتظر بمانید workflow «Build & Publish Docker
-   image» سبز (✓) شود.
+1. image را با دستور `docker buildx build … --push` (پایین) بسازید و منتشر
+   کنید؛ سپس در GitHub → تب **Packages** ببینید بستهٔ **plyr** ساخته شده باشد.
 2. image را **عمومی (Public)** کنید تا Coolify بدون لاگین بتواند بکشد:
    - GitHub → پروفایلتان → تب **Packages** → بستهٔ **plyr** را باز کنید
    - **Package settings** → **Change visibility** → **Public**
@@ -43,13 +49,14 @@ ghcr.io/saeedkhoshafsar/plyr:latest
 > برای `ghcr.io` با یک GitHub Personal Access Token (با scope `read:packages`) اضافه
 > کنید. عمومی‌کردن ساده‌تر است.
 
-> 🧩 **معماری CPU (مهم):** workflow این پروژه image را برای **هر دو** معماری
-> `linux/amd64` (x86) و `linux/arm64` (ARM) می‌سازد (با `platforms` در buildx +
-> QEMU). اگر سرور Coolify شما ARM باشد (مثل Ampere/Graviton/برخی VPSها) و image فقط
+> 🧩 **معماری CPU (مهم):** image را برای **هر دو** معماری `linux/amd64`
+> (x86) و `linux/arm64` (ARM) بسازید — همان فلگ `--platform linux/amd64,linux/arm64`
+> در دستور buildx بالا. (روی ماشین x86 یک‌بار QEMU را نصب کنید:
+> `docker run --privileged --rm tonistiigi/binfmt --install all`.)
+> اگر سرور Coolify شما ARM باشد (مانند Ampere/Graviton/برخی VPSها) و image فقط
 > amd64 باشد، هنگام deploy این خطا را می‌بینید:
 > `no matching manifest for linux/arm64/v8 ... no match for platform`.
-> راه‌حل همان است: مطمئن شوید نسخهٔ به‌روزِ workflow (با خط
-> `platforms: linux/amd64,linux/arm64`) اجرا شده و image جدید منتشر شده، سپس در
+> راه‌حل: image را با هر دو معماری بازسازی و منتشر کنید، سپس در
 > Coolify **Redeploy** بزنید.
 
 ---
@@ -150,9 +157,9 @@ API_TOKEN=
 
 ## 🔄 به‌روزرسانی نسخه
 
-هر بار کد را به `main` push کنید، GitHub Actions image جدید با تگ `latest` می‌سازد.
-سپس در Coolify فقط **Redeploy** بزنید تا نسخهٔ جدید کشیده شود. (برای آپدیت خودکار،
-می‌توانید در Coolify گزینهٔ Webhook/Automatic deploy را هم فعال کنید.)
+هر بار که image جدیدی را با تگ `latest` منتشر کردید (همان دستور buildx
+«مرحله ۰»)، در Coolify فقط **Redeploy** بزنید تا نسخهٔ جدید کشیده شود. (برای
+آپدیت خودکار، می‌توانید در Coolify گزینهٔ Webhook/Automatic deploy را فعال کنید.)
 
 ---
 
@@ -160,7 +167,7 @@ API_TOKEN=
 
 | روش | build کجا؟ | Redis | پیچیدگی |
 |-----|-----------|-------|---------|
-| **Docker Image** (این راهنما) | در GitHub Actions (ghcr.io) | باید جدا بسازید | متوسط — یک‌بار Actions + Redis جدا |
+| **Docker Image** (این راهنما) | روی ماشین خودتان → ghcr.io | باید جدا بسازید | متوسط — یک‌بار build/push + Redis جدا |
 | **Docker Compose** (`docker-compose.coolify.yml`) | روی سرور Coolify | خودکار همراه می‌آید | ساده‌ترین — همه‌چیز در یک فایل |
 | **Dockerfile** | روی سرور Coolify | باید جدا بسازید | مشابه Docker Image ولی build روی سرور |
 

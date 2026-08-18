@@ -193,9 +193,9 @@ ones that open a new tab, because the page did not exist yet when it was attache
 `context.on('download')` never fires at all (**30/30** misses) — only
 `page.on('download')` does, which is why the shelf still attaches per page.
 
-### Upload can be fully automatic — the handoff doc was wrong
+### Upload can be fully automatic — the earlier design note was wrong
 
-`HANDOFF-REMOTE-BROWSER.md` §2 states upload *cannot* be automatic here, because
+An earlier design note (§2) stated upload *cannot* be automatic here, because
 Playwright "is not holding its dialogs open" when the operator clicks with their
 own mouse over VNC, and concludes the operator must type a filename into the
 server's own dialog. **Measured false** (`tools/probe-upload-vnc.js`): headed

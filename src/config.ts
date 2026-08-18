@@ -519,7 +519,7 @@ export const config = {
   ADMIN_RATE_LIMIT_PER_MINUTE: parseInt(cleanEnv(process.env.ADMIN_RATE_LIMIT_PER_MINUTE) || '30', 10),
 
   // ============================================
-  // CORS (F5) - explicit cross-origin control for UI / n8n / extension
+  // CORS (F5) - explicit cross-origin control for UI / API clients / extension
   // ============================================
   // Comma-separated list of allowed origins. '*' allows any origin (no credentials).
   // Empty => same-origin only (the bundled dashboard works regardless).
@@ -576,7 +576,7 @@ export const config = {
   LIVE_SHARE_TTL_SEC: parseInt(cleanEnv(process.env.LIVE_SHARE_TTL_SEC) || '86400', 10),
 
   // ============================================
-  // n8n / API Integration (F3)
+  // API Integration (F3)
   // ============================================
   // Synchronous /run?wait=true: max time (ms) to block waiting for a job to
   // finish before falling back to the async {jobId} response (HTTP 202).

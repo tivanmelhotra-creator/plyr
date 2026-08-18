@@ -122,7 +122,7 @@ export function unpackedExtensionId(absDir: string): string {
 /**
  * Tell an extension page WHICH site it is being opened for.
  *
- * WHY THIS EXISTS — measured, not guessed (tools/probe-j2team-tmp.js).
+ * WHY THIS EXISTS — measured, not guessed (transient probe, since deleted).
  *
  * A toolbar popup normally runs next to an active tab, and the way an extension
  * learns which site it should act on is `chrome.tabs.query({active: true})`. We
@@ -146,7 +146,7 @@ export function unpackedExtensionId(absDir: string): string {
  *   popup.html?url=<base64>   → header "Cookies for 127.0.0.1",
  *                               downloads: ["127.0.0.1_09-08-2026.json"]
  *
- * TWO RULES, both measured (tools/probe-b64-tmp.js):
+ * TWO RULES, both measured with a transient probe (since deleted):
  *
  *  1. Encode `new URL(u).href`, never the raw string. The decoder on the other
  *     side is the browser's `atob`, and its encoder `btoa` THROWS
@@ -213,7 +213,7 @@ export function windowArgs(screen: { width: number; height: number } | null): st
 /**
  * Make Chrome reopen the tabs it had when it last went away.
  *
- * THE REPORT (HANDOFF-REMOTE-BROWSER.md §3.2)
+ * THE REPORT (original remote-browser bug report, §3.2)
  * -------------------------------------------
  *   «مرورگر ریموت رو بالا اوردم ولی وقتی وبگردی میکردم هنگ کرد و بعدش دیگه فریز
  *    شد منم بستم مجدد باز کنم کلا نرفت به اون ادرس … موقعی که مجدد میزنم یکی

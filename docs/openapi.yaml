@@ -6,7 +6,8 @@ info:
     Self-hosted browser-automation backend. Submit declarative `steps`
     workflows that run on a pooled Playwright browser, schedule recurring runs,
     stream live progress, and receive signed webhooks. Designed to integrate
-    cleanly with n8n (see the synchronous `POST /run?wait=true` mode, the
+    cleanly with external API clients and schedulers (see the synchronous
+    `POST /run?wait=true` mode, the
     `Idempotency-Key` header, and HMAC-signed outgoing webhooks).
 
 
@@ -16,7 +17,7 @@ info:
     Admin endpoints additionally require the `x-admin-token` header.
 
 
-    ## n8n / API Integration (F3)
+    ## API Integration (F3)
 
     - **Synchronous runs:** `POST /run?wait=true` blocks until the job finishes
       (bounded by `RUN_WAIT_MAX_MS`, default 60s) and returns the full result
@@ -810,7 +811,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
-  # Outgoing webhook contract (documented for n8n receivers; not an inbound path).
+  # Outgoing webhook contract (documented for external receivers; not an inbound path).
   # Headers (when WEBHOOK_SECRET is set):
   #   X-Signature: sha256=<hex HMAC-SHA256 of the raw JSON body>
   #   X-Webhook-Timestamp: <unix seconds>

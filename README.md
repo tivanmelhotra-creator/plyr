@@ -2,12 +2,11 @@
 
 Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript** — **رایگان، متن‌باز، و Self-Hosted**.
 
-> 🏠 **مدل استقرار:** این پروژه برای اجرا روی **سرور شخصی خودتان** طراحی شده (ترجیحاً کنار n8n). به‌صورت پیش‌فرض **تک‌کاربره و full-access** است؛ نه سرویس عمومی مشترک. دلیل: اتوماسیون مرورگر روی سرور عمومی ریسک سوءاستفاده بالایی دارد. (حالت چندکاربره/SaaS هم با `DEPLOYMENT_MODE=multi` در دسترس است.)
+> 🏠 **مدل استقرار:** این پروژه برای اجرا روی **سرور شخصی خودتان** طراحی شده. به‌صورت پیش‌فرض **تک‌کاربره و full-access** است؛ نه سرویس عمومی مشترک. دلیل: اتوماسیون مرورگر روی سرور عمومی ریسک سوءاستفاده بالایی دارد. (حالت چندکاربره/SaaS هم با `DEPLOYMENT_MODE=multi` در دسترس است.)
 >
-> این مخزن نسخه‌ی بازیابی‌شده از یک بکاپ قدیمی است که اکنون در حال **پاک‌سازی، رفع باگ، سازگارسازی با Linux، افزودن رابط کاربری، مسیر زنده، و ادغام با n8n** است.
-> نقشه‌ی راه، معماری مرجع و لیست کامل باگ‌ها در فایل [`PLAN.md`](./PLAN.md) قرار دارد.
->
-> 🔄 **برای ادامه‌ی توسعه در محیط/جلسه‌ی جدید:** ابتدا [`SESSION_RECOVERY.md`](./SESSION_RECOVERY.md) را بخوانید (راه‌اندازی sandbox، نکته‌ی CRLF، وضعیت فعلی، و قوانین کاری). تنها بکاپ پروژه همین ریپو است.
+> 📘 **مرجع فنی کانونی:** معماری، ساختار دایرکتوری، سیستم نود، صف‌ها، پیکربندی،
+> استقرار، محدودیت‌های فنی و قوانین پروژه در [`PROJECT.md`](./PROJECT.md) مستند شده‌اند.
+> اگر این README و `PROJECT.md` اختلاف داشتند، `PROJECT.md` مرجع است.
 
 ---
 
@@ -24,20 +23,19 @@ Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript**
 
 - **Hybrid Browser:** کاربران VIP مرورگر persistent اختصاصی، کاربران Free مرورگر مشترک با context ایزوله.
 - **Flow Engine:** پشتیبانی از `if/else`, `while`, `try/catch/finally`, `switch`, متغیر و ماژول افزونه‌ای.
-- **مدل دادهٔ یکنواخت آیتم‌محور (الهام از n8n):** داده بین استپ‌ها همیشه به‌صورت «آرایه‌ای از آیتم‌ها» با شکل `{ json, binary? }` جریان دارد (`src/core/WorkflowItems.ts`). هر workflow با یک آیتم خالی شروع می‌شود؛ خروجی هر استپ به آیتم نرمال می‌شود (شیء→۱ آیتم، آرایه→n آیتم)، و اگر استپ خروجی نداشته باشد جریان قبلی pass-through می‌شود. شمارش و نمونهٔ آیتم‌های هر استپ در رویداد زندهٔ `step.done` و خروجی نود (برای ارجاع آیندهٔ `$node["x"].json` و نمایش NDV) نگه‌داری می‌شود. کاملاً سازگار با سیستم متغیرهای موجود.
+- **مدل دادهٔ یکنواخت آیتم‌محور (الهام از مدل دادهٔ n8n):** داده بین استپ‌ها همیشه به‌صورت «آرایه‌ای از آیتم‌ها» با شکل `{ json, binary? }` جریان دارد (`src/core/WorkflowItems.ts`). هر workflow با یک آیتم خالی شروع می‌شود؛ خروجی هر استپ به آیتم نرمال می‌شود (شیء→۱ آیتم، آرایه→n آیتم)، و اگر استپ خروجی نداشته باشد جریان قبلی pass-through می‌شود. شمارش و نمونهٔ آیتم‌های هر استپ در رویداد زندهٔ `step.done` و خروجی نود (برای ارجاع آیندهٔ `$node["x"].json` و نمایش NDV) نگه‌داری می‌شود. کاملاً سازگار با سیستم متغیرهای موجود.
 - **ادیتور Flow بصری (node-based، هم‌حسِ n8n):** ساخت جریان به‌صورت گراف نودها — هر اکشن یک نود با **دسته‌بندی و رنگ‌بندی** (Navigation/Interaction/Data/Flow/Integration/Trigger، نوار لهجهٔ رنگی روی هر نود). palette با **جست‌وجوی نود** و گروه‌بندی بر اساس دسته + **drag-and-drop** از palette روی کانواس. **grid-snap** (نگه‌داشتن `Alt` برای جابه‌جایی آزاد)، **انتخاب چندتایی + box-select** (`Shift`+درگ) و جابه‌جایی گروهی، **کپی/پیست** (`Ctrl+C`/`Ctrl+V`)، انتخاب‌همه (`Ctrl+A`) و حذف (`Delete`). **minimap** (کلیک=هم‌مرکزسازی) و کنترل‌های **zoom / fit-to-screen**. **حالت‌های بصری نود** (idle/running با هالهٔ چرخان/success سبز/error قرمز — زیرساخت UI؛ دادهٔ زندهٔ واقعی در گام بعد). **نودهای شاخه‌دار** (`if`/`switch`/`loop`/`foreach`/`while`/`try`) با **پورت‌های خروجی چندگانه و رنگی** (then/else، body/done، try/catch/finally، کِیس‌های switch) که گراف **غیرخطی** را به `steps[]` تو‌در‌توی بک‌اند (then/else/cases/steps/catch/finally) سریالایز/دیسریالایز می‌کند، به‌علاوهٔ **اعتبارسنجی گراف** (نود بی‌اتصال، حلقهٔ بی‌بدنه، پارامتر الزامی). تبدیل دوطرفه با همان فرمت `steps` بک‌اند. علاوه بر فرم خطی ساده. (UX الهام از Automa/n8n، بدون کپی کد — لایسنس AGPL.)
 - **پنل جزئیات نود (NDV) سه‌ستونه + Expression امن:** انتخاب هر نود یک پنل **INPUT | Parameters | OUTPUT** باز می‌کند (مثل n8n): ستون INPUT آیتم‌های ورودی را به‌صورت فیلدهای **قابل‌کشیدن (drag&drop)** نشان می‌دهد که با رها کردن روی هر فیلد یک **Expression** می‌سازد؛ ستون OUTPUT نتیجهٔ همان نود. **فیلدهای غنی**: متن/گذرواژه/چندخطی، عدد (min/max)، **toggle بولین**، گزینه/چندگزینه، code(JS)، json، dateTime و … . هر فیلد اکسپرشن‌پذیر تاگل **Fixed/Expression** دارد و یک موتور Expression سبک `{{ $json.x }}`/`$node["n"].json`/`$now`/`$today`/`$vars` با **پیش‌نمایش و اعتبارسنجی زنده** ارائه می‌دهد. ⚠️ **امنیت:** ارزیابی در یک **sandbox محدود** (tokenizer+parser+interpreter اختصاصی، **بدون `eval`/`Function`**، مسدودسازی `__proto__/constructor`، whitelist متدها) انجام می‌شود — درسی از CVEهای اخیر n8n.
 - **اجرای زنده + نتیجهٔ هر نود (مثل n8n):** با اجرای یک Flow از ادیتور، یک **پنل اجرا/لاگِ کشوی پایین قابل‌جمع‌شدن** باز می‌شود که از طریق `LiveClient` (WebSocket با fallbackِ SSE) به رویدادهای زندهٔ جاب وصل است و **خط‌زمانی استپ‌ها** را با وضعیت لحظه‌ای نشان می‌دهد. روی هر نود **انیمیشن «در حال اجرا»** و سپس یک **badge** سبز (✓ + تعداد آیتم خروجی + زمان) یا قرمز (✕ + علت) با **tooltip** نقاشی می‌شود؛ کلیک روی نود یا ردیف خط‌زمان **OUTPUT** همان استپ را در NDV باز می‌کند. **آخرین اجرا**ی هر ورکفلو در مرورگر ذخیره می‌شود (نمایش پس از reload) و خروجی هر نود قابل **Pinning** است. منطق نگاشتِ رویداد→وضعیت در یک ماژول خالصِ تست‌پذیر (`public/js/run-state.js`) جداست (۱۴ تست واحد).
 - **مدیریت خطای حرفه‌ای (هم‌تراز n8n):** هر نود در تب **Settings** خود گزینه‌های **Continue On Fail** (در صورت خطا، نود خروجیِ `{error}` می‌دهد و اجرا ادامه می‌یابد) و **Retry On Fail** (تعداد دفعات + فاصلهٔ بین تلاش‌ها با backoff خطی) دارد؛ نود اختصاصی **🛑 Stop And Error** اجرا را با پیام دلخواه (با پشتیبانی Expression) عمداً متوقف می‌کند. منطق سیاست خطا در یک هستهٔ خالص و بدون‌وابستگیِ تست‌پذیر (`src/core/ErrorPolicy.ts`) جداست و خروجی استانداردِ Error Trigger (`execution.error.message/stack` + `lastNodeExecuted` + `workflow.id/name`) را می‌سازد (۲۵ تست واحد). موتور اجرا (`src/pipeline.ts`) با حلقهٔ retry برچسب‌دار این سیاست‌ها را اعمال می‌کند بدون آنکه به خطاهای حیاتیِ غیرقابل‌ادامه (لغو کاربر، بسته‌شدن صفحه، اتمام سهمیه، Safety Stop) دست بزند.
 - **تریگرها (نقطهٔ شروع ورکفلو، هم‌تراز n8n):** هر ورکفلو می‌تواند با یک نود **Trigger** فعال شود — **▶️ Manual** (دادهٔ JSON دلخواه برای تست از پنل)، **🪝 Webhook** (URL ورودی با فیلتر متد و امضای HMAC اختیاری؛ `body/headers/query` به‌صورت آیتم‌های ورودیِ اولین نود تزریق می‌شود)، **⏰ Schedule/Cron** (عبارت cron + timezone؛ روی BullMQ repeatable «وقتی زمان رسید خودش اجرا می‌کند») و **✈️ Telegram** (پیام دریافتی ورکفلو را فعال می‌کند). دادهٔ تریگر از طریق فیلد `triggerData` در `POST /run` و `POST /workflows/:id/run` پذیرفته شده و در worker به استریم آیتم اولیه نگاشت می‌شود؛ منطق نگاشت/اعتبارسنجی cron/امنیت در یک هستهٔ خالص تست‌پذیر (`src/core/TriggerEngine.ts`) جداست (۳۲ تست واحد).
-- **گزارش لحظه‌ای دوکاناله به بیرون (Step 29):** علاوه بر رویدادهای سطح-job، می‌توانید **هر استپ** را لحظه‌ای به بیرون گزارش بگیرید. **کانال ۱ — Webhook هر استپ:** با `STEP_WEBHOOK_ENABLED=true`، هر رویداد `step.start/done/error/retry` (به‌همراه خلاصهٔ آیتم ورودی/خروجی و خطا) با همان امضای **HMAC-SHA256** (`X-Signature`+`X-Webhook-Timestamp`+`X-Webhook-Event`) و retry/backoff به `webhookUrl` جاب ارسال می‌شود؛ نود **Trigger n8n** اکنون این رویدادهای per-step را هم در فهرست Eventها می‌پذیرد. **کانال ۲ — لینک مشاهدهٔ زندهٔ قابل‌اشتراک:** با `POST /live/share/:userId/:jobId` یک **توکن امضاشدهٔ منقضی‌شونده** و URL کامل بگیرید و صفحهٔ فقط‌خواندنیِ `/live/view/:userId/:jobId?share=…` را با هرکسی به‌اشتراک بگذارید — بدون افشای API-key، نودبه‌نود + خروجی هر استپ را زنده نشان می‌دهد (WebSocket با fallbackِ SSE). منطق payload و امضا/تأیید توکن در یک هستهٔ خالص تست‌پذیر (`src/core/StepReporter.ts`) جداست (۲۴ تست واحد + ۶ تست authorize).
+- **گزارش لحظه‌ای دوکاناله به بیرون (Step 29):** علاوه بر رویدادهای سطح-job، می‌توانید **هر استپ** را لحظه‌ای به بیرون گزارش بگیرید. **کانال ۱ — Webhook هر استپ:** با `STEP_WEBHOOK_ENABLED=true`، هر رویداد `step.start/done/error/retry` (به‌همراه خلاصهٔ آیتم ورودی/خروجی و خطا) با همان امضای **HMAC-SHA256** (`X-Signature`+`X-Webhook-Timestamp`+`X-Webhook-Event`) و retry/backoff به `webhookUrl` جاب ارسال می‌شود؛ گیرندهٔ بیرونی می‌تواند این رویدادهای per-step را هم فیلتر و مصرف کند. **کانال ۲ — لینک مشاهدهٔ زندهٔ قابل‌اشتراک:** با `POST /live/share/:userId/:jobId` یک **توکن امضاشدهٔ منقضی‌شونده** و URL کامل بگیرید و صفحهٔ فقط‌خواندنیِ `/live/view/:userId/:jobId?share=…` را با هرکسی به‌اشتراک بگذارید — بدون افشای API-key، نودبه‌نود + خروجی هر استپ را زنده نشان می‌دهد (WebSocket با fallbackِ SSE). منطق payload و امضا/تأیید توکن در یک هستهٔ خالص تست‌پذیر (`src/core/StepReporter.ts`) جداست (۲۴ تست واحد + ۶ تست authorize).
 - **کتابخانهٔ چند-ورکفلو در UI:** ویوی «📚 ورکفلوها» با گرید کارت — دیگر به یک ورکفلو محدود نیستید. ساخت/تغییرنام/کپی/حذف/اجرا، باز کردن هر ورکفلو در ادیتور بصری، دکمهٔ «💾 ذخیره روی سرور» (PUT با بامپ نسخه)، و مشاهدهٔ تاریخچهٔ نسخه‌ها + بازگردانی (restore) — همگی روی همان CRUD سرور (`/workflows/:userId`) با i18n کامل fa+en.
 - **نمایش زندهٔ مرورگر + Element Picker:** مرورگر سروری را زنده داخل داشبورد ببینید (CDP Screencast روی WebSocket `/browser/ws`)، روی صفحه کلیک/تایپ/اسکرول کنید (تعامل دوطرفه با `Input.*`)، و با ابزار «انتخاب عنصر» سلکتور CSS/XPath را خودکار بسازید و با یک کلیک به‌صورت گام `click`/`extract` به فرم اجرا اضافه کنید. هر نشست یک context ایزوله با TTL بی‌کاری دارد.
 - **افزونهٔ کمکی Chrome (Manifest V3):** پوشهٔ [`extension/`](extension/README.md) — روی مرورگر واقعی خودتان عنصر انتخاب کنید (CSS/XPath با همان منطق Picker بک‌اند)، اکشن‌ها را ضبط کنید (click/fill/press/goto) و با API Key مستقیم از popup به‌صورت یک Flow (`POST /run`) به بک‌اند بفرستید. با `npm run build` یک **artifact نصب‌شدنی** در `artifacts/element-inspector-extension/` ساخته می‌شود که مستقیماً با *Load unpacked* در Chrome نصب می‌گردد (همین artifact در CI هم ساخته و به‌عنوان workflow artifact آپلود می‌شود تا بدون build کردن قابل دانلود باشد). راهنمای گام‌به‌گام: [نصب افزونهٔ Element Inspector روی Chrome شخصی](#نصب-افزونهٔ-element-inspector-روی-chrome-شخصی-local-browser). نکتهٔ CORS در `extension/README.md`.
 - **Schedule:** زمان‌بندی cron با BullMQ repeatable jobs.
-- **ادغام n8n / API (F3):** حالت همگام `POST /run?wait=true` (صبر تا پایان جاب و بازگشت نتیجه به‌صورت inline؛ در timeout پاسخ `202` با `pollUrl`)، هدر `Idempotency-Key` برای جلوگیری از اجرای دوبارهٔ درخواست‌های تکراری، و **webhookهای امضاشده با HMAC-SHA256** (`X-Signature: sha256=…` + `X-Webhook-Timestamp` وقتی `WEBHOOK_SECRET` ست شود). مشخصات کامل OpenAPI در [`docs/openapi.yaml`](./docs/openapi.yaml).
-- **n8n Community Node (F4):** پکیج [`n8n-node/`](n8n-node/README.md) با نام `n8n-nodes-automationbackend` — یک Action node و یک Trigger node (دریافت webhookهای بک‌اند با **تأیید امضای HMAC**)؛ Credentials = Base URL + API Key (+ Webhook Secret اختیاری). عملیات‌های Action node: **Run Saved Workflow** (مدل ب — اجرای ورکفلوی ذخیره‌شده با انتخاب از dropdownِ زنده‌ای که با `loadOptions` از `GET /workflows/:userId` پر می‌شود، تزریق `triggerData`، حالت `wait=true` و `Idempotency-Key`) / **Run Inline Workflow** (`POST /run`) / Get Job Result / Create Schedule / Cancel Job. نصب و نمونه‌ورکفلوها در `n8n-node/README.md`.
-- **Workflow Storage (G2):** ذخیرهٔ workflowهای **قابل‌بازاجرا و نسخه‌بندی‌شده** در Redis، مستقل از نتیجهٔ job. CRUD کامل (`POST/GET/PUT/DELETE /workflows/:userId[/:workflowId]`)، تاریخچهٔ نسخه‌ها (`GET …/versions`، هرس خودکار با `WORKFLOW_MAX_VERSIONS`)، و بازاجرا با `POST /workflows/:userId/:workflowId/run` (همان قرارداد `?wait=true` + `Idempotency-Key`). هر workflow به کاربرش گره خورده (strict API-key binding) و از همان storage برای افزونه/n8n/UI استفاده می‌شود.
+- **ادغام API (F3):** حالت همگام `POST /run?wait=true` (صبر تا پایان جاب و بازگشت نتیجه به‌صورت inline؛ در timeout پاسخ `202` با `pollUrl`)، هدر `Idempotency-Key` برای جلوگیری از اجرای دوبارهٔ درخواست‌های تکراری، و **webhookهای امضاشده با HMAC-SHA256** (`X-Signature: sha256=…` + `X-Webhook-Timestamp` وقتی `WEBHOOK_SECRET` ست شود). مشخصات کامل OpenAPI در [`docs/openapi.yaml`](./docs/openapi.yaml).
+- **Workflow Storage (G2):** ذخیرهٔ workflowهای **قابل‌بازاجرا و نسخه‌بندی‌شده** در Redis، مستقل از نتیجهٔ job. CRUD کامل (`POST/GET/PUT/DELETE /workflows/:userId[/:workflowId]`)، تاریخچهٔ نسخه‌ها (`GET …/versions`، هرس خودکار با `WORKFLOW_MAX_VERSIONS`)، و بازاجرا با `POST /workflows/:userId/:workflowId/run` (همان قرارداد `?wait=true` + `Idempotency-Key`). هر workflow به کاربرش گره خورده (strict API-key binding) و از همان storage برای افزونه/کلاینت‌های API/UI استفاده می‌شود.
 - **امنیت:** API Key، Admin Secret، Rate Limit، محافظت SSRF، Path-traversal guard.
 
 ---
@@ -81,7 +79,6 @@ curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.s
 | **۲) Server (Docker)** | استک کامل (app + redis) با `docker compose` — Chromium و وابستگی‌های سیستمی داخل image هستند |
 | **۳) Server (Coolify)** | راهنمای استقرار ایزوله روی [Coolify](https://coolify.io) با فایل آمادهٔ `docker-compose.coolify.yml` (دامنه و TLS را خود Coolify هندل می‌کند) |
 | **۴) Client (Chrome)** | راهنمای بارگذاری افزونهٔ Chrome (Load unpacked) روی PC شما |
-| **۵) Client (n8n)** | build و نصب n8n community node در `~/.n8n/custom` |
 
 مراحل مسیر **Server (Node)**: `[1/6]` وابستگی‌ها → `[2/6]` مرورگر → `[3/6]` ساخت `.env` و تولید `API_TOKEN` تصادفی → `[4/6]` build → `[5/6]` دامنه + HTTPS (اختیاری) → `[6/6]` اجرا با PM2. در پایان **آدرس پنل و توکن** را چاپ می‌کند.
 
@@ -102,7 +99,6 @@ curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.s
 ./install.sh --server-docker                            # استک Docker
 ./install.sh --coolify                                  # راهنمای Coolify
 ./install.sh --client                                   # افزونهٔ Chrome
-./install.sh --client-n8n                               # نود n8n
 ./install.sh --server-node --yes                        # بدون پرسش (تأیید خودکار)
 ./install.sh --help                                     # راهنما
 ```
@@ -119,11 +115,10 @@ curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.s
 4. متغیرهای محیطی: `DEPLOYMENT_MODE=single`، `API_TOKEN=tok_...` (یا خالی برای تولید خودکار)، `NODE_ENV=production`.
 5. Deploy و سپس ورود به `https://your-domain/` با همان `API_TOKEN`.
 
-**راه Docker Image (image از قبل ساخته‌شده روی `ghcr.io`):**
+**راه Docker Image (ساخت image از همین مخزن):**
 
-اگر با نوع منبع **Docker Image** راحت‌ترید، این پروژه یک GitHub Actions
-(`.github/workflows/docker-publish.yml`) دارد که با هر push روی `main` خودکار image
-را می‌سازد و روی GitHub Container Registry منتشر می‌کند:
+اگر با نوع منبع **Docker Image** راحت‌ترید، image را از `Dockerfile` همین مخزن
+بسازید و روی رجیستری خودتان (مثلاً GitHub Container Registry) منتشر کنید:
 
 ```
 ghcr.io/saeedkhoshafsar/plyr:latest
@@ -486,7 +481,7 @@ const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
 
 ## مستندات API
 
-فهرست کامل endpointها، احراز هویت و نمونه‌ها در [`docs/API.md`](./docs/API.md). مشخصات ماشین‌خوانِ OpenAPI 3.0 (مناسب برای import در n8n/Swagger UI/Postman) در [`docs/openapi.yaml`](./docs/openapi.yaml).
+فهرست کامل endpointها، احراز هویت و نمونه‌ها در [`docs/API.md`](./docs/API.md). مشخصات ماشین‌خوانِ OpenAPI 3.0 (مناسب برای import در Swagger UI/Postman و سایر کلاینت‌ها) در [`docs/openapi.yaml`](./docs/openapi.yaml).
 
 ---
 
@@ -520,9 +515,17 @@ npm run check
 
 ---
 
-## وضعیت توسعه
+## مستندات
 
-این پروژه طبق `PLAN.md` به‌صورت استپ‌به‌استپ تکمیل می‌شود. وضعیت لحظه‌ای استپ‌ها را در همان فایل ببینید.
+| سند | محتوا |
+|-----|-------|
+| [`PROJECT.md`](./PROJECT.md) | مرجع فنی کانونی: معماری، نودها، صف‌ها، پیکربندی، استقرار، محدودیت‌ها |
+| [`docs/API.md`](./docs/API.md) | مرجع کامل HTTP API |
+| [`docs/openapi.yaml`](./docs/openapi.yaml) | مشخصات ماشین‌خوان OpenAPI 3.0.3 |
+| [`docs/END_TO_END_GUIDE.md`](./docs/END_TO_END_GUIDE.md) | راهنمای سرتاسری از نقطهٔ شروع تا نتیجه |
+| [`docs/COOLIFY.md`](./docs/COOLIFY.md) | استقرار روی Coolify |
+| [`extension/README.md`](./extension/README.md) | افزونهٔ Element Inspector |
+| [`CODESPACES.md`](./CODESPACES.md) | اجرای سریع در GitHub Codespaces |
 
 ## مجوز
 

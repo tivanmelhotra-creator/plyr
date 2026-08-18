@@ -93,7 +93,7 @@ const DOM_OPERATORS: ConditionOperator[] = [
  * browser globals.
  *
  * MEASURED, NOT ASSUMED (tools/probe-condition-value-types.js). The obvious
- * implementation -- and the one MISSIONS.md proposed -- is boundingBox()
+ * implementation -- and the one originally proposed -- is boundingBox()
  * intersected with the viewport rect, and it is WRONG: an element scrolled out
  * of sight inside an `overflow:hidden` container still reports a box that lands
  * inside the viewport, so the rect test answered TRUE for something no user can

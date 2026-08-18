@@ -70,7 +70,7 @@ Unchanged, and repeated because a fresh session has no memory of them:
 5. Commit after every change · squash to ONE commit · force-push
    `genspark_ai_developer` · open/update the PR · **give the user the PR link**.
 
-Plus the hard technical constraints (from `HANDOFF_NEXT_SESSION.md`):
+Plus the hard technical constraints (from the original NDV design brief):
 
 - **Do NOT add a new front-end JS file.** `tests/unit/icons.test.ts` pins the
   exact list of 18 files in `public/js/`.

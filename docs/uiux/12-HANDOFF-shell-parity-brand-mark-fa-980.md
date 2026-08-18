@@ -358,7 +358,7 @@ script tag, so `flow-editor.js` and `run-panel.js` must read `window.AppUtil` at
 Handoff 11's list, minus what shipped. For every item: **render before and after with `tools/ui-shot.js`, compare
 against the WebP, add or update a guard test, run the § 0 verification quartet, commit, and update this file.**
 
-1. **G7 — NDV build-out.** The largest remaining gap by far. Design base is `HANDOFF_NEXT_SESSION.md` plus
+1. **G7 — NDV build-out.** The largest remaining gap by far. Design base is the original NDV design brief plus
    `ndv-click-element-final.webp` / `ndv-condition-final.webp`; intended layering
    `ndv-model → ndv-ui → ndv-nodes → flow-editor`. **Remember the 18-file pin** (§ 0.5) — new NDV code goes into
    existing files unless a file is retired in the same change. Open it in a render with

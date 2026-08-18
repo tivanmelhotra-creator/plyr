@@ -4,7 +4,7 @@
  *
  * Why a new instrument instead of extending probe-live-parity.js
  * ─────────────────────────────────────────────────────────────
- * §8.2 of docs/HANDOFF-SIX-REGRESSIONS.md predicted this bug from the shape of
+ * The six-regressions bug report predicted this bug from the shape of
  * the coverage: the restart/recovery path had unit tests but had NEVER been
  * forced live end-to-end, and that is exactly where the bug lived. The parity
  * probe measures a session that is never yanked out from under itself; this one

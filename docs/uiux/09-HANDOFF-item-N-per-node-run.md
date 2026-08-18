@@ -535,4 +535,4 @@ Reference material: `docs/uiux/shell-add-node-palette.{webp,md}` (locked
 inventory: the 9-row context menu, the 7-button group toolbar, the 8 palette
 categories, the circled `+`), `docs/uiux/state-empty-canvas.webp` (four ACTIVITY
 LOG tabs), `08-…` § 5 (eleven traps), `07-…` § 4 (shell anchors) and § 5.6 (the
-do-not-"fix" list), `HANDOFF_2026-07-27_ICONS_LAYOUT.md` (A–N table).
+do-not-"fix" list) and the icon-registry / shell-layout brief (A–N table).

@@ -1583,7 +1583,7 @@ describe('uploading tells the truth about what the server did', () => {
   it('says the file is ready to send, and never tells the operator to type a name', async () => {
     // THIS TEST USED TO ASSERT THE OPPOSITE, and it was wrong.
     //
-    // It carried the reasoning from HANDOFF-REMOTE-BROWSER.md: this view is a
+    // It carried the reasoning of an earlier design note: this view is a
     // VNC screen onto a real Chromium the operator drives by hand, so
     // "Playwright is not holding its file dialog open", so there is no chooser to
     // answer, so the best the bar can do is tell the operator the NAME to type

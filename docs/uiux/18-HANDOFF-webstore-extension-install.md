@@ -1,7 +1,7 @@
 # Handoff 18 — Install a Chrome extension from a Web Store link
 
 **Status:** ✅ Implemented
-**Mission:** `MISSIONS.md` § 9
+**Mission:** owner request — install the extension from the Chrome Web Store
 
 ---
 

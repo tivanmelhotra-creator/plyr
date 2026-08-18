@@ -1,7 +1,7 @@
 /**
  * probe-clipboard.js — LIVE proof for §4, "remote copy/paste is broken".
  *
- * The report (docs/HANDOFF-SIX-REGRESSIONS.md §4):
+ * The report (six-regressions bug report, item 4):
  *
  *   «قبلاً می‌تونستم ریموت کپی یا پیست کنم ولی اینم خراب شده»
  *   — I used to be able to copy or paste remotely, but this broke too.

@@ -2,7 +2,7 @@
  * tools/probe-heal-panel.js — LIVE proof for §1: the picker got STUCK on
  * "Getting the browser ready / Starting Chrome / about 6 seconds".
  *
- * What the user reported (docs/HANDOFF-SIX-REGRESSIONS.md §1)
+ * What the user reported (six-regressions bug report, item 1)
  * ──────────────────────────────────────────────────────────
  *   «باید حداقل نیاز به زمان داره اطلاع بده یا خلاصه اگر نیازه ترمیم بشه ترمیم
  *   بشه خلاصه کاربر نباید گیر کنه»

@@ -8,7 +8,7 @@
  *
  * WHY THIS FILE EXISTS
  * --------------------
- * MISSIONS.md's plan for part 2 proposed implementing "element visible in
+ * The original plan for part 2 proposed implementing "element visible in
  * screen" as `locator.boundingBox()` intersected with the viewport rect. This
  * probe was written to check that before building on it, and it turned out to be
  * WRONG — see finding 3. Two more traps (findings 1 and 4) are silent: they

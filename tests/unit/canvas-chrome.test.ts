@@ -24,8 +24,9 @@
  *
  * Behavioural verification (real geometry, aria-pressed transitions, the
  * Focus-Mode width change and the Auto-Layout no-overlap/on-grid result) was
- * done in a browser against a static server; the outcome is recorded in
- * HANDOFF_2026-07-27_ICONS_LAYOUT.md.
+ * done in a browser against a static server; the outcome was recorded in
+ * the icon-registry / shell-layout brief (see docs/uiux/04-HANDOFF-editor-
+ * shell-outline-activity.md for the surviving normative version).
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';

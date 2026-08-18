@@ -20,7 +20,7 @@
 
   // Strip a trailing slash and add a scheme if missing, so callers can paste
   // "localhost:3000" and we still build a valid URL. Mirrors background.js /
-  // the n8n node's normalizeBase().
+  // the server-side base-URL normalization.
   function normalizeBase(url) {
     var u = String(url == null ? '' : url).trim();
     if (!u) return '';
@@ -29,7 +29,7 @@
   }
 
   // Build the URL to run a SAVED, versioned workflow (Model B contract, shared
-  // with the n8n node): POST /workflows/:userId/:workflowId/run  (+?wait).
+  // across API clients): POST /workflows/:userId/:workflowId/run  (+?wait).
   function buildRunSavedUrl(baseUrl, userId, workflowId, opts) {
     var base = normalizeBase(baseUrl);
     var u = base + '/workflows/' + encodeURIComponent(String(userId)) +

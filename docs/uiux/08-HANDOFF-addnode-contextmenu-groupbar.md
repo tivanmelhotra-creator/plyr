@@ -297,4 +297,4 @@ free ports and open the palette pre-wired to that port.
 | Editor shell (authoritative chrome) | `docs/uiux/state-empty-canvas.{webp,md}` |
 | Launcher + measured geometry | `docs/uiux/shell-editor-launcher-menu.{webp,md}` |
 | Previous status doc | `docs/uiux/07-HANDOFF-fullbleed-editor-shell.md` |
-| Items A–N table + traps | `HANDOFF_2026-07-27_ICONS_LAYOUT.md` |
+| Items A–N table + traps | icon-registry / shell-layout brief (superseded by `04-HANDOFF-…`) |

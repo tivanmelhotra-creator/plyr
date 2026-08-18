@@ -13,7 +13,7 @@
 | کاربر | `x-api-key: <API_KEY>` | لازم برای `/run`, `/cancel`, `/job`, `/jobs`, `/quota`. کلیدها در `API_KEYS` تعریف می‌شوند. |
 | ادمین | `x-admin-token: <ADMIN_SECRET>` | لازم برای همه‌ی مسیرهای `/admin/*`. مقدار از `ADMIN_SECRET`. |
 
-> در حالت Self-Hosted تک‌کاربره (`DEPLOYMENT_MODE=single`) احراز هویت ممکن است ساده‌تر/غیرفعال شود — به استپ ۱۸ در `PLAN.md` مراجعه کنید.
+> در حالت Self-Hosted تک‌کاربره (`DEPLOYMENT_MODE=single`) احراز هویت ممکن است ساده‌تر/غیرفعال شود — بخش «Configuration» در [`PROJECT.md`](../PROJECT.md) را ببینید.
 
 نمونه‌ی فراخوانی:
 

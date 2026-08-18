@@ -593,7 +593,7 @@ function buildMenu(
  * The two rules `openPageMenu` cannot currently reach, exercised where they
  * actually live.
  *
- * MEASURED (tools/probe-seps-tmp.js, since deleted): with the separator-collapse
+ * MEASURED (transient probe, since deleted): with the separator-collapse
  * rule REMOVED, all nine menu shapes still rendered correctly — every section's
  * separator is itself conditional, so today nothing strands one. The same holds
  * for `saveUrlToShelf('')`: `canSave('')` is already false, so no menu entry can

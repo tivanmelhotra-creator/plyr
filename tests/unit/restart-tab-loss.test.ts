@@ -1,7 +1,7 @@
 /**
  * restart-tab-loss.test.ts — the regression the user called «مشکل بزرگیه».
  *
- * The report (docs/HANDOFF-SIX-REGRESSIONS.md §2):
+ * The report (six-regressions bug report, item 2):
  *
  *   «وقتی خواستم یه اکستنشن نصب کنم بعد نصب نمیدونم ریستارت شد یا چی، کل تب‌ها
  *   گم شدن ... نهایتش باید یه رفرش می‌شد»
