@@ -571,6 +571,142 @@ async function inspectorUnpair() {
   return { ok: true };
 }
 
+/* ============================================================
+   REMOTE TARGETING CONSENT
+   ============================================================
+
+   WHY THIS EXISTS
+
+   The browser running on the server is, from this extension's point of view, an
+   ordinary LOCAL browser. It loads this same code, and it addresses a submit
+   with `ab_targetFieldId` out of chrome.storage.local.
+
+   Until now the ONLY writer of that value was inspectorPair() — redeeming an
+   Authorization Code. But REMOTE deliberately never issues a code, by explicit
+   requirement. So on the remote path the value stayed empty, submitElement()
+   refused locally with TARGET_NOT_AUTHORIZED before any HTTP request was made,
+   and the operator saw:
+
+     «ظاهرا نمیدونه به کدوم فیلد باید ارسال بشه» — Connection failed: network
+
+   The server had granted a binding. Nothing had ever told the CLIENT which field
+   it was for.
+
+   WHY A PROMPT AND NOT AN AUTO-FILL
+
+   The obvious shortcut is to have the extension ask "what is my current target?"
+   and adopt the answer. That was rejected: with two nodes open there IS no
+   single current target, and picking the most recent silently means a pick lands
+   in the node the operator is no longer looking at, WITH a success message. That
+   is strictly worse than the refusal it replaces, because a refusal is visible.
+   It also breaks the standing rule «The Extension must NEVER be able to choose
+   an arbitrary Target Field» — an extension that adopts whatever a list contains
+   has chosen.
+
+   So the server ASKS, naming the node and the field, and the human answers. A
+   consent and a code are the same security object — one-time, server-issued,
+   expiring, single-target, completable only by a person. The consent is merely
+   addressed to a browser the server can already reach, so it can be DELIVERED
+   instead of TRANSCRIBED. Approval is what attaches the destination, which is
+   why the reply to a decision is stored exactly the way a redeemed code is.
+   ============================================================ */
+
+/**
+ * What is this browser being asked to confirm?
+ *
+ * Returns the human-readable questions ONLY. The server withholds the target
+ * address from this list on purpose (see ConsentPrompt in
+ * src/core/RemoteTargetConsent.ts): if the address were here, this function
+ * could store it and skip the prompt, which is the one thing the handshake
+ * exists to prevent.
+ */
+async function consentList() {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error, requests: [] };
+
+  var res = await apiFetch(ctx.base + '/inspector/consent', { method: 'GET' }, ctx.apiKey);
+  var data = (res && res.data) || {};
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'Could not ask the server what is pending.',
+      requests: [],
+    };
+  }
+  return { ok: true, count: data.count || 0, requests: data.requests || [] };
+}
+
+/**
+ * The human pressed Allow (or Deny).
+ *
+ * Sends a `consentId` and a boolean — never a target. The destination comes back
+ * FROM the server, decided before the prompt was ever raised, and storing it is
+ * the line that makes the reported failure go away: it is the write to
+ * `ab_targetFieldId` that REMOTE never had.
+ *
+ * Deliberately mirrors inspectorPair() field for field, including the durable
+ * pairing key and the environment, because a consent-granted pairing must be
+ * exactly as durable as a code-granted one. If it were not, the operator would
+ * be re-prompted on every NDV open and we would have replaced "type a code every
+ * time" with "click Allow every time" — a different spelling of the same defect.
+ */
+async function consentDecide(payload) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+
+  var consentId = String((payload && payload.consentId) || '').trim();
+  if (!consentId) {
+    return { ok: false, reason: 'consent_not_found', error: 'Nothing to answer.' };
+  }
+  // Explicitly boolean: `approve: undefined` must never read as approval.
+  var approve = (payload && payload.approve) === true;
+
+  var res = await apiFetch(
+    ctx.base + '/inspector/consent/decide',
+    { method: 'POST', body: JSON.stringify({ consentId: consentId, approve: approve }) },
+    ctx.apiKey
+  );
+
+  var data = res.data || {};
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'That request could not be answered.',
+    };
+  }
+
+  // Denied: the server attached nothing, so neither do we. Anything already
+  // paired is left alone — declining a NEW field must not disconnect the field
+  // this browser is currently working on.
+  if (!data.approved) {
+    return { ok: true, approved: false, consentId: consentId };
+  }
+
+  var target = data.target || null;
+  var id = (data.binding && data.binding.targetFieldId) || data.targetFieldId
+    || (target && target.targetFieldId) || '';
+  await setTargetFieldId(id);
+
+  var pairingKey = (data.binding && data.binding.pairingKey) || data.pairingKey
+    || (target && target.pairingKey) || '';
+  await setPairingKey(pairingKey);
+
+  var env = (target && target.environment) || 'remote';
+  await setTargetEnvironment(env);
+
+  return {
+    ok: true,
+    approved: true,
+    consentId: consentId,
+    targetFieldId: id,
+    pairingKey: pairingKey,
+    environment: env,
+    target: target,
+  };
+}
+
 /**
  * Deliver ONE confirmed attribute to the paired Target Field.
  *
@@ -845,6 +981,17 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
       return true; // async
     case 'AB_INSPECTOR_TOGGLE':
       toggleInspector(msg.desired).then(sendResponse);
+      return true; // async
+
+    // ---- Remote targeting consent -----------------------------------------
+    // The REMOTE counterpart of AB_INSPECTOR_PAIR. Same outcome — a stored
+    // target — reached by answering a question the server delivered instead of
+    // by transcribing a code, because on this path there is no code to type.
+    case 'AB_CONSENT_LIST':
+      consentList().then(sendResponse);
+      return true; // async
+    case 'AB_CONSENT_DECIDE':
+      consentDecide(msg.payload).then(sendResponse);
       return true; // async
     case 'AB_MODE_GET':
       getBrowserMode().then(sendResponse);

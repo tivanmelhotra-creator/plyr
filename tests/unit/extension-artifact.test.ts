@@ -79,6 +79,11 @@ describe('the build emits a loadable unpacked extension', () => {
       'content/presence.js',
       'content/recorder.js',
       'content/selector.js',
+      // The remote-targeting consent prompt. Listed explicitly because it is the
+      // only thing that makes REMOTE usable without an Authorization Code: if the
+      // build silently dropped it, targeting would fail exactly the way it was
+      // reported — a picker that cannot say where to send.
+      'content/consent.js',
       'lib/ab-core.js',
       'lib/ab-handoff.js',
       'lib/ab-inspect.js',

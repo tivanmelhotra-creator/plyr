@@ -42,7 +42,7 @@ import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
 import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
 import { inspectorAuth } from '../core/InspectorAuthorization';
-import { remoteConsent, isSameHostPeer, type ConsentRefusal } from '../core/RemoteConsent';
+import { remoteTargetConsent } from '../core/RemoteTargetConsent';
 import {
   planTargeting,
   environmentOptions,
@@ -218,13 +218,6 @@ const AUTHORIZATION_MESSAGES: Record<string, string> = {
     'Authorization code expired. Start a new Inspector authorization.',
 };
 
-const CONSENT_MESSAGES: Record<ConsentRefusal, string> = {
-  CONSENT_NOT_FOUND: 'Consent request not found or does not belong to this account.',
-  CONSENT_EXPIRED: 'Consent request has expired. Re-target the field from the workflow.',
-  CONSENT_SUPERSEDED: 'Consent request was superseded by a newer target field request.',
-  FORBIDDEN_PEER: 'Remote browser consent can only be granted from the server host.',
-};
-
 /**
  * Why a Target Field could not be registered.
  *
@@ -283,13 +276,6 @@ function advertisedBaseUrl(req: AuthenticatedRequest) {
       socket?: { encrypted?: boolean };
     }),
   });
-}
-
-function fromServerHost(req: AuthenticatedRequest): boolean {
-  const ip = String(
-    req.header('x-forwarded-for') || req.socket?.remoteAddress || '',
-  ).split(',')[0].trim();
-  return isSameHostPeer(ip);
 }
 
 /**
@@ -951,13 +937,32 @@ export const createModeRoutes = (): Router => {
         inspectorAuth.grant(req.apiKey, userId, target.targetFieldId, target.pairingKey);
       }
 
-      remoteConsent.open(userId, {
+      // ── The half that was missing, and the reason REMOTE did not work ──────
+      //
+      // REPORTED: «اگر کد اتورایز رو وارد نکنم … ظاهرا نمیدونه به کدوم فیلد باید
+      // ارسال بشه — Connection failed: network».
+      //
+      // The grant above authorizes the extension inside the remote browser, but
+      // that extension addresses its submit with `ab_targetFieldId` out of its
+      // own storage, and the ONLY writer of that value was redeeming a code —
+      // which REMOTE deliberately never issues. So it stayed empty and
+      // `sendElement` refused before making a request.
+      //
+      // A prompt is raised in the remote browser instead. It is not a
+      // notification: approving it is what attaches the destination, so the
+      // extension still never chooses a field, and with two nodes open the
+      // operator is asked WHICH — the ambiguity the report identifies.
+      //
+      // Idempotent per field: asking again for the same field refreshes the
+      // prompt rather than raising a second one.
+      const consent = remoteTargetConsent.request({
+        userId,
         targetFieldId: target.targetFieldId,
+        pairingKey: target.pairingKey,
         nodeId: target.nodeId,
         fieldKey: target.fieldKey,
-        workflowId: target.workflowId,
-        nodeName: target.label || target.nodeId,
-        fieldName: target.fieldKey,
+        label: target.label,
+        action: target.action,
       });
 
       res.json({
@@ -968,6 +973,22 @@ export const createModeRoutes = (): Router => {
         target,
         paired: true,
         openRemoteBrowser: true,
+        // The prompt the operator must answer inside the remote browser, so the
+        // dashboard can say "approve it there" and poll for the outcome instead
+        // of claiming the field is ready before anyone has agreed.
+        consent: consent
+          ? {
+            consentId: consent.request.consentId,
+            state: consent.request.state,
+            expiresAt: consent.request.expiresAt,
+            // TRUE when the prompt was already on screen for this field. The
+            // dashboard uses it to say "still waiting" rather than repeating
+            // "look at the browser" — see the repeat case in the report.
+            reused: consent.reused,
+            nodeId: consent.request.nodeId,
+            fieldKey: consent.request.fieldKey,
+          }
+          : null,
       });
       return;
     }
@@ -1079,57 +1100,186 @@ export const createModeRoutes = (): Router => {
       res.json({ success: true, unpaired: 0, pairingKey });
       return;
     }
+    // An unanswered prompt about a field the user just unpaired must not stay on
+    // screen: approving it would re-attach the destination they deliberately
+    // detached, one press after detaching it.
+    remoteTargetConsent.clearForPairing(userId, pairingKey);
+
     res.json({ success: true, unpaired: inspectorAuth.unpair(pairingKey), pairingKey });
   });
 
+  // ════════════════════════════════════════════════════════════════
+  // Consent — how the REMOTE browser learns which field it is aiming at
+  // ════════════════════════════════════════════════════════════════
+  //
+  // REPORTED, and the reason these three routes exist:
+  //
+  //   «موقعی که کاربر مرورگر روی سرور بالا اومد توی همون صفحه مرورگر یه الرت
+  //    بالا بیاد و از کاربر اجازه اتصال به نود/فیلد رو بگیره و وقتی کاربر اجازه
+  //    داد پلاگین خودش کد اتورایزش جایگزین میشه و اتصالشو اکتیو میکنه»
+  //
+  // Read as a protocol, that is: the browser ASKS what it is being requested to
+  // do (GET), the human ANSWERS (POST decide), and the dashboard WATCHES for the
+  // outcome (GET status). The extension never names a destination in any of the
+  // three — it names a `consentId` it was handed, and the server maps that to
+  // the field it decided on before the prompt existed.
+
   /**
-   * Remote Browser Consent routes
+   * What is this browser being asked to connect to?
+   *
+   * Polled by the extension inside the remote browser. Returns the FULL list of
+   * outstanding prompts, not one "current" question, because the two-node case
+   * in the report is precisely a case with two of them, and a single-valued
+   * answer would have to silently choose.
+   *
+   * Scoped by the same `sessionOwners()` rule the session route uses: the
+   * extension's own key may map to a different account than the dashboard that
+   * raised the prompt, and asking in the wrong scope is how a prompt raised by
+   * the panel became invisible to the browser it was raised for.
    */
-  router.get('/inspector/consent/pending', (req: AuthenticatedRequest, res: Response) => {
-    const userId = resolveUserId(req);
-    const offer = remoteConsent.getPending(userId);
-    res.json({
-      success: true,
-      offer: offer || null,
-    });
+  router.get('/inspector/consent', (req: AuthenticatedRequest, res: Response) => {
+    const owners = sessionOwners(req, inspectorAuth.bindingsFor(req.apiKey || ''));
+
+    const seen = new Set<string>();
+    const requests = [];
+    for (const owner of owners) {
+      for (const r of remoteTargetConsent.pendingFor(owner)) {
+        if (seen.has(r.consentId)) continue;
+        seen.add(r.consentId);
+        requests.push(r);
+      }
+    }
+
+    res.json({ success: true, count: requests.length, requests });
   });
 
-  router.post('/inspector/consent/accept', (req: AuthenticatedRequest, res: Response) => {
-    const userId = resolveUserId(req);
-    const offerId = String((req.body || {}).offerId || '');
+  /**
+   * The human's answer.
+   *
+   * THIS is where a consent becomes authority, and it is deliberately the same
+   * shape as redeeming a code: the server looks up what it already decided, and
+   * grants exactly that. The body carries a `consentId` and an `approve` flag —
+   * never a target — so the rule «The Extension must NEVER be able to choose an
+   * arbitrary Target Field» holds here as strictly as it does on /inspector/pair.
+   *
+   * The response carries the target so the extension can store the id it must
+   * put on its next submit, which is the value that was never being written and
+   * the direct cause of the reported failure.
+   */
+  router.post('/inspector/consent/decide', (req: AuthenticatedRequest, res: Response) => {
+    const body = req.body || {};
+    const consentId = String(body.consentId || '');
+    const approve = body.approve !== false;
 
-    if (!fromServerHost(req)) {
+    const current = remoteTargetConsent.get(consentId);
+    if (!current) {
+      res.status(404).json({
+        success: false,
+        reason: 'consent_not_found',
+        error: 'That request is no longer waiting for an answer. Press the field’s picker again.',
+      });
+      return;
+    }
+
+    // Answer only what was asked of an account this caller is actually in. A
+    // consentId is unguessable, but "unguessable" is not an authorization model.
+    const owners = new Set(sessionOwners(req, inspectorAuth.bindingsFor(req.apiKey || '')));
+    if (!owners.has(current.userId)) {
       res.status(403).json({
         success: false,
-        reason: 'FORBIDDEN_PEER',
-        error: CONSENT_MESSAGES.FORBIDDEN_PEER,
+        reason: 'consent_not_yours',
+        error: 'That request was not addressed to this browser.',
       });
       return;
     }
 
-    const result = remoteConsent.accept(userId, offerId);
-    if (!result.success) {
-      res.status(400).json({
+    const decision = remoteTargetConsent.decide(consentId, approve);
+    if (!decision.ok) {
+      const reason = decision.reason || 'consent_not_found';
+      res.status(reason === 'expired' ? 410 : 409).json({
         success: false,
-        reason: result.reason,
-        error: CONSENT_MESSAGES[result.reason],
+        reason,
+        error: reason === 'expired'
+          ? 'That request timed out. Press the field’s picker again to ask afresh.'
+          : 'That request has already been answered.',
+        state: decision.request?.state,
+      });
+      return;
+    }
+
+    const request = decision.request!;
+
+    if (!approve) {
+      res.json({ success: true, approved: false, consentId: request.consentId });
+      return;
+    }
+
+    // Bind the CALLER's key, not the seeded one: whoever answered the prompt is
+    // the client that will submit, and binding anything else would authorize a
+    // different client than the one the human just consented for.
+    const binding = inspectorAuth.grant(
+      req.apiKey || '',
+      request.userId,
+      request.targetFieldId,
+      request.pairingKey,
+    );
+
+    // The target record is looked up rather than reconstructed from the prompt:
+    // it carries the label and action the extension shows in its own UI, and a
+    // field that expired between the ask and the answer must be reported as
+    // gone instead of bound.
+    const target = targetFields.resolve(request.userId, request.targetFieldId);
+    if (!target) {
+      res.status(409).json({
+        success: false,
+        reason: 'TARGET_FIELD_NOT_FOUND',
+        error: 'That field is no longer open. Press its picker again.',
       });
       return;
     }
 
     res.json({
       success: true,
-      target: result.offer.target,
+      approved: true,
+      consentId: request.consentId,
+      // The two values the extension stores — the address it must send to, and
+      // the durable identity that keeps it from being asked again.
+      targetFieldId: request.targetFieldId,
+      pairingKey: request.pairingKey,
+      binding,
+      target,
     });
   });
 
-  router.post('/inspector/consent/reject', (req: AuthenticatedRequest, res: Response) => {
+  /**
+   * Has the prompt been answered yet?
+   *
+   * For the DASHBOARD, which raised it and cannot see the remote browser. Same
+   * reason `/inspector/targeting/status` exists for the LOCAL flow: the party
+   * that asked is not the party that answers, and the server is the only one
+   * that sees both.
+   */
+  router.get('/inspector/consent/status', (req: AuthenticatedRequest, res: Response) => {
     const userId = resolveUserId(req);
-    const offerId = String((req.body || {}).offerId || '');
-    const ok = remoteConsent.reject(userId, offerId);
+    const consentId = String(req.query.consentId || '');
+    const current = remoteTargetConsent.get(consentId);
+
+    if (!current || current.userId !== userId) {
+      // 200 with a state, not 404: "gone" is a legitimate answer to "how is it
+      // going?", and a polling dashboard should not have to treat it as an error.
+      res.json({ success: true, state: 'expired', found: false });
+      return;
+    }
+
     res.json({
       success: true,
-      rejected: ok,
+      found: true,
+      state: current.state,
+      consentId: current.consentId,
+      nodeId: current.nodeId,
+      fieldKey: current.fieldKey,
+      targetFieldId: current.state === 'approved' ? current.targetFieldId : '',
+      expiresAt: current.expiresAt,
     });
   });
 

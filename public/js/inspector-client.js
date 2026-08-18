@@ -356,6 +356,34 @@
   }
 
   /**
+   * Is the Remote Browser already up and answering?
+   *
+   * Asked so the Targeting flow can DECLINE to relaunch a browser the operator
+   * is already looking at:
+   *
+   *   «اگر کاربر مرورگر رو نبنده و برم نود بعدی رو باز کنه … گیج میشه که الان من
+   *    مرورگرم بالا هست، آیا نیازه مجدد آیکون پیکر رو بزنم تا مرورگر بالا بیاد؟
+   *    اگرم بیاد بهینه نیست»
+   *
+   * `running` and `responsive` are deliberately both required. A frozen Chromium
+   * keeps `running` true while answering nothing, and treating that as "already
+   * up" would skip the relaunch that would have fixed it — leaving the operator
+   * staring at a dead tab with no way forward. So the answer is only "live" when
+   * the process is there AND it replies.
+   *
+   * Resolves false on any failure. A probe that cannot answer must fall back to
+   * the OLD behaviour (open the browser), because a spurious "already live" is
+   * the one outcome that strands the flow.
+   */
+  function remoteBrowserLive() {
+    return get('/browser/real/health')
+      .then(function (res) {
+        return !!(res && res.success && res.running && res.responsive);
+      })
+      .catch(function () { return false; });
+  }
+
+  /**
    * Has the user finished typing the code into their extension yet?
    *
    * Polled by the dialog because the dashboard cannot observe the extension
@@ -701,6 +729,8 @@
     targetingOptions: targetingOptions,
     targetingBegin: targetingBegin,
     targetingStatus: targetingStatus,
+    /** Whether the server's browser is already up, so it need not be relaunched. */
+    remoteBrowserLive: remoteBrowserLive,
     targetingUnpair: targetingUnpair,
     releaseTarget: releaseTarget,
     releaseNode: releaseNode,

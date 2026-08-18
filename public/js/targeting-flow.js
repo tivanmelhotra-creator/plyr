@@ -485,11 +485,16 @@
    * re-render there must not leave the operator with a silently dead crosshair
    * after a pairing they just completed.
    */
-  function armed(target, environment, ctx) {
+  function armed(target, environment, ctx, note) {
     if (ctx && typeof ctx.onArmed === 'function') {
       try { ctx.onArmed(target, environment); } catch (e) { /* see above */ }
     }
-    toast(t(environment === 'remote' ? 'tgt.readyRemote' : 'tgt.readyLocal'), 'info');
+    // `note` lets the REMOTE branch say something truer than "opening the
+    // browser" when the browser is already open and the operator's next move is
+    // to answer a prompt inside it. Defaults to the original wording, so LOCAL
+    // and the first-launch case are unchanged.
+    var key = note || (environment === 'remote' ? 'tgt.readyRemote' : 'tgt.readyLocal');
+    toast(t(key), 'info');
   }
 
   // ---------------------------------------------------------------------------
@@ -535,21 +540,77 @@
       closeDialog();
 
       if (res.openRemoteBrowser) {
-        var bv = window.BrowserView;
-        if (bv && typeof bv.openRealBrowser === 'function') {
-          // Not awaited: the operator is told by the toast below, and
-          // openRealBrowser reports its own failure inside the tab they are
-          // actually looking at. It rethrows for callers that do await, so the
-          // rejection is swallowed here to avoid a duplicate unhandled report.
-          bv.openRealBrowser(ctx.url || '', tab).catch(function () {});
-        } else if (tab) {
-          try { tab.close(); } catch (e) {}
-        }
-      } else if (tab) {
-        try { tab.close(); } catch (e) {}
+        openOrReuseRemote(res, ctx, environment, tab);
+        return;
       }
 
+      if (tab) { try { tab.close(); } catch (e) {} }
       armed(res.target, res.environment || environment, ctx);
+    });
+  }
+
+  /**
+   * REMOTE, second time onwards: do NOT relaunch a browser that is already up.
+   *
+   * Reported:
+   *
+   *   «اگر کاربر مرورگر رو نبنده و برم نود بعدی رو باز کنه و گیج میشه که الان من
+   *    مرورگرم بالا هست آیا نیازه مجدد آیکون پیکر رو بزنم تا مرورگر بالا بیاد،
+   *    اگرم بیاد بهینه نیست»
+   *
+   *   «یعنی مرورگر مجدد بالا نمیاد و فقط الرت بالا میاد در دفعات تکراری»
+   *
+   * The server has already raised a consent prompt for this field (res.consent),
+   * and that prompt renders inside whatever page the remote browser is showing —
+   * see extension/content/consent.js, which polls. So when the browser is live
+   * there is nothing to open: the question is already on the operator's screen,
+   * and re-launching would throw away the page they were working on and cost a
+   * cold start for no gain.
+   *
+   * The liveness probe decides, not a local flag. A flag would go stale the
+   * moment the operator closed the tab themselves, and then the flow would
+   * cheerfully tell them to answer a prompt in a browser that is not running.
+   * On ANY doubt — probe failed, no BrowserView, not responsive — this falls back
+   * to opening the browser, because a needless relaunch is an annoyance while a
+   * skipped one is a dead end.
+   */
+  function openOrReuseRemote(res, ctx, environment, tab) {
+    var client = ic();
+    var bv = window.BrowserView;
+    var env = res.environment || environment;
+
+    // No way to open one at all: nothing to reuse, nothing to launch.
+    if (!bv || typeof bv.openRealBrowser !== 'function') {
+      if (tab) { try { tab.close(); } catch (e) {} }
+      armed(res.target, env, ctx);
+      return;
+    }
+
+    function launch() {
+      // Not awaited: the operator is told by the toast below, and
+      // openRealBrowser reports its own failure inside the tab they are
+      // actually looking at. It rethrows for callers that do await, so the
+      // rejection is swallowed here to avoid a duplicate unhandled report.
+      bv.openRealBrowser(ctx.url || '', tab).catch(function () {});
+      armed(res.target, env, ctx);
+    }
+
+    if (!client || typeof client.remoteBrowserLive !== 'function') { launch(); return; }
+
+    client.remoteBrowserLive().then(function (live) {
+      if (!live) { launch(); return; }
+
+      // Already up. Release the tab we speculatively claimed for the popup
+      // blocker — leaving it would strand a blank window on screen, which looks
+      // exactly like the broken relaunch this branch exists to avoid.
+      if (tab) { try { tab.close(); } catch (e) {} }
+
+      // `reused` means the server refreshed an EXISTING question about this same
+      // field rather than asking a new one — the operator pressed the picker
+      // twice. Saying "still waiting" is honest; repeating "a new prompt is
+      // waiting" would imply a second thing to answer that does not exist.
+      var reused = !!(res.consent && res.consent.reused);
+      armed(res.target, env, ctx, reused ? 'tgt.consentWaiting' : 'tgt.consentAsked');
     });
   }
 
