@@ -135,6 +135,30 @@ export interface ConsentRequest {
 /** The public view. Identical today; named so the wire shape can be pinned. */
 export type ConsentView = ConsentRequest;
 
+/**
+ * What a browser is allowed to SEE while a prompt is still unanswered.
+ *
+ * Deliberately the full request MINUS `targetFieldId` and `pairingKey`.
+ *
+ * The whole point of the handshake is that approval is what hands over the
+ * destination. If the pending list carried the destination, an extension could
+ * read the address out of the list it polls and submit straight to it, never
+ * rendering a prompt and never asking the human anything — which is exactly the
+ * standing prohibition «The Extension must NEVER be able to choose an arbitrary
+ * Target Field», re-entered through the one door built to enforce it.
+ *
+ * Everything a human needs in order to answer — which node, which field, which
+ * action, how long it is good for — is still here. Only the machine-usable
+ * address is withheld, and only until Allow is pressed.
+ */
+export type ConsentPrompt = Omit<ConsentRequest, 'targetFieldId' | 'pairingKey'>;
+
+/** Drop the address from a request, leaving the human-readable question. */
+function toPrompt(r: ConsentRequest): ConsentPrompt {
+  const { targetFieldId: _address, pairingKey: _pairing, ...prompt } = r;
+  return prompt;
+}
+
 export interface ConsentDecision {
   ok: boolean;
   reason?: 'not_found' | 'expired' | 'already_decided';
@@ -248,13 +272,13 @@ export class RemoteTargetConsentRegistry {
    * should answer the question they were asked first — not the one that happens
    * to have been added last.
    */
-  pendingFor(userId: string, now = Date.now()): ConsentView[] {
+  pendingFor(userId: string, now = Date.now()): ConsentPrompt[] {
     this.sweep(now);
     const owner = clean(userId, 200);
     return [...this.requests.values()]
       .filter((r) => r.userId === owner && r.state === 'pending')
       .sort((a, b) => a.requestedAt - b.requestedAt)
-      .map((r) => ({ ...r }));
+      .map(toPrompt);
   }
 
   /** One request by id, whatever its state. `null` when unknown or swept. */
