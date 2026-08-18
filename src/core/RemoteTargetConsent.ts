@@ -118,6 +118,20 @@ export interface ConsentRequest {
   targetFieldId: string;
   /** The durable identity, so approval can record a pairing like a redeem does. */
   pairingKey: string;
+  /**
+   * WHICH browser this prompt is addressed to.
+   *
+   * A consent is a REMOTE mechanism: it exists because REMOTE issues no
+   * Authorization Code, so approving is what attaches the destination. In LOCAL
+   * the code already does that job, so a prompt there is not redundant decoration
+   * -- it is a second, competing way to bind a field.
+   *
+   * REPORTED: choosing LOCAL, typing a code, seeing the target stay empty, and
+   * then minutes later being shown a remote-style approval alert that was what
+   * finally bound the field. Both extensions poll the SAME endpoint with the SAME
+   * account, so without this field the server cannot tell them apart.
+   */
+  environment: 'local' | 'remote';
   /** ── Shown to the human, so the prompt can be verified, not merely trusted ── */
   nodeId: string;
   fieldKey: string;
@@ -202,6 +216,13 @@ export class RemoteTargetConsentRegistry {
       fieldKey?: string;
       label?: string;
       action?: string;
+      /**
+       * Defaults to 'remote' when omitted, because that is the only environment
+       * that legitimately raises a prompt: LOCAL authorizes with a code. A caller
+       * that forgets to say therefore gets the historical behaviour rather than a
+       * prompt that silently reaches the wrong browser.
+       */
+      environment?: 'local' | 'remote';
     },
     now = Date.now(),
   ): { request: ConsentRequest; reused: boolean } | null {
@@ -256,6 +277,7 @@ export class RemoteTargetConsentRegistry {
       fieldKey: clean(input.fieldKey, 200),
       label: clean(input.label, 200),
       action: clean(input.action, 200),
+      environment: input.environment === 'local' ? 'local' : 'remote',
       state: 'pending',
       requestedAt: now,
       expiresAt: now + CONSENT_TTL_MS,
@@ -272,11 +294,30 @@ export class RemoteTargetConsentRegistry {
    * should answer the question they were asked first — not the one that happens
    * to have been added last.
    */
-  pendingFor(userId: string, now = Date.now()): ConsentPrompt[] {
+  pendingFor(
+    userId: string,
+    now = Date.now(),
+    environment?: 'local' | 'remote' | '',
+  ): ConsentPrompt[] {
     this.sweep(now);
     const owner = clean(userId, 200);
+
+    // An extension that DECLARES itself local is never shown a remote prompt.
+    //
+    // This is the server half of «LOCAL = NO Remote Approval Alert». It cannot be
+    // done in the UI: the extension in the operator's own Chrome and the one in
+    // the server's browser poll this exact endpoint with the exact same account,
+    // so the only thing that can separate them is what they say they are.
+    //
+    // An extension that declares NOTHING still sees remote prompts. Older builds
+    // send no environment, and the remote browser runs whichever build was
+    // side-loaded into it -- starving it would break REMOTE altogether. The
+    // asymmetry is deliberate: only an explicit 'local' filters anything out.
+    const askedBy = environment === 'local' ? 'local' : '';
+
     return [...this.requests.values()]
       .filter((r) => r.userId === owner && r.state === 'pending')
+      .filter((r) => (askedBy === 'local' ? r.environment === 'local' : true))
       .sort((a, b) => a.requestedAt - b.requestedAt)
       .map(toPrompt);
   }

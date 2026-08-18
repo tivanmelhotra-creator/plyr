@@ -963,6 +963,11 @@ export const createModeRoutes = (): Router => {
         fieldKey: target.fieldKey,
         label: target.label,
         action: target.action,
+        // Stamped so the prompt can only ever be delivered to the browser it is
+        // addressed to. This branch is REMOTE-only -- `plan.serverMayGrant` is
+        // true for no other environment -- so the value is a constant, not a
+        // pass-through of anything a caller sent.
+        environment: 'remote',
       });
 
       res.json({
@@ -1140,10 +1145,37 @@ export const createModeRoutes = (): Router => {
   router.get('/inspector/consent', (req: AuthenticatedRequest, res: Response) => {
     const owners = sessionOwners(req, inspectorAuth.bindingsFor(req.apiKey || ''));
 
+    // WHICH browser is asking?
+    //
+    // The extension in the operator's own Chrome and the one inside the server's
+    // browser are the same build, polling this same path, authenticated into the
+    // same account. Nothing about the REQUEST distinguishes them, so the client
+    // states it, and a client that states 'local' is served no remote prompt.
+    //
+    // That is the enforcement point for «LOCAL = NO Remote Approval Alert». It
+    // belongs here rather than in the UI because a prompt withheld from view but
+    // still returned by the API is still delivered -- to the next poller, minutes
+    // later, which is exactly the reported symptom.
+    //
+    // Absent or unrecognised means "do not filter": older extension builds send
+    // nothing, and the remote browser runs whichever build was side-loaded into
+    // it. Only an explicit 'local' narrows the list.
+    //
+    // normalizeBrowserEnvironment() is deliberately NOT used: its contract is to
+    // fall back to a real environment ('remote' by default), which is right for
+    // the targeting flow but wrong here, where "said nothing" must stay distinct
+    // from "said remote".
+    const declared = String(req.query.environment ?? req.header('x-browser-environment') ?? '')
+      .trim()
+      .toLowerCase();
+    const filter: 'local' | 'remote' | '' = declared === 'local'
+      ? 'local'
+      : (declared === 'remote' ? 'remote' : '');
+
     const seen = new Set<string>();
     const requests = [];
     for (const owner of owners) {
-      for (const r of remoteTargetConsent.pendingFor(owner)) {
+      for (const r of remoteTargetConsent.pendingFor(owner, Date.now(), filter)) {
         if (seen.has(r.consentId)) continue;
         seen.add(r.consentId);
         requests.push(r);
