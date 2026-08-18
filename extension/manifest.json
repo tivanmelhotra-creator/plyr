@@ -20,7 +20,8 @@
         "content/selector.js",
         "content/inspector.js",
         "content/recorder.js",
-        "content/presence.js"
+        "content/presence.js",
+        "content/consent.js"
       ],
       "run_at": "document_idle",
       "all_frames": false
