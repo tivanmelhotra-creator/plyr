@@ -5,6 +5,7 @@ import vm from 'vm';
 import { InspectorHub } from '../../src/core/InspectorHub';
 import { TargetFieldRegistry } from '../../src/core/TargetFieldRegistry';
 import { InspectorAuthorizationRegistry } from '../../src/core/InspectorAuthorization';
+import { RemoteTargetConsentRegistry } from '../../src/core/RemoteTargetConsent';
 
 // ════════════════════════════════════════════════════════════════
 // THE EXTENSION ⇄ BACKEND SEAM — extension/background.js ⇄ InspectorHub
@@ -69,6 +70,16 @@ interface Harness {
   hub: InspectorHub;
   registry: TargetFieldRegistry;
   auth: InspectorAuthorizationRegistry;
+  consent: RemoteTargetConsentRegistry;
+  /**
+   * Raise a consent prompt the way the REMOTE branch of
+   * /inspector/targeting/begin does, and return its handle.
+   *
+   * Deliberately mints NO Authorization Code, because that is the whole point of
+   * the REMOTE path — «برای REMOTE BROWSER نیازی به Authorization Code نیست» —
+   * and it is precisely why nothing used to write the destination.
+   */
+  askFor(targetFieldId: string): string;
   /** Register a destination the way the workflow UI does, and return its id. */
   openField(opts?: { nodeId?: string; fieldKey?: string; action?: string; label?: string }): string;
   /** Mint the Authorization Code the project would show the user. */
@@ -93,6 +104,7 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
   const registry = opts.reuse?.registry ?? new TargetFieldRegistry();
   const auth = opts.reuse?.auth ?? new InspectorAuthorizationRegistry();
   const hub = opts.reuse?.hub ?? new InspectorHub(registry, auth);
+  const consent = opts.reuse?.consent ?? new RemoteTargetConsentRegistry();
 
   // chrome.storage.local outlives the worker, which is the entire reason the
   // destination is persisted rather than re-derived.
@@ -189,6 +201,50 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       });
     }
 
+    // ── The REMOTE consent handshake ──────────────────────────────────────
+    // Mirrors mode.routes.ts, including the two properties that matter most:
+    // the pending list withholds the address, and `decide` is the ONLY thing
+    // that grants. A convenience fake that returned the target in the list, or
+    // granted on GET, would let a broken extension pass.
+    if (method === 'GET' && path === '/inspector/consent') {
+      const requestsOut = consent.pendingFor(USER);
+      return reply(200, { success: true, count: requestsOut.length, requests: requestsOut });
+    }
+
+    if (method === 'POST' && path === '/inspector/consent/decide') {
+      const id = String(body?.consentId || '');
+      const approve = body?.approve !== false;
+      const current = consent.get(id);
+      if (!current) {
+        return reply(404, {
+          success: false, reason: 'consent_not_found',
+          error: 'That request is no longer waiting for an answer.',
+        });
+      }
+      const decision = consent.decide(id, approve);
+      if (!decision.ok) {
+        return reply(decision.reason === 'expired' ? 410 : 409, {
+          success: false, reason: decision.reason, error: 'That request could not be answered.',
+        });
+      }
+      if (!approve) {
+        return reply(200, { success: true, approved: false, consentId: id });
+      }
+      const req = decision.request!;
+      // Authority is created HERE and nowhere else — the same grant a redeemed
+      // code performs, which is what keeps "code" and "consent" one concept.
+      const binding = auth.grant(key, req.userId, req.targetFieldId, req.pairingKey);
+      return reply(200, {
+        success: true,
+        approved: true,
+        consentId: id,
+        targetFieldId: req.targetFieldId,
+        pairingKey: req.pairingKey,
+        binding,
+        target: registry.resolve(req.userId, req.targetFieldId),
+      });
+    }
+
     if (method === 'POST' && path === '/inspector/element') {
       posted.push(body || {});
       const result = hub.submit(USER, {
@@ -254,9 +310,25 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
     hub,
     registry,
     auth,
+    consent,
     storage,
     requests,
     posted,
+    askFor(targetFieldId: string) {
+      const target = registry.resolve(USER, targetFieldId);
+      if (!target) throw new Error('fixture target missing');
+      const raised = consent.request({
+        userId: USER,
+        targetFieldId,
+        pairingKey: target.pairingKey,
+        nodeId: target.nodeId,
+        fieldKey: target.fieldKey,
+        label: target.label,
+        action: target.action,
+      });
+      if (!raised) throw new Error('fixture consent not raised');
+      return raised.request.consentId;
+    },
     openField(opts = {}) {
       const reg = registry.register(USER, {
         nodeId: opts.nodeId ?? 'node-7',
@@ -801,5 +873,251 @@ describe('the extension remembers the FIELD, not just the address', () => {
 
     const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
     expect(res.paired).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// THE REMOTE CONSENT HANDSHAKE, ACROSS THE SEAM
+//
+// THE BUG THESE EXIST TO CATCH
+// ----------------------------
+// The browser on the server is, to this extension, an ordinary LOCAL browser:
+// same code, same storage, and a submit addressed with `ab_targetFieldId`. The
+// only writer of that value was inspectorPair() — redeeming an Authorization
+// Code — and REMOTE deliberately never issues one. So the value stayed empty,
+// submitElement() refused locally with TARGET_NOT_AUTHORIZED before any HTTP
+// request was made, and the operator saw:
+//
+//   «ظاهرا نمدونه به کدوم فیلد باید ارسال بشه» — Connection failed: network
+//
+// Note what the OLD tests could not have caught: they pair with a CODE, so
+// `ab_targetFieldId` was always written and the seam always looked healthy. The
+// gap was a path with no code in it at all, so it needs tests with no code in
+// them at all — which is why every test below asserts zero codes were minted.
+// ════════════════════════════════════════════════════════════════
+
+describe('REMOTE consent — the extension learns its destination without a code', () => {
+  /**
+   * A configured worker.
+   *
+   * These tests each need their OWN worker (several boot two of them to model a
+   * service-worker restart), so they cannot lean on the shared `beforeEach`
+   * above — and an unconfigured worker fails inspectorContext() with
+   * `no_base_url`, which would make every assertion below fail for a reason that
+   * has nothing to do with consent.
+   */
+  function worker(opts: WorkerOpts = {}): Harness {
+    const w = loadWorker(opts);
+    w.storage.ab_baseUrl = BASE;
+    w.storage.ab_apiKey = API_KEY;
+    w.storage.ab_userId = USER;
+    return w;
+  }
+
+  it('sees the question but NOT the address', async () => {
+    // The security property that makes the handshake meaningful. If the address
+    // were in the list, this extension could store it and submit without ever
+    // asking anyone — «The Extension must NEVER be able to choose an arbitrary
+    // Target Field», re-entered through the door built to enforce it.
+    const h = worker();
+    const id = h.openField({ nodeId: 'search-box', label: 'Click → Selector' });
+    h.askFor(id);
+
+    const res = await h.send({ type: 'AB_CONSENT_LIST' });
+    expect(res.ok).toBe(true);
+    const list = res.requests as Array<Record<string, unknown>>;
+    expect(list).toHaveLength(1);
+
+    // What a human needs in order to answer is present…
+    expect(list[0].nodeId).toBe('search-box');
+    expect(list[0].fieldKey).toBe('selector');
+    expect(list[0].action).toBe('click');
+    expect(typeof list[0].consentId).toBe('string');
+    // …and what a machine needs in order to bypass the human is not.
+    expect(list[0].targetFieldId).toBeUndefined();
+    expect(list[0].pairingKey).toBeUndefined();
+  });
+
+  it('stores NOTHING while the prompt is merely listed', async () => {
+    // Polling must not be the thing that connects. Only Allow may.
+    const h = worker();
+    h.askFor(h.openField());
+    await h.send({ type: 'AB_CONSENT_LIST' });
+    expect(h.storage.ab_targetFieldId).toBeFalsy();
+    expect(h.storage.ab_pairingKey).toBeFalsy();
+  });
+
+  it('Allow writes the destination — the line that was missing', async () => {
+    const h = worker();
+    const id = h.openField({ nodeId: 'search-box' });
+    const consentId = h.askFor(id);
+
+    const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    expect(res.ok).toBe(true);
+    expect(res.approved).toBe(true);
+
+    // THE FIX. This is the write that REMOTE never had.
+    expect(h.storage.ab_targetFieldId).toBe(id);
+    // And the DURABLE half, so the operator is not re-prompted on every NDV
+    // open — otherwise we would have replaced "type a code every time" with
+    // "click Allow every time", the same defect in a new spelling.
+    expect(h.storage.ab_pairingKey).toBeTruthy();
+    expect(h.storage.ab_targetEnvironment).toBeTruthy();
+  });
+
+  it('and a pick then actually LANDS — no code anywhere in the flow', async () => {
+    // The end of the reported failure, measured through the real hub rather than
+    // inferred from stored strings.
+    const h = worker();
+    const id = h.openField({ nodeId: 'search-box', label: 'Click → Selector' });
+    const consentId = h.askFor(id);
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+
+    const sent = await h.send(submitMsg());
+    expect(sent.ok).toBe(true);
+
+    const delivered = h.hub.peek(USER);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].target.targetFieldId).toBe(id);
+    expect(delivered[0].value).toBe('a#buy');
+
+    // Zero Authorization Codes were involved, which is the requirement.
+    expect(h.auth.pendingCount()).toBe(0);
+    expect(h.requests.some((r) => r.path === '/inspector/pair')).toBe(false);
+  });
+
+  it('addresses the submit with the id it was GIVEN, never one it chose', async () => {
+    const h = worker();
+    const id = h.openField();
+    const consentId = h.askFor(id);
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    await h.send(submitMsg());
+
+    expect(h.posted).toHaveLength(1);
+    expect(h.posted[0].targetFieldId).toBe(id);
+    // The decision request carried a handle and a boolean — never a target.
+    const decide = h.requests.filter((r) => r.path === '/inspector/consent/decide')[0];
+    expect(decide.body).toBeTruthy();
+    expect(Object.keys(decide.body as object).sort()).toEqual(['approve', 'consentId']);
+  });
+
+  it('presents its own credential when answering', async () => {
+    // The grant is made against the ANSWERING key, so a body-supplied key would
+    // let any caller claim another client's pairing.
+    const h = worker();
+    const consentId = h.askFor(h.openField());
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    const decide = h.requests.filter((r) => r.path === '/inspector/consent/decide')[0];
+    expect(decide.key).toBe(API_KEY);
+  });
+
+  it('Deny attaches nothing', async () => {
+    const h = worker();
+    const consentId = h.askFor(h.openField());
+    const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: false } });
+    expect(res.ok).toBe(true);
+    expect(res.approved).toBe(false);
+    expect(h.storage.ab_targetFieldId).toBeFalsy();
+  });
+
+  it('an undefined approve flag is NOT approval', async () => {
+    // A malformed message must never be read as consent.
+    const h = worker();
+    const consentId = h.askFor(h.openField());
+    const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId } });
+    expect(res.approved).toBeFalsy();
+    expect(h.storage.ab_targetFieldId).toBeFalsy();
+  });
+
+  it('declining a NEW field does not disconnect the field already in use', async () => {
+    // The operator is working in node A and waves away a prompt for node B.
+    // Losing A's connection because they declined B would be a data-loss bug
+    // dressed as a permission check.
+    const h = worker();
+    const a = h.openField({ nodeId: 'search-box' });
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId: h.askFor(a), approve: true } });
+    expect(h.storage.ab_targetFieldId).toBe(a);
+
+    const b = h.openField({ nodeId: 'submit-btn' });
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId: h.askFor(b), approve: false } });
+
+    expect(h.storage.ab_targetFieldId).toBe(a);
+    expect((await h.send(submitMsg())).ok).toBe(true);
+  });
+
+  it('two nodes, one browser: the APPROVED field receives the pick', async () => {
+    // «دو تا فیلد با نودهای متفاوت … نمیدونه کدوم فیلد باید ارسال بشه»
+    // Both prompts are live at once. Answering the SECOND must send there —
+    // not to the first, and not to whichever the server happened to mint last.
+    const h = worker();
+    const a = h.openField({ nodeId: 'search-box' });
+    const b = h.openField({ nodeId: 'submit-btn' });
+    h.askFor(a);
+    const consentB = h.askFor(b);
+
+    const listed = (await h.send({ type: 'AB_CONSENT_LIST' })).requests as Array<Record<string, unknown>>;
+    expect(listed).toHaveLength(2);
+
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId: consentB, approve: true } });
+    await h.send(submitMsg());
+
+    const delivered = h.hub.peek(USER);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].target.nodeId).toBe('submit-btn');
+  });
+
+  it('re-answering the same prompt is refused, not silently re-granted', async () => {
+    const h = worker();
+    const consentId = h.askFor(h.openField());
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    const again = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    expect(again.ok).toBe(false);
+    expect(again.reason).toBe('already_decided');
+  });
+
+  it('reports an unknown handle instead of pretending it worked', async () => {
+    const h = worker();
+    const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId: 'cns_nope' } });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('consent_not_found');
+    expect(h.storage.ab_targetFieldId).toBeFalsy();
+  });
+
+  it('refuses an empty handle without making a request at all', async () => {
+    const h = worker();
+    const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId: '' } });
+    expect(res.ok).toBe(false);
+    expect(h.requests.some((r) => r.path === '/inspector/consent/decide')).toBe(false);
+  });
+
+  it('the answered prompt leaves the queue, so it is not asked twice', async () => {
+    const h = worker();
+    const consentId = h.askFor(h.openField());
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    expect((await h.send({ type: 'AB_CONSENT_LIST' })).count).toBe(0);
+  });
+
+  it('the connection survives a service-worker restart', async () => {
+    // MV3 kills workers aggressively. A consent-granted pairing has to be as
+    // durable as a code-granted one or the operator is re-prompted at random.
+    const first = worker();
+    const id = first.openField();
+    const consentId = first.askFor(id);
+    await first.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+
+    const restarted = worker({ reuse: first });
+    expect(restarted.storage.ab_targetFieldId).toBe(id);
+    expect((await restarted.send(submitMsg())).ok).toBe(true);
+  });
+
+  it('unpairing locally clears a consent-granted target too', async () => {
+    // Otherwise the popup would keep reporting "paired" for a field the operator
+    // deliberately let go of.
+    const h = worker();
+    const consentId = h.askFor(h.openField());
+    await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    await h.send({ type: 'AB_INSPECTOR_UNPAIR' });
+    expect(h.storage.ab_targetFieldId).toBeFalsy();
+    expect(h.storage.ab_pairingKey).toBeFalsy();
   });
 });
