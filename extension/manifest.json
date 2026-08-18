@@ -5,45 +5,47 @@
   "description": "Element Inspector, action recorder, and Remote→Local session handoff for automation-backend. Inspect any element (Ctrl+Shift+C), and move a running remote browser session onto this machine with a pairing code — same tabs, same order, same active tab.",
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "Element Inspector",
+    "default_popup": "popup/popup.html"
+  },
   "background": {
     "service_worker": "background.js"
-  },
-  "action": {
-    "default_popup": "popup/popup.html",
-    "default_icon": {
-      "16": "icons/icon-16.png",
-      "32": "icons/icon-32.png",
-      "48": "icons/icon-48.png",
-      "128": "icons/icon-128.png"
-    }
   },
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["content/inspector.js", "content/presence.js", "content/consent.js"],
-      "run_at": "document_idle"
+      "js": [
+        "lib/ab-inspect.js",
+        "content/selector.js",
+        "content/inspector.js",
+        "content/recorder.js",
+        "content/presence.js",
+        "content/consent.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
+  "_comment_web_accessible_resources": "The picker panel is drawn by a content script into a closed shadow root on the user's own page, so its fonts resolve against THAT page's document, not against the extension. Without this list Chrome refuses the chrome-extension:// font URL and the panel silently falls back to the platform faces. Scoped to the two woff2 files and nothing else: this list is the extension's public surface, and anything on it can be fetched by any site and used to fingerprint the extension's presence. Two font files leak nothing beyond 'this extension is installed', which the on-page panel already announces.",
   "web_accessible_resources": [
     {
-      "resources": ["content/inspector.css", "icons/*"],
+      "resources": [
+        "popup/fonts/hanken-grotesk-latin.woff2",
+        "popup/fonts/jetbrains-mono-latin.woff2"
+      ],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],
   "commands": {
-    "_execute_action": {
-      "suggested_key": {
-        "default": "Ctrl+Shift+X",
-        "mac": "Command+Shift+X"
-      },
-      "description": "Open Inspector popup"
-    },
-    "toggle-inspect": {
-      "suggested_key": {
-        "default": "Ctrl+Shift+C",
-        "mac": "Command+Shift+C"
-      },
-      "description": "Toggle element inspection"
+    "toggle-inspector": {
+      "suggested_key": { "default": "Ctrl+Shift+C", "mac": "Command+Shift+C" },
+      "description": "Inspect an element and send it to the active node"
     }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   }
 }
