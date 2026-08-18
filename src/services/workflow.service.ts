@@ -14,7 +14,7 @@ import {
 // Workflow Storage service (Step 17, category G2)
 //
 // A single source of truth for saving/loading reusable, versioned workflows in
-// Redis. CRUD endpoints, the re-run endpoint, the n8n node and the UI all go
+// Redis. CRUD endpoints, the re-run endpoint, API clients and the UI all go
 // through here so every client sees the same records and the same version
 // history. Everything is scoped per-user; ids are server-generated.
 // ============================================================

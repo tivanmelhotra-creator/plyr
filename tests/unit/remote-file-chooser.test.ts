@@ -10,7 +10,7 @@
  *
  * WHY THIS CODE IS ALLOWED TO EXIST
  * ---------------------------------
- * HANDOFF-REMOTE-BROWSER.md said an upload on this view could not be automatic:
+ * An earlier design note said an upload on this view could not be automatic:
  * the operator drives a real Chromium with a real mouse over VNC, so Playwright
  * "is not holding its dialogs open" and there is no chooser to answer. MEASURED
  * (tools/probe-upload-vnc.js) with a genuine X11 click from `xdotool` and no
@@ -348,7 +348,7 @@ describe('tokens, never paths', () => {
 
 describe('two tabs asking at once: first come, first served', () => {
   it('keeps the FIRST dialog and releases the second', async () => {
-    // MEASURED (simulator, tools/probe-steal-tmp.js) that letting the newer
+    // MEASURED (simulator + transient probe, since deleted) that letting the newer
     // dialog take the slot delivers the file to the WRONG page:
     //     A input files : 0
     //     B input files : 1        ← A asked, B received

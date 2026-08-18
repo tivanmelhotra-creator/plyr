@@ -143,7 +143,7 @@
   //
   // The grouped form renders real <optgroup>s. It exists because the Condition
   // Builder's operator list is 20+ entries long and Automa (project rule R1,
-  // MISSIONS.md) buckets the same list into basic / number / text / boolean —
+  // PROJECT.md) buckets the same list into basic / number / text / boolean —
   // a flat list of that length is a scan, not a choice. <optgroup> is the
   // native, zero-JS, screen-reader-announced way to do it, so no custom popup.
   function selectCell(options, value, onChange) {

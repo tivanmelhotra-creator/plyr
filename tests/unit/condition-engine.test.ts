@@ -304,7 +304,7 @@ describe('ConditionEngine — Left source (source / attribute)', () => {
 });
 
 /**
- * Automa parity (project rule R1, MISSIONS.md — mission 5).
+ * Automa parity (project rule R1, PROJECT.md).
  *
  * Automa's `conditionBuilder.compareTypes` offers case-INSENSITIVE twins
  * (`eqi`, `cni`, `nci`) and JS-truthiness checks (`itr`, `ifl`). The builder now

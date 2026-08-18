@@ -1,7 +1,7 @@
 /**
  * heal-panel-stuck.test.ts — «کاربر نباید گیر کنه».
  *
- * The report (docs/HANDOFF-SIX-REGRESSIONS.md §1):
+ * The report (six-regressions bug report, item 1):
  *
  *   The user opened the simulated browser, pressed what looked like an off
  *   button, and got a panel reading "Getting the browser ready / Starting Chrome

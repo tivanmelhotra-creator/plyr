@@ -181,7 +181,7 @@ async function listWorkflows() {
 }
 
 // Step 31: run a saved, versioned workflow (Model B contract, shared with the
-// n8n node) and return the jobId so the popup can subscribe to live events.
+// API client) and return the jobId so the popup can subscribe to live events.
 async function runSavedWorkflow(payload) {
   var cfg = await getSettings();
   var base = normalizeBase(cfg.baseUrl);

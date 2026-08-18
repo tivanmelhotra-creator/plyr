@@ -94,8 +94,8 @@ and the two 2026-07-28 screens define the product-level navigation.
 | `state-empty-canvas` | **Refreshed: full editor shell** (stem is historical) | `.webp` **(newest)** | `lite/*.jpg` *(stale)* | `.md` *(rewritten)* | ✅ built · top bar (items A–B) + OUTLINE rail (C) + blocks palette (D) + 4-tab ACTIVITY LOG (E) + **top-end** canvas toolbar & pill row + titled minimap; empty-state card still renders when the graph is empty |
 
 Remaining work per screen is tracked, with file/line anchors, in
-`/HANDOFF_2026-07-27_ICONS_LAYOUT.md` § 4 (items A-N, ordered by visual
-impact). `/HANDOFF_NEXT_SESSION.md` § 5 remains the NDV design-foundation
+`04-HANDOFF-editor-shell-outline-activity.md` (items A-N, ordered by visual
+impact). `ndv-click-element-final.md` + `ndv-condition-final.md` remain the NDV design-foundation
 reference. The editor-shell items A–E are complete; see
 `04-HANDOFF-editor-shell-outline-activity.md` for what each landed as and for the
 decisions taken where the image described something the backend does not have.

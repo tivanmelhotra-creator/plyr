@@ -6,7 +6,7 @@
  *    جدید بالا میاره که همه تب ها گم شدن یا بسته شدن با همون مرورگر کرش شده»
  *
  * i.e. a wedged Chromium was killed, and the browser that came up next had NO
- * tabs. HANDOFF-REMOTE-BROWSER.md §3.2 names `clearCrashedExitState()` as the
+ * tabs. The original bug report §3.2 names `clearCrashedExitState()` as the
  * prime suspect (wiping the crash flag is what would DISCARD the previous tabs)
  * and forbids guessing. This script decides it by experiment, on the same
  * launch path RealChrome uses.

@@ -2,8 +2,9 @@ import { describe, it, expect, beforeAll, vi } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
 
-// ── n8n integration (F3) route test ───────────────────────────────────────
-// Exercises the real POST /run handler wiring for the three new features:
+// ── POST /run — synchronous + idempotent submission ───────────────────────
+// Exercises the real POST /run handler wiring for the three API-client features
+// any external caller (HTTP client, scheduler, browser extension) relies on:
 //   1. Idempotency-Key dedupe (same key -> original jobId, no second enqueue)
 //   2. ?wait=true sync mode returning the persisted result inline
 //   3. ?wait=true timeout -> HTTP 202 with a pollUrl

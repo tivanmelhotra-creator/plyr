@@ -198,7 +198,7 @@
 
   // Operator groups — Automa parity (utils/shared.js -> conditionBuilder
   // .compareTypes, which renders its dropdown as <optgroup>s: basic / number /
-  // text / boolean). Project rule R1 (MISSIONS.md) makes Automa the reference
+  // text / boolean). Project rule R1 (PROJECT.md) makes Automa the reference
   // for node logic, and a 20-entry flat list is exactly the case an <optgroup>
   // exists for. Two groups are ours rather than Automa's:
   //   dom    — our four selector-only operators (Automa expresses these as

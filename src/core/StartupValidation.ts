@@ -23,7 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  *
  * Tempting, and wrong. This server is not only the Remote Browser: it serves
- * the dashboard, the workflow API, the n8n integration and the job queue, and
+ * the dashboard, the workflow API, the external HTTP API and the job queue, and
  * `SelfHeal`/`DesktopProvision` can install the missing pieces AT RUNTIME
  * without root (that is the whole point of DesktopProvision). A process that
  * exits on a missing library would take away the very UI the operator uses to

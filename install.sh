@@ -15,10 +15,9 @@
 #   2) Server (Docker)   app + redis via docker compose
 #   3) Server (Coolify)  guidance + files for an isolated Coolify deploy
 #   4) Client (Chrome)   load the MV3 browser extension
-#   5) Client (n8n)      build/install the n8n community node
 #
 # Non-interactive flags:
-#   --server-node | --server-docker | --client | --client-n8n | --coolify
+#   --server-node | --server-docker | --client | --coolify
 #   --domain <host>   public domain -> saved to .env as PUBLIC_DOMAIN (and, on
 #                     --server-node, used to configure Caddy/HTTPS)
 #   --port <n>        (server-node) app port (default 3000)
@@ -107,14 +106,13 @@ ${BOLD}Targets${RESET}
   ${GREEN}server (docker)${RESET}  Run the full stack (app + redis) with Docker Compose.
   ${GREEN}server (coolify)${RESET} Print guidance + ensure files for an isolated
                    Coolify deploy (Coolify handles domain + TLS itself).
-  ${GREEN}client${RESET}           Chrome extension (load unpacked) and/or n8n node.
+  ${GREEN}client${RESET}           Chrome extension (load unpacked) on this PC.
 
 ${BOLD}Options${RESET}
   --server-node        Non-interactive native Node server install
   --server-docker      Non-interactive Docker server install
   --coolify            Print Coolify deploy guidance
   --client             Non-interactive Chrome-extension helper
-  --client-n8n         Non-interactive n8n node build/install
   --domain <host>      Public domain, saved to .env as PUBLIC_DOMAIN and shown
                        beside the Authorization Code. On --server-node it also
                        configures Caddy/HTTPS.
@@ -132,7 +130,6 @@ while [ $# -gt 0 ]; do
     --server-node)   MODE="server-node" ;;
     --coolify)       MODE="coolify" ;;
     --client)        MODE="client" ;;
-    --client-n8n)    MODE="client-n8n" ;;
     --domain)        shift; OPT_DOMAIN="${1:-}" ;;
     --port)          shift; OPT_PORT="${1:-}" ;;
     -y|--yes)        ASSUME_YES=1 ;;
@@ -724,34 +721,6 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# CLIENT — n8n community node
-# ---------------------------------------------------------------------------
-install_client_n8n() {
-  title "Client — n8n community node"
-  if [ ! -d n8n-node ]; then
-    warn "n8n-node/ folder not found — skipping."
-    return 0
-  fi
-  require_node || return 1
-  info "This builds the n8n node package (TypeScript -> dist) in ./n8n-node."
-  if confirm "Install deps and build the n8n node now?"; then
-    ( cd n8n-node && npm install && npm run build )
-    ok "n8n node built at ${SCRIPT_DIR}/n8n-node/dist"
-    local N8N_CUSTOM="${HOME}/.n8n/custom"
-    info "n8n loads community nodes from: ${N8N_CUSTOM}"
-    if confirm "Install the built node into ${N8N_CUSTOM} now?"; then
-      mkdir -p "$N8N_CUSTOM"
-      ( cd "$N8N_CUSTOM" && { [ -f package.json ] || npm init -y >/dev/null 2>&1; } && npm install "${SCRIPT_DIR}/n8n-node" )
-      ok "Installed into ${N8N_CUSTOM}. Restart n8n to pick it up."
-    else
-      info "Manual: in n8n install community node 'n8n-nodes-automationbackend',"
-      info "or run:  cd ~/.n8n/custom && npm install \"${SCRIPT_DIR}/n8n-node\""
-    fi
-  fi
-  ok "n8n client done."
-}
-
-# ---------------------------------------------------------------------------
 # Final summary for server installs
 # ---------------------------------------------------------------------------
 print_server_summary() {
@@ -783,18 +752,16 @@ What are you installing on ${BOLD}this machine${RESET}?
   ${BOLD}2)${RESET} Server (Docker)   ${DIM}— app + redis via docker compose${RESET}
   ${BOLD}3)${RESET} Server (Coolify)  ${DIM}— isolated deploy guidance + files${RESET}
   ${BOLD}4)${RESET} Client (Chrome)   ${DIM}— load the browser extension on this PC${RESET}
-  ${BOLD}5)${RESET} Client (n8n)      ${DIM}— build/install the n8n community node${RESET}
-  ${BOLD}6)${RESET} Quit
+  ${BOLD}5)${RESET} Quit
 EOF
   local choice
-  choice="$(ask "Choose [1-6]" "1")"
+  choice="$(ask "Choose [1-5]" "1")"
   case "$choice" in
     1) install_server_node ;;
     2) install_server_docker ;;
     3) install_coolify ;;
     4) install_client ;;
-    5) install_client_n8n ;;
-    6|q|Q) info "Bye."; exit 0 ;;
+    5|q|Q) info "Bye."; exit 0 ;;
     *) err "Invalid choice."; exit 1 ;;
   esac
 }
@@ -808,7 +775,6 @@ main() {
     server-node)   install_server_node ;;
     coolify)       install_coolify ;;
     client)        install_client ;;
-    client-n8n)    install_client_n8n ;;
     "")            menu ;;
   esac
   printf "\n%s\n" "${GREEN}${BOLD}Done.${RESET}"

@@ -2235,7 +2235,7 @@
    * an unmapped action fell back to its raw id, so a seeded render showed
    * `fill` / `wait` / `extract` on the canvas, in the OUTLINE and in the blocks
    * palette. The fallback is kept for actions added later, and
-   * `tests/unit/palette-labels.test.ts` fails the moment the catalog grows a
+   * `tests/unit/action-catalog.test.ts` fails the moment the catalog grows a
    * member this table does not name, in either dictionary. */
   var NODE_DISPLAY_NAMES = {
     // navigation

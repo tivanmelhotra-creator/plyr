@@ -1,8 +1,8 @@
 // ============================================================
-// Webhook HMAC signing (F3 - n8n integration hardening)
+// Webhook HMAC signing (F3 - outgoing webhook hardening)
 //
 // When WEBHOOK_SECRET is configured, every outgoing webhook body is signed so
-// the receiver (e.g. an n8n Webhook node) can verify authenticity. We compute
+// the receiver (any HTTP webhook endpoint) can verify authenticity. We compute
 // HMAC-SHA256 over the EXACT serialized JSON body that is sent on the wire and
 // expose it as `X-Signature: sha256=<hex>`. A `X-Webhook-Timestamp` header
 // (unix seconds) is also emitted so receivers can reject stale replays.

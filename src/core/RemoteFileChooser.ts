@@ -14,7 +14,7 @@
  *
  * WHY THIS IS POSSIBLE HERE — AND WHY THE OLD HANDOFF SAID IT WAS NOT
  * -------------------------------------------------------------------
- * HANDOFF-REMOTE-BROWSER.md stated that on this view an upload could not be
+ * An earlier design note stated that on this view an upload could not be
  * automatic, reasoning that the operator drives a REAL Chromium with a real
  * mouse over VNC, so Playwright "is not holding its dialogs open" and there is
  * no dialog to answer. That reasoning is wrong, and only a measurement could

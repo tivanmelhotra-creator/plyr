@@ -1,7 +1,7 @@
 # Handoff 17 — Condition node with multiple prioritised paths (Mission 7)
 
 **Status:** ✅ Implemented
-**Mission:** `MISSIONS.md` § 7 — *«نود شرطی یه بخش path داره که نمیشه جدید اضافه کرد … هر کدوم از path ها با اولویت بالا از بالا به پایین به ترتیب چک میشه، درست باشه اون مسیر رو میره وگرنه بعدی چک میشه. اگر هیچ کدوم کار نکرد و مسیری فعال نشه، از مسیر خنثا یعنی next میره.»*
+**Mission (owner request):** *«نود شرطی یه بخش path داره که نمیشه جدید اضافه کرد … هر کدوم از path ها با اولویت بالا از بالا به پایین به ترتیب چک میشه، درست باشه اون مسیر رو میره وگرنه بعدی چک میشه. اگر هیچ کدوم کار نکرد و مسیری فعال نشه، از مسیر خنثا یعنی next میره.»*
 
 ---
 
@@ -146,7 +146,7 @@ Line endings confirmed unchanged: LF under `public/**`, CRLF preserved in
 ## 7. Not in scope / next
 
 * **Mission 5 part 2** — Automa value-type parity for the condition builder
-  (grouped value types) is still open; see `MISSIONS.md` § 5.
+  (grouped value types) is still open; see `19-HANDOFF-condition-value-types.md`.
 * Path-level *drag* reordering on the canvas (today reordering is done with the
   ↑ / ↓ buttons in the NDV list).
 * A “duplicate path” shortcut — cheap to add on top of `writePaths`.

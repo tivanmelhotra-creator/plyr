@@ -3,8 +3,8 @@
 // ----------------------------------------------------------------
 // Channel 1 (outbound webhook): in addition to the existing job-level
 // webhook, every step event (start/done/error/retry) can be delivered
-// live to the client URL (e.g. an n8n "Automation Backend Trigger"
-// node) signed with the SAME HMAC scheme as job webhooks.
+// live to the client URL (e.g. an external webhook receiver or
+// trigger endpoint) signed with the SAME HMAC scheme as job webhooks.
 //
 // Channel 2 (shareable live link): a per-job share token, signed over
 // "<userId>:<jobId>:<exp>", lets a recipient open a read-only live view
@@ -41,8 +41,8 @@ export function isStepEventType(type: string | undefined | null): type is StepEv
 }
 
 // ── Per-step webhook payload ────────────────────────────────────
-// A flat, n8n-friendly envelope. `event` matches the live event type so
-// a single n8n Trigger node can filter on step.start/step.done/...
+// A flat, integration-friendly envelope. `event` matches the live event type
+// so a single receiver can filter on step.start/step.done/...
 export interface StepWebhookPayload {
   event: StepEventType;
   jobId: string;
@@ -88,7 +88,7 @@ function asString(v: unknown): string | undefined {
  * Build the outbound per-step webhook payload from a live step event.
  * Returns null when the event is not a per-step event (so callers can
  * cheaply skip job.* / log events). The shape is intentionally flat and
- * stable so n8n expressions like `{{$json.outputItemCount}}` just work.
+ * stable so expressions like `{{$json.outputItemCount}}` just work.
  */
 export function buildStepWebhookPayload(input: StepEventInput): StepWebhookPayload | null {
   if (!isStepEventType(input.type)) return null;
@@ -129,8 +129,8 @@ export function buildStepWebhookPayload(input: StepEventInput): StepWebhookPaylo
 
 /**
  * Decide whether a given step event should be delivered, honoring an
- * optional allow-list of event types (mirrors the n8n Trigger node's
- * multiOptions "events" filter). Empty/undefined list = deliver all
+ * optional allow-list of event types (an "events" multi-select filter
+ * on the receiver side). Empty/undefined list = deliver all
  * per-step events. Non-step events are never delivered here.
  */
 export function shouldDeliverStepEvent(

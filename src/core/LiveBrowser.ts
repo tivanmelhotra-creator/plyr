@@ -708,7 +708,7 @@ export class LiveBrowserSession {
    *
    * The claim "Chrome will not open a second dialog while the first is up" holds
    * per PAGE, not per browser — and this session owns several. MEASURED
-   * (tools/probe-steal-tmp.js) with two tabs each opening a chooser and then one
+   * (transient probe, since deleted) with two tabs each opening a chooser, then one
    * setFiles:
    *     sequence      : pending <- A | pending <- B
    *     A input files : 0
@@ -1248,7 +1248,7 @@ export class LiveBrowserSession {
     // ---------------------------------------------------------------------
     // `pendingChooser` holds exactly ONE dialog, so a second dialog used to be
     // able to overwrite the first, and the file the user then picked went to the
-    // WRONG page. MEASURED (tools/probe-steal-tmp.js), two tabs each opening a
+    // WRONG page. MEASURED (transient probe, since deleted): two tabs each opening a
     // chooser, then one setFiles:
     //     sequence      : pending <- A | pending <- B
     //     A input files : 0

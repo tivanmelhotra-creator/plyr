@@ -12,7 +12,7 @@ export const sendWebhook = async (
 
   // [F3] Serialize the body ONCE so the signature is computed over the exact
   // bytes we transmit. When WEBHOOK_SECRET is set, attach HMAC headers so the
-  // receiver (e.g. an n8n Webhook node) can verify authenticity + freshness.
+  // receiver (any HTTP webhook endpoint) can verify authenticity + freshness.
   const rawBody = JSON.stringify(payload);
   const signatureHeaders: Record<string, string> = {};
   if (config.WEBHOOK_SECRET) {

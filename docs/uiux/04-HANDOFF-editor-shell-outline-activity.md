@@ -570,7 +570,7 @@ The palette is currently rendered by `renderPalette()` inside `flow-editor.js`, 
 | **I** | Group-selection toolbar (appears when >1 node is box-selected) |
 | **J** | Full **9-item** node context menu (currently partial: clone/pin/unpin exist — `fe.nodeMenu`, `fe.cloneNode`, `fe.pinNode`, `fe.unpinNode` are already in i18n) |
 | **N** | Single-node **Run node**: a backend endpoint + `API.runNode()` + NDV wiring (the NDV already has a run button shell, `.ndv-run-btn` in CSS at ~1740) |
-| — | Priority-1 guard tests named in `03-HANDOFF`: `tests/unit/workspace-tabs.test.ts` |
+| — | Priority-1 guard tests named in `03-HANDOFF`: `tests/unit/workspace-ui.test.ts` (shipped name) |
 
 ---
 

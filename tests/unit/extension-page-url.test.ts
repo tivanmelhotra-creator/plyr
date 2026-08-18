@@ -10,7 +10,7 @@
  * and no site.
  *
  * Reported symptom, reproduced with the real J2TEAM Cookies extension in a
- * headed Chrome (tools/probe-j2team-tmp.js):
+ * headed Chrome (transient probe, since deleted):
  *
  *   popup.html              → header "Cookies for this page", downloads: []
  *   popup.html?url=<base64> → header "Cookies for 127.0.0.1",

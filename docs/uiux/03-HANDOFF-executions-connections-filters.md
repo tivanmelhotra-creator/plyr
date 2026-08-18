@@ -233,7 +233,7 @@ execTimer = track(setInterval(...))                 // خروج از کل view �
    `grep "'refresh'"` جواب غلط می‌دهد. همیشه از `Icons.has()` بپرس.
 
 ۷. **`.ic` نباید width/height بگیرد** · **`'fx'` آیکون نیست** (جزئیات در
-   `HANDOFF_2026-07-27_ICONS_LAYOUT.md` §2.1).
+   the icon-registry / shell-layout brief, §2.1).
 
 ۸. **Redis نصب نیست.** `npm start` / `npm run dev` بالا نمی‌آید. برای بررسی
    بصری از سرور استاتیک استفاده کن:
@@ -279,7 +279,7 @@ execTimer = track(setInterval(...))                 // خروج از کل view �
 `tests/unit/workspace-ui.test.ts` (آن را بخوان و کپی کن؛ سورس را با
 `readFileSync` می‌خواند و روی رشته assert می‌زند).
 
-پیشنهاد فایل جدید: `tests/unit/workspace-tabs.test.ts`
+پیشنهاد فایل جدید: `tests/unit/workspace-ui.test.ts` (شامل شد)
 
 | مورد | چه چیزی assert شود |
 |---|---|
@@ -336,7 +336,7 @@ execTimer = track(setInterval(...))                 // خروج از کل view �
 > **⚠️ توجه:** بخشی از E (تب `Execution`) حالا با تب Executions همپوشانی مفهومی
 > دارد. **آن را دوباره ننویس** — منطق ردیف و برچسب trigger را از
 > `views.js#execRow` بردار و مشترک کن، وگرنه دو نمایش از یک داده می‌سازی
-> (همان دامی که در `HANDOFF_NEXT_SESSION.md` §8 مورد ۸ ثبت شده).
+> (همان دامی که در بریف اولیهٔ طراحی NDV ثبت شده بود).
 
 ### اولویت ۴ — پرداخت‌های کوچکِ باقی‌مانده از §4.3 سند قبلی
 
@@ -442,8 +442,8 @@ git push -f origin genspark_ai_developer
 |---|---|
 | **این فایل** | Executions/Connections/Filters + **فهرست معتبر کارِ مانده** |
 | `docs/uiux/02-HANDOFF-workspace-architecture.md` | معماری قفل‌شده‌ی ۶ ناحیه، Workspace hub، App Launcher، جدول درستی Live Browser |
-| `HANDOFF_2026-07-27_ICONS_LAYOUT.md` | رجیستری آیکون، پنج اکشن هسته‌ای، چیدمان افقی، **بخش ۴ = آیتم‌های A..N پوسته** |
-| `HANDOFF_NEXT_SESSION.md` | پایه‌ی دیزاین NDV (دو نود `click` و `if`/`while`)، توکن‌های قفل‌شده، دام‌های سریالایزر |
+| بریف آیکون/پوسته *(بازنشسته)* | رجیستری آیکون، پنج اکشن هسته‌ای، چیدمان افقی، **بخش ۴ = آیتم‌های A..N پوسته** — نسخهٔ جاری: `04-HANDOFF-editor-shell-outline-activity.md` |
+| بریف طراحی NDV *(بازنشسته)* | پایه‌ی دیزاین NDV (دو نود `click` و `if`/`while`)، توکن‌های قفل‌شده، دام‌های سریالایزر — نسخهٔ جاری: `ndv-click-element-final.md` + `ndv-condition-final.md` |
 | `docs/uiux/01-REPORT-ui-architecture-update.md` | گزارش کاربر، عیناً |
 | `docs/uiux/00-PROCESS-node-design.md` | فرایند طراحی هر نود |
 

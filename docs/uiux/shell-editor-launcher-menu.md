@@ -99,7 +99,9 @@ info-blue `#2BA6FF`, success `#2ECC71`, danger `#E45555`, text `#E8EDF4` /
 - **Undo / Redo**: `rotate-ccw` / `rotate-cw` icon buttons, disabled when the
   respective history stack is empty.
 - **Export ▾** / **Save ▾**: dark split buttons (`#151C25`, `1px` border,
-  radius `8px`, `13px`). Export menu: `JSON`, `cURL`, `n8n node`. Save menu:
+  radius `8px`, `13px`). Export menu: `JSON`, `cURL`. Save menu:
+  (The `n8n node` export item in the original sketch was never built, and
+  the legacy n8n integration has since been removed; do not reintroduce it.)
   `Save`, `Save as…`, `Save version`.
 - **Stop**: solid `#E45555`, white label, only present while a run is active;
   it is replaced by the orange `▶ Test Workflow` button when idle.
