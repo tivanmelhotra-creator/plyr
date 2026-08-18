@@ -164,6 +164,14 @@ type Responses = {
   noClipboardApi?: boolean;
   /** Make the execCommand fallback fail too — nothing can be copied. */
   execFails?: boolean;
+  /**
+   * What /browser/real/health says, via InspectorClient.remoteBrowserLive().
+   *
+   *   undefined — the method is absent entirely (an older dashboard bundle)
+   *   true      — already up and answering, so it must NOT be relaunched
+   *   false     — not up, or frozen, so it MUST be launched
+   */
+  remoteLive?: boolean;
 };
 
 function boot(res: Responses): Harness {
@@ -236,6 +244,15 @@ function boot(res: Responses): Harness {
         calls.push({ fn: 'targetingUnpair', args: [nodeId, fieldKey, opts] });
         return Promise.resolve(res.unpair !== false);
       },
+      // Installed only when the test says so, because "this dashboard has no
+      // liveness probe" is a real state the flow has to survive by falling back
+      // to the old launch-every-time behaviour.
+      ...(res.remoteLive === undefined ? {} : {
+        remoteBrowserLive: () => {
+          calls.push({ fn: 'remoteBrowserLive', args: [] });
+          return Promise.resolve(res.remoteLive);
+        },
+      }),
     },
     BrowserView: {
       openRealBrowser: (url: string, tab: unknown) => {
@@ -983,5 +1000,181 @@ describe('§7 — the dialog behaves like a dialog', () => {
     await openChooser(h);
     expect(h.flow.isOpen()).toBe(false);
     expect(h.toasts).toContain('tgt.failed');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §11 — REMOTE, THE SECOND TIME: DO NOT RELAUNCH A BROWSER THAT IS ALREADY UP
+//
+// Reported:
+//
+//   «اگر کاربر مرورگر رو نبنده و برم نود بعدی رو باز کنه و گیج میشه که الان من
+//    مرورگرم بالا هست ایا نیازه مجدد ایکون پیکر رو بزنم تا مرورگر بالا بیاد
+//    اگرم بیاد بهینه نیست»
+//
+//   «یعنی مرورگر مجدد بالا نمیاد و فقط الرت بالا میاد در دفعالت تکراری و توی اون
+//    الرت میگه که چه نودی، چه فیلدی»
+//
+// Two separate promises live here, and they pull in opposite directions:
+//
+//   1. When the browser IS up, do not relaunch it — the operator loses the page
+//      they were working on and pays a cold start for nothing. The consent prompt
+//      is already rendering in the tab they are looking at.
+//   2. When anything is uncertain, DO launch. A spurious "already up" is the one
+//      failure that strands the flow with no way forward, so every doubtful case
+//      below asserts the old behaviour is preserved.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('§11 — a live Remote Browser is reused, not relaunched', () => {
+  /** REMOTE plan + a consent prompt, which is what the server now returns. */
+  function remotePlan(over: Record<string, unknown> = {}) {
+    return {
+      success: true, environment: 'remote', step: 'targeting',
+      target: { ...TARGET, environment: 'remote' }, paired: true,
+      openRemoteBrowser: true,
+      consent: { consentId: 'cns_' + 'a1b2c3d4e5f6a1b2c3d4e5f6', state: 'pending', reused: false },
+      ...over,
+    };
+  }
+
+  /**
+   * `planOver` patches the SERVER'S PLAN; `over` patches the harness.
+   *
+   * Kept as two arguments on purpose. An earlier version funnelled both through
+   * `Responses.begin`, so patching the plan also overwrote the `begin` function
+   * with a plain object — targetingBegin() then resolved to that object, the flow
+   * saw no `success`, and the test "failed" on tgt.failed while appearing to
+   * measure the toast wording. Two parameters make that mistake unexpressible.
+   */
+  function bootRemote(over: Partial<Responses> = {}, planOver: Record<string, unknown> = {}) {
+    return boot({
+      options: OPTIONS_UNPAIRED,
+      ...over,
+      begin: (env: string) => (env === 'remote' ? remotePlan(planOver) : null),
+    });
+  }
+
+  async function pickRemote(h: Harness) {
+    await openChooser(h);
+    card(h, 'remote').fire('click');
+    await settle();
+    await settle();
+  }
+
+  it('does NOT relaunch when the browser is already up and answering', async () => {
+    const h = bootRemote({ remoteLive: true });
+    await pickRemote(h);
+
+    // THE FIX: «مرورگر مجدد بالا نمیاد».
+    expect(h.realBrowser.length).toBe(0);
+    // And the field is still armed — skipping the launch must not skip the arming.
+    expect(h.armed.length).toBe(1);
+    expect(h.armed[0].environment).toBe('remote');
+  });
+
+  it('DOES launch when the browser is not up', async () => {
+    const h = bootRemote({ remoteLive: false });
+    await pickRemote(h);
+    expect(h.realBrowser.length).toBe(1);
+    expect(h.realBrowser[0].gotTab).toBe(true);
+    expect(h.armed.length).toBe(1);
+  });
+
+  it('closes the speculatively-claimed tab when it turns out not to be needed', async () => {
+    // The tab is claimed synchronously to beat the popup blocker. If the browser
+    // is already up that tab is surplus, and leaving it would park a blank window
+    // on screen — indistinguishable, to the operator, from the broken relaunch
+    // this whole branch exists to prevent.
+    const h = bootRemote({ remoteLive: true });
+    await pickRemote(h);
+    expect(h.tabs.length).toBe(1);
+    expect(h.tabs[0].closed).toBe(true);
+  });
+
+  it('still claims the tab synchronously — the popup-blocker rule is untouched', async () => {
+    const h = bootRemote({ remoteLive: true });
+    await openChooser(h);
+    card(h, 'remote').fire('click');
+    // No await: the tab must exist before the server is ever asked, or the
+    // browser would have blocked it.
+    expect(h.tabs.length).toBe(1);
+  });
+
+  it('tells the operator to answer in the browser, not that one is opening', async () => {
+    const h = bootRemote({ remoteLive: true });
+    await pickRemote(h);
+    // «فقط الرت بالا میاد» — the honest instruction. Announcing "opening the
+    // Remote Browser…" would promise a tab that never appears.
+    expect(h.toasts).toContain('tgt.consentAsked');
+    expect(h.toasts).not.toContain('tgt.readyRemote');
+  });
+
+  it('says "still waiting" when the server refreshed an existing prompt', async () => {
+    // reused=true means the operator pressed the picker twice for the SAME field.
+    // There is no second question to answer, so claiming a new prompt arrived
+    // would send them looking for one.
+    const h = bootRemote(
+      { remoteLive: true },
+      { consent: { consentId: 'cns_x', state: 'pending', reused: true } },
+    );
+    await pickRemote(h);
+    expect(h.toasts).toContain('tgt.consentWaiting');
+    expect(h.toasts).not.toContain('tgt.consentAsked');
+  });
+
+  it('keeps the original wording when it actually launches', async () => {
+    const h = bootRemote({ remoteLive: false });
+    await pickRemote(h);
+    expect(h.toasts).toContain('tgt.readyRemote');
+    expect(h.toasts).not.toContain('tgt.consentAsked');
+  });
+
+  it('launches when the dashboard has no liveness probe at all', async () => {
+    // An older bundle without remoteBrowserLive() must behave exactly as before
+    // rather than silently never opening a browser again.
+    const h = bootRemote({}); // remoteLive undefined -> method absent
+    await pickRemote(h);
+    expect(h.calls.some((c) => c.fn === 'remoteBrowserLive')).toBe(false);
+    expect(h.realBrowser.length).toBe(1);
+    expect(h.toasts).toContain('tgt.readyRemote');
+  });
+
+  it('asks the probe exactly once per pick', async () => {
+    // A probe per pick, not per poll: this runs on a user gesture and must not
+    // turn into background traffic.
+    const h = bootRemote({ remoteLive: true });
+    await pickRemote(h);
+    expect(h.calls.filter((c) => c.fn === 'remoteBrowserLive').length).toBe(1);
+  });
+
+  it('never probes on the LOCAL branch', async () => {
+    // LOCAL has nothing to relaunch; asking would be a pointless request and a
+    // confusing dependency between two independent paths.
+    const h = boot({
+      options: OPTIONS_PAIRED,
+      remoteLive: true,
+      begin: (env: string) => (env === 'local'
+        ? {
+          success: true, environment: 'local', step: 'targeting',
+          target: TARGET, paired: true, openRemoteBrowser: false,
+        }
+        : null),
+    });
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+    await settle();
+    expect(h.calls.some((c) => c.fn === 'remoteBrowserLive')).toBe(false);
+    expect(h.realBrowser.length).toBe(0);
+    expect(h.toasts).toContain('tgt.readyLocal');
+  });
+
+  it('arms the field even when there is no BrowserView to open one with', async () => {
+    // Nothing can be launched AND nothing can be reused, so the only correct
+    // outcome is to arm the field anyway rather than drop the pick silently.
+    const h = bootRemote({ remoteLive: true });
+    delete (h.win as Record<string, unknown>).BrowserView;
+    await pickRemote(h);
+    expect(h.realBrowser.length).toBe(0);
+    expect(h.armed.length).toBe(1);
   });
 });
