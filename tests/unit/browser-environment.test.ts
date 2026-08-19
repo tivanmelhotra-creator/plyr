@@ -105,38 +105,48 @@ describe('REMOTE BROWSER', () => {
   });
 });
 
-describe('LOCAL BROWSER', () => {
-  // [REQ] First use of a field: the code is issued at that moment.
-  it('asks for an Authorization Code the FIRST time a field is targeted', () => {
+describe('LOCAL BROWSER = the browser runtime on the SAME server', () => {
+  // [REQ] "LOCAL باید کاملاً internal/automatic باشد" — LOCAL is the browser
+  // runtime on the same server/infrastructure the application runs on, so the
+  // server is not a third party to it. There is nothing for a human to supply.
+  it('asks for NOTHING the FIRST time a field is targeted', () => {
     const plan = planTargeting({ environment: 'local', paired: false });
-    expect(plan.step).toBe('authorize');
-    expect(plan.needsAuthorization).toBe(true);
-    expect(plan.note).toBe('pairing_required');
+    // Was 'authorize' with needsAuthorization: true and note 'pairing_required'
+    // — the step that rendered an Authorization Code and a Base URL.
+    expect(plan.step).toBe('targeting');
+    expect(plan.needsAuthorization).toBe(false);
+    expect(plan.note).toBe('server_local_browser');
   });
 
-  // [REQ] «دفعات بعد برای همان Extension و همان Target Field، دیگر
-  //        Authorization Code لازم نیست.»
-  it('asks for NOTHING once that field is already paired', () => {
+  it('asks for NOTHING on a field it has already bound either', () => {
     const plan = planTargeting({ environment: 'local', paired: true });
     expect(plan.step).toBe('targeting');
     expect(plan.needsAuthorization).toBe(false);
     expect(plan.note).toBe('already_paired');
   });
 
-  it('never opens the server browser', () => {
-    // The bug this whole change exists to fix: the user already has the page
-    // open in their own Chrome, and a server window they did not ask for is
-    // both useless and confusing.
+  it('never raises a Remote Approval alert', () => {
+    // The one real asymmetry between the environments. LOCAL is internal, so
+    // there is no second party to approve anything.
+    for (const paired of [true, false]) {
+      expect(planTargeting({ environment: 'local', paired }).needsRemoteApproval).toBe(false);
+    }
+  });
+
+  it('never opens a server-owned browser WINDOW for the user', () => {
+    // LOCAL resolves the runtime already present on the server rather than
+    // launching the remote desktop view.
     for (const paired of [true, false]) {
       expect(planTargeting({ environment: 'local', paired }).opensRemoteBrowser).toBe(false);
     }
   });
 
-  it('never lets the server bind on the user’s behalf', () => {
-    // The server does not own the user's browser, so it cannot vouch for what
-    // is running in it. Only a code the human types can.
+  it('lets the server bind the target itself', () => {
+    // The inversion at the heart of this fix. The server RUNS this browser, so
+    // it can bind the field internally; requiring a typed code was requiring
+    // the user to re-supply what the server already knew.
     for (const paired of [true, false]) {
-      expect(planTargeting({ environment: 'local', paired }).serverMayGrant).toBe(false);
+      expect(planTargeting({ environment: 'local', paired }).serverMayGrant).toBe(true);
     }
   });
 });
@@ -149,8 +159,12 @@ describe('LOCAL when it cannot be used', () => {
     // page — the exact lie this subsystem exists to prevent.
     expect(plan.environment).toBe('local');
     expect(plan.note).toBe('local_disabled');
-    expect(plan.step).toBe('authorize');
+    // 'targeting' is now the ONLY step: TargetingStep is a one-member union, so
+    // an authorize step cannot be expressed even by mistake.
+    expect(plan.step).toBe('targeting');
     expect(plan.opensRemoteBrowser).toBe(false);
+    // Refused, so the server must NOT claim it can bind.
+    expect(plan.serverMayGrant).toBe(false);
   });
 
   it('reports local_unavailable when local is on but nothing is connected', () => {
@@ -169,7 +183,7 @@ describe('LOCAL when it cannot be used', () => {
     expect(plan.note).toBe('local_disabled');
   });
 
-  it('still says a paired field would need no code, even while unreachable', () => {
+  it('still needs no authorization for a bound field, even while unreachable', () => {
     // Unreachable is not "unpaired". Conflating them would throw away a pairing
     // the user already earned, just because their browser was closed.
     const plan = planTargeting({ environment: 'local', paired: true, localAvailable: false });
@@ -194,16 +208,30 @@ describe('the chooser’s options', () => {
     expect(opts.map((o) => o.id)).toEqual(['local', 'remote']);
   });
 
-  it('warns that LOCAL will ask for a code, when it will', () => {
+  it('promises no credential step for EITHER environment', () => {
+    // Previously the LOCAL card carried a "will ask for a code" warning. Under
+    // the final contract neither environment has a code, so neither warns.
     const [local, remote] = environmentOptions({ paired: false });
-    expect(local.needsAuthorization).toBe(true);
+    expect(local.needsAuthorization).toBe(false);
     expect(remote.needsAuthorization).toBe(false);
   });
 
-  it('drops that warning once the field is paired', () => {
-    const [local] = environmentOptions({ paired: true });
-    expect(local.needsAuthorization).toBe(false);
-    expect(local.paired).toBe(true);
+  it('marks REMOTE — and only REMOTE — as needing approval', () => {
+    // This is what replaced the credential warning on the cards: the single
+    // honest difference the user needs to know before choosing.
+    const [local, remote] = environmentOptions({ paired: false });
+    expect(local.needsRemoteApproval).toBe(false);
+    expect(remote.needsRemoteApproval).toBe(true);
+  });
+
+  it('treats LOCAL as ready whether or not the field was bound before', () => {
+    for (const paired of [true, false]) {
+      const [local] = environmentOptions({ paired });
+      expect(local.needsAuthorization).toBe(false);
+      // serverMayGrant is true for LOCAL, so the card reports it as ready to
+      // use rather than as something to set up first.
+      expect(local.paired).toBe(true);
+    }
   });
 
   it('treats REMOTE as always paired', () => {

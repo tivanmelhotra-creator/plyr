@@ -1320,23 +1320,22 @@
       'insp.err.INVALID_AUTHORIZATION_CODE': 'کد مجوز نامعتبر است. کد جدیدی درخواست کنید.',
       'insp.err.AUTHORIZATION_EXPIRED': 'کد مجوز منقضی شده است. مجوز جدیدی برای بازرس شروع کنید.',
       'insp.err.TARGET_FIELD_NOT_FOUND': 'فیلد مقصد در دسترس نیست. نود را دوباره باز کنید و دکمهٔ انتخاب آن را بزنید.',
-      'insp.err.TARGET_NOT_AUTHORIZED': 'این بازرس برای فیلد درخواستی مجاز نیست. کد مجوز جدیدی درخواست کنید.',
+      'insp.err.TARGET_NOT_AUTHORIZED': 'این بازرس به فیلد درخواستی متصل نیست. روی همان فیلد در پروژه، دکمهٔ هدف‌گیری (نشانگر) را بزنید.',
       'insp.err.INSPECTOR_DISCONNECTED': 'ارتباط بازرس قطع شده است. افزونه را دوباره متصل کنید.',
       'insp.err.ELEMENT_INSPECTION_FAILED': 'بررسی المان ممکن نشد. دوباره المان را انتخاب کنید.',
       'insp.err.ATTRIBUTE_SEND_FAILED': 'ارسال ویژگی ممکن نشد. یک ویژگی دارای مقدار انتخاب کنید و دوباره بفرستید.',
 
-      // صدور کد — سمت پروژه از فرآیند اتصال. کد فقط به همین یک فیلد تعلق دارد،
-      // و همین است که مانع می‌شود افزونه مقصد را خودش انتخاب کند.
-      'insp.connect': 'اتصال بازرس',
-      'insp.connectHint': 'یک کد یک‌بارمصرف بگیرید و آن را در افزونه وارد کنید تا این فیلد پر شود.',
-      'insp.codeReady': 'این کد را در افزونه وارد کنید',
-      'insp.codeExpires': 'تا ۵ دقیقه اعتبار دارد',
-      'insp.codeFailed': 'صدور کد ممکن نشد. نود را دوباره باز کنید و تلاش کنید.',
-      'insp.codeCopied': 'کد کپی شد.',
-      // زمانی که افزونه کد را پذیرفت. باکس کد پس از آن برداشته می‌شود، پس بدون
-      // این پیام هیچ نشانه‌ای از موفقیت باقی نمی‌ماند.
-      'insp.pairedNow': 'افزونه متصل شد. حالا المان را در مرورگر خود انتخاب کنید.',
-      'insp.copy': 'کپی',
+      // کلیدهای «صدور کد» از اینجا حذف شده‌اند: insp.connect، insp.connectHint،
+      // insp.codeReady، insp.codeExpires، insp.codeFailed، insp.codeCopied،
+      // insp.pairedNow و insp.copy.
+      //
+      // این‌ها متنِ باکس «اتصال بازرس» در هر فیلد بودند — دکمه‌ای که یک
+      // Authorization Code و یک Base URL می‌ساخت تا کاربر آن‌ها را در افزونه
+      // کپی کند. آن باکس حذف شده است، چون LOCAL نباید هیچ Base URL یا API Key
+      // یا Authorization Code از کاربر بخواهد؛ سرور خودش مقصد را می‌بندد.
+      //
+      // کلیدها همراه با کد حذف شدند تا یک رشتهٔ بی‌استفاده بعداً کسی را به
+      // ساختن دوبارهٔ همان فرم ترغیب نکند.
 
       // ── انتخاب محیط مرورگر — نخستین گام هدف‌گیری ─────────────────────────
       // «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله
@@ -1349,46 +1348,43 @@
       'tgt.title': 'هدف‌گیری با کدام مرورگر؟',
       'tgt.subtitle': 'انتخاب کنید المان را در کدام مرورگر نشان می‌دهید.',
       'tgt.local': 'مرورگر محلی',
-      'tgt.localDesc': 'مرورگر خودتان روی دستگاه خودتان. با افزونهٔ بازرس انتخاب می‌کنید.',
+      'tgt.localDesc': 'مرورگر روی همین سرور. اتصال کاملاً خودکار است و چیزی از شما پرسیده نمی‌شود.',
       'tgt.remote': 'مرورگر ریموت',
       'tgt.remoteDesc': 'مرورگر روی سرور. یک تب تازه باز می‌شود و همان‌جا انتخاب می‌کنید.',
-      // برچسبی که پیش از انتخاب می‌گوید چه چیزی در انتظار کاربر است، تا کد
-      // ناگهانی روی صفحه ظاهر نشود.
-      'tgt.needsCode': 'یک‌بار کد مجوز لازم دارد',
-      'tgt.noCode': 'کد لازم ندارد',
-      'tgt.paired': 'قبلاً متصل شده',
+      // برچسبی که پیش از انتخاب می‌گوید چه چیزی در انتظار کاربر است. تنها
+      // تفاوت واقعی میان دو گزینه همین است: ریموت یک تأیید در خود مرورگر
+      // می‌خواهد، محلی هیچ چیز. کلیدهای پیشین (needsCode / noCode / paired)
+      // حذف شدند، چون هر سه دربارهٔ «کد مجوز» بودند و کد دیگر وجود ندارد.
+      'tgt.needsApproval': 'در همان مرورگر یک تأیید لازم دارد',
+      'tgt.automatic': 'اتصال خودکار — بدون کد و بدون تنظیم',
       // چرا یک گزینه در دسترس نیست. به‌جای پنهان‌کردنش دلیل گفته می‌شود،
       // چون گزینهٔ ناپیدا سؤال می‌سازد و گزینهٔ توضیح‌دار پاسخ.
       'tgt.localDisabled': 'هدف‌گیری با مرورگر محلی روی این سرور خاموش است.',
       'tgt.localUnavailable': 'مرورگر محلی در دسترس نیست. افزونهٔ بازرس را نصب و مرورگرتان را باز کنید.',
       'tgt.cancel': 'انصراف',
-      // گام مجوز، فقط در شاخهٔ محلی و فقط بار اول همان فیلد.
-      'tgt.authTitle': 'این کد را در افزونه وارد کنید',
-      'tgt.authHint': 'کد فقط برای همین فیلد است. بعد از تأیید، دفعات بعد دیگر پرسیده نمی‌شود.',
-      'tgt.waiting': 'در انتظار افزونه…',
-      'tgt.pairedNow': 'متصل شد. حالا المان را در مرورگر خود انتخاب کنید.',
-      'tgt.readyLocal': 'آماده است. المان را در مرورگر خودتان انتخاب کنید.',
+      // گام محلی: گزارشِ کاری که سرور همین حالا انجام داده، نه فرمی برای پر کردن.
+      // جای صفحهٔ «کد مجوز» را گرفته است.
+      'tgt.localTitle': 'مرورگر محلی آماده شد',
+      'tgt.localAuto': 'همه چیز روی همین سرور و به‌صورت خودکار انجام شد — نه آدرس، نه کلید، نه کد.',
+      'tgt.stepRuntime': 'اجرای مرورگر',
+      'tgt.stepRuntimeOk': 'شناسایی و آماده شد',
+      'tgt.stepContext': 'اتصال داخلی',
+      'tgt.stepContextOk': 'به‌صورت خودکار حل شد',
+      'tgt.stepTarget': 'فیلد هدف',
+      'tgt.connectedTo': 'متصل به هدف',
+      'tgt.readyToSend': 'آمادهٔ ارسال',
+      'tgt.close': 'بستن',
+      'tgt.readyLocal': 'آماده است. المان را در مرورگر انتخاب کنید.',
       'tgt.readyRemote': 'مرورگر ریموت در حال باز شدن است…',
       'tgt.consentAsked': 'مرورگر ریموت از قبل باز است — در همان تب اجازهٔ اتصال را بدهید.',
       'tgt.consentWaiting': 'هنوز منتظر اجازهٔ شما در تب مرورگر ریموت هستیم.',
       'tgt.failed': 'شروع هدف‌گیری ممکن نشد. دوباره تلاش کنید.',
       'tgt.unpair': 'قطع اتصال این فیلد',
       'tgt.unpaired': 'اتصال این فیلد قطع شد. دفعهٔ بعد کد تازه لازم است.',
-      // آدرس سرور، کنار کد. کد بدون آدرس قابل استفاده نیست: کاربر باید هر دو را
-      // در افزونه وارد کند و تا پیش از این فقط کد نمایش داده می‌شد.
-      'tgt.baseUrl': 'آدرس سرور (Base URL)',
-      'tgt.baseConfigured': 'دامنهٔ تنظیم‌شده',
-      'tgt.baseRequest': 'همان آدرسی که این صفحه با آن باز شده',
-      'tgt.baseDetected': 'شناسایی‌شده — در صورت نیاز اصلاحش کنید',
-      'tgt.baseLoopback': 'فقط روی همین رایانه کار می‌کند',
-      'tgt.copied': 'کپی شد',
-      // برچسب خود کد. تا پیش از این کد بدون برچسب و کنار دکمهٔ «کپی» در پایین
-      // پنجره بود؛ حالا که دو مقدار قابل کپی روی صفحه است، هرکدام باید بگوید
-      // چه چیزی را کپی می‌کند.
-      'tgt.authCode': 'کد مجوز (Authorization Code)',
-      // وقتی نوشتن در کلیپ‌بورد ممکن نشد — مثلاً روی مبدأ ناامن. سکوت در این
-      // حالت بدترین حالت است: کاربر مقدار قبلی کلیپ‌بورد را جای‌گذاری می‌کند.
-      'tgt.copyManual': 'کپی نشد — خودتان انتخاب و Ctrl+C کنید',
+      // حذف‌شده: tgt.baseUrl / baseConfigured / baseRequest / baseDetected /
+      // baseLoopback / copied / copyManual / authCode / authTitle / authHint /
+      // waiting / pairedNow. همه متعلق به صفحهٔ «کد مجوز» بودند؛ آن صفحه حذف شد،
+      // چون مرورگر محلی روی همین سرور اجرا می‌شود و چیزی برای جابه‌جا کردن نیست.
 
       'mode.title': 'حالت مرورگر',
       'mode.remote': 'مرورگر ریموت',
@@ -2659,23 +2655,23 @@
       'insp.err.INVALID_AUTHORIZATION_CODE': 'Authorization code invalid. Request a new Authorization Code.',
       'insp.err.AUTHORIZATION_EXPIRED': 'Authorization code expired. Start a new Inspector authorization.',
       'insp.err.TARGET_FIELD_NOT_FOUND': 'Target Field unavailable. Re-open the node and press its picker button again.',
-      'insp.err.TARGET_NOT_AUTHORIZED': 'This Inspector is not authorized for the requested Field — request a new Authorization Code.',
+      'insp.err.TARGET_NOT_AUTHORIZED': 'This Inspector is not attached to the requested Field — press the targeting crosshair on that field in the project.',
       'insp.err.INSPECTOR_DISCONNECTED': 'Inspector disconnected. Reconnect the extension.',
       'insp.err.ELEMENT_INSPECTION_FAILED': 'Unable to inspect element. Try selecting the element again.',
       'insp.err.ATTRIBUTE_SEND_FAILED': 'Unable to send attribute. Select one attribute with a value, then retry the send.',
 
-      // Issuing a code — the project side of pairing. The code is scoped to THIS
-      // one field, which is what stops the extension choosing its own target.
-      'insp.connect': 'Connect Inspector',
-      'insp.connectHint': 'Get a one-time code and enter it in the extension to fill this field.',
-      'insp.codeReady': 'Enter this code in the extension',
-      'insp.codeExpires': 'Valid for 5 minutes',
-      'insp.codeFailed': 'The code could not be issued. Re-open the node and try again.',
-      'insp.codeCopied': 'Code copied.',
-      // Shown when the extension accepts the code. The code box is removed at
-      // that moment, so without this there is no sign the pairing succeeded.
-      'insp.pairedNow': 'Extension connected. Now pick the element in your browser.',
-      'insp.copy': 'Copy',
+      // The code-issuing keys are removed from here: insp.connect,
+      // insp.connectHint, insp.codeReady, insp.codeExpires, insp.codeFailed,
+      // insp.codeCopied, insp.pairedNow and insp.copy.
+      //
+      // They were the text of the per-field "Connect Inspector" box — a button
+      // that minted an Authorization Code and printed a Base URL for the user to
+      // copy into the extension. That box is gone, because LOCAL may not ask the
+      // user for a Base URL, an API Key or an Authorization Code: the server
+      // binds the target itself.
+      //
+      // The strings are deleted along with the code so that a leftover unused
+      // label cannot later invite someone to rebuild the same form.
 
       // ── Browser Environment chooser — the FIRST step of Targeting ────────
       // «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله
@@ -2689,26 +2685,33 @@
       'tgt.title': 'Target with which browser?',
       'tgt.subtitle': 'Choose where you will point at the element.',
       'tgt.local': 'Local Browser',
-      'tgt.localDesc': 'Your own browser on your own machine. You pick with the Inspector extension.',
+      'tgt.localDesc': 'The browser runtime on this same server. Connects automatically — nothing to enter.',
       'tgt.remote': 'Remote Browser',
       'tgt.remoteDesc': 'The browser on the server. A new tab opens and you pick there.',
-      // Says what is coming BEFORE the user commits, so a code never appears
-      // out of nowhere.
-      'tgt.needsCode': 'Needs a one-time Authorization Code',
-      'tgt.noCode': 'No code needed',
-      'tgt.paired': 'Already paired',
+      // Says what is coming BEFORE the user commits. The only real difference
+      // between the two cards is now whether an approval will be raised inside
+      // the browser. REPLACES needsCode / noCode / paired, all three of which
+      // were statements about an Authorization Code that no longer exists.
+      'tgt.needsApproval': 'Asks you to approve in that browser',
+      'tgt.automatic': 'Connects automatically — no code, no setup',
       // Why an option cannot be used. Explained rather than hidden: a missing
       // option raises a question, an explained one answers it.
       'tgt.localDisabled': 'Local Browser targeting is turned off on this server.',
       'tgt.localUnavailable': 'No local browser available. Install the Inspector extension and open your browser.',
       'tgt.cancel': 'Cancel',
-      // The authorize step — local branch only, and only the first time for
-      // that field.
-      'tgt.authTitle': 'Enter this code in the extension',
-      'tgt.authHint': 'The code is for this field only. Once accepted, you will not be asked again.',
-      'tgt.waiting': 'Waiting for the extension…',
-      'tgt.pairedNow': 'Paired. Now pick the element in your browser.',
-      'tgt.readyLocal': 'Ready. Pick the element in your own browser.',
+      // The LOCAL step: a REPORT of what the server already did, not a form to
+      // fill in. Replaces the Authorization Code screen entirely.
+      'tgt.localTitle': 'Local Browser ready',
+      'tgt.localAuto': 'Resolved automatically on this server — no address, no key, no code.',
+      'tgt.stepRuntime': 'Browser runtime',
+      'tgt.stepRuntimeOk': 'detected and ready',
+      'tgt.stepContext': 'Internal connection',
+      'tgt.stepContextOk': 'resolved automatically',
+      'tgt.stepTarget': 'Target field',
+      'tgt.connectedTo': 'Connected to target',
+      'tgt.readyToSend': 'Ready to send',
+      'tgt.close': 'Close',
+      'tgt.readyLocal': 'Ready. Pick the element in the browser.',
       'tgt.readyRemote': 'Opening the Remote Browser…',
       // The Remote Browser was ALREADY open, so it was not relaunched. What the
       // operator has to do next is answer the prompt inside it — saying
@@ -2718,22 +2721,13 @@
       'tgt.failed': 'Targeting could not be started. Try again.',
       'tgt.unpair': 'Unpair this field',
       'tgt.unpaired': 'This field was unpaired. Next time a new code will be needed.',
-      // The server address, beside the code. A code with no address is not
-      // usable -- both go into the extension, and only the code was shown.
-      'tgt.baseUrl': 'Server address (Base URL)',
-      'tgt.baseConfigured': 'configured domain',
-      'tgt.baseRequest': 'the address this page was opened on',
-      'tgt.baseDetected': 'detected — correct it if needed',
-      'tgt.baseLoopback': 'only works on this machine',
-      'tgt.copied': 'Copied',
-      // The code's own label. It previously had none, sitting next to a footer
-      // button simply marked "Copy"; with two copyable values on screen each has
-      // to say which one it takes.
-      'tgt.authCode': 'Authorization Code',
-      // When the clipboard write failed -- an insecure origin, or a document
-      // without focus. Saying nothing is the worst outcome: the operator pastes
-      // whatever was on the clipboard before.
-      'tgt.copyManual': 'Not copied — select it and press Ctrl+C',
+      // REMOVED: tgt.baseUrl / baseConfigured / baseRequest / baseDetected /
+      // baseLoopback / copied / copyManual / authCode / authTitle / authHint /
+      // waiting / pairedNow. Every one belonged to the Authorization Code screen.
+      // That screen is gone because the LOCAL browser runs on this same server,
+      // so there is no longer anything for the operator to carry between two
+      // machines -- and a dictionary that still speaks the language of a
+      // credential form is how such a form comes back.
 
       'mode.title': 'Browser mode',
       'mode.remote': 'Remote Browser',

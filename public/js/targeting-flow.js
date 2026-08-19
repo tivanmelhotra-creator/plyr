@@ -97,7 +97,12 @@
     var d = openDialog;
     openDialog = null;
     if (!d) return;
-    if (d.poll) { clearInterval(d.poll); d.poll = null; }
+    // Cleared BOTH ways on purpose: `poll` holds an interval on the remote path
+    // and a one-shot timeout on the LOCAL auto-close path. In browsers the two id
+    // spaces are shared, so clearing both is correct and neither call can harm
+    // the other kind of handle — whereas clearing only the interval would leave a
+    // LOCAL timer alive to close a dialog the operator had already replaced.
+    if (d.poll) { clearInterval(d.poll); clearTimeout(d.poll); d.poll = null; }
     if (d.onKey) {
       document.removeEventListener('keydown', d.onKey, true);
       d.onKey = null;
@@ -171,133 +176,21 @@
   }
 
   /**
-   * Put text on the clipboard, for real.
+   * REMOVED: writeClipboard(), copyButton(), baseUrlRow().
    *
-   * `navigator.clipboard.writeText` is the right call and is NOT reliable here:
-   * it rejects on an insecure origin (a plain-http LAN address, which is exactly
-   * how this panel is reached while someone is still setting PUBLIC_DOMAIN up)
-   * and on a document that does not have focus. The values this dialog copies —
-   * an Authorization Code and a Base URL — are the two things the operator MUST
-   * transfer into another application, so a copy button that quietly does nothing
-   * is worse here than anywhere else in the product: they paste stale clipboard
-   * content into the extension and the pairing fails for a reason that is
-   * nowhere on screen.
+   * All three existed to serve ONE screen — the LOCAL Authorization Code dialog —
+   * whose entire job was to move two values (an 8-character code and a Base URL)
+   * out of this page and into an extension running on a DIFFERENT machine. That
+   * machine does not exist in this product: `LOCAL BROWSER` is the Browser Runtime
+   * on the same server as the backend, and both values are now resolved
+   * internally and never shown.
    *
-   * So the deprecated `execCommand('copy')` is kept as a fallback. The textarea
-   * is appended to the document (not to the panel) and removed in a `finally`,
-   * so a throw cannot leave a stray node behind or shift the dialog's layout.
-   *
-   * Returns a Promise<boolean> — RESOLVED, never rejected. The caller renders
-   * either "Copied" or an instruction to copy by hand, and both of those are
-   * more useful than an exception.
+   * They are deleted rather than left in place unused. A clipboard helper sitting
+   * next to a flow that must never ask the operator to copy a credential is an
+   * invitation to reintroduce exactly the defect this change removes, and the
+   * i18n keys it consumed (tgt.copied, tgt.baseUrl, tgt.baseDetected, …) would
+   * have kept the vocabulary of a credential form alive in the UI's dictionary.
    */
-  function writeClipboard(text) {
-    var s = String(text == null ? '' : text);
-    if (!s) return Promise.resolve(false);
-
-    function legacy() {
-      try {
-        var doc = document;
-        if (!doc || !doc.body || typeof doc.execCommand !== 'function') return false;
-        var ta = doc.createElement('textarea');
-        ta.value = s;
-        // Off-screen rather than hidden: a `display:none` textarea cannot be
-        // selected, so the copy would silently produce nothing.
-        ta.setAttribute('aria-hidden', 'true');
-        ta.style.position = 'fixed';
-        ta.style.top = '-1000px';
-        ta.style.opacity = '0';
-        doc.body.appendChild(ta);
-        try {
-          ta.focus();
-          ta.select();
-          return !!doc.execCommand('copy');
-        } finally {
-          if (ta.parentNode) ta.parentNode.removeChild(ta);
-        }
-      } catch (e) { return false; }
-    }
-
-    try {
-      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(s).then(
-          function () { return true; },
-          function () { return legacy(); }
-        );
-      }
-    } catch (e) { /* fall through to the legacy path */ }
-    return Promise.resolve(legacy());
-  }
-
-  /**
-   * A Copy button that says what happened.
-   *
-   * Confirmation is applied only once the write has RESOLVED. A "Copied" shown
-   * before that is a claim the operator only discovers to be false when they
-   * paste — and at that point they have no reason to suspect the button.
-   *
-   * `getText` is a function rather than a string so the button always copies the
-   * value currently on screen, not the one captured when it was built.
-   */
-  function copyButton(getText, cls) {
-    var label = t('insp.copy');
-    var b = button(label, 'is-quiet' + (cls ? ' ' + cls : ''), function () {
-      writeClipboard(getText()).then(function (ok) {
-        b.textContent = ok ? t('tgt.copied') : t('tgt.copyManual');
-        b.className = 'tgt-btn is-quiet' + (cls ? ' ' + cls : '') + (ok ? ' is-ok' : ' is-warn');
-        if (b.copyTimer) clearTimeout(b.copyTimer);
-        b.copyTimer = setTimeout(function () {
-          b.textContent = label;
-          b.className = 'tgt-btn is-quiet' + (cls ? ' ' + cls : '');
-        }, ok ? 1200 : 2600);
-      });
-    });
-    b.setAttribute('aria-label', label);
-    return b;
-  }
-
-  /**
-   * The Base URL, beside the code, with its own Copy button.
-   *
-   * Its own button rather than one that copies both: they go into two different
-   * fields in the extension, so a combined copy would only have to be pulled
-   * apart again by hand. The address is rendered LTR and `user-select:all` for
-   * the same reason as the code — it is retyped into another application, and a
-   * bidi-reordered URL is a URL that gets mistyped in an RTL page.
-   *
-   * `source` is shown because "detected" and "configured" do not deserve equal
-   * confidence. A detected LAN address is a good guess that the operator may
-   * need to correct; saying so is what lets them realise they should set
-   * PUBLIC_DOMAIN instead of concluding the product is broken.
-   */
-  function baseUrlRow(baseUrl, source) {
-    var wrap = el('div', 'tgt-base');
-
-    var head = el('div', 'tgt-base-head');
-    head.appendChild(el('span', 'tgt-base-label', t('tgt.baseUrl')));
-    var hintKey = source === 'configured' ? 'tgt.baseConfigured'
-      : source === 'request' ? 'tgt.baseRequest'
-        : source === 'detected' ? 'tgt.baseDetected'
-          : source === 'loopback' ? 'tgt.baseLoopback' : '';
-    if (hintKey) {
-      head.appendChild(el('span', 'tgt-base-src' + (source === 'configured' ? ' is-ok' : ''), t(hintKey)));
-    }
-    wrap.appendChild(head);
-
-    var line = el('div', 'tgt-base-line');
-    // textContent, never innerHTML: this string is assembled from a Host header.
-    var value = el('code', 'tgt-base-url', baseUrl);
-    line.appendChild(value);
-
-    // Through the shared helper, so this button and the CODE's button behave
-    // identically — including the insecure-origin fallback, which matters most
-    // for precisely this value: an operator copying a Base URL is very often
-    // looking at a plain-http LAN address at the time.
-    line.appendChild(copyButton(function () { return baseUrl; }, 'tgt-base-copy'));
-    wrap.appendChild(line);
-
-    return wrap;
-  }
 
   // ---------------------------------------------------------------------------
   // Step 1 — the chooser
@@ -324,15 +217,19 @@
     if (!opt.available) {
       noteCls += 'is-warn';
       noteText = t(NOTE_KEYS[opt.note] || 'tgt.localUnavailable');
-    } else if (opt.needsAuthorization) {
+    } else if (opt.needsRemoteApproval) {
+      // The one thing that still genuinely differs between the two cards, and so
+      // the only thing worth warning about BEFORE the click. REPLACES the
+      // `needsAuthorization` badge ("an Authorization Code will be shown"), which
+      // can no longer be true in either environment.
       noteCls += 'is-code';
-      noteText = t('tgt.needsCode');
-    } else if (isLocal && opt.paired) {
-      noteCls += 'is-ok';
-      noteText = t('tgt.paired');
+      noteText = t('tgt.needsApproval');
     } else {
+      // LOCAL, in every case. Paired or not, the connection is automatic, so
+      // there is no honest distinction left to draw here — the old `paired` /
+      // `noCode` split existed only to promise whether a code was coming.
       noteCls += 'is-ok';
-      noteText = t('tgt.noCode');
+      noteText = t('tgt.automatic');
     }
     card.appendChild(el('div', noteCls, noteText));
 
@@ -380,98 +277,97 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Step 2 — the Authorization Code (LOCAL, first time for this field)
+  // Step 2 — LOCAL: the automatic progression
   // ---------------------------------------------------------------------------
 
   /**
-   * Show the code and wait for the extension to accept it.
+   * WHAT USED TO BE HERE, AND WHY IT IS GONE
+   * ----------------------------------------
+   * `renderAuthorize()`: an 8-character Authorization Code, a Base URL, a Copy
+   * button for each, a "waiting for the extension…" line, and a 1s poll of
+   * `targetingStatus` until the operator had retyped both values into the
+   * extension popup.
    *
-   * POLLED, not pushed. The dashboard cannot observe the extension directly —
-   * they are different browsers, which is the entire point of LOCAL — so the
-   * server, the only party that sees both sides, is asked. This also keeps
-   * working behind a proxy that breaks WebSockets.
+   * Every one of those was addressed to a browser on a DIFFERENT machine. In this
+   * product `LOCAL BROWSER` is the Browser Runtime on the SAME server the backend
+   * runs on, so there is no second machine to carry a secret to:
+   *
+   *     «LOCAL باید کاملاً internal/automatic باشد … بدون Base URL، بدون
+   *      API Key، بدون Authorization Code، بدون Alert»
+   *
+   * The server now attaches the destination itself in `/inspector/targeting/begin`
+   * (see the shared server-granted branch in src/Routes/mode.routes.ts), so by the
+   * time this screen appears there is nothing left to ask and nothing left to
+   * wait for. What replaces it is a REPORT of work already done, not a form.
+   *
+   * WHY IT IS SHOWN AT ALL, RATHER THAN CLOSING SILENTLY
+   * ---------------------------------------------------
+   * The required flow names its own steps:
+   *
+   *     LOCAL BROWSER → Detect local browser runtime → Ensure browser ready
+   *     → Resolve internal backend/runtime context → Resolve target
+   *     → Connected to Target → Ready to Send
+   *
+   * Rendering them is what makes an automatic connection legible instead of
+   * merely fast. A crosshair that flashes and closes leaves the operator unable
+   * to tell "connected" from "silently did nothing" — the same ambiguity the old
+   * dialog's confirmation delay existed to prevent.
    */
-  function renderAuthorize(panel, res, ctx) {
+  function renderLocalProgress(panel, res, ctx) {
     var dlg = openDialog;
-    header(panel, 'tgt.authTitle', t('tgt.authHint'));
+    header(panel, 'tgt.localTitle', t('tgt.localAuto'));
 
-    // `display` is the grouped form (e.g. "4821-9930"). LTR and user-select:all
-    // are set in CSS so the code reads correctly and copies cleanly in an RTL
-    // page — a digit group must not be reordered by the bidi algorithm.
-    //
-    // The code now sits on its own labelled line WITH a Copy button, matching
-    // the Base URL below it. Both are values the operator has to move into the
-    // extension by hand, so both deserve the same affordance — and the raw
-    // `res.code` is what gets copied, not the grouped display form, because the
-    // separators are cosmetic and pasting them back is one more thing that can
-    // go wrong.
-    var codeWrap = el('div', 'tgt-base tgt-code-wrap');
-    var codeHead = el('div', 'tgt-base-head');
-    codeHead.appendChild(el('span', 'tgt-base-label', t('tgt.authCode')));
-    codeWrap.appendChild(codeHead);
+    var target = res.target || {};
 
-    var codeLine = el('div', 'tgt-base-line');
-    var code = el('div', 'tgt-code', res.display || res.code || '');
-    codeLine.appendChild(code);
-    codeLine.appendChild(copyButton(function () {
-      return res.code || res.display || '';
-    }, 'tgt-code-copy'));
-    codeWrap.appendChild(codeLine);
-    panel.appendChild(codeWrap);
-    panel.appendChild(el('div', 'tgt-expires', t('insp.codeExpires')));
-
-    // ── The other half of the pairing ────────────────────────────────────────
-    // A code alone is not usable: the extension needs an address to send it to,
-    // and until now the operator had to work that out themselves. On a laptop
-    // the guess is localhost:3000 and usually right; behind Cloudflare, on a
-    // VPS or in a Codespace it is not, and the result is an extension that
-    // cannot connect while this dialog insists a valid code is waiting.
-    //
-    // The server sends it because only the server knows its configured domain
-    // and listening port. If it sends nothing (an older server), this block is
-    // skipped entirely rather than inventing an address here — a made-up Base
-    // URL presented this confidently is worse than none.
-    if (res.baseUrl) {
-      panel.appendChild(baseUrlRow(res.baseUrl, res.baseUrlSource));
+    // Each line is a step the SERVER has already completed. They are rendered
+    // resolved rather than animated: inventing a spinner for work that finished
+    // before the response arrived would be theatre, and this dialog's whole
+    // claim is that nothing is pending.
+    var list = el('div', 'tgt-steps');
+    var steps = [
+      ['tgt.stepRuntime', t('tgt.stepRuntimeOk')],
+      ['tgt.stepContext', t('tgt.stepContextOk')],
+      ['tgt.stepTarget', target.fieldKey || ctx.fieldKey || ''],
+    ];
+    for (var i = 0; i < steps.length; i++) {
+      var row = el('div', 'tgt-step is-ok');
+      row.appendChild(el('span', 'tgt-step-name', t(steps[i][0])));
+      row.appendChild(el('span', 'tgt-step-val', steps[i][1]));
+      list.appendChild(row);
     }
+    panel.appendChild(list);
 
-    var status = el('div', 'tgt-status', t('tgt.waiting'));
+    // The identity of what is now connected — node, field, and the address the
+    // value will land at. Shown because "Connected to Target" with no target
+    // named is exactly as unverifiable as the silent close above.
+    var idw = el('div', 'tgt-target');
+    idw.appendChild(el('div', 'tgt-target-head', t('tgt.connectedTo')));
+    var pairs = [
+      ['insp.node', target.nodeId || ctx.nodeId || ''],
+      ['insp.field', target.label || target.fieldKey || ctx.fieldKey || ''],
+      ['insp.fieldId', target.targetFieldId || ''],
+    ];
+    for (var j = 0; j < pairs.length; j++) {
+      if (!pairs[j][1]) continue;
+      var line = el('div', 'tgt-target-row');
+      line.appendChild(el('span', 'tgt-target-label', t(pairs[j][0])));
+      line.appendChild(el('span', 'tgt-target-value', String(pairs[j][1])));
+      idw.appendChild(line);
+    }
+    panel.appendChild(idw);
+
+    var status = el('div', 'tgt-status is-ok', t('tgt.readyToSend'));
     panel.appendChild(status);
 
-    // Only Cancel remains here: Copy moved up beside the value it copies. A
-    // footer button labelled just "Copy" could not say WHICH of the two values
-    // on screen it would take, and now there are two.
-    footer(panel, [
-      button(t('tgt.cancel'), 'is-ghost', closeDialog),
-    ]);
+    footer(panel, [button(t('tgt.close'), 'is-ghost', closeDialog)]);
 
-    var client = ic();
-    if (!client) return;
-
-    var targetFieldId = res.target && res.target.targetFieldId;
-    if (!targetFieldId) return;
-
-    dlg.poll = setInterval(function () {
-      // A timer that outlived its dialog would write into a detached node and,
-      // worse, arm a field the operator has since cancelled.
-      if (openDialog !== dlg) { clearInterval(dlg.poll); return; }
-      client.targetingStatus(targetFieldId).then(function (s) {
-        if (openDialog !== dlg) return;
-        if (!s || !s.paired) return;
-        clearInterval(dlg.poll);
-        dlg.poll = null;
-        status.textContent = t('tgt.pairedNow');
-        status.className = 'tgt-status is-ok';
-        // Held briefly so the confirmation is actually read before the dialog
-        // disappears; without it the panel vanishes the instant the code is
-        // accepted and the operator cannot tell success from a crash.
-        setTimeout(function () {
-          if (openDialog !== dlg) return;
-          closeDialog();
-          armed(res.target, 'local', ctx);
-        }, 900);
-      });
-    }, 1000);
+    // Arm immediately — the field IS live, so withholding it until the operator
+    // dismisses a confirmation would make the dialog load-bearing. It closes on
+    // its own so the flow ends where the old one did, at a usable crosshair.
+    armed(res.target, 'local', ctx, 'tgt.readyLocal');
+    dlg.poll = setTimeout(function () {
+      if (openDialog === dlg) closeDialog();
+    }, 1600);
   }
 
   // ---------------------------------------------------------------------------
@@ -529,23 +425,24 @@
         return;
       }
 
-      if (res.step === 'authorize') {
-        if (tab) { try { tab.close(); } catch (e) {} }
-        var dlg = buildShell();
-        renderAuthorize(dlg.panel, res, ctx);
-        return;
-      }
-
-      // step === 'targeting' — nothing more to ask.
-      closeDialog();
-
+      // There is no longer an `authorize` step to branch on. The server answers
+      // `targeting` for both environments because it attaches the destination
+      // itself in either case — see planTargeting in src/core/BrowserEnvironment.ts.
       if (res.openRemoteBrowser) {
+        closeDialog();
         openOrReuseRemote(res, ctx, environment, tab);
         return;
       }
 
       if (tab) { try { tab.close(); } catch (e) {} }
-      armed(res.target, res.environment || environment, ctx);
+
+      // ── LOCAL: report the automatic connection ────────────────────────────
+      //
+      // Replaces the code screen. `renderLocalProgress` arms the field itself and
+      // closes on its own, so the flow still ends at a usable crosshair — it just
+      // gets there without asking the operator for anything.
+      var dlg = buildShell();
+      renderLocalProgress(dlg.panel, res, ctx);
     });
   }
 

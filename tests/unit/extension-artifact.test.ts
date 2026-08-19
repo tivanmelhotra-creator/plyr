@@ -100,6 +100,84 @@ describe('the build emits a loadable unpacked extension', () => {
     }
   });
 
+  it('the artifact is the CURRENT source, not a stale build left on disk', () => {
+    // THE GAP THIS CLOSES, measured — and it is the second half of a reported
+    // regression, not a hypothetical.
+    //
+    // The operator reported that the Browser Environment selector was missing
+    // from the extension UI. The selector was in `extension/`; what they had
+    // installed was `artifacts/element-inspector-extension/`, built BEFORE that
+    // work and never regenerated. That stale copy still carried the credential
+    // UI which had already been deleted from source — a Base URL box, an API key
+    // box, an Authorization Code box and the Local/Remote BACKEND radio pair —
+    // so the installed extension disagreed with the repository on both counts.
+    //
+    // Every assertion in this file passed on that stale directory, because they
+    // all ask whether files EXIST and whether references RESOLVE. A stale build
+    // satisfies both: it is complete, loadable and wrong. So the artifact is now
+    // compared byte-for-byte against the source it claims to be a copy of.
+    //
+    // Byte-for-byte is deliberate. This build has no bundler, no transpile step
+    // and no template substitution — scripts/build-extension.js copies files
+    // verbatim — so any difference at all is either a stale artifact or a build
+    // step nobody documented. Both are things to find out about here.
+    for (const rel of [
+      'background.js',
+      'popup/popup.html',
+      'popup/popup.js',
+      'popup/popup.css',
+      'content/inspector.js',
+      'content/consent.js',
+      'lib/ab-core.js',
+      'lib/ab-inspect.js',
+      'manifest.json',
+    ]) {
+      const built = artifactFile(rel);
+      const source = fs.readFileSync(path.join(ROOT, 'extension', rel), 'utf8');
+      expect(built, `artifact is stale for ${rel} — re-run npm run build`).toBe(source);
+    }
+  });
+
+  it('the built popup carries the LOCAL / REMOTE Browser Environment selector', () => {
+    // Named explicitly rather than left to the byte comparison above, because
+    // this is the control the operator reported missing and a diff failure would
+    // not say which control was lost. «این انتخاب باید در ابتدای Target This
+    // Field وجود داشته باشد.»
+    const html = artifactFile('popup/popup.html');
+    expect(html).toContain('id="envCard"');
+    expect(html).toContain('id="envGrid"');
+
+    // And the controller that fills it, in the artifact — a container with no
+    // renderer would install as an empty card, which is the same bug wearing a
+    // different shape.
+    const js = artifactFile('popup/popup.js');
+    expect(js).toContain('AB_TARGETING_OPTIONS');
+    expect(js).toContain('AB_TARGETING_BEGIN');
+    expect(js).toMatch(/Local Browser/);
+    expect(js).toMatch(/Remote Browser/);
+
+    // The worker half must ship too, or every card press answers with an
+    // unhandled message.
+    const bg = artifactFile('background.js');
+    expect(bg).toContain("case 'AB_TARGETING_OPTIONS'");
+    expect(bg).toContain("case 'AB_TARGETING_BEGIN'");
+  });
+
+  it('the built popup ships NO credential control — deleting those was correct', () => {
+    // The other half of the same staleness bug: the artifact the operator had
+    // installed still asked for a Base URL, an API key and an Authorization
+    // Code, all of which are gone from source. Restoring the environment
+    // selector must not bring any of them back, in source OR in the artifact.
+    const html = artifactFile('popup/popup.html');
+    for (const dead of [
+      'modeLocal', 'modeRemote', 'modeLocalUrl', 'modeRemoteUrl',
+      'baseUrl', 'apiKey', 'apiKeyPeek', 'inspCode', 'connect',
+    ]) {
+      expect(html, `the built popup still declares #${dead}`).not.toContain(`id="${dead}"`);
+    }
+    expect(html, 'the built popup still has a password input').not.toMatch(/type="password"/i);
+  });
+
   it('every path the manifest names resolves inside the artifact', () => {
     const manifest = JSON.parse(artifactFile('manifest.json'));
     const refs: string[] = [

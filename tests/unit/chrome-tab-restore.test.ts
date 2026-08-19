@@ -64,6 +64,19 @@ afterEach(async () => {
   (RealChrome as unknown as { context: unknown }).context = null;
 });
 
+/**
+ * Strip comments so a source-order assertion measures CODE.
+ *
+ * The route handlers in this project carry long explanatory headers that quote
+ * the calls they are describing, so an offset comparison over raw text answers
+ * a question about prose rather than about execution order.
+ */
+function code(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+}
+
 const prefsPath = () => path.join(dir, 'Default', 'Preferences');
 const readPrefs = async () => JSON.parse(await fs.readFile(prefsPath(), 'utf8'));
 const writePrefs = async (o: unknown) => {
@@ -401,12 +414,20 @@ describe('the /browser/real/open route', () => {
     // context whenever one exists, and a frozen Chromium still has one — so
     // reopening the view returned the same dead browser. The check has to come
     // before the reuse or it changes nothing.
-    const src = await routes();
+    //
+    // Comments are stripped before the positions are compared. This test is
+    // about the order two CALLS execute in, and it previously measured raw file
+    // offsets — so a comment that merely NAMED `RealChrome.getContext()` while
+    // explaining the route counted as the call itself and inverted the result.
+    // Prose about a call is not a call.
+    const src = code(await routes());
     const open = src.slice(src.indexOf("router.post('/browser/real/open'"));
     const body = open.slice(0, open.indexOf('router.get('));
     const checkAt = body.indexOf('recycleIfWedged');
     const reuseAt = body.indexOf('RealChrome.getContext()');
     expect(checkAt, 'the open route must probe for a wedged browser')
+      .toBeGreaterThan(-1);
+    expect(reuseAt, 'the open route must still reuse or launch a context')
       .toBeGreaterThan(-1);
     expect(checkAt).toBeLessThan(reuseAt);
   });

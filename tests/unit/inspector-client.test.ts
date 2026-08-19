@@ -417,105 +417,48 @@ describe('state reported to the UI', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// AUTHORIZATION CODES — the project side of pairing.
+// THE AUTHORIZATION CODE CLIENT IS GONE — and this block records why.
 //
-// The code is issued HERE and scoped to one field server-side. That is the
-// mechanism behind §8: the extension redeems a code already bound to a
-// destination, so it never names a target itself. A code issued for "the
-// extension" rather than for one field would hand back exactly the arbitrary
-// targeting the design forbids.
+// `authorizeTarget()` lived here and was covered by seven tests. It asked
+// POST /inspector/authorize for an 8-character code scoped to one field, which
+// the dashboard then displayed for the operator to retype into the extension.
+// Both the method and the route are deleted, so the tests are replaced by the
+// assertions that keep them deleted.
+//
+// The PROPERTY those seven tests protected is still protected, just not here:
+// «the extension must never name its own destination». It now holds by
+// construction rather than by scoping a code — the server resolves the target
+// and binds it during /inspector/targeting/begin, and the extension is only ever
+// told a `consentId`. tests/integration/targeting-routes.test.ts owns that.
 // ════════════════════════════════════════════════════════════════
-describe('issuing an authorization code', () => {
-  const offer = (path: string, body: any): any => {
-    if (path === '/inspector/target') {
-      return {
-        success: true,
-        target: {
-          targetFieldId: `node_${body.nodeId}__${body.fieldKey}__abcd`,
-          nodeId: body.nodeId, fieldKey: body.fieldKey, action: body.action, label: body.label,
-        },
-      };
-    }
-    if (path === '/inspector/authorize') {
-      return {
-        success: true, code: 'ABCDEFGH', display: 'ABCD-EFGH',
-        target: { targetFieldId: body.targetFieldId, fieldKey: 'selector' },
-        expiresAt: 1_700_000_000_000, expiresInMs: 300_000,
-      };
-    }
-    return { success: true };
-  };
-
-  it('asks the server for a code scoped to ONE field', async () => {
+describe('the authorization code client is gone', () => {
+  it('exposes no authorizeTarget method', async () => {
     const h = boot();
-    h.reply.value = offer;
+    expect((h.client as any).authorizeTarget).toBeUndefined();
+  });
+
+  it('never references the deleted route', async () => {
+    // Source-level, because a call built from a string fragment would survive
+    // the method check above while still hitting a route that no longer exists.
+    const src = readFileSync(
+      resolve(process.cwd(), 'public/js/inspector-client.js'),
+      'utf8',
+    );
+    const body = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(body).not.toContain('/inspector/authorize');
+    expect(body).not.toContain('authorizeTarget');
+  });
+
+  it('still registers a Target Field, which is what actually binds one', async () => {
+    // The capability that replaced it, asserted so this block cannot be read as
+    // "targeting was removed". Registering mints the destination server-side;
+    // no code is involved and none is returned.
+    const h = boot();
     const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
-
-    const res = await h.client.authorizeTarget(t.targetFieldId);
-
-    const call = h.posts.filter((p) => p.path === '/inspector/authorize');
-    expect(call).toHaveLength(1);
-    // The field is the whole point: a code not tied to one destination would let
-    // the extension pick where the value lands.
-    expect(call[0]!.body).toEqual({ targetFieldId: t.targetFieldId });
-    expect(res.code).toBe('ABCDEFGH');
-  });
-
-  it('returns the grouped form for reading, and the raw form for redeeming', async () => {
-    const h = boot();
-    h.reply.value = offer;
-    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
-    const res = await h.client.authorizeTarget(t.targetFieldId);
-    // `display` is typed by a human; `code` is what redeem() compares.
-    expect(res.display).toBe('ABCD-EFGH');
-    expect(res.code).toBe('ABCDEFGH');
-    expect(res.expiresInMs).toBe(300_000);
-  });
-
-  it('reports the lifetime, so an expired code is not mistaken for a broken one', async () => {
-    const h = boot();
-    h.reply.value = offer;
-    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
-    const res = await h.client.authorizeTarget(t.targetFieldId);
-    expect(res.expiresAt).toBeGreaterThan(0);
-  });
-
-  it('refuses to ask for a code with no field, without calling the server', async () => {
-    const h = boot();
-    h.reply.value = offer;
-    const res = await h.client.authorizeTarget('');
-    expect(res).toBeNull();
-    expect(h.posts.filter((p) => p.path === '/inspector/authorize')).toHaveLength(0);
-  });
-
-  it('resolves null on a server refusal rather than rejecting', async () => {
-    // The caller is a button. A rejection here would surface as an unhandled
-    // error and could leave the editor looking broken over one failed code.
-    const h = boot();
-    h.reply.value = (path: string) => {
-      if (path === '/inspector/authorize') return { success: false, reason: 'TARGET_FIELD_NOT_FOUND' };
-      return { success: true };
-    };
-    await expect(h.client.authorizeTarget('node_n1__selector__abcd')).resolves.toBeNull();
-  });
-
-  it('resolves null when the request itself fails', async () => {
-    // Modelled as a REJECTED promise, not a synchronous throw: window.API.post
-    // returns a promise, so an offline server arrives as a rejection. Throwing
-    // synchronously here would test the harness rather than the .catch().
-    const h = boot();
-    h.reply.value = () => Promise.reject(new Error('offline')) as never;
-    await expect(h.client.authorizeTarget('node_n1__selector__abcd')).resolves.toBeNull();
-  });
-
-  it('does not disturb the registered fields', async () => {
-    const h = boot();
-    h.reply.value = offer;
-    const t = await h.client.registerTarget('n1', 'selector', { action: 'click' });
-    await h.client.authorizeTarget(t.targetFieldId);
-    // Authorizing is not a lifecycle event: the field stays exactly as open as
-    // it was, or a code request would look like it closed the destination.
+    expect(t.targetFieldId).toBeTruthy();
+    expect((t as any).code).toBeUndefined();
     expect(h.client.state().targets).toHaveLength(1);
-    expect(h.client.myTargets()).toHaveLength(1);
   });
 });

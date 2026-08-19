@@ -507,23 +507,47 @@ describe('7. a prompt about an unpaired field is withdrawn', () => {
 // 8. LOCAL is untouched — the separation the mission insists on
 // ════════════════════════════════════════════════════════════════
 
-describe('8. LOCAL still uses a code, and raises no prompt', () => {
-  // [REQ] «LOCAL BROWSER → may need an Authorization Code; REMOTE BROWSER →
-  //        never needs one.» The fix must not blur the two.
+describe('8. LOCAL raises no prompt and needs no code either', () => {
+  // [REQ] SUPERSEDED. This block read «LOCAL BROWSER → may need an Authorization
+  // Code; REMOTE BROWSER → never needs one» and pinned that asymmetry. The final
+  // contract removes the code from BOTH, because both browsers run on this
+  // server, and keeps a different asymmetry instead — the approval Alert:
+  //
+  //     LOCAL  → internal automatic Base URL → no API Key → no Authorization
+  //              → no Alert → automatic connection
+  //     REMOTE → Base URL from the server's own configuration → no API Key
+  //              → no Authorization Code → Remote Approval Alert
+  //
+  // The block is kept because "LOCAL raises no prompt" is still load-bearing:
+  // it is the assertion that stops the REMOTE consent flow leaking into LOCAL.
 
-  it('LOCAL issues a code and asks the server browser nothing', async () => {
+  it('LOCAL asks nobody anything — no code, and no prompt for the server browser', async () => {
     const res = await begin({ environment: 'local' });
-    expect(res.body.step).toBe('authorize');
-    expect(res.body.code).toMatch(/^[A-Z0-9]{8}$/);
-    expect(res.body.consent).toBeUndefined();
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.consent == null).toBe(true);
+    // The prompt queue the REMOTE browser polls must stay empty, or the operator
+    // would find an approval card in a flow that never asked for one.
     expect((await asked()).body.count).toBe(0);
   });
 
-  it('LOCAL still shows the Base URL beside the code', async () => {
+  it('LOCAL shows no Base URL to read, because nothing is retyped', async () => {
+    // Inverted deliberately. This test used to REQUIRE `baseUrl` in the response
+    // so the dialog could display it beside the code; the requirement forbids
+    // that field outright: «LOCAL UI نباید Base URL داشته باشد».
     const res = await begin({ environment: 'local' });
-    expect(typeof res.body.baseUrl).toBe('string');
-    expect(res.body.baseUrl.length).toBeGreaterThan(0);
-    expect(res.body.baseUrlSource).toBeTruthy();
+    expect(res.body.baseUrl).toBeUndefined();
+    expect(res.body.baseUrlSource).toBeUndefined();
+    expect(res.body.display).toBeUndefined();
+  });
+
+  it('LOCAL mints no pending code server-side, so none can be waiting', async () => {
+    // Stronger than the response check above: a code that was created and merely
+    // omitted from the body would still be a code the user could be asked for
+    // later. Nothing may be pending at all.
+    await begin({ environment: 'local' });
+    await begin({ environment: 'local' });
+    expect(inspectorAuth.pendingCount()).toBe(0);
   });
 
   it('REMOTE never opens a code path, paired or not', async () => {

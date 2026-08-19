@@ -338,18 +338,50 @@ describe('§5 — removing the tabs did NOT remove the capabilities', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('§6 — Connection is only Connection', () => {
-  it('holds the backend location, the credentials and the resulting state', () => {
+  it('reports the resolved connection, and offers nothing to fill in', () => {
+    // WHAT THIS TEST USED TO REQUIRE, and why it had to change: it demanded
+    // #modeLocal, #modeRemote, #baseUrl, #apiKey, #inspCode and #connect be
+    // present on this panel — that is, it required by name every field the
+    // requirement forbids:
+    //
+    //     «LOCAL UI نباید این موارد را داشته باشد:
+    //      Base URL / API Key / Authorization Code / Remote Approval»
+    //
+    // So the panel is now a REPORT rather than a form. What it must still show
+    // is the outcome — where the backend is, whether the field will accept a
+    // pick, and which field that is — because a connection whose destination is
+    // unstated is the one failure mode worse than no connection: the send works
+    // and lands somewhere else.
     const p = panel('p-connection');
     for (const id of [
-      'modeLocal', 'modeRemote',   // where the backend is (§1's only Local/Remote)
-      'baseUrl', 'apiKey',         // how to reach it
-      'inspCode', 'connect',       // one-time pairing to a Target Field
       'connState', 'connBackend', 'connAuth',
       'ctNode', 'ctField', 'ctFieldId',
     ]) {
       expect(p, `Connection must contain #${id}`).toContain(`id="${id}"`);
     }
   });
+
+  it('contains no credential input of any kind', () => {
+    // The inverse, asserted by name. Listing the exact removed ids means a
+    // future change that reintroduces any one of them fails here rather than
+    // being noticed by the user as a form that came back.
+    const p = panel('p-connection');
+    for (const dead of ['modeLocal', 'modeRemote', 'baseUrl', 'apiKey', 'inspCode', 'connect']) {
+      expect(p, `Connection must not contain #${dead}`).not.toContain(`id="${dead}"`);
+    }
+    // No free-text entry at all: an <input> or <textarea> here is something to
+    // type into, whatever it happens to be called.
+    expect(p).not.toMatch(/<input\b/i);
+    expect(p).not.toMatch(/<textarea\b/i);
+  });
+
+  it('says plainly that there is nothing to enter', () => {
+    // An empty panel is indistinguishable from a panel that failed to render. A
+    // user who remembers typing an address needs to be told that not typing one
+    // is now the correct state, or the fix reads as a bug.
+    expect(panel('p-connection')).toMatch(/nothing to enter/i);
+  });
+
 
   it('hosts no Handoff, Session or Run control', () => {
     const p = panel('p-connection');
@@ -367,17 +399,24 @@ describe('§6 — Connection is only Connection', () => {
     expect(p).not.toMatch(/workflow/i);
   });
 
-  it('offers Local and Remote as the location of the BACKEND, nothing else', () => {
+  it('offers no backend chooser, and still never mentions a Remote Browser', () => {
     const p = panel('p-connection');
-    // The three concepts that must not be conflated: BrowserMode/Remote Browser
-    // decides the execution environment, TargetField decides where data lands,
-    // and the Inspector sends one value. Only the last two are this popup's
-    // business, and the Local/Remote choice here is §1's — a URL.
-    expect(p).toMatch(/Local Backend/);
-    expect(p).toMatch(/Remote Backend/);
+    // The rule this test enforces is unchanged and permanent: the three concepts
+    // must not be conflated. BrowserEnvironment (LOCAL/REMOTE) decides which
+    // browser does the picking, TargetField decides where the data lands, and
+    // the Inspector sends one value.
+    //
+    // What changed is that the popup's own Local/Remote control — a BACKEND URL
+    // choice, §1's, unrelated to BrowserEnvironment despite the identical words —
+    // is gone, because the backend address is resolved internally now. Removing
+    // it removes the likeliest source of the confusion this test guards against,
+    // so the first two assertions invert while the last two stand.
+    expect(p).not.toMatch(/Local Backend/);
+    expect(p).not.toMatch(/Remote Backend/);
     expect(p).not.toMatch(/Remote Browser/i);
     expect(p).not.toMatch(/move (a |your )?(running )?session/i);
   });
+
 
   it('shows the exact Target Field id, which is what a send is aimed at', () => {
     const p = panel('p-connection');

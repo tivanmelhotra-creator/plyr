@@ -253,45 +253,25 @@
     }).catch(function () { return null; });
   }
 
-  /**
-   * Ask the server for a one-time Authorization Code for ONE of this page's
-   * fields — the other half of pairing.
+  /* authorizeTarget() IS REMOVED.
    *
-   * This is the only way an extension can ever be pointed at a field: the code
-   * is scoped to `targetFieldId` server-side, so the extension redeems it
-   * without ever naming a destination itself (§8). Which is why the code is
-   * issued HERE, in the project, by the person who can see the field — and is
-   * never requested by the extension.
+   * It POSTed to /inspector/authorize and returned { code, display, baseUrl, … }
+   * for the editor to render as an Authorization Code plus an address for the
+   * operator to transcribe into the extension. The route is deleted server-side
+   * (src/Routes/mode.routes.ts) and its only caller — the per-field "Connect
+   * Inspector" row in flow-editor.js — is deleted too.
    *
-   * Resolves to null on refusal rather than rejecting: the caller is a button,
-   * and a failed request must leave the editor usable.
-   */
-  function authorizeTarget(targetFieldId) {
-    if (!targetFieldId) return Promise.resolve(null);
-    return post('/inspector/authorize', { targetFieldId: targetFieldId })
-      .then(function (res) {
-        if (!res || !res.code) return null;
-        return {
-          code: res.code,
-          // Grouped for reading aloud and typing; `code` is what redeem compares.
-          display: res.display || res.code,
-          target: res.target || null,
-          expiresAt: res.expiresAt || 0,
-          expiresInMs: res.expiresInMs || 0,
-          // The OTHER half of what the operator has to type into the extension.
-          //
-          // The route has always sent these; this wrapper used to drop them, so
-          // the only caller (the editor's inline Connect row) could show a code
-          // and no address — and an extension pointed at the wrong origin fails
-          // to pair for a reason that is nowhere on screen. Passed through
-          // rather than defaulted: an older server that sends nothing must lead
-          // to the row showing no address, never to a guess made here.
-          baseUrl: res.baseUrl || '',
-          baseUrlSource: res.baseUrlSource || '',
-        };
-      })
-      .catch(function () { return null; });
-  }
+   * Nothing replaces it on this client, because binding is no longer something
+   * the page asks for and then displays. `targetingBegin()` below does the whole
+   * job in one call:
+   *
+   *   LOCAL   the server rebinds the extension to the field internally and
+   *           answers `paired: true`. There is nothing to show.
+   *   REMOTE  the server raises a consent request; the remote browser answers it
+   *           and receives the target directly.
+   *
+   * Keeping a code-minting wrapper here with no route behind it would only
+   * invite a caller to be written for it. */
 
   // ---------------------------------------------------------------------------
   // TARGETING — the LOCAL / REMOTE step that now opens the flow
@@ -329,11 +309,12 @@
    * The user chose an environment. Register the destination and find out what
    * happens next.
    *
-   * Resolves to the server's plan: `step` is 'targeting' when picking can start
-   * immediately, or 'authorize' with a `code` when this field has never been
-   * paired in a local browser before. Resolves to null on refusal rather than
-   * rejecting — the caller is a button, and a failed request must leave the
-   * editor usable.
+   * Resolves to the server's plan. `step` is always 'targeting' now — there is
+   * no 'authorize' step and no `code`, in either environment. The one difference
+   * left between them is `plan.needsRemoteApproval`: LOCAL is attached by this
+   * server before it answers, REMOTE asks the other browser for approval first.
+   * Resolves to null on refusal rather than rejecting — the caller is a button,
+   * and a failed request must leave the editor usable.
    */
   function targetingBegin(nodeId, fieldKey, environment, opts) {
     if (!nodeId || !fieldKey) return Promise.resolve(null);
@@ -384,11 +365,12 @@
   }
 
   /**
-   * Has the user finished typing the code into their extension yet?
+   * Is this Target Field attached to an Inspector yet?
    *
-   * Polled by the dialog because the dashboard cannot observe the extension
-   * directly — they are different browsers, which is the entire point of LOCAL.
-   * The server is the only party that sees both sides.
+   * No longer "has the user typed the code" — nothing is typed. LOCAL comes back
+   * attached, so this answers `paired:true` on the first poll. REMOTE genuinely
+   * resolves later, once the approval prompt is answered inside the other
+   * browser, and the server is the only party that sees both sides.
    */
   function targetingStatus(targetFieldId) {
     if (!targetFieldId) return Promise.resolve(null);
@@ -724,7 +706,6 @@
     start: start,
     stop: stop,
     registerTarget: registerTarget,
-    authorizeTarget: authorizeTarget,
     // The LOCAL / REMOTE step at the top of the Targeting flow.
     targetingOptions: targetingOptions,
     targetingBegin: targetingBegin,

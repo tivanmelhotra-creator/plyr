@@ -50,13 +50,32 @@
 
   THREE CONCEPTS THAT MUST NOT BE CONFLATED
   ─────────────────────────────────────────
-    Browser Environment = LOCAL / REMOTE browser   → chosen in the TARGETING flow
+    Browser Environment = LOCAL / REMOTE browser   → chosen in the TARGETING flow,
+                                                     offered by the "Browser
+                                                     environment" card on INSPECT
+                                                     as well as by the web app's
+                                                     own chooser
     Session / Handoff   = browser infrastructure   → not in this popup at all
     targetFieldId       = the exact data destination
 
-  The Local/Remote pair on CONNECTION is §1's distinction and ONLY that: the
-  LOCATION OF THE BACKEND. The Browser Environment is reported on INSPECT as a
-  separate, differently-labelled row, because they are different questions.
+  The "Backend" row on CONNECTION is §1's distinction and ONLY that: the LOCATION
+  OF THE BACKEND, reported after the server resolved it. The Browser Environment
+  is reported on INSPECT as a separate, differently-labelled row, because they
+  are different questions.
+
+  NOTHING ON EITHER TAB IS A CREDENTIAL INPUT
+  ───────────────────────────────────────────
+  The Connection tab no longer contains #baseUrl, #apiKey, #apiKeyPeek, #inspCode
+  or #connect, and it no longer contains the Local/Remote backend radio pair
+  (#modeLocal / #modeRemote / #modeLocalUrl / #modeRemoteUrl). The server that
+  launched this browser already knows its own address and token, and this popup
+  reads them from the bootstrap it was seeded with — so a form here could only
+  ask the user to re-enter, by hand, something already known and correct.
+
+  LOCAL  = the browser runtime on the same server as the app: internal address,
+           no key, no code, no prompt.
+  REMOTE = the browser on the server's own infrastructure: address from the
+           server's public configuration, no key, no code, one Remote Approval.
 
   THE TABS USE NO JAVASCRIPT. They are radio inputs plus <label>s switched by
   CSS `:checked ~` rules — an MV3 popup runs under a CSP that refuses inline
@@ -152,15 +171,17 @@
               <span class="ivalue mono" id="inspFieldId">—</span>
             </span>
           </div>
-          <!-- WHICH BROWSER this field is being targeted in: Local Browser (this
-               one) or Remote Browser (the one on the server). Reported by the
-               backend from the target's own record, never asserted here, and
-               CHOSEN at the start of the targeting flow — not a setting on the
-               Connection tab.
+          <!-- WHICH BROWSER this field is being targeted in: Local Browser (the
+               runtime on the same server as the app) or Remote Browser (the one
+               the server launches). Reported by the backend from the target's own
+               record, never asserted here. This row is the ANSWER; the choice
+               itself is made in the "Browser environment" card below, which is
+               the first step of targeting.
 
-               Distinct from the Local/Remote pair on CONNECTION, which is
-               derived from whether the Base URL is loopback, i.e. where the
-               SERVER is. Two different questions, separately labelled. -->
+               Distinct from the "Backend" row on CONNECTION, which says where
+               the SERVER is. Two different questions, separately labelled — and
+               only one of them is a choice anyone makes: the backend is resolved
+               by the server, the browser is chosen in the targeting flow. -->
           <div class="idrow">
             <span class="idicon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -187,16 +208,61 @@
                «Not attached to a field? Open Connection» paragraph — was old
                Automation-Helper UI and is gone.
 
-               The label is what remains of that paragraph's one useful job. When
-               there is no destination, the ONLY place to establish one is the
-               Connection tab, and a user reading "no target field" in this card
-               has no reason to know that. So the empty-state line is itself the
-               route there — a real <label for>, which switches tabs through the
-               same CSS the tab strip uses. No script, so it cannot be defeated by
-               MV3's CSP, and no second mechanism to keep in step with the first.
-               It is only reachable while the row is visible, i.e. while there is
+               The label is what remains of that paragraph's one useful job.
+               A destination is now established in the PROJECT — the crosshair on
+               a field — and never in this popup, which is why the text it shows
+               says so. It still switches to Connection, because that is where a
+               user with no target can see WHY: whether the backend was resolved
+               and reachable at all. A real <label for>, so it works through the
+               same CSS as the tab strip, with no script for MV3's CSP to refuse.
+               Only reachable while the row is visible, i.e. while there is
                genuinely nothing to pick into. -->
           <label class="hintline" id="inspNodeRow" for="tab-connection"><span id="inspNode">—</span></label>
+        </div>
+      </section>
+
+      <!-- ── BROWSER ENVIRONMENT — THE FIRST STEP OF TARGETING ───────────
+           REPORTED, and the regression this section repairs:
+
+             «UI فعلی دیگر هیچ انتخابی برای LOCAL BROWSER / REMOTE BROWSER
+              ندارد … این انتخاب باید در ابتدای Target This Field وجود داشته
+              باشد و state واقعی Browser Environment را تعیین کند.»
+
+           Placed ABOVE the crosshair button, because that is what "at the start
+           of Target This Field" means: the environment is chosen, and only then
+           does the pick happen in it. Below the Target Field card, because which
+           FIELD is being targeted is the question this one is an answer about.
+
+           NOT THE BACKEND CONNECTION — «این را با Backend Connection اشتباه
+           نکن.» The Connection tab's "Backend" row says WHERE THE SERVER IS; it
+           is resolved by the server and is not a choice. This is WHICH BROWSER
+           does the picking. Two different questions, which is why they live on
+           different tabs under different words.
+
+           WHAT IS DELIBERATELY ABSENT FROM BOTH CARDS
+           ───────────────────────────────────────────
+           No Base URL, no API key, no Authorization Code. Removing those was
+           correct and they are NOT coming back:
+
+             LOCAL  — the browser runtime on the SAME server as the app. Address
+                      and token are that server's own, resolved internally. One
+                      click, nothing to enter, no approval prompt.
+             REMOTE — the browser on the server's infrastructure. Address from
+                      the server's public configuration. Still no key and no
+                      code; the one human act is approving the Remote Approval
+                      prompt, which binds that browser to this field — and an
+                      already-running remote browser is reused, not replaced.
+
+           The cards are rendered by popup.js from the SERVER's own
+           environmentOptions(), so this panel can never offer a browser the
+           server would refuse. Buttons, not radios: choosing is an action that
+           registers the destination, not a setting that sits there. -->
+      <section class="card" id="envCard">
+        <div class="card-hd"><h2>Browser environment</h2></div>
+        <div class="card-bd">
+          <p class="lede">Choose which browser you will point at the element. Nothing to enter either way.</p>
+          <div class="envgrid" id="envGrid"></div>
+          <div class="status" id="envStatus"></div>
         </div>
       </section>
 
@@ -293,102 +359,51 @@
     </section>
 
     <!-- ══ CONNECTION ═══════════════════════════════════════════════════
-         «Connection فقط Connection است.» Backend location, credentials, and the
-         state that results from them. Nothing about Session Handoff, the Remote
-         Browser, saved workflows or live runs belongs here — and the Browser
-         Environment does not either: that is chosen at the start of the
-         targeting flow, not configured as a connection setting. -->
+         «Connection فقط Connection است.» — and Connection is now something the
+         user READS, never something they fill in.
+
+         WHAT USED TO BE HERE, AND WHY IT IS GONE
+         ────────────────────────────────────────
+         This panel used to open with three input controls and a Connect button:
+
+           Base URL            text input, placeholder http://127.0.0.1:3000
+           API key             password input, with a show/hide eye
+           Authorization code  text input, placeholder ABCD-8F21
+           [ Connect ]         redeemed the code against the backend
+
+         plus a Local Backend / Remote Backend radio pair that wrote the Base URL
+         for you. All of it is deleted, because none of it may be asked for:
+
+           LOCAL BROWSER  → the browser runtime on the SAME server as the app.
+                            The backend address is internal and resolved by the
+                            server itself. No API key, no Authorization Code, no
+                            approval prompt — the connection is automatic.
+           REMOTE BROWSER → the browser on the server / remote infrastructure.
+                            Its address comes from the server's own public
+                            configuration. Still no API key and no Authorization
+                            Code; the one thing the user does is APPROVE the
+                            Remote Approval prompt, which binds that browser to
+                            the Target Field they are working on.
+
+         In both cases the address and the credential are facts the SERVER
+         already holds — it is the party that launched this browser. Asking the
+         user to retype them here was asking them to re-supply, by hand and from
+         inside a browser they may not be able to read them from, values the
+         server had all along.
+
+         What replaces the form is the same information as an ANSWER: which
+         backend was resolved, whether it is reachable, and which Target Field a
+         pick would land in. -->
     <section class="panel" id="p-connection">
-
-      <section class="card">
-        <div class="card-hd"><h2>Backend connection</h2></div>
-        <div class="card-bd">
-          <p class="lede">Choose where the extension should send inspected data.</p>
-          <!-- Two cards side by side, as approved: both options and both URLs
-               stay readable at once, so the user can see which machine they are
-               about to talk to without opening anything. The whole card is the
-               <label>, so the click target is the card and not a 13px dot. -->
-          <div class="modegrid">
-            <label class="modecard" for="modeLocal">
-              <input type="radio" name="abmode" id="modeLocal">
-              <span class="dot" aria-hidden="true"></span>
-              <span class="modemeta">
-                <span class="modename">Local Backend</span>
-                <span class="modeurl" id="modeLocalUrl">http://127.0.0.1:3000</span>
-              </span>
-            </label>
-            <label class="modecard" for="modeRemote">
-              <input type="radio" name="abmode" id="modeRemote">
-              <span class="dot" aria-hidden="true"></span>
-              <span class="modemeta">
-                <span class="modename">Remote Backend</span>
-                <span class="modeurl" id="modeRemoteUrl">https://your-server.com</span>
-              </span>
-            </label>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-hd"><h2>Connection details</h2></div>
-        <div class="card-bd">
-          <label class="field stack">
-            <span>Base URL</span>
-            <input id="baseUrl" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
-          </label>
-          <p class="hintline">The base URL of your backend server.</p>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-hd"><h2>Authentication</h2></div>
-        <div class="card-bd">
-          <p class="lede">Provide the required credentials to authorize the connection.</p>
-          <label class="field inline">
-            <span>API key</span>
-            <span class="ibox">
-              <input id="apiKey" type="password" placeholder="••••••••••••" autocomplete="off">
-              <button class="peek" type="button" id="apiKeyPeek" title="Show or hide" aria-label="Show or hide the API key">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6">
-                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"></path>
-                  <circle cx="12" cy="12" r="2.8"></circle><path d="M3.5 20.5 20.5 3.5"></path>
-                </svg>
-              </button>
-            </span>
-          </label>
-          <!-- §7 — The Authorization Code is a ONE-TIME pairing credential, not
-               a password. It is scoped server-side to a single Target Field,
-               which is the only reason this extension can never aim a pick at a
-               field the user did not offer (§8). Once paired, ordinary sends use
-               the API Key plus the bound field, and this box is only needed
-               again to move to a DIFFERENT field.
-
-               REMOTE BROWSER targets never need one at all — the server owns
-               that browser and binds the Inspector itself. -->
-          <label class="field inline">
-            <span>Authorization code</span>
-            <span class="ibox">
-              <input id="inspCode" type="text" placeholder="ABCD-8F21" autocomplete="off"
-                     autocapitalize="characters" spellcheck="false" maxlength="9">
-            </span>
-          </label>
-          <div class="cta">
-            <button class="btn primary lg" type="button" id="connect">
-              <span class="bicon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9">
-                  <path d="M9.6 14.4 6.8 17.2a3.4 3.4 0 0 1-4.8-4.8l3.4-3.4"></path>
-                  <path d="M14.4 9.6l2.8-2.8a3.4 3.4 0 0 1 4.8 4.8l-3.4 3.4"></path>
-                  <path d="M9 15l6-6"></path>
-                </svg>
-              </span>Connect</button>
-          </div>
-          <div class="status" id="inspPairStatus"></div>
-        </div>
-      </section>
 
       <section class="card">
         <div class="card-hd"><h2>Connection status</h2></div>
         <div class="card-bd">
+          <!-- Stated as the first thing on the panel, because the absence of a
+               form is otherwise indistinguishable from a form that failed to
+               render. A user who remembers typing an address here needs to be
+               told that not typing one is now the correct state. -->
+          <p class="lede">Resolved automatically by the server that runs this browser. There is nothing to enter.</p>
           <div class="statebox">
             <div class="tfstate" id="connState">—</div>
             <div class="splitrow">
@@ -412,8 +427,14 @@
                     <path d="M9.2 12.2l2 2 3.6-3.8"></path>
                   </svg>
                 </span>
+                <!-- "Field access", not "Authorization": the old label was one
+                     word away from the Authorization Code input that used to sit
+                     directly above it, and read as its result. It never was —
+                     it reports whether the backend will accept a pick for the
+                     field this extension is pointed at, which is now decided
+                     entirely by the server. -->
                 <span class="idmeta">
-                  <span class="idlabel">Authorization</span>
+                  <span class="idlabel">Field access</span>
                   <span class="ivalue" id="connAuth">—</span>
                 </span>
               </div>
@@ -482,12 +503,15 @@
                 <span class="ivalue" id="ctEnv">—</span>
               </span>
             </div>
-            <!-- The DURABLE pairing, as opposed to the ADDRESS in "Field ID".
-                 Answers the only question the operator actually cares about
-                 here: will another Authorization Code be asked for next time?
-                 The address expires in hours and is re-minted on every NDV open;
-                 the pairing lasts for days and is what makes «دفعات بعد … دیگر
-                 نیازی به Authorization Code جدید نیست» true. -->
+            <!-- The DURABLE binding, as opposed to the ADDRESS in "Field ID".
+                 The address is re-minted every time the node is re-opened; the
+                 binding outlives it, which is what makes returning to the same
+                 field a no-op rather than a fresh setup.
+
+                 It no longer answers "will I be asked for another Authorization
+                 Code?", because no code is ever asked for. It answers the
+                 question that replaced it: is this browser still bound to the
+                 field, or will the next target need a new Remote Approval? -->
             <div class="idrow">
               <span class="idicon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -496,14 +520,20 @@
                 </svg>
               </span>
               <span class="idmeta">
-                <span class="idlabel">Pairing</span>
+                <span class="idlabel">Binding</span>
                 <span class="ivalue" id="ctPairing">—</span>
               </span>
             </div>
           </div>
           <div class="tfstate" id="ctState">—</div>
+          <!-- Release, not "Disconnect": there is no connection the user made,
+               so there is none for them to undo. What this does is drop the
+               binding to the current field, which is a real thing to want — a
+               binding pointing at a field you have finished with is exactly the
+               state where the next pick lands somewhere surprising. Kept for
+               that reason, and for that reason only. -->
           <div class="cta end">
-            <button class="btn ghost sm" type="button" id="inspUnpair" hidden>Disconnect</button>
+            <button class="btn ghost sm" type="button" id="inspUnpair" hidden>Release this field</button>
           </div>
         </div>
       </section>
