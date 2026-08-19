@@ -79,7 +79,7 @@ beforeEach(() => {
   inspectorHub.clear();
 });
 
-/** The dashboard opens the chooser and picks LOCAL: a code comes back. */
+/** The dashboard opens the chooser and picks LOCAL. No code comes back any more. */
 function begin(key = DASH_KEY, body: Record<string, unknown> = {}) {
   return request(app)
     .post('/inspector/targeting/begin')
@@ -90,9 +90,33 @@ function begin(key = DASH_KEY, body: Record<string, unknown> = {}) {
     });
 }
 
-/** The extension types the code in. */
-function pair(code: string, key = EXT_KEY) {
-  return request(app).post('/inspector/pair').set('x-api-key', key).send({ code });
+/**
+ * Bind `key` to a field that belongs to ANOTHER account.
+ *
+ * WHY THIS GOES THROUGH THE REGISTRY RATHER THAN A ROUTE. The old helper posted
+ * an Authorization Code to /inspector/pair, and any key at all could redeem one
+ * — which is exactly the weakness that made the code worth deleting. Nothing
+ * arbitrary can bind itself any more.
+ *
+ * The two surviving binders both refuse to reproduce this state over HTTP in
+ * multi-tenant mode, and correctly so:
+ *
+ *   • targeting/begin grants to `config.API_TOKEN`, which is EMPTY in multi mode
+ *     (it only has a value in single-user mode), so `grant('')` returns null.
+ *   • consent/decide first checks the caller is in the target's account and
+ *     answers 403 consent_not_yours otherwise.
+ *
+ * That is a property worth keeping, not a gap to route around, so the binding is
+ * created the same way the server itself creates one. This file is about how
+ * GET /inspector/session READS a binding whose recorded account disagrees with
+ * the caller's key→account mapping — not about which route wrote it. Writing it
+ * directly states that precondition instead of smuggling it in through a flow
+ * that no longer permits it.
+ */
+function bindAcrossAccounts(key: string, userId: string, targetFieldId: string, pairingKey: string) {
+  const binding = inspectorAuth.grant(key, userId, targetFieldId, pairingKey);
+  expect(binding, 'the cross-account binding must exist for this test to mean anything').toBeTruthy();
+  return binding;
 }
 
 /** What the popup asks on open — the request whose answer was self-contradictory. */
@@ -138,18 +162,29 @@ function popupView(body: Record<string, unknown>, chosenTargetFieldId: string) {
   };
 }
 
-/** The full LOCAL pairing, dashboard → code → extension. */
+/**
+ * The reported state, assembled: userA has the field open, userB's extension is
+ * bound to it.
+ *
+ * The dashboard half is driven over HTTP because the route is what mints the
+ * destination and records its owner. Only the final binding is written directly,
+ * for the reason given on bindAcrossAccounts above.
+ */
 async function pairedFlow() {
-  const begun = await begin();
+  const begun = await begin(DASH_KEY);
   expect(begun.status).toBe(200);
-  expect(begun.body.step).toBe('authorize');
+  // LOCAL now completes internally: no code, no prompt, nothing to retype.
+  expect(begun.body.step).toBe('targeting');
+  expect(begun.body.code).toBeUndefined();
 
-  const paired = await pair(begun.body.code);
-  expect(paired.status).toBe(200);
-
-  const targetFieldId: string = paired.body.binding.targetFieldId;
+  const targetFieldId: string = begun.body.target.targetFieldId;
   expect(targetFieldId).toBeTruthy();
-  return { targetFieldId, begun, paired };
+
+  // userA owns the field; the extension's key maps to userB. This disagreement
+  // IS the bug's precondition.
+  bindAcrossAccounts(EXT_KEY, 'userA', targetFieldId, begun.body.target.pairingKey);
+
+  return { targetFieldId, begun };
 }
 
 describe('GET /inspector/session — one scope for both halves of the answer', () => {
@@ -193,10 +228,17 @@ describe('GET /inspector/session — one scope for both halves of the answer', (
   });
 
   it('does not list the same target twice when both sides resolve to one account', async () => {
-    // The ORDINARY case must be untouched: same key on both sides.
+    // The ORDINARY case must be untouched: same key on both sides, one account.
+    //
+    // This is the case the widening could most easily break. The route answers
+    // `targets` from the caller's own account AND from every account named on a
+    // binding; when those are the SAME account, a naive union lists the field
+    // twice and the popup renders a duplicate. So the binding is deliberately
+    // written for the caller's own key here — the disagreement the rest of the
+    // file relies on is exactly what must be absent.
     const begun = await begin(DASH_KEY);
-    const paired = await pair(begun.body.code, DASH_KEY);
-    const targetFieldId: string = paired.body.binding.targetFieldId;
+    const targetFieldId: string = begun.body.target.targetFieldId;
+    bindAcrossAccounts(DASH_KEY, 'userA', targetFieldId, begun.body.target.pairingKey);
 
     const res = await session(DASH_KEY);
     const ids = (res.body.targets as { targetFieldId: string }[]).map((t) => t.targetFieldId);
@@ -292,7 +334,20 @@ describe('GET /inspector/targeting/status — the dashboard can see the pairing 
     expect(res.body.step).toBe('targeting');
   });
 
-  it('reports NOT paired while the code is still unredeemed', async () => {
+  it('reports LOCAL attached on the FIRST poll, with nothing left pending', async () => {
+    // WHAT THIS TEST USED TO SAY, and why it was inverted rather than deleted.
+    //
+    // It asserted `paired:false` + `step:'authorize'` "while the code is still
+    // unredeemed", which was correct against the old architecture: begin minted
+    // an Authorization Code and the pairing did not exist until the operator had
+    // retyped it into their extension.
+    //
+    // There is no unredeemed state left to observe. LOCAL is the browser on THIS
+    // server, so `targeting/begin` attaches it before it answers. Keeping the old
+    // expectation would have pinned the deleted flow in place; deleting the test
+    // outright would have left the polling route unpinned. So it now states the
+    // replacement property: the very first poll — no redemption, no waiting —
+    // already reports the field attached.
     const begun = await begin(DASH_KEY);
     const targetFieldId: string = begun.body.target.targetFieldId;
 
@@ -301,7 +356,11 @@ describe('GET /inspector/targeting/status — the dashboard can see the pairing 
       .set('x-api-key', DASH_KEY)
       .query({ targetFieldId });
 
-    expect(res.body.paired).toBe(false);
-    expect(res.body.step).toBe('authorize');
+    expect(res.status).toBe(200);
+    expect(res.body.paired).toBe(true);
+    expect(res.body.step).toBe('targeting');
+    // The route must not offer a code back, in any field name.
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.baseUrl).toBeUndefined();
   });
 });

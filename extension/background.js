@@ -96,11 +96,16 @@ var abBootstrapReady = applyBootstrapDefaults().catch(function () { /* best-effo
  * WHY THIS EXISTS
  * ---------------
  * Reported defect: the Remote approval Alert appeared in the operator's OWN
- * Chrome while they were working in LOCAL mode, minutes after they had already
- * authorized with a code. The binding contract is:
+ * Chrome while they were working in LOCAL mode. The binding contract is now:
  *
- *   LOCAL  = API Key + Authorization Code   -> NO Remote Approval Alert
- *   REMOTE = no API Key, no Authorization Code -> Remote Approval Alert
+ *   LOCAL  = the browser runtime on the SAME server as the application.
+ *            Nothing to enter — no Base URL, no API Key, no Authorization Code —
+ *            and NO Remote Approval Alert. The server resolves its own internal
+ *            address and binds the target field itself.
+ *   REMOTE = a browser on the server's infrastructure. Its address is resolved
+ *            automatically from the server's public configuration, still with no
+ *            API Key and no Authorization Code to type, and it is the ONLY
+ *            environment that raises the Remote Approval Alert.
  *
  * The prompt is delivered by polling GET /inspector/consent, and that route can
  * only scope by account. Two browsers signed into the SAME account are
@@ -198,44 +203,71 @@ async function apiFetch(url, opts, apiKey) {
   }
 }
 
+/* ============================================================================
+   ALL BACKEND CALLS BELOW RESOLVE THEIR CONTEXT INTERNALLY.
+   ----------------------------------------------------------------------------
+   Each of these used to open with the same two lines:
+
+       if (!base)       return { ok: false, error: 'no_base_url' };
+       if (!cfg.apiKey) return { ok: false, error: 'no_api_key' };
+
+   Those refusals were the reason the popup had a Base URL box and an API Key
+   box: something had to fill the values the worker was demanding. Both
+   environments of this product already know their own backend — LOCAL is the
+   browser runtime on the same server as the application, REMOTE is side-loaded
+   by that server with its address baked into bootstrap.config.js — so the
+   demand was asking the user to re-type a value the software already had.
+
+   They now share inspectorContext(), which resolves the address from seeded
+   storage, then the bootstrap, then the server-local loopback, and passes the
+   API key through when known rather than insisting on it. See its header for
+   the full reasoning. The only failure left is one no typing can fix.
+   ============================================================================ */
+
+/** Shared guard: resolve the internal context or report the one real failure. */
+function contextFailure(ctx) {
+  if (ctx && ctx.error) return { ok: false, error: ctx.error };
+  return null;
+}
+
 // Send the recorded steps to the backend as an inline Flow (POST /run).
 async function sendFlow(payload) {
-  var cfg = await getSettings();
-  var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { ok: false, error: 'no_base_url' };
-  if (!cfg.apiKey) return { ok: false, error: 'no_api_key' };
+  var ctx = await inspectorContext();
+  var bad = contextFailure(ctx);
+  if (bad) return bad;
 
   var steps = Array.isArray(payload && payload.steps) ? payload.steps : [];
   if (!steps.length) return { ok: false, error: 'no_steps' };
 
-  var body = { userId: cfg.userId || 'local', steps: steps, headless: true };
+  var body = { userId: ctx.userId, steps: steps, headless: true };
   if (payload && payload.webhookUrl) body.webhookUrl = payload.webhookUrl;
   if (payload && typeof payload.headless === 'boolean') body.headless = payload.headless;
 
   var url = (typeof ABCore !== 'undefined' && ABCore.buildRunInlineUrl)
-    ? ABCore.buildRunInlineUrl(base, { wait: !!(payload && payload.wait) })
-    : base + '/run';
-  return apiFetch(url, { method: 'POST', body: JSON.stringify(body) }, cfg.apiKey);
+    ? ABCore.buildRunInlineUrl(ctx.base, { wait: !!(payload && payload.wait) })
+    : ctx.base + '/run';
+  return apiFetch(url, { method: 'POST', body: JSON.stringify(body) }, ctx.apiKey);
 }
 
-// Validate the API key / connectivity via GET /me. Returns data so the popup
-// can resolve the canonical userId the key is bound to.
+// Validate connectivity via GET /me. Returns data so the popup can resolve the
+// canonical userId, and reports the resolved backend so the popup can DISPLAY
+// the address instead of asking for it.
 async function checkConnection() {
-  var cfg = await getSettings();
-  var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { ok: false, error: 'no_base_url' };
-  if (!cfg.apiKey) return { ok: false, error: 'no_api_key' };
-  return apiFetch(base + '/me', { method: 'GET' }, cfg.apiKey);
+  var ctx = await inspectorContext();
+  var bad = contextFailure(ctx);
+  if (bad) return bad;
+  var res = await apiFetch(ctx.base + '/me', { method: 'GET' }, ctx.apiKey);
+  res.baseUrl = ctx.base;
+  res.baseUrlSource = ctx.baseUrlSource;
+  return res;
 }
 
 // Step 31: list the user's saved workflows — the SAME list the panel shows.
 async function listWorkflows() {
-  var cfg = await getSettings();
-  var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { ok: false, error: 'no_base_url' };
-  if (!cfg.apiKey) return { ok: false, error: 'no_api_key' };
-  var userId = cfg.userId || 'local';
-  var res = await apiFetch(base + '/workflows/' + encodeURIComponent(userId), { method: 'GET' }, cfg.apiKey);
+  var ctx = await inspectorContext();
+  var bad = contextFailure(ctx);
+  if (bad) return bad;
+  var res = await apiFetch(ctx.base + '/workflows/' + encodeURIComponent(ctx.userId), { method: 'GET' }, ctx.apiKey);
   if (res.ok && typeof ABCore !== 'undefined' && ABCore.parseWorkflowList) {
     res.workflows = ABCore.parseWorkflowList(res.data);
   }
@@ -245,23 +277,22 @@ async function listWorkflows() {
 // Step 31: run a saved, versioned workflow (Model B contract, shared with the
 // API client) and return the jobId so the popup can subscribe to live events.
 async function runSavedWorkflow(payload) {
-  var cfg = await getSettings();
-  var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { ok: false, error: 'no_base_url' };
-  if (!cfg.apiKey) return { ok: false, error: 'no_api_key' };
+  var ctx = await inspectorContext();
+  var bad = contextFailure(ctx);
+  if (bad) return bad;
   var workflowId = payload && payload.workflowId;
   if (!workflowId) return { ok: false, error: 'no_workflow_id' };
 
-  var userId = cfg.userId || 'local';
+  var userId = ctx.userId;
   var url = (typeof ABCore !== 'undefined' && ABCore.buildRunSavedUrl)
-    ? ABCore.buildRunSavedUrl(base, userId, workflowId, { wait: !!(payload && payload.wait) })
-    : base + '/workflows/' + encodeURIComponent(userId) + '/' + encodeURIComponent(workflowId) + '/run';
+    ? ABCore.buildRunSavedUrl(ctx.base, userId, workflowId, { wait: !!(payload && payload.wait) })
+    : ctx.base + '/workflows/' + encodeURIComponent(userId) + '/' + encodeURIComponent(workflowId) + '/run';
 
   var body = {};
   if (payload && payload.triggerData) body.triggerData = payload.triggerData;
   if (payload && typeof payload.headless === 'boolean') body.headless = payload.headless;
 
-  var res = await apiFetch(url, { method: 'POST', body: JSON.stringify(body) }, cfg.apiKey);
+  var res = await apiFetch(url, { method: 'POST', body: JSON.stringify(body) }, ctx.apiKey);
   if (res.ok && typeof ABCore !== 'undefined' && ABCore.extractJobId) {
     res.jobId = ABCore.extractJobId(res.data);
   }
@@ -279,13 +310,14 @@ function broadcast(message) {
 }
 
 async function startLive(payload) {
-  var cfg = await getSettings();
-  var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { ok: false, error: 'no_base_url' };
-  if (!cfg.apiKey) return { ok: false, error: 'no_api_key' };
+  var ctx = await inspectorContext();
+  var bad = contextFailure(ctx);
+  if (bad) return bad;
+  var cfg = { baseUrl: ctx.base, apiKey: ctx.apiKey, userId: ctx.userId };
+  var base = ctx.base;
   var jobId = payload && payload.jobId;
   if (!jobId) return { ok: false, error: 'no_job_id' };
-  var userId = (payload && payload.userId) || cfg.userId || 'local';
+  var userId = (payload && payload.userId) || ctx.userId;
 
   // stop a previous stream for the same job if any
   if (liveControllers[jobId]) { try { liveControllers[jobId].abort(); } catch (e) { /* noop */ } }
@@ -373,9 +405,10 @@ function stopLive(payload) {
 // Step 31: open (or focus) the dashboard panel — the SAME UI the extension is
 // a thin client of.
 async function openPanel() {
-  var cfg = await getSettings();
-  var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { ok: false, error: 'no_base_url' };
+  var ctx = await inspectorContext();
+  var bad = contextFailure(ctx);
+  if (bad) return bad;
+  var base = ctx.base;
   var url = (typeof ABCore !== 'undefined' && ABCore.buildPanelUrl) ? ABCore.buildPanelUrl(base) : base + '/';
   return new Promise(function (resolve) {
     chrome.tabs.create({ url: url }, function (tab) {
@@ -393,8 +426,8 @@ async function openPanel() {
    holds host_permissions, so the request belongs here — same reason sendFlow
    lives here.
 
-   THE DESTINATION IS A TARGET FIELD, AND IT IS PAIRED ONCE
-   -------------------------------------------------------
+   THE DESTINATION IS A TARGET FIELD, AND IT IS BOUND ONCE
+   ------------------------------------------------------
    This worker used to mint its own `ext-…` session id and submit picks under it.
    The dashboard claimed nodes under a per-TAB `ui-…` id, and the server compared
    the two for equality — two independently generated strings, so every pick was
@@ -404,22 +437,113 @@ async function openPanel() {
 
    That whole mechanism is gone. The destination is now a Target Field the
    project registers, addressed by `targetFieldId`, and this extension is bound
-   to it ONCE by typing an Authorization Code. After that, ordinary sends carry
-   only the API key and the id — no session, no echo, nothing to keep in sync.
+   to it ONCE — by the SERVER, not by the user:
+
+     LOCAL  the server binds the field internally when the crosshair is used.
+            Nothing is typed and nothing is shown to approve.
+     REMOTE the server raises an approval request; answering it delivers the
+            target (see consentDecide). Still nothing is typed.
+
+   After the binding, ordinary sends carry only the id and whatever key the
+   bootstrap supplied — no session, no echo, nothing to keep in sync.
 
    The extension therefore stores exactly one new thing: which Target Field it is
-   currently sending to. That is a user CHOICE, so it is persisted rather than
-   re-derived, and it survives worker restarts (MV3 kills workers aggressively).
+   currently sending to. It is persisted rather than re-derived so it survives
+   worker restarts (MV3 kills workers aggressively).
    ============================================================ */
 
-// Resolve base + key once for the inspector calls, with the same explicit
-// error keys the popup already knows how to render.
+/**
+ * Resolve the backend context for the inspector calls — WITHOUT asking the user.
+ *
+ * WHAT THIS USED TO DO, AND WHY IT WAS THE DEFECT
+ * ----------------------------------------------
+ * It read `ab_baseUrl` and `ab_apiKey` out of storage and, if either was blank,
+ * refused with `no_base_url` / `no_api_key`. Those two strings were the engine
+ * of the whole reported problem: the popup rendered them as "set the Base URL
+ * first" / "set the API Key first", which is why it HAD a Base URL box and an
+ * API key box at all. Every credential control in the extension existed to
+ * satisfy this function.
+ *
+ * That is backwards for both environments of this product:
+ *
+ *   LOCAL BROWSER  = the browser runtime on the SAME server the application runs
+ *                    on. The backend is not merely reachable from here, it is the
+ *                    process that launched this browser. Its address is internal
+ *                    and known; there is nothing for a human to look up.
+ *   REMOTE BROWSER = the browser on the server's own infrastructure, side-loaded
+ *                    with this extension by that same server, which wrote its own
+ *                    public address and token into bootstrap.config.js on the way
+ *                    in (src/core/InspectorExtension.ts).
+ *
+ * In both cases the server is the authority on its own address and token, and it
+ * has already stated both. Asking the user to retype them was asking them to
+ * re-supply — by hand, from inside a browser they may not be able to read them
+ * from — values that were present and correct all along.
+ *
+ * WHAT IT DOES NOW
+ * ----------------
+ * Three internal sources, in order of authority, and no user input anywhere:
+ *
+ *   1. Storage, which `applyBootstrapDefaults()` has already seeded from the
+ *      server's own bootstrap. This is the normal case and it is exact.
+ *   2. `AB_BOOTSTRAP` directly, in case storage was cleared after seeding — the
+ *      generated file is still importable, so the answer is still available.
+ *   3. The server-local loopback default. Reached only when there is no bootstrap
+ *      at all, which is a hand-installed copy driving a server on this machine.
+ *      This is a guess, but it is the RIGHT guess for exactly the case that has
+ *      no other source, and it is the same address the server publishes to its
+ *      own managed copies (InspectorExtension.serverBaseUrl()).
+ *
+ * The API key is passed through when known and OMITTED when not — never demanded.
+ * `apiFetch()` already sends no `x-api-key` header for an empty value, and a
+ * server-local request without one is a request the backend is entitled to
+ * accept or refuse on its own terms. Refusing it HERE, before it is made, is the
+ * behaviour that produced a credential form.
+ *
+ * The single remaining failure is `runtime_context_unavailable`, and it means
+ * something the user genuinely cannot fix by typing: no address could be
+ * resolved from any internal source. The popup says so in those terms.
+ */
+var LOOPBACK_FALLBACK_BASE = 'http://127.0.0.1:3000';
+
 async function inspectorContext() {
   var cfg = await getSettings();
+
+  // 1 — what the server seeded (or what a previous version stored).
   var base = normalizeBase(cfg.baseUrl);
-  if (!base) return { error: 'no_base_url' };
-  if (!cfg.apiKey) return { error: 'no_api_key' };
-  return { base: base, apiKey: cfg.apiKey, userId: cfg.userId || 'local' };
+  var apiKey = cfg.apiKey || '';
+  var userId = cfg.userId || 'local';
+  var source = base ? 'bootstrap' : '';
+
+  // 2 — the generated bootstrap itself, if storage lost it.
+  if (!base || !apiKey) {
+    try {
+      if (typeof AB_BOOTSTRAP !== 'undefined' && AB_BOOTSTRAP) {
+        if (!base && AB_BOOTSTRAP.baseUrl) {
+          base = normalizeBase(AB_BOOTSTRAP.baseUrl);
+          source = 'bootstrap';
+        }
+        if (!apiKey && AB_BOOTSTRAP.apiKey) apiKey = AB_BOOTSTRAP.apiKey;
+        if ((!userId || userId === 'local') && AB_BOOTSTRAP.userId) userId = AB_BOOTSTRAP.userId;
+      }
+    } catch (e) { /* not a managed copy — fall through to the loopback default */ }
+  }
+
+  // 3 — the server-local default. The LOCAL contract is "the browser runtime on
+  //     the same server", so loopback is not a fallback in spirit: it IS the
+  //     address of a server-local backend, and it is what the server itself
+  //     publishes to the copies it seeds.
+  if (!base) {
+    base = normalizeBase(LOOPBACK_FALLBACK_BASE);
+    source = 'server-local';
+  }
+
+  if (!base) return { error: 'runtime_context_unavailable' };
+
+  // `apiKey` may legitimately be '' here. That is not an error state: it is a
+  // request the backend gets to judge, and the alternative — refusing to ask —
+  // is what put an API key box on screen.
+  return { base: base, apiKey: apiKey, userId: userId, baseUrlSource: source };
 }
 
 /** Which Target Field this extension is currently sending to, if any. */
@@ -449,13 +573,13 @@ function setTargetFieldId(id) {
  *                       in days. Says WHETHER this extension is trusted for
  *                       that field at all.
  *
- * Keeping only the address is what used to make pairing look temporary: the
+ * Keeping only the address is what used to make a binding look temporary: the
  * address died on the next NDV open, and with nothing durable stored the popup
- * had to report "not paired" and the operator was asked for another code. The
- * requirement is explicit that this must not happen:
- *
- *   «دفعات بعد برای همان Extension و همان Target Field، دیگر نیازی به
- *    Authorization Code جدید نیست.»
+ * had to report "not bound" and the operator was asked to authorize again. The
+ * original requirement was explicit that a re-authorization must not be needed
+ * for the same extension and the same target field, and that still holds under
+ * the current contract — where re-authorizing would mean re-approving a REMOTE
+ * request, and for LOCAL would mean nothing at all.
  */
 function getPairingKey() {
   return new Promise(function (resolve) {
@@ -520,6 +644,14 @@ async function inspectorSession() {
   var data = (res && res.data) || {};
   var chosen = await getTargetFieldId();
 
+  // The address this request actually used, reported back so the popup can SHOW
+  // the resolved backend instead of echoing an input box. Sent on failure too —
+  // "cannot reach X" is only actionable if X is named. `baseUrlSource` says
+  // whether it came from the server's bootstrap or the server-local default,
+  // which is the difference between a managed browser and a hand-installed one.
+  res.baseUrl = ctx.base;
+  res.baseUrlSource = ctx.baseUrlSource;
+
   var authorized = data.authorized || [];
   var isAuthorized = authorized.some(function (b) { return b.targetFieldId === chosen; });
 
@@ -560,69 +692,37 @@ async function inspectorSession() {
 }
 
 /**
- * Redeem an Authorization Code — the one-time pairing step.
+ * inspectorPair() IS DELETED.
  *
- * The target is decided by the CODE, server-side. This function deliberately
- * does not send a `targetFieldId`: «The Extension must NEVER be able to choose
- * an arbitrary Target Field.» What comes back is the field the code was scoped
- * to, and THAT is what gets stored.
+ * It was the extension's half of the Authorization Code architecture: it POSTed
+ * a user-typed code to `/inspector/pair`, and the server answered with the field
+ * that code had been scoped to, which the extension then stored.
+ *
+ * That architecture is withdrawn. Neither environment issues a code any more:
+ *
+ *   LOCAL BROWSER  — the browser runtime on the same server as the application.
+ *                    The server binds the target itself when the crosshair is
+ *                    used; there is no credential and no prompt.
+ *   REMOTE BROWSER — the server's own browser. It binds on the user APPROVING
+ *                    the Remote Approval prompt, which is handled by
+ *                    consentDecide() below.
+ *
+ * So there is nothing left for this function to redeem. Deleting it, rather than
+ * leaving it unreachable, is deliberate: a live code-redemption path in the
+ * worker is a working half of the removed flow, and the next UI that wanted to
+ * "just add a code box" would find it already built and waiting.
+ *
+ * consentDecide() is its replacement, and the two are worth comparing — same
+ * outcome (a stored target the extension did not choose), reached by ANSWERING a
+ * question the server asked instead of by transcribing a secret the server
+ * printed.
  */
-async function inspectorPair(payload) {
-  var ctx = await inspectorContext();
-  if (ctx.error) return { ok: false, error: ctx.error };
-
-  var code = String((payload && payload.code) || '').trim();
-  if (!code) return { ok: false, reason: 'INVALID_AUTHORIZATION_CODE', error: 'Enter the Authorization Code.' };
-
-  var res = await apiFetch(
-    ctx.base + '/inspector/pair',
-    { method: 'POST', body: JSON.stringify({ code: code }) },
-    ctx.apiKey
-  );
-
-  var data = res.data || {};
-  if (!res.ok) {
-    return {
-      ok: false,
-      reason: data.reason || res.error,
-      error: data.error || res.message || 'The authorization code was refused.'
-    };
-  }
-
-  var target = data.target || null;
-  var id = (data.binding && data.binding.targetFieldId) || (target && target.targetFieldId) || '';
-  await setTargetFieldId(id);
-
-  // Store the DURABLE identity too, not just the address.
-  //
-  // This is the line that makes "no second code" real on the extension side.
-  // The address in `ab_targetFieldId` dies with the next NDV open; the pairing
-  // key does not, so on the next visit to the SAME field the popup can say
-  // "already paired" and the dashboard's chooser skips the code entirely.
-  // Both come from the SERVER's response — the extension never invents either,
-  // because «The Extension must NEVER be able to choose an arbitrary Target
-  // Field» applies just as much to the stable id as to the address.
-  var pairingKey = (data.binding && data.binding.pairingKey) || (target && target.pairingKey) || '';
-  await setPairingKey(pairingKey);
-
-  var env = (target && target.environment) || '';
-  await setTargetEnvironment(env);
-
-  return {
-    ok: true,
-    targetFieldId: id,
-    pairingKey: pairingKey,
-    environment: env,
-    target: target,
-  };
-}
 
 /**
- * Forget the pairing locally.
+ * Forget the binding locally.
  *
  * Clears the durable key as well as the address — otherwise the popup would go
- * on reporting "paired" for a field this extension has deliberately let go of,
- * and the operator would never be offered the code that would reconnect it.
+ * on reporting "bound" for a field this extension has deliberately let go of.
  * The server keeps its own record until the dashboard's explicit
  * `/inspector/targeting/unpair`; this is the extension's local half.
  */
@@ -643,11 +743,11 @@ async function inspectorUnpair() {
    ordinary LOCAL browser. It loads this same code, and it addresses a submit
    with `ab_targetFieldId` out of chrome.storage.local.
 
-   Until now the ONLY writer of that value was inspectorPair() — redeeming an
-   Authorization Code. But REMOTE deliberately never issues a code, by explicit
-   requirement. So on the remote path the value stayed empty, submitElement()
-   refused locally with TARGET_NOT_AUTHORIZED before any HTTP request was made,
-   and the operator saw:
+   Historically the ONLY writer of that value was inspectorPair(), which redeemed
+   an Authorization Code — a mechanism since removed entirely. REMOTE never issued
+   a code even then, by explicit requirement, so on the remote path the value
+   stayed empty, submitElement() refused locally with TARGET_NOT_AUTHORIZED before
+   any HTTP request was made, and the operator saw:
 
      «ظاهرا نمیدونه به کدوم فیلد باید ارسال بشه» — Connection failed: network
 
@@ -699,10 +799,11 @@ async function consentList() {
   // because in LOCAL mode the request is not made at all.
   //
   // Returning `ok: true` with an empty list rather than an error is deliberate:
-  // "nothing is pending for you" is the TRUTH in local mode, and the contract
-  // says LOCAL binds through redeeming an Authorization Code — a path that is
-  // complete on its own and needs no prompt, no polling and no timeout. An error
-  // here would make callers back off and retry as if something were broken.
+  // "nothing is pending for you" is the TRUTH in local mode, because the server
+  // binds a LOCAL browser's field internally the moment the crosshair is used —
+  // a path that is complete on its own and needs no prompt, no polling and no
+  // timeout. An error here would make callers back off and retry as if something
+  // were broken.
   if (env !== 'remote') {
     return { ok: true, count: 0, requests: [], environment: env, skipped: 'local' };
   }
@@ -742,11 +843,15 @@ async function consentList() {
  * the line that makes the reported failure go away: it is the write to
  * `ab_targetFieldId` that REMOTE never had.
  *
- * Deliberately mirrors inspectorPair() field for field, including the durable
- * pairing key and the environment, because a consent-granted pairing must be
- * exactly as durable as a code-granted one. If it were not, the operator would
- * be re-prompted on every NDV open and we would have replaced "type a code every
- * time" with "click Allow every time" — a different spelling of the same defect.
+ * Stores the durable pairing key and the environment alongside the target, so a
+ * consent-granted binding survives an NDV reopen. If it did not, the operator
+ * would be re-prompted every time and "click Allow every time" would simply be
+ * a new spelling of the defect this work removes.
+ *
+ * This is the ONLY way a target arrives in this worker from a user action, and
+ * it applies to REMOTE alone. LOCAL needs no counterpart: the server binds the
+ * field itself the moment the crosshair is used, with nothing to answer and
+ * nothing to type.
  */
 async function consentDecide(payload) {
   var ctx = await inspectorContext();
@@ -761,15 +866,19 @@ async function consentDecide(payload) {
   // it somehow (a stale card left in a tab from a previous remote session, or a
   // page that guesses an id). Gating the LIST alone would leave the write to
   // `ab_targetFieldId` reachable, and that write is the whole point of the
-  // handshake — the target must arrive in LOCAL only by redeeming an
-  // Authorization Code, which is what inspectorPair() does.
+  // handshake. A LOCAL browser has no business answering it because it never
+  // needed to: the server bound its field internally when the crosshair was
+  // used, which is why the approval alert is a REMOTE-only surface.
   var env = await browserEnvironment();
   if (env !== 'remote') {
     return {
       ok: false,
       reason: 'wrong_environment',
+      // Was: '…Use the Authorization Code from the dashboard instead.' There is
+      // no code any more, and a local browser has nothing at all to do here.
       error: 'Remote approval does not apply to a local browser. '
-        + 'Use the Authorization Code from the dashboard instead.',
+        + 'A local browser is bound by the server automatically when you use '
+        + 'the crosshair on a field.',
       environment: env,
     };
   }
@@ -807,7 +916,9 @@ async function consentDecide(payload) {
     || (target && target.pairingKey) || '';
   await setPairingKey(pairingKey);
 
-  var env = (target && target.environment) || 'remote';
+  // Reuses the `env` declared above (a second `var env` here was a duplicate
+  // declaration that silently shadowed nothing and only confused readers).
+  env = (target && target.environment) || 'remote';
   await setTargetEnvironment(env);
 
   return {
@@ -852,14 +963,17 @@ async function submitElement(payload) {
     };
   }
 
-  // The destination must have been paired. Refusing locally saves a round trip
-  // and names the actual fix.
+  // The destination must have been bound. Refusing locally saves a round trip
+  // and names the actual fix — which is now an action in the PROJECT, not a
+  // credential to type here. Was: 'Enter an Authorization Code first.'
   var targetFieldId = await getTargetFieldId();
   if (!targetFieldId) {
     return {
       ok: false,
       reason: 'TARGET_NOT_AUTHORIZED',
-      error: 'This Inspector is not connected to a Field. Enter an Authorization Code first.'
+      error: 'This Inspector is not bound to a Field yet. In the project, click the '
+        + 'crosshair on the field you want to fill (and approve the request if this '
+        + 'is the remote browser).'
     };
   }
 
@@ -897,6 +1011,155 @@ async function submitElement(payload) {
     attribute: data.attribute || attrName,
     value: data.value || '',
     delivery: data.delivery || null
+  };
+}
+
+/* ============================================================================
+   BROWSER ENVIRONMENT — THE LOCAL / REMOTE CHOICE, FROM INSIDE THE EXTENSION
+   ----------------------------------------------------------------------------
+   REPORTED, and the regression these two functions repair:
+
+     «UI فعلی دیگر هیچ انتخابی برای LOCAL BROWSER / REMOTE BROWSER ندارد. طبق
+      قرارداد نهایی، این انتخاب باید حتماً در Targeting flow باقی بماند. این را
+      با Backend Connection اشتباه نکن.»
+
+   The choice itself was never deleted from the product: the dashboard's own
+   dialog (public/js/targeting-flow.js renderChooser) still offers both cards.
+   What was missing is that the choice existed ONLY there. An operator working
+   from the extension popup — which is where "Target this field" is reached in
+   the browser being targeted — had no way to make it, so the environment was
+   whatever the last dashboard interaction happened to record.
+
+   WHAT THESE ARE NOT
+   ------------------
+   Not the Backend Connection. That is WHERE THE SERVER IS, it is resolved by
+   the server, it is not a choice, and the controls that used to ask for it
+   (#baseUrl, #apiKey, the Local/Remote BACKEND radio pair) are deleted and stay
+   deleted. These two functions carry the third, separate concept:
+
+     Browser Environment  LOCAL / REMOTE   <- WHICH BROWSER does the picking
+     Backend location     resolved by the server, never asked
+     targetFieldId        the destination, minted server-side
+
+   NO NEW BACKEND. Both call the routes the dashboard chooser already calls,
+   unchanged: GET /inspector/targeting/options and POST /inspector/targeting/
+   begin. There is deliberately no new endpoint, no new grant path and no new
+   binding rule — the server keeps deciding all of that, exactly as it does for
+   the dashboard, which is what stops the two surfaces from disagreeing.
+   ========================================================================== */
+
+/**
+ * Which environments may be chosen for this field right now, and what each one
+ * would ask of the operator.
+ *
+ * A READ: it registers nothing, mints no destination and creates no pairing,
+ * because merely opening a chooser the user may cancel must not leave state
+ * behind. `available` / `needsRemoteApproval` come from the server's own
+ * environmentOptions(), so the popup can never offer a card the server would
+ * then refuse, nor promise "automatic" for a card that raises an approval.
+ */
+async function targetingOptions(payload) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error, options: [] };
+
+  var nodeId = String((payload && payload.nodeId) || '').trim();
+  var fieldKey = String((payload && payload.fieldKey) || '').trim();
+  if (!nodeId || !fieldKey) return { ok: false, error: 'no_target_field', options: [] };
+
+  var qs = '?nodeId=' + encodeURIComponent(nodeId) + '&fieldKey=' + encodeURIComponent(fieldKey);
+  if (payload && payload.workflowId) qs += '&workflowId=' + encodeURIComponent(payload.workflowId);
+
+  var res = await apiFetch(ctx.base + '/inspector/targeting/options' + qs, { method: 'GET' }, ctx.apiKey);
+  var data = (res && res.data) || {};
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'Could not ask the server which browsers are available.',
+      options: []
+    };
+  }
+  return {
+    ok: true,
+    options: data.options || [],
+    paired: !!data.paired,
+    localEnabled: !!data.localEnabled,
+    pairingKey: data.pairingKey || ''
+  };
+}
+
+/**
+ * The operator chose an environment. Hand it to the server and store what comes
+ * back.
+ *
+ * The ENVIRONMENT is the only thing sent. The binding, the address and the
+ * credential all come back FROM the server, which is what keeps this surface
+ * incapable of asserting a target for itself:
+ *
+ *   LOCAL   -> `paired: true`, `runtime: 'server-local'`, `consent: null`.
+ *              Bound before the route answers, so the target is stored here and
+ *              the operator is asked for nothing at all: no Base URL, no API
+ *              key, no Authorization Code and no approval prompt.
+ *   REMOTE  -> `openRemoteBrowser: true` and a consent prompt. The target is
+ *              deliberately NOT stored on this path: it arrives through
+ *              consentDecide() when the human presses Allow, which is what makes
+ *              the approval meaningful rather than decorative, and what lets an
+ *              already-running remote browser be reused for a new field.
+ */
+async function targetingBegin(payload) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+
+  var environment = (payload && payload.environment) === 'local' ? 'local' : 'remote';
+  var nodeId = String((payload && payload.nodeId) || '').trim();
+  var fieldKey = String((payload && payload.fieldKey) || '').trim();
+  if (!nodeId || !fieldKey) return { ok: false, error: 'no_target_field' };
+
+  var body = {
+    nodeId: nodeId,
+    fieldKey: fieldKey,
+    action: (payload && payload.action) || '',
+    environment: environment
+  };
+  if (payload && payload.workflowId) body.workflowId = payload.workflowId;
+  if (payload && payload.label) body.label = payload.label;
+
+  var res = await apiFetch(
+    ctx.base + '/inspector/targeting/begin',
+    { method: 'POST', body: JSON.stringify(body) },
+    ctx.apiKey
+  );
+  var data = (res && res.data) || {};
+  if (!res.ok) {
+    // `local_disabled` / `local_unavailable` are passed through with the
+    // server's own sentence: the operator's switch is the fix, and a generic
+    // failure would hide it.
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'The browser environment could not be selected.',
+      environment: environment
+    };
+  }
+
+  var target = data.target || null;
+
+  // LOCAL only. See the doc block above for why REMOTE must wait for Allow.
+  if (environment === 'local' && target && target.targetFieldId) {
+    await setTargetFieldId(target.targetFieldId);
+    if (target.pairingKey) await setPairingKey(target.pairingKey);
+    await setTargetEnvironment('local');
+  }
+
+  return {
+    ok: true,
+    environment: environment,
+    step: data.step || 'targeting',
+    target: target,
+    paired: !!data.paired,
+    runtime: data.runtime || '',
+    openRemoteBrowser: !!data.openRemoteBrowser,
+    consent: data.consent || null
   };
 }
 
@@ -945,19 +1208,23 @@ function handoffAvailable() {
   return (typeof ABHandoff !== 'undefined') && ABHandoff;
 }
 
+// Resolved through the same internal path as everything else, so this cannot
+// ask for a Base URL the popup no longer collects.
 async function handoffBase() {
-  var cfg = await getSettings();
-  return normalizeBase(cfg.baseUrl);
+  var ctx = await inspectorContext();
+  return (ctx && ctx.base) || '';
 }
 
 async function handoffPair(payload) {
   if (!handoffAvailable()) return { ok: false, error: 'Handoff module failed to load.' };
   var base = await handoffBase();
   if (!base) {
+    // Was 'Set the backend Base URL in this popup first, then enter the code.'
+    // There is no such box any more, and the address is the server's to state.
     return {
       ok: false,
-      reason: 'no_base_url',
-      error: 'Set the backend Base URL in this popup first, then enter the code.'
+      reason: 'runtime_context_unavailable',
+      error: 'This browser has not been given a backend address by the server yet.'
     };
   }
   var res = await ABHandoff.pairWithCode(base, payload && payload.code);
@@ -1084,11 +1351,27 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
     case 'AB_INSPECTOR_SESSION':
       inspectorSession().then(sendResponse);
       return true; // async
-    // One-time pairing. Distinct from AB_HANDOFF_PAIR below: that code binds a
-    // BROWSER SESSION, this one binds a TARGET FIELD. Two subsystems, two codes,
-    // and unpairing either must leave the other alone.
-    case 'AB_INSPECTOR_PAIR':
-      inspectorPair(msg.payload).then(sendResponse);
+    // There is deliberately NO 'AB_INSPECTOR_PAIR' case here any more.
+    //
+    // It used to route to inspectorPair(), which redeemed a user-typed
+    // Authorization Code against POST /inspector/pair. Both the function and
+    // the code architecture are gone: the server now binds the target field
+    // itself when the operator clicks the crosshair (LOCAL, silently) or
+    // approves the request (REMOTE, via AB_CONSENT_DECIDE below). No caller
+    // in this repo sends this message.
+    //
+    // Note AB_HANDOFF_PAIR further down is a DIFFERENT subsystem — it binds a
+    // BROWSER SESSION, not a target field — and is intentionally untouched.
+    // ---- Browser Environment: the LOCAL / REMOTE choice ------------------
+    // The FIRST step of targeting, offered here as well as in the dashboard,
+    // because this popup is the surface reached from inside the browser being
+    // targeted. Both cases delegate to the routes the dashboard chooser already
+    // uses; neither adds a binding rule of its own.
+    case 'AB_TARGETING_OPTIONS':
+      targetingOptions(msg.payload).then(sendResponse);
+      return true; // async
+    case 'AB_TARGETING_BEGIN':
+      targetingBegin(msg.payload).then(sendResponse);
       return true; // async
     case 'AB_INSPECTOR_UNPAIR':
       inspectorUnpair().then(sendResponse);
@@ -1098,9 +1381,9 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
       return true; // async
 
     // ---- Remote targeting consent -----------------------------------------
-    // The REMOTE counterpart of AB_INSPECTOR_PAIR. Same outcome — a stored
-    // target — reached by answering a question the server delivered instead of
-    // by transcribing a code, because on this path there is no code to type.
+    // How a REMOTE browser acquires its target: by answering a question the
+    // server delivered, never by transcribing a code. (A LOCAL browser needs
+    // nothing at all — the server binds the field when the crosshair is used.)
     // Which browser am I? Asked by content/consent.js before it starts polling,
     // so a local browser never runs the approval loop at all, and by the popup
     // so it can state the environment instead of leaving the operator guessing.

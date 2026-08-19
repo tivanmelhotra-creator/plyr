@@ -484,105 +484,74 @@ body {
 .btn.primary:disabled:hover { filter: none; }
 .bicon { display: flex; }
 
-/* ── Backend mode cards ───────────────────────────────────────────────────
-   The design's `.option`: a 16px drawn radio, then name over URL, on #101010,
-   turning orange-tinted when active. Side by side rather than stacked so both
-   URLs stay readable at once — the user can see which machine they are about
-   to talk to without opening anything. The whole card is the <label>. */
-.modegrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
-.modecard {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 9px;
-  align-items: start;
-  padding: 10px;
-  background: #101010;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  min-width: 0;
-  transition: border-color .12s, background .12s;
-}
-.modecard:hover { border-color: #444; }
-/* The native input is replaced by a drawn ring: the design's ring-and-fill is
-   not reachable with `accent-color` alone, and the input must stay focusable. */
-.modecard input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.dot {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #777;
-  border-radius: 50%;
-  margin-top: 2px;
-  position: relative;
-}
-.modemeta { display: flex; flex-direction: column; min-width: 0; }
-.modename { font-size: 13px; line-height: 18px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.modeurl {
-  font: 11px/14px var(--mono);
-  color: var(--muted);
-  margin-top: 2px;
-  overflow-wrap: anywhere;
-}
-/* :has() is why the selected card can be tinted with no JavaScript. It is
-   supported in every Chromium that supports MV3. */
-.modecard:has(input:checked) { border-color: var(--orange); background: var(--orange-tint); }
-.modecard:has(input:checked) .dot { border-color: var(--orange); }
-.modecard:has(input:checked) .dot::after {
-  content: '';
-  position: absolute;
-  inset: 3px;
-  border-radius: 50%;
-  background: var(--orange);
-}
-.modecard:has(input:checked) .modeurl { color: var(--orange); }
-.modecard:has(input:focus-visible) { outline: 1px solid var(--orange); outline-offset: 1px; }
+/* ── Browser Environment chooser — LOCAL / REMOTE ─────────────────────────
+   The FIRST step of Target This Field, and NOT the backend mode cards that used
+   to sit on the Connection tab. Those asked where the SERVER is and wrote a Base
+   URL; these ask which BROWSER does the picking and write nothing. The rules are
+   new rather than a revival of `.modecard`, because the two are different
+   controls: a `<button>` that performs a registration, not a radio that stores a
+   preference — see the block below for why the old rules stay deleted.
 
-/* ── Fields ───────────────────────────────────────────────────────────────
-   The design stacks every label above its box and gives the box a 34px height
-   on #0f0f0f with a mono value. Both arrangements in the markup are kept —
-   Base URL stacks, API key and Authorization code label beside — but they
-   share one box style so the three inputs cannot drift apart. */
-.field { display: block; margin-top: 10px; }
-.card-hd + .card-bd > .field:first-child { margin-top: 0; }
-.field.stack span,
-.field.inline > span:first-child {
-  display: block;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 12px;
-  color: var(--text);
-  margin-bottom: 5px;
+   Two equal columns at any popup width, so neither browser reads as the default
+   and the choice is presented as a genuine pair. */
+.envgrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
 }
-.field.inline > span:first-child { color: var(--muted); }
-.ibox, .field.stack .ibox { position: relative; display: flex; min-width: 0; }
-.field input {
-  width: 100%;
-  min-height: 34px;
-  padding: 8px 9px;
-  background: #0f0f0f;
+.envcard {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  text-align: left;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--panel3);
   color: var(--text);
-  font: 12px/16px var(--mono);
-}
-.field.inline input { padding-right: 34px; }
-.field input::placeholder { color: var(--dim); }
-.field input:focus { outline: none; border-color: var(--orange); }
-.peek {
-  position: absolute;
-  right: 5px; top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  padding: 5px;
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  color: var(--muted);
   cursor: pointer;
+  font-family: var(--sans);
 }
-.peek:hover { color: var(--text); }
-.peek.on { color: var(--orange); }
-.peek:focus-visible { outline: 1px solid var(--orange); outline-offset: 0; }
+.envcard:hover:not(:disabled) { border-color: #444; background: #161616; }
+/* focus-visible only: a keyboard user needs the ring; a mouse user who just
+   pressed a card does not want one left behind on it. */
+.envcard:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+/* The card currently in force. Orange is this panel's "active" colour
+   everywhere else (card titles, the selected tab), so an operator re-opening the
+   popup reads which browser is chosen without having to compare the two. */
+.envcard.is-on { border-color: var(--orange); background: #ff66000f; }
+.envcard.is-off,
+.envcard:disabled { opacity: .5; cursor: default; }
+
+/* The label carries the word "Browser" — mono, like every other technical
+   identity in this popup — because the Connection tab uses the bare words
+   local/remote for where the BACKEND is, and the two must not be read as one
+   setting. */
+.envname { font: 700 11px/14px var(--mono); letter-spacing: .02em; }
+.envdesc { font-size: 11px; line-height: 14px; color: var(--muted); }
+/* What the card will ASK OF THE USER, stated before it is pressed: "Automatic"
+   or "Needs Remote Approval". Never a credential — there is none to ask for. */
+.envnote { font: 10px/13px var(--mono); }
+.envnote.is-ok { color: var(--green); }
+.envnote.is-code { color: var(--orange); }
+.envnote.is-warn { color: var(--danger); }
+
+/* ── Removed: the backend mode cards and the credential fields ────────────
+   The rules for `.modegrid` / `.modecard` / `.dot` / `.modemeta` / `.modename`
+   / `.modeurl`, and for `.field` / `.ibox` / `.peek`, are deleted along with the
+   markup they dressed: the Local-vs-Remote backend radio pair, the Base URL box,
+   the API key box with its show/hide eye, and the Authorization Code box.
+
+   The popup no longer has a single control a user types into. The address and
+   the token are resolved by the server that launched this browser and reported
+   as read-only rows in "Connection status"; the target is bound by the server
+   when the crosshair is used. Styles for input controls that may not exist are
+   removed rather than left behind, because a stylesheet that still knows how to
+   render a credential form is half of one.
+
+   `.field` is deliberately gone too, even though it looks generic: its only
+   users were those three inputs. */
 
 /* ── SELECTED ELEMENT rows ────────────────────────────────────────────────
    The design's `.selected-item`: a 110px mono key column, then the value, one
@@ -704,8 +673,8 @@ body {
    was perfectly correct.
    Making `.mark` the containing block is what ties the dot to the CIRCLE it
    belongs to, so `inset: 3px` means "3px inside this ring" and yields a
-   centred 6×6 dot at any cell width. `.modecard .dot` never had this bug
-   precisely because it declares `position: relative` itself.
+   centred 6×6 dot at any cell width. (The since-deleted `.modecard .dot` never
+   had this bug, precisely because it declared `position: relative` itself.)
    `flex: 0 0 14px` is the same defence one layer out: `.ctl` is a flex
    container, so a stretched or shrunk flex item would resize the ring — and
    with it the dot — the moment a row's height or content changed. */

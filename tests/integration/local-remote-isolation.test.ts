@@ -105,7 +105,8 @@ describe('LOCAL must never raise a Remote approval prompt', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.environment).toBe('local');
 
-    // LOCAL authorizes with a code; it must not also be handed a prompt.
+    // LOCAL is attached internally by the server; it must not also be handed a
+    // prompt. «LOCAL BROWSER → … → بدون Alert → اتصال خودکار».
     expect(res.body.consent == null).toBe(true);
     expect(res.body.openRemoteBrowser).not.toBe(true);
 
@@ -115,14 +116,26 @@ describe('LOCAL must never raise a Remote approval prompt', () => {
     expect(remoteTargetConsent.pendingFor('local')).toHaveLength(0);
   });
 
-  it('LOCAL asks for an Authorization Code, and that is the whole handshake', async () => {
+  it('LOCAL is attached by the server, and that is the whole handshake', async () => {
+    // The same property this test always guarded — LOCAL's handshake is
+    // self-contained and involves no remote party — with the mechanism corrected.
+    // It previously asserted `step:'authorize'` and `serverMayGrant:false`, i.e.
+    // that the operator completed the handshake by hand. LOCAL is the browser
+    // runtime on THIS server, so the server completes it:
+    //
+    //     Target This Field → LOCAL BROWSER → …internal… → Connected to Target
     const res = await begin('local');
 
-    expect(res.body.step).toBe('authorize');
-    expect(res.body.plan.needsAuthorization).toBe(true);
-    expect(res.body.plan.serverMayGrant).toBe(false);
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.plan.needsAuthorization).toBe(false);
+    expect(res.body.plan.serverMayGrant).toBe(true);
+    expect(res.body.plan.needsRemoteApproval).toBe(false);
     expect(res.body.plan.opensRemoteBrowser).toBe(false);
+    // Nothing for the user to read, copy or retype anywhere in the response.
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.baseUrl).toBeUndefined();
   });
+
 
   // ── THE LEAK PATH ────────────────────────────────────────────────────────
   // One account may legitimately use BOTH environments: one node targeted

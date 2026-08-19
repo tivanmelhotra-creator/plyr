@@ -1740,193 +1740,45 @@
     feedback.appendChild(prev);
     row.appendChild(feedback);
 
-    // The project side of pairing. Only on fields that can actually receive a
-    // pick, because a Connect button on a checkbox would issue a code for a
-    // destination the server refuses.
-    if (pickableFields(node.action).indexOf(f.k) !== -1) {
-      row.appendChild(buildConnectRow(node, f));
-    }
+    // NO per-field "Connect Inspector" row lives here any more.
+    //
+    // It used to sit exactly at this point: on every pickable field, a button
+    // that called `authorizeTarget()` and then printed an Authorization Code
+    // chip and a Base URL chip for the operator to copy into the extension.
+    //
+    // That row is gone because it is the same forbidden surface as the old
+    // authorize dialog. Targeting is reached through the crosshair, which now
+    // resolves LOCAL entirely on the server (no code, no address, no key) and
+    // asks for approval only in the REMOTE case. A field-level button whose one
+    // job was to mint a credential would put the removed flow straight back on
+    // screen, one node at a time.
+    //
+    // Nothing replaces it: the crosshair on this same field already is the
+    // entry point, so a second control here would only be a second way to
+    // reach the same target — and the way that asks the user for secrets.
 
     row._field = f;
     return row;
   }
 
-  /**
-   * "Connect Inspector" for ONE field.
-   *
-   * The code is issued here, in the project, by the person looking at the field.
-   * That is the whole mechanism behind §8: the extension redeems a code that is
-   * already bound to one destination, so it never gets to name a target itself.
-   * A "pair the extension" button living in the extension could not have this
-   * property.
-   */
-  function buildConnectRow(node, f) {
-    var wrap = document.createElement('div');
-    wrap.className = 'ndv-connect';
-
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn ghost xs ndv-connect-btn';
-    btn.textContent = t('insp.connect');
-    btn.title = t('insp.connectHint');
-
-    var out = document.createElement('span');
-    out.className = 'ndv-connect-out';
-
-    // The poll that makes this box GO AWAY. See startWatch().
-    var watch = null;
-    function stopWatch() {
-      if (watch) { clearInterval(watch); watch = null; }
-    }
-
-    /**
-     * One copyable value: a label, the value, and a Copy button that confirms.
-     *
-     * Both of the things the operator has to move into the extension — the code
-     * and the Base URL — are rendered through this, so neither can end up with
-     * an affordance the other lacks. `writeClipboard` is the editor's existing
-     * helper, which already falls back to execCommand on a non-secure origin;
-     * that fallback matters most here, because a plain-http LAN address is
-     * exactly the situation in which someone is copying a Base URL.
-     */
-    function valueChip(labelText, value, cls) {
-      var chip = document.createElement('span');
-      chip.className = 'ndv-connect-chip';
-
-      if (labelText) {
-        var lab = document.createElement('span');
-        lab.className = 'ndv-connect-label';
-        lab.textContent = labelText;
-        chip.appendChild(lab);
-      }
-
-      // The value must be selectable — users read it across to another window,
-      // and a half-selected code is a silent pairing failure.
-      var v = document.createElement('code');
-      v.className = 'ndv-connect-code' + (cls ? ' ' + cls : '');
-      v.textContent = value;
-      chip.appendChild(v);
-
-      var copy = document.createElement('button');
-      copy.type = 'button';
-      copy.className = 'btn ghost xs ndv-connect-copy';
-      copy.textContent = t('insp.copy');
-      copy.title = t('insp.copy');
-      copy.setAttribute('aria-label', t('insp.copy') + ' ' + labelText);
-      copy.addEventListener('click', function () {
-        writeClipboard(value);
-      });
-      chip.appendChild(copy);
-
-      return chip;
-    }
-
-    // Rendered as text, never innerHTML: the code comes from the server, and
-    // this is the habit that keeps it impossible for any value to become markup.
-    function show(msg, kind, offer) {
-      out.className = 'ndv-connect-out' + (kind ? ' ' + kind : '');
-      out.textContent = '';
-      if (msg) {
-        var label = document.createElement('span');
-        label.className = 'ndv-connect-msg';
-        label.textContent = msg;
-        out.appendChild(label);
-      }
-      if (offer && (offer.display || offer.code)) {
-        out.appendChild(valueChip(
-          t('tgt.authCode'), offer.display || offer.code, ''
-        ));
-      }
-      // A code with no address is not usable. Shown only when the server sent
-      // one — an address invented here would be presented with the same
-      // confidence as a configured one and be wrong more often.
-      if (offer && offer.baseUrl) {
-        out.appendChild(valueChip(t('tgt.baseUrl'), offer.baseUrl, 'ndv-connect-base'));
-      }
-    }
-
-    /**
-     * Watch for the extension accepting the code, then clear this box.
-     *
-     *   «توقع داشتم وقتی ارتباط برقرار میشه باکسی که کد اتورایز و بیس یو ار ال
-     *    رو نمایش میده خارج بشه و انتظار یک الرت موفقیت بودم ولی هیچ اتفاقی
-     *    نیوفتاد»
-     *
-     * And nothing did: this row printed a code and then never asked about it
-     * again. The dashboard cannot observe the extension directly — they are
-     * different browsers — so the server, the only party that sees both sides,
-     * is polled. Exactly the mechanism the LOCAL/REMOTE chooser already uses;
-     * this row simply never had it.
-     *
-     * Stops on success, and stops itself if the field is closed underneath it,
-     * so a timer cannot outlive the node it belongs to.
-     */
-    function startWatch(ic, targetFieldId) {
-      stopWatch();
-      if (typeof ic.targetingStatus !== 'function') return;
-
-      watch = setInterval(function () {
-        // The row was re-rendered or the node closed: the id this timer holds is
-        // no longer the live destination, so keeping it would poll forever.
-        if (myTargetIdFor(node.id, f.k) !== targetFieldId) { stopWatch(); return; }
-
-        ic.targetingStatus(targetFieldId).then(function (s) {
-          if (!s || !s.paired) return;
-          stopWatch();
-          // The box goes away, because its whole content — a one-time code and
-          // an address to type it into — is now spent. Leaving it up invites
-          // the operator to type a consumed code a second time.
-          show('', '', null);
-          if (U() && U().toast) U().toast(t('insp.pairedNow'), 'ok');
-        }).catch(function () { /* a failed poll is retried on the next tick */ });
-      }, 1000);
-    }
-
-    btn.addEventListener('click', function () {
-      var ic = inspectorClient();
-      // The id is the SERVER's, looked up from what this page registered. There
-      // is deliberately no way to type one in: a client-chosen id is exactly the
-      // stale/forged delivery the random suffix exists to prevent.
-      var targetFieldId = myTargetIdFor(node.id, f.k);
-      if (!ic || typeof ic.authorizeTarget !== 'function' || !targetFieldId) {
-        show(t('insp.err.TARGET_FIELD_NOT_FOUND'), 'err', null);
-        return;
-      }
-
-      btn.disabled = true;
-      stopWatch();
-      show(t('common.loading') || '…', '', null);
-      ic.authorizeTarget(targetFieldId).then(function (offer) {
-        btn.disabled = false;
-        if (!offer) { show(t('insp.codeFailed'), 'err', null); return; }
-        // Name the lifetime: a code with no stated expiry looks broken rather
-        // than expired when it later stops working.
-        show(t('insp.codeReady') + ' · ' + t('insp.codeExpires'), 'ok', offer);
-        startWatch(ic, targetFieldId);
-      }).catch(function () {
-        btn.disabled = false;
-        show(t('insp.codeFailed'), 'err', null);
-      });
-    });
-
-    wrap.appendChild(btn);
-    wrap.appendChild(out);
-    return wrap;
-  }
-
-  /** The server-minted id this page holds for one node's field, or ''. */
-  function myTargetIdFor(nodeId, fieldKey) {
-    var ic = inspectorClient();
-    if (!ic || typeof ic.myTargets !== 'function') return '';
-    var mine = [];
-    try { mine = ic.myTargets() || []; } catch (e) { return ''; }
-    for (var i = 0; i < mine.length; i++) {
-      if (mine[i] && mine[i].nodeId === nodeId && mine[i].fieldKey === fieldKey) {
-        return mine[i].targetFieldId || '';
-      }
-    }
-    return '';
-  }
+  // buildConnectRow() and myTargetIdFor() used to live here (~175 lines) and are
+  // deleted.
+  //
+  // buildConnectRow() built the per-field "Connect Inspector" box: a button that
+  // called `InspectorClient.authorizeTarget()`, then rendered the returned
+  // Authorization Code and Base URL as two copy-to-clipboard chips, and polled
+  // `targetingStatus` once a second until the extension redeemed the code so the
+  // box could be taken down again. myTargetIdFor() existed only to feed it the
+  // server-minted target id.
+  //
+  // All of it is removed for one reason: the LOCAL flow may not ask the user for
+  // a Base URL, an API Key or an Authorization Code, and this box asked for two
+  // of the three by design. The server now binds the target itself when the
+  // crosshair is used, so there is no code to issue, no address to copy, and
+  // nothing for a poll to wait for.
+  //
+  // The clipboard helper these used, `writeClipboard()`, is NOT removed — it is
+  // the editor's shared helper and still serves "copy step"/"copy workflow".
 
   // Re-evaluate every expression field's preview against the node's INPUT
   // sample, marking errors inline (never throws — uses mapParams semantics).

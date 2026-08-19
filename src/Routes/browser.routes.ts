@@ -69,6 +69,7 @@ import {
   contentDispositionAttachment,
 } from '../core/RemoteDownloads';
 import { SelfHeal, type HealStep } from '../core/SelfHeal';
+import { ensureRuntimeReady } from '../core/BrowserRuntimeRecovery';
 // The same gate /browser/ws uses. Uploads must be scoped to the identity the
 // socket runs as, so they must be authorized by the identical rule.
 import { authorizeLive } from '../core/LiveServer';
@@ -1238,6 +1239,43 @@ export const createBrowserRoutes = (): Router => {
     //   3. Every fault stays in REQUEST SCOPE. Nothing here can reach the
     //      process-level handlers, so a browser that cannot start can no
     //      longer take the server, the port and /health down with it.
+
+    // ─────────────────────────────────────────────────────────────────────
+    // REPAIR THE RUNTIME FIRST — the fix for `remote_browser_disabled`
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // REPORTED, and still reproducible before this line existed:
+    //
+    //     remote_browser_disabled
+    //     The Remote Browser is switched off for this instance
+    //
+    // ROOT CAUSE. `/browser/start` and `/browser/enable` both self-enable the
+    // runtime. THIS route — the only one the crosshair reaches, via
+    // BrowserView.openRealBrowser — did not. So a `REAL_CHROME_ENABLED=false`
+    // was not discovered here but three frames deeper, inside
+    // RealChrome.getContext(), by which point the only thing left to do with it
+    // was describe() it as a failure and 503. The flag was tripped over late
+    // instead of being consulted early.
+    //
+    // Asking BEFORE starting turns that dead end into a repair. The operator
+    // pressed "open the browser and let me pick a field in it"; there is no
+    // reading of that request under which "it is configured off" is a more
+    // useful answer than switching it on and continuing.
+    //
+    // It restarts only the BROWSER process when one is wedged. The main
+    // application is never restarted — see BrowserRuntimeRecovery's header.
+    const runtime = await ensureRuntimeReady();
+    if (!runtime.ok) {
+      res.status(503).json({
+        success: false,
+        error: runtime.problem,
+        hint: runtime.hint,
+        retryable: true,
+        steps: runtime.steps,
+      });
+      return;
+    }
+
     const result = await withStartBudget(
       async () => {
         const desktop = await Desktop.start();

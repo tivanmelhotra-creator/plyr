@@ -9,17 +9,22 @@
  *   «وقتی روی آیکون 🎯 Target This Field کلیک می‌شود، اولین قدم باید انتخاب
  *    محیط مرورگر باشد، نه انتخاب حالت اتصال.»
  *
- * and that the two branches differ in exactly one respect:
+ * The branches originally differed in whether an Authorization Code was issued:
+ * REMOTE «نیازی به Authorization Code نیست», LOCAL issued one for that Target
+ * Field the first time. That is no longer the contract. `LOCAL BROWSER` means the
+ * Browser Runtime on the same Server/Infrastructure the backend runs on, so
+ * NEITHER environment issues a code and the operator types nothing in either:
  *
- *   REMOTE — «نیازی به Authorization Code نیست»
- *   LOCAL  — a code is issued for THAT Target Field the first time, and
- *            «دفعات بعد برای همان Extension و همان Target Field، دیگر نیازی به
- *             Authorization Code جدید نیست»
+ *   LOCAL  — «internal automatic Base URL → no API Key → no Authorization →
+ *             no Alert → اتصال خودکار»
+ *   REMOTE — address resolved from the server's own configuration, no code, but
+ *            a Remote Approval prompt, because that browser is shared across
+ *            targeting runs and the prompt names which field the next pick is for
  *
  * The requirement also insists this be genuinely implemented rather than
  * "displayed cosmetically in the Popup", so these tests assert what the dialog
- * DOES — which endpoint it drove, which tab it opened, when it stops asking for
- * a code — and never that a particular string appears in the source.
+ * DOES — which endpoint it drove, which tab it opened, what it wrote to the
+ * clipboard — and never that a particular string appears in the source.
  *
  * HOW THEY TEST IT
  * ----------------
@@ -363,6 +368,18 @@ function ctx(h: Harness, over: Record<string, unknown> = {}) {
   };
 }
 
+// The options fixtures mirror what `environmentOptions()` in
+// src/core/BrowserEnvironment.ts actually builds, field for field. Two of those
+// fields changed with the contract and the fixtures had kept the old shape,
+// which is why so much of this file was asserting a UI that no longer exists:
+//
+//   needsAuthorization  — now the literal `false` in every option, in every
+//                         state. It was `true` for a first-time LOCAL field.
+//   needsRemoteApproval — new, and the ONE asymmetry left between the two
+//                         environments: REMOTE raises an approval prompt in the
+//                         browser it shares across runs, LOCAL never does.
+//   paired              — reported `true` for both whenever the server may grant,
+//                         which it now may for LOCAL too.
 const OPTIONS_UNPAIRED = {
   success: true,
   pairingKey: 'tf:wf1:8f21:product_selector',
@@ -370,8 +387,8 @@ const OPTIONS_UNPAIRED = {
   localEnabled: true,
   mode: 'remote',
   options: [
-    { id: 'local', available: true, paired: false, needsAuthorization: true, note: 'pairing_required' },
-    { id: 'remote', available: true, paired: true, needsAuthorization: false, note: 'server_owned_browser' },
+    { id: 'local', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: false, note: '' },
+    { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
   ],
 };
 
@@ -379,8 +396,8 @@ const OPTIONS_PAIRED = {
   ...OPTIONS_UNPAIRED,
   paired: true,
   options: [
-    { id: 'local', available: true, paired: true, needsAuthorization: false, note: 'already_paired' },
-    { id: 'remote', available: true, paired: true, needsAuthorization: false, note: 'server_owned_browser' },
+    { id: 'local', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: false, note: '' },
+    { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
   ],
 };
 
@@ -388,8 +405,8 @@ const OPTIONS_LOCAL_OFF = {
   ...OPTIONS_UNPAIRED,
   localEnabled: false,
   options: [
-    { id: 'local', available: false, paired: false, needsAuthorization: true, note: 'local_disabled' },
-    { id: 'remote', available: true, paired: true, needsAuthorization: false, note: 'server_owned_browser' },
+    { id: 'local', available: false, paired: false, needsAuthorization: false, needsRemoteApproval: false, note: 'local_disabled' },
+    { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
   ],
 };
 
@@ -478,7 +495,7 @@ describe('§1 — the chooser is the FIRST step, before any browser opens', () =
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('§2 — REMOTE needs no Authorization Code', () => {
+describe('§2 — REMOTE needs no Authorization Code either, only an approval', () => {
   let h: Harness;
   beforeEach(() => {
     h = boot({
@@ -492,9 +509,23 @@ describe('§2 — REMOTE needs no Authorization Code', () => {
     });
   });
 
-  it('the remote card advertises that no code is needed', async () => {
+  it('advertises the approval prompt, which is the only thing left to warn about', async () => {
+    // WAS `tgt.noCode` — a badge that said "no Authorization Code needed" and
+    // only made sense while the OTHER card still produced one. Neither does, so
+    // the phrase distinguishes nothing; what genuinely differs is that REMOTE
+    // asks the operator to approve inside the browser it shares across runs.
     await openChooser(h);
-    expect(card(h, 'remote').find('tgt-card-note')[0].text()).toBe('tgt.noCode');
+    expect(card(h, 'remote').find('tgt-card-note')[0].text()).toBe('tgt.needsApproval');
+  });
+
+  it('never says a code is coming, in either card', async () => {
+    await openChooser(h);
+    const notes = [
+      card(h, 'local').find('tgt-card-note')[0].text(),
+      card(h, 'remote').find('tgt-card-note')[0].text(),
+    ];
+    expect(notes).not.toContain('tgt.needsCode');
+    expect(notes).not.toContain('tgt.noCode');
   });
 
   it('goes straight to targeting — no code screen', async () => {
@@ -554,291 +585,213 @@ describe('§2 — REMOTE needs no Authorization Code', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('§3 — LOCAL, first time for this field: a code is issued', () => {
-  function bootUnpaired(status: unknown[] = []) {
+describe('§3 — LOCAL, first time for this field: attached automatically', () => {
+  // WHAT THIS SECTION USED TO ASSERT, and why every test in it changed.
+  //
+  // It described the reported defect. A first-time LOCAL field came back with
+  // `step: 'authorize'` plus `code` / `display` / `expiresAt`, the dialog drew a
+  // code screen, and it then POLLED `targetingStatus` once a second until the
+  // operator had retyped that code into their extension popup. Only then was the
+  // field armed.
+  //
+  // The requirement is that LOCAL is the Browser Runtime on the same server Plyr
+  // runs on. There is no second machine to authorize to, so `begin` attaches the
+  // field itself and answers `paired: true, runtime: 'server-local'`. The dialog
+  // now renders what the server ALREADY did — runtime ready, context resolved,
+  // target resolved, connected — arms the field immediately, and closes itself.
+  //
+  // The tests were rewritten rather than deleted because the properties they
+  // guarded still matter: nothing is polled, no code is shown, no remote browser
+  // is opened, and the flow still ends at an armed crosshair.
+  function bootLocal() {
     return boot({
       options: OPTIONS_UNPAIRED,
       begin: {
-        success: true, environment: 'local', step: 'authorize', target: TARGET,
-        paired: false, openRemoteBrowser: false,
-        code: '48219930', display: '4821-9930',
-        expiresAt: Date.now() + 300000, expiresInMs: 300000,
+        success: true, environment: 'local', step: 'targeting', target: TARGET,
+        paired: true, rebound: 0, openRemoteBrowser: false,
+        runtime: 'server-local', consent: null,
       },
-      status,
     });
   }
 
-  it('the local card warns a code is coming, BEFORE it is clicked', async () => {
-    const h = bootUnpaired();
+  it('the local card promises an automatic connection, BEFORE it is clicked', async () => {
+    const h = bootLocal();
     await openChooser(h);
-    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.needsCode');
+    // WAS `tgt.needsCode` — "an Authorization Code will be shown".
+    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
   });
 
-  it('shows the code screen instead of starting the pick', async () => {
-    const h = bootUnpaired();
+  it('shows the resolved steps instead of a code screen', async () => {
+    const h = bootLocal();
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
-    expect(h.flow.isOpen()).toBe(true);
-    expect(h.panel()!.find('tgt-code')[0].text()).toBe('4821-9930');
-    // Nothing is armed yet: the extension has not accepted the code.
-    expect(h.armed).toEqual([]);
+
+    // The progression the requirement spells out: detect the runtime, resolve
+    // the internal backend context, resolve the target.
+    const names = h.panel()!.find('tgt-step-name').map((n) => n.text());
+    expect(names).toEqual(['tgt.stepRuntime', 'tgt.stepContext', 'tgt.stepTarget']);
+    // And nothing to copy, in either of the two shapes it used to take.
+    expect(h.panel()!.find('tgt-code')).toHaveLength(0);
+    expect(h.panel()!.find('tgt-base-url')).toHaveLength(0);
   });
 
-  it('polls the server for the pairing, addressed by targetFieldId', async () => {
-    const h = bootUnpaired([{ success: true, paired: false }]);
+  it('names what it connected to, so "Connected to Target" is not a bare claim', async () => {
+    const h = bootLocal();
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+
+    const values = h.panel()!.find('tgt-target-value').map((n) => n.text());
+    expect(values).toContain('8f21');
+    expect(values).toContain('product_selector');
+    expect(values).toContain('node_8f21__product_selector__a73f');
+    expect(h.panel()!.find('tgt-status')[0].text()).toBe('tgt.readyToSend');
+  });
+
+  it('polls nothing at all, because nothing is pending', async () => {
+    const h = bootLocal();
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
     await h.tick();
-    const poll = h.calls.filter((c) => c.fn === 'targetingStatus');
-    expect(poll.length).toBe(1);
-    expect(poll[0].args[0]).toBe('node_8f21__product_selector__a73f');
+
+    // WAS: exactly one targetingStatus call per tick, addressed by
+    // targetFieldId, until the code was redeemed.
+    expect(h.calls.filter((c) => c.fn === 'targetingStatus')).toHaveLength(0);
   });
 
-  it('arms the field once the extension accepts the code', async () => {
-    const h = bootUnpaired([{ success: true, paired: true, target: TARGET }]);
+  it('arms the field on the spot, then closes itself', async () => {
+    const h = bootLocal();
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
-    await h.tick();
-    expect(h.panel()!.find('tgt-status')[0].text()).toBe('tgt.pairedNow');
-    await h.flushTimeouts();
-    expect(h.flow.isOpen()).toBe(false);
+
+    // Armed BEFORE the dialog goes away: the dialog is a report, not a gate.
     expect(h.armed).toEqual([
       { targetFieldId: 'node_8f21__product_selector__a73f', environment: 'local' },
     ]);
     expect(h.toasts).toContain('tgt.readyLocal');
+
+    expect(h.flow.isOpen()).toBe(true);
+    await h.flushTimeouts();
+    expect(h.flow.isOpen()).toBe(false);
+    expect(h.backdrop()).toBeNull();
   });
 
   it('never opens the remote browser on the LOCAL path', async () => {
-    const h = bootUnpaired([{ success: true, paired: true }]);
+    const h = bootLocal();
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
-    await h.tick();
     await h.flushTimeouts();
     expect(h.realBrowser).toEqual([]);
     expect(h.tabs).toEqual([]);
   });
 
-  it('stops polling once the dialog is cancelled', async () => {
-    const h = bootUnpaired([{ success: true, paired: false }]);
+  it('leaves no timer behind when the dialog is cancelled', async () => {
+    // The old worry was a poll outliving its dialog and arming a field the
+    // operator had cancelled. The self-close timeout raises the same question,
+    // so it is asked the same way.
+    const h = bootLocal();
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
     h.flow.close();
-    await h.tick();
-    // A timer outliving its dialog would arm a field the operator cancelled.
-    expect(h.calls.filter((c) => c.fn === 'targetingStatus').length).toBe(0);
-    expect(h.armed).toEqual([]);
+    await h.flushTimeouts();
+
+    expect(h.flow.isOpen()).toBe(false);
+    expect(h.backdrop()).toBeNull();
+    expect(h.calls.filter((c) => c.fn === 'targetingStatus')).toHaveLength(0);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BOTH values, each with a Copy that really copies.
+// §8 — THE SCREEN THOSE COPY BUTTONS SERVED NO LONGER EXISTS
+//
+// WHAT WAS HERE. Fifteen tests over the LOCAL Authorization Code dialog and its
+// two Copy buttons, written against this requirement:
 //
 //   «Authorization UI باید هم AUTHORIZATION CODE و هم BASE URL را نمایش دهد،
 //    هرکدام با یک Copy واقعی.»
 //
-// "Real" is the operative word, and it is why these tests watch the CLIPBOARD
-// rather than the existence of a button. The previous code's Copy called
-// navigator.clipboard.writeText inside a try/catch and rendered nothing at all:
-// on an insecure origin — a plain-http LAN address, which is precisely where an
-// operator reads a Base URL from — the promise rejected, the catch swallowed it,
-// and the button looked exactly like a button that had worked. The operator then
-// pasted whatever was on the clipboard before into the extension, and the
-// pairing failed for a reason nowhere on screen.
-// ═══════════════════════════════════════════════════════════════════════════
-describe('§8 — the code and the Base URL are both copyable', () => {
-  const OFFER = {
-    success: true, environment: 'local', step: 'authorize', target: TARGET,
-    paired: false, openRemoteBrowser: false,
-    code: '48219930', display: '4821-9930',
-    expiresAt: Date.now() + 300000, expiresInMs: 300000,
-    baseUrl: 'https://panel.example.com', baseUrlSource: 'configured',
-  };
-
-  /** Open the code screen with a given clipboard environment. */
-  async function codeScreen(over: Partial<Responses> = {}) {
-    const h = boot({ options: OPTIONS_UNPAIRED, begin: OFFER, ...over });
+// They were good tests of a real defect: the old Copy called
+// navigator.clipboard.writeText inside a try/catch and rendered nothing, so on an
+// insecure origin — a plain-http LAN address, exactly where an operator reads a
+// Base URL from — the promise rejected, the catch swallowed it, and the button
+// looked like one that had worked.
+//
+// WHY THEY ARE GONE. That requirement was superseded by the one this change
+// implements: `LOCAL BROWSER` is the Browser Runtime on the SAME server the
+// backend runs on. Both values it asked the operator to carry — the code and the
+// address — are now resolved internally and never displayed:
+//
+//   «LOCAL BROWSER → Browser روی همان Server → internal automatic Base URL →
+//    no API Key → no Authorization → no Alert → automatic connection»
+//
+// So targeting-flow.js has no writeClipboard(), copyButton() or baseUrlRow() left
+// to test. Fifteen tests of a deleted screen are replaced by three that pin the
+// deletion, because that is the property worth defending now: nothing in this
+// dialog may ever ask the operator to copy a credential again.
+//
+// The clipboard machinery in the harness above is deliberately KEPT. It records
+// every write and the path taken, which is what makes "copies nothing" provable
+// rather than merely unobserved.
+describe('§8 — the LOCAL flow asks the operator to copy nothing', () => {
+  /** Drive the full LOCAL path, in the automatic form it now takes. */
+  async function localFlow(over: Partial<Responses> = {}) {
+    const h = boot({
+      options: OPTIONS_UNPAIRED,
+      begin: {
+        success: true, environment: 'local', step: 'targeting', target: TARGET,
+        paired: true, openRemoteBrowser: false, runtime: 'server-local', consent: null,
+      },
+      ...over,
+    });
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
     return h;
   }
 
-  const copyButtons = (h: Harness) => h.panel()!.find('tgt-btn')
-    .filter((b) => b.className.indexOf('tgt-code-copy') >= 0
-      || b.className.indexOf('tgt-base-copy') >= 0);
-  const codeCopy = (h: Harness) => h.panel()!.find('tgt-code-copy')[0];
-  const baseCopy = (h: Harness) => h.panel()!.find('tgt-base-copy')[0];
-
-  it('shows both values on the same screen', async () => {
-    const h = await codeScreen();
-    expect(h.panel()!.find('tgt-code')[0].text()).toBe('4821-9930');
-    expect(h.panel()!.find('tgt-base-url')[0].text()).toBe('https://panel.example.com');
+  it('renders no Copy button, and no value to copy', async () => {
+    const h = await localFlow();
+    const panel = h.panel()!;
+    // The four nodes the deleted screen was made of.
+    expect(panel.find('tgt-code')).toHaveLength(0);
+    expect(panel.find('tgt-code-copy')).toHaveLength(0);
+    expect(panel.find('tgt-base-url')).toHaveLength(0);
+    expect(panel.find('tgt-base-copy')).toHaveLength(0);
   });
 
-  it('gives each value its OWN Copy button', async () => {
-    const h = await codeScreen();
-    // Two buttons, not one that copies both: they go into two different fields
-    // in the extension, so a combined copy would only have to be pulled apart
-    // again by hand.
-    expect(copyButtons(h).length).toBe(2);
-    expect(codeCopy(h)).toBeTruthy();
-    expect(baseCopy(h)).toBeTruthy();
-  });
-
-  it('labels the code, now that it is not the only value on screen', async () => {
-    const h = await codeScreen();
-    const labels = h.panel()!.find('tgt-base-label').map((n) => n.text());
-    expect(labels).toContain('tgt.authCode');
-    expect(labels).toContain('tgt.baseUrl');
-  });
-
-  it('copies the RAW code, not the grouped display form', async () => {
-    const h = await codeScreen();
-    codeCopy(h).fire('click');
+  it('writes to the clipboard on no path, neither API nor fallback', async () => {
+    const h = await localFlow();
     await h.settle();
-    // The separators are cosmetic and the server normalises them away; pasting
-    // them back is one more thing that can go wrong.
-    expect(h.clipboard).toEqual([{ text: '48219930', via: 'api' }]);
-  });
 
-  it('copies the Base URL exactly as advertised', async () => {
-    const h = await codeScreen();
-    baseCopy(h).fire('click');
-    await h.settle();
-    expect(h.clipboard).toEqual([{ text: 'https://panel.example.com', via: 'api' }]);
-  });
-
-  it('confirms ON the button, so a click is distinguishable from a no-op', async () => {
-    const h = await codeScreen();
-    const b = codeCopy(h);
-    expect(b.text()).toBe('insp.copy');
-    b.fire('click');
-    await h.settle();
-    expect(b.text()).toBe('tgt.copied');
-  });
-
-  it('confirms only AFTER the write resolved, never before', async () => {
-    const h = await codeScreen();
-    const b = codeCopy(h);
-    b.fire('click');
-    // Not settled yet: a "Copied" here would be a claim the operator only
-    // discovers to be false when they paste.
-    expect(b.text()).toBe('insp.copy');
-    await h.settle();
-    expect(b.text()).toBe('tgt.copied');
-  });
-
-  it('falls back to execCommand when the clipboard API rejects', async () => {
-    // An insecure origin, or a document without focus. Both ordinary here.
-    const h = await codeScreen({ clipboardFails: true });
-    baseCopy(h).fire('click');
-    await h.settle();
-    expect(h.clipboard).toEqual([{ text: 'https://panel.example.com', via: 'exec' }]);
-    expect(baseCopy(h).text()).toBe('tgt.copied');
-  });
-
-  it('falls back when the clipboard API is missing entirely', async () => {
-    const h = await codeScreen({ noClipboardApi: true });
-    codeCopy(h).fire('click');
-    await h.settle();
-    expect(h.clipboard).toEqual([{ text: '48219930', via: 'exec' }]);
-  });
-
-  it('leaves no textarea behind after the fallback', async () => {
-    const h = await codeScreen({ clipboardFails: true });
-    codeCopy(h).fire('click');
-    await h.settle();
-    // A survivor would be a hidden node a later copy could read from instead of
-    // the intended value.
+    // Recorded from BOTH paths, so this cannot pass merely because the modern
+    // API was unavailable and the execCommand fallback quietly took over.
+    expect(h.clipboard).toEqual([]);
     expect(h.strayNodes()).toEqual([]);
   });
 
-  it('says so, and how to recover, when nothing can be copied', async () => {
-    const h = await codeScreen({ clipboardFails: true, execFails: true });
-    const b = codeCopy(h);
-    b.fire('click');
+  it('completes normally on an origin where copying would have failed', async () => {
+    // The old screen's worst case: an insecure origin, where writeText rejects
+    // and execCommand fails too. It used to strand the operator with a code they
+    // could not copy. Nothing is copied now, so the same environment must simply
+    // be irrelevant — the field still arms.
+    const h = await localFlow({ clipboardFails: true, execFails: true });
     await h.settle();
+
     expect(h.clipboard).toEqual([]);
-    // Silence here is the worst outcome: the operator pastes the previous
-    // clipboard contents and the pairing fails for an invisible reason.
-    expect(b.text()).toBe('tgt.copyManual');
-  });
-
-  it('keeps the failure visible longer than a success', async () => {
-    const ok = await codeScreen();
-    codeCopy(ok).fire('click');
-    await ok.settle();
-    const okMs = ok.timers.filter((x) => !x.interval).map((x) => x.ms).pop();
-
-    const bad = await codeScreen({ clipboardFails: true, execFails: true });
-    codeCopy(bad).fire('click');
-    await bad.settle();
-    const badMs = bad.timers.filter((x) => !x.interval).map((x) => x.ms).pop();
-
-    // "Copied" is a glance; an instruction to press Ctrl+C has to be read.
-    expect(badMs!).toBeGreaterThan(okMs!);
-  });
-
-  it('still shows the code screen when the server sent no Base URL', async () => {
-    // An older server. The address is omitted rather than invented — a made-up
-    // Base URL presented this confidently is worse than none.
-    const h = boot({
-      options: OPTIONS_UNPAIRED,
-      begin: { ...OFFER, baseUrl: undefined, baseUrlSource: undefined },
-    });
-    await openChooser(h);
-    card(h, 'local').fire('click');
-    await settle();
-    expect(h.panel()!.find('tgt-code')[0].text()).toBe('4821-9930');
-    expect(h.panel()!.find('tgt-base-url').length).toBe(0);
-    expect(copyButtons(h).length).toBe(1);
-  });
-
-  it('names where the address came from, so a guess is not read as a fact', async () => {
-    const h = await codeScreen();
-    expect(h.panel()!.find('tgt-base-src')[0].text()).toBe('tgt.baseConfigured');
-
-    const detected = boot({
-      options: OPTIONS_UNPAIRED,
-      begin: { ...OFFER, baseUrl: 'http://192.168.1.50:3000', baseUrlSource: 'detected' },
-    });
-    await openChooser(detected);
-    card(detected, 'local').fire('click');
-    await settle();
-    expect(detected.panel()!.find('tgt-base-src')[0].text()).toBe('tgt.baseDetected');
-  });
-
-  it('the box disappears and success is announced once the code is accepted', async () => {
-    const h = boot({
-      options: OPTIONS_UNPAIRED,
-      begin: OFFER,
-      status: [{ success: true, paired: true, target: TARGET }],
-    });
-    await openChooser(h);
-    card(h, 'local').fire('click');
-    await settle();
-    // Both values are on screen while the pairing is pending…
-    expect(h.panel()!.find('tgt-code').length).toBe(1);
-    expect(h.panel()!.find('tgt-base-url').length).toBe(1);
-
-    await h.tick();
-    await h.flushTimeouts();
-
-    // …and gone once it lands, with a toast rather than a silent close. A
-    // one-time code left on screen invites the operator to type it again.
-    expect(h.flow.isOpen()).toBe(false);
-    expect(h.backdrop()).toBeNull();
+    expect(h.armed).toEqual([
+      { targetFieldId: 'node_8f21__product_selector__a73f', environment: 'local' },
+    ]);
     expect(h.toasts).toContain('tgt.readyLocal');
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('§4 — LOCAL again for the SAME field: no second code', () => {
+describe('§4 — LOCAL again for the SAME field: still nothing to do', () => {
   let h: Harness;
   beforeEach(() => {
     h = boot({
@@ -850,19 +803,34 @@ describe('§4 — LOCAL again for the SAME field: no second code', () => {
     });
   });
 
-  it('the local card says "already paired" rather than warning about a code', async () => {
+  it('reads the same on the second visit as on the first', async () => {
+    // WAS `tgt.paired` ("already paired") — the second half of a pair of badges
+    // whose only job was to tell the operator whether a code was coming this
+    // time. With no code in either case there is nothing to distinguish, and
+    // `environmentOptions()` reports LOCAL as paired whenever the server may
+    // grant, which is always. Two badges that promise the same thing in
+    // different words would only invite the reader to look for a difference.
     await openChooser(h);
-    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.paired');
+    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
   });
 
   it('goes straight to targeting, showing no code at all', async () => {
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
-    expect(h.flow.isOpen()).toBe(false);
+
+    // The field is armed the moment the server answers. The report dialog is
+    // still on screen at this point — it closes itself on a timer, which is
+    // asserted in §3 — so `isOpen()` is checked AFTER that timer runs rather
+    // than expected to be false already.
     expect(h.armed).toEqual([
       { targetFieldId: 'node_8f21__product_selector__a73f', environment: 'local' },
     ]);
+    expect(h.panel()!.find('tgt-code')).toHaveLength(0);
+
+    await h.flushTimeouts();
+    expect(h.flow.isOpen()).toBe(false);
+
     // The persistence requirement, stated as behaviour: nothing was polled,
     // because nothing was pending.
     expect(h.calls.some((c) => c.fn === 'targetingStatus')).toBe(false);
@@ -877,7 +845,7 @@ describe('§4 — LOCAL again for the SAME field: no second code', () => {
     expect(fresh.panel()!.find('tgt-btn').map((b) => b.text())).not.toContain('tgt.unpair');
   });
 
-  it('unpairing is the ONE thing that brings the code back', async () => {
+  it('unpairing still reaches the route that deliberately forgets a pairing', async () => {
     await openChooser(h);
     const unpair = h.panel()!.find('tgt-btn').filter((b) => b.text() === 'tgt.unpair')[0];
     unpair.fire('click');
@@ -891,18 +859,27 @@ describe('§4 — LOCAL again for the SAME field: no second code', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('§5 — a DIFFERENT field is a different pairing', () => {
-  it("the operator's own scenario: product_selector paired, product_url is not", async () => {
-    // «اگر کاربر یک Target Field جدید انتخاب کند، آن هدف جدید نیاز به
-    //  Authorization/Pairing جدید دارد.»
+describe('§5 — a DIFFERENT field is a different pairing, and needs no setup either', () => {
+  it("the operator's own scenario: product_selector attached, product_url the same", async () => {
+    // WAS: the paired field showed `tgt.paired`, the new one `tgt.needsCode`,
+    // against «اگر کاربر یک Target Field جدید انتخاب کند، آن هدف جدید نیاز به
+    // Authorization/Pairing جدید دارد» — a new field meant a new code.
+    //
+    // The PAIRING is still per-field: the pairingKey is built from workflow, node
+    // and field, and the server mints and binds a separate one for the second
+    // field. What is gone is the SETUP that used to accompany it. So the property
+    // under test moves from "a new field asks for a code" to "a new field is a
+    // distinct destination, resolved just as automatically as the first".
     const paired = boot({ options: OPTIONS_PAIRED });
     await openChooser(paired);
-    expect(card(paired, 'local').find('tgt-card-note')[0].text()).toBe('tgt.paired');
+    expect(card(paired, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
 
     const other = boot({ options: OPTIONS_UNPAIRED });
     await openChooser(other, { nodeId: '92aa', fieldKey: 'product_url' });
-    expect(card(other, 'local').find('tgt-card-note')[0].text()).toBe('tgt.needsCode');
+    expect(card(other, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
 
+    // The part that must NOT collapse: the second field is asked about on its
+    // own identity, never inheriting the first one's answer.
     const asked = other.calls.filter((c) => c.fn === 'targetingOptions')[0];
     expect(asked.args[0]).toBe('92aa');
     expect(asked.args[1]).toBe('product_url');

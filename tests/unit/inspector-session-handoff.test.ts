@@ -91,8 +91,20 @@ interface Harness {
   askFor(targetFieldId: string): string;
   /** Register a destination the way the workflow UI does, and return its id. */
   openField(opts?: { nodeId?: string; fieldKey?: string; action?: string; label?: string }): string;
-  /** Mint the Authorization Code the project would show the user. */
-  codeFor(targetFieldId: string): string;
+  /**
+   * Bind this extension's API key to a field the way the SERVER now does.
+   *
+   * REPLACES codeFor(). There is no Authorization Code to mint: both browsers
+   * belong to this server, so `/inspector/targeting/begin` calls
+   * `inspectorAuth.grant()` itself (`plan.serverMayGrant`, true for LOCAL as
+   * well as REMOTE) the moment the crosshair is used. This helper performs that
+   * same grant, against the same registry, so a fixture cannot claim an
+   * authority the real route would not have created.
+   *
+   * Returns the durable pairing key, because that — not the address — is what
+   * the grant is filed under.
+   */
+  grantFor(targetFieldId: string): string;
 }
 
 /**
@@ -230,22 +242,14 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       });
     }
 
-    if (method === 'POST' && path === '/inspector/pair') {
-      const result = auth.redeem(key, String(body?.code || ''));
-      if (!result.ok) {
-        return reply(403, {
-          success: false,
-          reason: result.reason,
-          error: 'The authorization code was refused.',
-        });
-      }
-      return reply(200, {
-        success: true,
-        binding: result.binding,
-        target: registry.resolve(result.binding.userId, result.binding.targetFieldId),
-        mode: 'remote',
-      });
-    }
+    // `/inspector/pair` AND `/inspector/authorize` ARE DELIBERATELY ABSENT.
+    //
+    // They used to be answered here, redeeming a code through auth.redeem(). Both
+    // routes are deleted from src/Routes/mode.routes.ts, so a fake that still
+    // served them would be MORE capable than the server — and any extension code
+    // that still called one would look healthy in this file while failing in
+    // production. They now fall through to the 404 at the bottom, which is
+    // exactly what the real backend answers, and one test below asserts that.
 
     // ── The REMOTE consent handshake ──────────────────────────────────────
     // Mirrors mode.routes.ts, including the two properties that matter most:
@@ -413,19 +417,18 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       if (!reg.ok || !reg.target) throw new Error(`fixture target rejected: ${reg.reason}`);
       return reg.target.targetFieldId;
     },
-    codeFor(targetFieldId: string) {
-      // Mint the code the way the ROUTE does — against the target's stable
-      // pairing key, not just its address.
-      //
-      // `issue()` falls back to the targetFieldId when the key is omitted, so
-      // omitting it here would file the fixture's pairing under an address and
-      // make the harness disagree with the server about what "paired" means.
-      // The durable-pairing tests below would then fail against correct code,
-      // which is a fixture lying rather than a defect found.
+    grantFor(targetFieldId: string) {
+      // Granted against the target's STABLE pairing key, not just its address —
+      // the same argument order `/inspector/targeting/begin` uses. Filing a
+      // fixture's authority under an address instead would make the harness
+      // disagree with the server about what "paired" means, and the
+      // durable-pairing tests below would then fail against correct code: a
+      // fixture lying rather than a defect found.
       const target = registry.resolve(USER, targetFieldId);
-      const offer = auth.issue(USER, targetFieldId, Date.now(), target?.pairingKey);
-      if (!offer) throw new Error('fixture offer not issued');
-      return offer.code;
+      if (!target) throw new Error('fixture target missing');
+      const binding = auth.grant(API_KEY, USER, targetFieldId, target.pairingKey);
+      if (!binding) throw new Error('fixture grant refused');
+      return target.pairingKey;
     },
     send(msg: Msg) {
       return new Promise<Record<string, unknown>>((res, rej) => {
@@ -471,11 +474,39 @@ function submitMsg(extra: Msg = {}): Msg {
   };
 }
 
-/** Pair the worker to a fresh field the way the user does, and return its id. */
+/**
+ * Put the worker in the state the crosshair leaves it in, and return the id.
+ *
+ * WHAT THIS USED TO DO, AND WHY IT CANNOT ANY MORE
+ * -----------------------------------------------
+ * It sent `AB_INSPECTOR_PAIR` with a minted code, and the worker's reply is what
+ * wrote `ab_targetFieldId`. Both halves of that are gone: the message is not
+ * handled, and the route it posted to is deleted.
+ *
+ * The state it produced is still exactly the state the tests need, so it is now
+ * reached the way production reaches it, in the same two parts:
+ *
+ *   1. THE SERVER grants the authority — `/inspector/targeting/begin` does this
+ *      itself for both environments now, which is the whole correction.
+ *   2. THE BROWSER learns the destination — for REMOTE by approving the consent
+ *      prompt (consentDecide, exercised end-to-end in the last describe below);
+ *      for LOCAL the server-launched browser is handed it the same way.
+ *
+ * Part 2 is written straight into storage here rather than driven through a
+ * message, and that is deliberate: this helper is a FIXTURE for the tests about
+ * what happens AFTER a binding exists. Driving consent through the worker for
+ * every one of them would make thirty tests depend on the consent path, so a
+ * single consent regression would fail all thirty and localise nothing. The
+ * consent path has its own describe that drives it properly and asserts these
+ * same two keys, which is what keeps this shortcut honest.
+ */
 async function pairTo(h: Harness, opts: Parameters<Harness['openField']>[0] = {}) {
   const id = h.openField(opts);
-  const res = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: h.codeFor(id) } });
-  if (!res.ok) throw new Error(`fixture pairing failed: ${JSON.stringify(res)}`);
+  const pairingKey = h.grantFor(id);
+  h.storage.ab_targetFieldId = id;
+  h.storage.ab_pairingKey = pairingKey;
+  const target = h.registry.resolve(USER, id);
+  if (target?.environment) h.storage.ab_targetEnvironment = target.environment;
   return id;
 }
 
@@ -489,7 +520,7 @@ beforeEach(() => {
 
 // ── The fixtures must be real, or every assertion below is theatre ──────────
 describe('the harness drives the real seam', () => {
-  it('registers through the real registry and pairs through the real code', async () => {
+  it('registers through the real registry and binds through the real grant', async () => {
     const id = h.openField();
     expect(id).toMatch(/^node_/);
     // The id is minted by the SERVER, and carries the field it points at.
@@ -498,10 +529,42 @@ describe('the harness drives the real seam', () => {
     const before = h.auth.bindingsFor(API_KEY);
     expect(before).toHaveLength(0);
 
-    const res = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: h.codeFor(id) } });
-    expect(res.ok).toBe(true);
-    // Proven against the registry, not against the reply the worker composed.
+    // The authority is created by the SERVER, exactly as the targeting route
+    // creates it. Asserted against the registry rather than against a reply the
+    // worker composed, so the fixture cannot fake being authorized.
+    const pairingKey = h.grantFor(id);
+    expect(pairingKey).toBe('tf:-:node-7:selector');
     expect(h.auth.isAuthorized(API_KEY, USER, id)).toBe(true);
+  });
+
+  it('never asks the backend for a code route, on any path it drives', async () => {
+    // The routes are deleted from src/Routes/mode.routes.ts and the fake above
+    // mirrors that, so a surviving caller would now 404. Driving the full
+    // lifecycle and asserting neither path is ever requested is the check that
+    // matters: a 404 probe would only prove the FAKE lacks the route, which is a
+    // fact about this file rather than about the extension.
+    await pairTo(h);
+    await h.send(submitMsg());
+    await h.send({ type: 'AB_INSPECTOR_SESSION' });
+    await h.send({ type: 'AB_INSPECTOR_UNPAIR' });
+
+    const codePaths = h.requests.filter(
+      (r) => r.path === '/inspector/pair' || r.path === '/inspector/authorize',
+    );
+    expect(codePaths).toEqual([]);
+    // And it did real work, so the emptiness above is not "made no requests".
+    expect(h.requests.length).toBeGreaterThan(0);
+  });
+
+  it('does not handle AB_INSPECTOR_PAIR at all', async () => {
+    // The worker's dispatcher must not merely fail the message — it must not
+    // recognise it. `send()` rejects when the listener declines, which is what a
+    // message with no case does. Leaving the case in place but erroring would be
+    // a working half of the removed flow, waiting for a caller.
+    await expect(h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: 'ABCDEFGH' } }))
+      .rejects.toThrow(/declined/);
+    const bgSrc = readFileSync(resolve(__dirname, '../../extension/background.js'), 'utf8');
+    expect(bgSrc).not.toContain("case 'AB_INSPECTOR_PAIR':");
   });
 });
 
@@ -520,16 +583,32 @@ describe('the destination a pick is sent to', () => {
     expect(String(h.posted[0]!.targetFieldId)).not.toMatch(/^ui-/);
   });
 
-  it('never sends a targetFieldId while pairing — §8, the code decides', async () => {
-    const id = h.openField();
-    await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: h.codeFor(id) } });
-
-    const pair = h.requests.filter((r) => r.path === '/inspector/pair');
-    expect(pair).toHaveLength(1);
+  it('never names a destination in anything it sends — §8, the SERVER decides', async () => {
     // «The Extension must NEVER be able to choose an arbitrary Target Field.»
-    // If the id travelled in the pairing body, a caller could swap it for
-    // another and bind itself to a field it was never offered.
-    expect(Object.keys(pair[0]!.body || {})).toEqual(['code']);
+    //
+    // This used to be checked on the pairing body: the id must not travel with
+    // the code, or a caller could swap it and bind itself to a field it was never
+    // offered. There is no pairing request left, so the property is checked where
+    // it now lives — across EVERY request the worker makes while acquiring a
+    // destination. The only place a targetFieldId may legitimately appear is the
+    // submit, which is addressed TO the field the server already granted.
+    const h2 = loadWorker({ managed: true });
+    h2.storage.ab_baseUrl = BASE;
+    h2.storage.ab_apiKey = API_KEY;
+    h2.storage.ab_userId = USER;
+
+    const id = h2.openField();
+    const consentId = h2.askFor(id);
+    await h2.send({ type: 'AB_CONSENT_LIST' });
+    await h2.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+
+    // The destination arrived, so the acquisition really happened…
+    expect(h2.storage.ab_targetFieldId).toBe(id);
+    // …and it was never uttered by this side. Every request up to this point
+    // carries no field id of any kind, so there was nothing to substitute.
+    for (const r of h2.requests) {
+      expect(JSON.stringify(r.body || {})).not.toContain(id);
+    }
   });
 
   it('presents the API key as a credential rather than in the body', async () => {
@@ -633,8 +712,15 @@ describe('refusals stay explicit, and name the fix', () => {
     // A request whose only possible answer is a refusal is not worth a round
     // trip, and the message the user needs is the same either way.
     expect(h.posted).toHaveLength(0);
-    // The fix must be NAMED, so the user knows what to do about it.
-    expect(String(res.error)).toMatch(/Authorization Code/i);
+    // The fix must be NAMED, so the user knows what to do about it — and the
+    // name changed with the architecture. It used to say "Enter an Authorization
+    // Code first", which now points at a control that exists nowhere: the action
+    // is in the PROJECT, and for the remote browser it is followed by an
+    // approval. A refusal that names a deleted remedy is worse than a generic
+    // one, because it sends the user looking.
+    expect(String(res.error)).toMatch(/crosshair/i);
+    expect(String(res.error)).toMatch(/approve/i);
+    expect(String(res.error)).not.toMatch(/Authorization Code/i);
   });
 
   it('refuses when no attribute is radio-selected', async () => {
@@ -654,12 +740,44 @@ describe('refusals stay explicit, and name the fix', () => {
     expect(h.posted).toHaveLength(0);
   });
 
-  it('refuses when the extension has not been configured', async () => {
+  it('does NOT refuse merely because no API key is stored', async () => {
+    // THE INVERSION THAT MATTERS MOST IN THIS FILE.
+    //
+    // This test used to assert `no_api_key`, and that refusal was the engine of
+    // the entire reported defect: the popup rendered it as "set the API Key
+    // first", which is the only reason it HAD an API key box. Every credential
+    // control in the extension existed to satisfy it.
+    //
+    // A key is now passed through when known and OMITTED when not, never
+    // demanded — a server-local request without one is a request the BACKEND is
+    // entitled to judge. So an absent key must not stop the work; the binding
+    // state decides, exactly as it does with a key present.
     delete h.storage.ab_apiKey;
     const res = await h.send(submitMsg());
+
     expect(res.ok).toBe(false);
-    expect(res.error).toBe('no_api_key');
-    expect(h.requests).toHaveLength(0);
+    // Refused for the REAL reason — nothing is bound yet — not for a missing
+    // credential.
+    expect(res.reason).toBe('TARGET_NOT_AUTHORIZED');
+    expect(res.error).not.toBe('no_api_key');
+    expect(String(res.error)).not.toMatch(/api key/i);
+  });
+
+  it('sends without a key rather than refusing, once a field IS bound', async () => {
+    // The other half: with a destination in place and no key stored, the request
+    // must actually be MADE. Refusing here is what the credential form existed
+    // to prevent, so proving the request travels is proving the form is
+    // unnecessary.
+    await pairTo(h);
+    delete h.storage.ab_apiKey;
+
+    await h.send(submitMsg());
+
+    const post = h.requests.filter((r) => r.path === '/inspector/element')[0];
+    expect(post).toBeTruthy();
+    // apiFetch sends no x-api-key header for an empty value — it does not invent
+    // one, and it does not withhold the request.
+    expect(post!.key).toBe('');
   });
 
   it('reports TARGET_FIELD_NOT_FOUND once the field is closed, and says so', async () => {
@@ -676,20 +794,42 @@ describe('refusals stay explicit, and name the fix', () => {
   });
 
   it('passes the §27 reason through instead of flattening it to a failure', async () => {
-    const res = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: 'NOTACODE' } });
+    // Unchanged in purpose, moved to a refusal that still exists. It used to
+    // check INVALID_AUTHORIZATION_CODE from a redeem; the property is that a
+    // SPECIFIC, actionable reason survives the trip back to the caller rather
+    // than being flattened into "failed", because "not authorized for that
+    // field" and "that field is closed" call for different actions.
+    const id = await pairTo(h);
+    h.registry.unregister(USER, id);
+
+    const res = await h.send(submitMsg());
 
     expect(res.ok).toBe(false);
-    // "check what you typed" and "ask for a new code" are different
-    // instructions, so a single generic message would withhold the fix.
-    expect(res.reason).toBe('INVALID_AUTHORIZATION_CODE');
-    expect(h.storage.ab_targetFieldId).toBeFalsy();
+    expect(res.reason).toBe('TARGET_FIELD_NOT_FOUND');
+    // The surviving destinations travel with it, which is what the popup shows
+    // instead of leaving the user with a dead end.
+    expect(res).toHaveProperty('targets');
   });
 
-  it('refuses an empty code without asking the server', async () => {
-    const res = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: '   ' } });
-    expect(res.ok).toBe(false);
-    expect(res.reason).toBe('INVALID_AUTHORIZATION_CODE');
-    expect(h.requests.filter((r) => r.path === '/inspector/pair')).toHaveLength(0);
+  it('offers no local code validation, because there is no code to validate', async () => {
+    // ab-core.js still exports the validator (the Handoff subsystem has its own
+    // codes), so the guard is that the INSPECTOR path no longer reaches for it:
+    // no message accepts a code, and no refusal mentions one.
+    const bgSrc = readFileSync(resolve(__dirname, '../../extension/background.js'), 'utf8');
+    // Comments stripped first. background.js documents the deletion by NAME
+    // ('inspectorPair() IS DELETED'), which is worth keeping — it is what stops
+    // the next reader rebuilding it — but a bare substring search would count
+    // that prose as the function and this test would then be asserting the
+    // opposite of what it reads like.
+    const code = bgSrc
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    expect(code).not.toContain('inspectorPair');
+    expect(code).not.toMatch(/INVALID_AUTHORIZATION_CODE/);
+
+    // And the refusal a user actually hits says nothing about one.
+    const res = await h.send(submitMsg());
+    expect(String(res.error)).not.toMatch(/code/i);
   });
 });
 
@@ -716,16 +856,25 @@ describe('one code, one field — a pairing cannot be widened', () => {
     expect(h.hub.peek(USER)[0]!.fields).toEqual({ url: 'a#buy' });
   });
 
-  it('a code cannot be redeemed twice', async () => {
-    const id = h.openField();
-    const code = h.codeFor(id);
+  it('an approval cannot be replayed — the consent replaces the one-time code', async () => {
+    // The single-use property is not lost with the code, it MOVED. A consent is
+    // the same security object: one-time, server-issued, expiring, single-target,
+    // completable only by a person. Proving it cannot be answered twice is what
+    // keeps that claim true — a replayable approval would be a strictly weaker
+    // object than the code it replaced.
+    const w = loadWorker({ managed: true });
+    w.storage.ab_baseUrl = BASE;
+    w.storage.ab_apiKey = API_KEY;
+    w.storage.ab_userId = USER;
 
-    const first = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code } });
+    const consentId = w.askFor(w.openField());
+
+    const first = await w.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
     expect(first.ok).toBe(true);
+    expect(first.approved).toBe(true);
 
-    const second = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code } });
+    const second = await w.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
     expect(second.ok).toBe(false);
-    expect(second.reason).toBe('INVALID_AUTHORIZATION_CODE');
   });
 });
 
@@ -802,9 +951,11 @@ describe('what the popup is told about the connection', () => {
 
   it('does not present another API key\u2019s pairing as its own', async () => {
     const id = h.openField();
-    // Somebody else redeemed a code for this field.
-    h.auth.redeem('someone-elses-key', h.codeFor(id));
-    // This extension merely remembers the id, without ever having paired.
+    // Somebody else was granted this field. (Granted directly, the way the
+    // server does it now — there is no code for another party to redeem.)
+    const target = h.registry.resolve(USER, id)!;
+    h.auth.grant('someone-elses-key', USER, id, target.pairingKey);
+    // This extension merely remembers the id, without ever having been granted.
     h.storage.ab_targetFieldId = id;
 
     const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
@@ -921,7 +1072,9 @@ describe('the extension remembers the FIELD, not just the address', () => {
       environment: 'local',
     });
     const id = reg.target!.targetFieldId;
-    await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: h.codeFor(id) } });
+    h.grantFor(id);
+    h.storage.ab_targetFieldId = id;
+    h.storage.ab_pairingKey = reg.target!.pairingKey;
 
     const res = await h.send({ type: 'AB_INSPECTOR_SESSION' });
 

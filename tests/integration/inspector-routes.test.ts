@@ -69,25 +69,40 @@ async function openField(body: Record<string, unknown> = {}) {
   return res;
 }
 
-/** Full pairing dance for `key`, returning the field it is now bound to. */
-async function pair(key: string, body: Record<string, unknown> = {}) {
-  const reg = await openField(body);
-  expect(reg.status).toBe(200);
-  const targetFieldId = reg.body.target.targetFieldId as string;
-
-  const auth = await request(app)
-    .post('/inspector/authorize')
-    .set('x-api-key', KEY_A)
-    .send({ targetFieldId });
-  expect(auth.status).toBe(200);
-
-  const paired = await request(app)
-    .post('/inspector/pair')
+/**
+ * Attach `key` to a destination, returning the field it is now bound to.
+ *
+ * WHAT THIS REPLACED, and why the shape of the helper changed. It used to be
+ * called `pair` and it ran the three-step dance the product no longer has:
+ * register the field, POST /inspector/authorize to mint an 8-character
+ * Authorization Code, then POST /inspector/pair from the extension's key to
+ * redeem it. Both of those routes are deleted, so every test that funnelled
+ * through here was failing with 404.
+ *
+ * The replacement is ONE request, because that is now the whole handshake: the
+ * chooser's own route registers the destination and binds the Inspector to it
+ * before answering. `environment: 'local'` is the case under test throughout
+ * this file — the browser on THIS server — and it binds with no prompt at all.
+ *
+ * Note which key gets bound. The route grants to `config.API_TOKEN` (the token it
+ * seeds its own side-loaded extension with) and ALSO to the calling key when the
+ * two differ. In multi-tenant mode — which tests/integration/setup.ts forces —
+ * `config.API_TOKEN` is the empty string and `grant('')` is a no-op, so the
+ * caller's own key is the binding that exists. That is what makes cross-KEY
+ * isolation still demonstrable here: KEY_B calling begin binds KEY_B, and never
+ * KEY_A's field.
+ */
+async function attach(key: string, body: Record<string, unknown> = {}) {
+  const res = await request(app)
+    .post('/inspector/targeting/begin')
     .set('x-api-key', key)
-    .send({ code: auth.body.code });
-  expect(paired.status).toBe(200);
-
-  return targetFieldId;
+    .send({ nodeId: 'node-7', fieldKey: 'selector', action: 'click', environment: 'local', ...body });
+  expect(res.status).toBe(200);
+  // The contract this file is now pinned to: attached, with nothing pending.
+  expect(res.body.step).toBe('targeting');
+  expect(res.body.paired).toBe(true);
+  expect(res.body.code).toBeUndefined();
+  return res.body.target.targetFieldId as string;
 }
 
 function element() {
@@ -117,7 +132,7 @@ beforeEach(() => {
 
 describe('a Target Field id cannot be forged', () => {
   it('refuses a well-formed id that was never registered', async () => {
-    await pair(KEY_A);
+    await attach(KEY_A);
 
     // Correct SHAPE, invented content. The server resolves the STORED record and
     // never parses facts out of the string, so a forgery has nowhere to land.
@@ -134,7 +149,10 @@ describe('a Target Field id cannot be forged', () => {
     const reg = await openField({ nodeId: 'node-9', fieldKey: 'url', action: 'goto' });
     const unpaired = reg.body.target.targetFieldId;
 
-    await pair(KEY_A);
+    // Registered through /inspector/target, which deliberately does NOT bind —
+    // only the chooser's route does. So this id is live and unattached, which is
+    // precisely the state a guessed id would land in.
+    await attach(KEY_A);
 
     const res = await send(KEY_A, { targetFieldId: unpaired });
 
@@ -144,7 +162,7 @@ describe('a Target Field id cannot be forged', () => {
   });
 
   it('will not let one API key ride another key\u2019s pairing', async () => {
-    const targetFieldId = await pair(KEY_A);
+    const targetFieldId = await attach(KEY_A);
 
     // Same account, same field, different extension install.
     const res = await send(KEY_B, { targetFieldId });
@@ -154,7 +172,7 @@ describe('a Target Field id cannot be forged', () => {
   });
 
   it('takes the key from the header, ignoring one supplied in the body', async () => {
-    const targetFieldId = await pair(KEY_A);
+    const targetFieldId = await attach(KEY_A);
 
     // KEY_B presenting itself as KEY_A. If the route read the body, this would
     // succeed and pairing would be worth nothing.
@@ -167,7 +185,7 @@ describe('a Target Field id cannot be forged', () => {
   it('accepts the same send once the key is properly paired', async () => {
     // The control: everything above must fail for the RIGHT reason, not because
     // the happy path is broken too.
-    const targetFieldId = await pair(KEY_A);
+    const targetFieldId = await attach(KEY_A);
 
     const res = await send(KEY_A, { targetFieldId });
 
@@ -198,78 +216,79 @@ describe('registration refuses a fieldKey the action does not declare', () => {
   });
 });
 
-describe('authorization codes are scoped and single-use', () => {
-  it('will not issue a code for an id that does not exist', async () => {
+describe('the Authorization Code routes are gone, and stay gone', () => {
+  // WHAT THIS DESCRIBE USED TO BE. Four tests over POST /inspector/authorize and
+  // POST /inspector/pair: no code for an unknown id, an unknown code reported as
+  // INVALID rather than as a 500, a redeemed code refused a second time, and the
+  // pairing filed under the STABLE pairingKey so the legacy "Connect Inspector"
+  // button did not ask for a second code.
+  //
+  // Every one of them was a good test of a mechanism that must not exist. LOCAL
+  // is the Browser Runtime on the same server Plyr runs on, so a code asked the
+  // operator to carry a secret out of one of the server's own windows and back
+  // into another one to prove they were themselves.
+  //
+  // Deleting the tests along with the routes would have left the deletion
+  // unguarded — nothing would fail if a later change re-registered either route
+  // or put a `code` back on a targeting response. So the describe is repurposed:
+  // it now asserts the ABSENCE, over the same real HTTP the old tests used.
+
+  it('answers 404 to POST /inspector/authorize', async () => {
+    // A live field, so a 404 can only mean the ROUTE is missing — not the target.
+    const reg = await openField();
+    expect(reg.status).toBe(200);
+
     const res = await request(app)
       .post('/inspector/authorize')
       .set('x-api-key', KEY_A)
-      .send({ targetFieldId: 'node_ghost__selector__aaaa' });
+      .send({ targetFieldId: reg.body.target.targetFieldId });
 
-    // 404, and no code: issuing one would let a caller discover valid ids by
-    // watching which requests produce a code.
     expect(res.status).toBe(404);
-    expect(res.body.reason).toBe('TARGET_FIELD_NOT_FOUND');
     expect(res.body.code).toBeUndefined();
   });
 
-  it('reports an unknown code as INVALID rather than as a server error', async () => {
+  it('answers 404 to POST /inspector/pair', async () => {
     const res = await request(app)
       .post('/inspector/pair')
       .set('x-api-key', KEY_A)
       .send({ code: 'ZZZZZZZZ' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.reason).toBe('INVALID_AUTHORIZATION_CODE');
+    expect(res.status).toBe(404);
+    expect(res.body.binding).toBeUndefined();
   });
 
-  it('refuses a code that has already been redeemed', async () => {
-    const reg = await openField();
-    const auth = await request(app)
-      .post('/inspector/authorize')
+  it('hands out no code, and no address to type it into', async () => {
+    // The two fields the popup used to have inputs for. Neither may come back on
+    // the one route that still starts a targeting run.
+    const res = await request(app)
+      .post('/inspector/targeting/begin')
       .set('x-api-key', KEY_A)
-      .send({ targetFieldId: reg.body.target.targetFieldId });
+      .send({ nodeId: 'node-7', fieldKey: 'selector', action: 'click', environment: 'local' });
 
-    const first = await request(app).post('/inspector/pair').set('x-api-key', KEY_A)
-      .send({ code: auth.body.code });
-    expect(first.status).toBe(200);
-
-    // A code that lingered could pair a second, unintended extension.
-    const second = await request(app).post('/inspector/pair').set('x-api-key', KEY_B)
-      .send({ code: auth.body.code });
-    expect(second.status).toBe(403);
-    expect(second.body.reason).toBe('INVALID_AUTHORIZATION_CODE');
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.baseUrl).toBeUndefined();
+    expect(res.body.baseUrlSource).toBeUndefined();
+    expect(res.body.display).toBeUndefined();
+    expect(res.body.step).toBe('targeting');
   });
 
-  // The legacy /inspector/authorize route predates the pairing key. It resolved
-  // the target and then issued against the ADDRESS only, taking issue()'s
-  // fallback — so a pairing made through the old "Connect Inspector" button was
-  // filed under an id that is re-minted on the next NDV open, and the operator
-  // was asked for a second code for a field they had already paired. The
-  // chooser's own route was correct; this one silently was not, and both must
-  // honour «دفعات بعد … دیگر نیازی به Authorization Code جدید نیست».
-  it('files the pairing under the STABLE key, so the legacy route needs no second code', async () => {
-    const reg = await openField({ nodeId: 'node-7', fieldKey: 'selector', action: 'click' });
-    const first = reg.body.target.targetFieldId as string;
-    const pairingKey = reg.body.target.pairingKey as string;
-    expect(pairingKey).toBe('tf:-:node-7:selector');
+  it('still files the binding under the STABLE pairing key', async () => {
+    // The property the deleted "legacy route" test was really protecting, kept
+    // because it is the reason «دفعات بعد … دیگر نیازی نیست» holds: bind against
+    // the ephemeral ADDRESS and re-opening the node looks unpaired again, since
+    // the address is re-minted on every open.
+    const targetFieldId = await attach(KEY_A, { nodeId: 'node-7', fieldKey: 'selector' });
 
-    const auth = await request(app).post('/inspector/authorize')
-      .set('x-api-key', KEY_A).send({ targetFieldId: first });
-    expect(auth.status).toBe(200);
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_A).send({ code: auth.body.code });
-
-    // The session must report the pairing under the stable identity — not
-    // under the ephemeral address, which is what the bug did.
     const session = await request(app).get('/inspector/session').set('x-api-key', KEY_A);
-    const keys = (session.body.pairings || []).map((p: { pairingKey: string }) => p.pairingKey);
-    expect(keys).toContain(pairingKey);
-    expect(keys).not.toContain(first);
+    const keys = (session.body.pairings || []).map((x: { pairingKey: string }) => x.pairingKey);
+    expect(keys).toContain('tf:-:node-7:selector');
+    expect(keys).not.toContain(targetFieldId);
 
-    // And the consequence the operator actually feels: re-opening the SAME
-    // field reports it already paired, so no code screen appears.
+    // And the consequence the operator feels: after the address is released,
+    // re-opening the SAME field already reports it paired.
     await request(app).post('/inspector/target/release')
-      .set('x-api-key', KEY_A).send({ targetFieldId: first });
+      .set('x-api-key', KEY_A).send({ targetFieldId });
     const again = await request(app).get('/inspector/targeting/options')
       .set('x-api-key', KEY_A).query({ nodeId: 'node-7', fieldKey: 'selector', action: 'click' });
     expect(again.status).toBe(200);
@@ -279,8 +298,8 @@ describe('authorization codes are scoped and single-use', () => {
 
 describe('releasing one Target Field leaves the others alone', () => {
   it('revokes only the released field\u2019s binding', async () => {
-    const first = await pair(KEY_A, { nodeId: 'node-1', fieldKey: 'selector', action: 'click' });
-    const second = await pair(KEY_A, { nodeId: 'node-2', fieldKey: 'url', action: 'goto' });
+    const first = await attach(KEY_A, { nodeId: 'node-1', fieldKey: 'selector', action: 'click' });
+    const second = await attach(KEY_A, { nodeId: 'node-2', fieldKey: 'url', action: 'goto' });
 
     const rel = await request(app).post('/inspector/target/release')
       .set('x-api-key', KEY_A).send({ targetFieldId: first });
@@ -299,7 +318,7 @@ describe('releasing one Target Field leaves the others alone', () => {
   });
 
   it('reports the session scoped to the asking key', async () => {
-    const mine = await pair(KEY_A);
+    const mine = await attach(KEY_A);
 
     const a = await request(app).get('/inspector/session').set('x-api-key', KEY_A);
     expect(a.body.authorized.map((b: { targetFieldId: string }) => b.targetFieldId)).toContain(mine);

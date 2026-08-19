@@ -15,8 +15,10 @@ import request from 'supertest';
 //
 // So these go over the wire and assert on the HTTP contract:
 //
-//   REMOTE  → 200, step 'targeting', no `code` in the body, openRemoteBrowser
-//   LOCAL   → 200, step 'authorize', a `code` — but only the FIRST time
+//   REMOTE  → 200, step 'targeting', no `code`, openRemoteBrowser, consent raised
+//   LOCAL   → 200, step 'targeting', NO code and NO consent, EVER — because LOCAL
+//             is the browser runtime on the same server as this process, so the
+//             server binds the field itself and there is nothing to hand over
 //
 // The scenario the operator wrote out by hand is at the bottom, end to end.
 // ════════════════════════════════════════════════════════════════
@@ -111,12 +113,34 @@ describe('GET /inspector/targeting/options', () => {
     expect(inspectorAuth.pendingCount()).toBe(0);
   });
 
-  it('warns that LOCAL will ask for a code on a field that is not yet paired', async () => {
+  it('promises NEITHER environment will ask for a code, even on a fresh field', async () => {
+    // This test used to assert the opposite for LOCAL, and that inverted
+    // expectation is the whole defect in miniature: the chooser advertised
+    // «این محیط از شما Authorization Code می‌خواهد» before the user had picked
+    // anything, so the credential form was promised at the earliest possible
+    // moment. There is no longer a code in EITHER environment, so the promise
+    // is now false for both — and it is asserted on an unpaired field on
+    // purpose, since that was the one case that used to differ.
     const res = await options();
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
     const remote = res.body.options.find((o: { id: string }) => o.id === 'remote');
-    expect(local.needsAuthorization).toBe(true);
+    expect(res.body.paired).toBe(false);
+    expect(local.needsAuthorization).toBe(false);
     expect(remote.needsAuthorization).toBe(false);
+  });
+
+  it('marks the approval Alert as the ONE difference between the two', async () => {
+    // The environments are not interchangeable, and the chooser has to say so
+    // — but the difference is now a single flag rather than a whole extra
+    // screen. REMOTE binds a long-lived browser that may already be pointed at
+    // another field, so a human confirms WHICH field it should follow. LOCAL is
+    // resolved per run on this same machine, so there is nothing to
+    // disambiguate: «LOCAL → بدون Alert → اتصال خودکار».
+    const res = await options();
+    const local = res.body.options.find((o: { id: string }) => o.id === 'local');
+    const remote = res.body.options.find((o: { id: string }) => o.id === 'remote');
+    expect(local.needsRemoteApproval).toBe(false);
+    expect(remote.needsRemoteApproval).toBe(true);
   });
 
   it('returns the stable pairing key, so it survives a re-open', async () => {
@@ -192,14 +216,30 @@ describe('POST /inspector/targeting/begin — REMOTE BROWSER', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('POST /inspector/targeting/begin — LOCAL BROWSER, first time', () => {
-  // [REQ] «اگر این Target Field قبلاً pair نشده باشد، همان لحظه یک
-  //        Authorization Code مخصوص همان Target Field صادر شود.»
-  it('issues a code, and does NOT open the server browser', async () => {
+  // [REQ] "Target This Field → LOCAL BROWSER → Detect local browser runtime →
+  //        … → Connected to Target → Ready to Send", with no step in between
+  //        that asks the operator for anything at all.
+  it('goes straight to targeting: no code, no approval, no server window', async () => {
     const res = await begin({ environment: 'local' });
     expect(res.status).toBe(200);
-    expect(res.body.step).toBe('authorize');
-    expect(res.body.code).toMatch(/^[A-Z0-9]{8}$/);
+    // Was step 'authorize' carrying an 8-character code.
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.display).toBeUndefined();
     expect(res.body.openRemoteBrowser).toBe(false);
+    // No approval alert for LOCAL — automatic connection instead.
+    expect(res.body.consent).toBeNull();
+    // Stated positively so the dashboard renders the automatic progression.
+    expect(res.body.runtime).toBe('server-local');
+    expect(res.body.paired).toBe(true);
+  });
+
+  it('never returns a Base URL for the operator to copy', async () => {
+    // The LOCAL UI must contain no `Base URL`. The route used to send one
+    // beside the code, and that is what the dialog rendered.
+    const res = await begin({ environment: 'local' });
+    expect(res.body.baseUrl).toBeUndefined();
+    expect(res.body.baseUrlSource).toBeUndefined();
   });
 
   it('records LOCAL on the destination', async () => {
@@ -207,47 +247,51 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, first time', () => 
     expect(res.body.target.environment).toBe('local');
   });
 
-  it('refuses the pick until the code has been redeemed', async () => {
-    // The code has to mean something. If a submit worked before pairing, the
-    // whole authorize step would be theatre.
+  // THE decisive test for this environment.
+  //
+  // "Connected to Target / Ready to Send" has to be TRUE, not merely displayed.
+  // Removing the Authorization Code removed the thing that used to create the
+  // very first binding, so if nothing replaced it the dialog would report
+  // success and then every pick would be refused with TARGET_NOT_AUTHORIZED —
+  // a worse failure than the credential form, because it stays invisible until
+  // the user actually tries to work.
+  it('leaves the FIRST-TIME browser genuinely able to send', async () => {
     const res = await begin({ environment: 'local' });
-    const sent = await send(KEY_B, res.body.target.targetFieldId);
-    expect(sent.status).toBe(409);
-    expect(sent.body.reason).toBe('TARGET_NOT_AUTHORIZED');
+    const id = res.body.target.targetFieldId;
+
+    expect(inspectorAuth.isAuthorized(KEY_A, 'local', id)).toBe(true);
+    expect((await send(KEY_A, id)).status).toBe(200);
   });
 
-  it('issues a code scoped to THAT field only', async () => {
+  it('binds ONLY the fields that were actually targeted', async () => {
+    // «The Extension must NEVER be able to choose an arbitrary Target Field.»
+    // Granting internally must not turn into granting broadly.
     const first = await begin({ environment: 'local', nodeId: 'node-7' });
     const second = await begin({
       environment: 'local', nodeId: 'node-9', fieldKey: 'url', action: 'goto',
     });
 
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: first.body.code });
-
-    // Paired with the first field…
-    expect((await send(KEY_B, first.body.target.targetFieldId)).status).toBe(200);
-    // …and pointedly not with the second.
-    expect((await send(KEY_B, second.body.target.targetFieldId)).body.reason)
-      .toBe('TARGET_NOT_AUTHORIZED');
+    expect((await send(KEY_A, first.body.target.targetFieldId)).status).toBe(200);
+    expect((await send(KEY_A, second.body.target.targetFieldId)).status).toBe(200);
+    // A never-targeted id remains refused.
+    expect((await send(KEY_A, 'node_zzzz__nope__0000')).status).toBe(409);
   });
 });
 
 describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
-  /** Pair KEY_B with the default field, the way the extension does. */
-  async function pairLocal(body: Record<string, unknown> = {}) {
+  /** Target the field once, the way the crosshair does. No redemption step. */
+  async function bindLocal(body: Record<string, unknown> = {}) {
     const res = await begin({ environment: 'local', ...body });
-    expect(res.body.step).toBe('authorize');
-    const done = await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: res.body.code });
-    expect(done.status).toBe(200);
+    expect(res.body.step).toBe('targeting');
+    expect(res.body.code).toBeUndefined();
     return res.body.target.targetFieldId as string;
   }
 
-  // [REQ] «دفعات بعد برای همان Extension و همان Target Field، دیگر
-  //        Authorization Code لازم نیست.»
-  it('asks for NO code the second time the same field is targeted', async () => {
-    await pairLocal();
+  // [REQ] The next time round, for the same extension and the same Target
+  //       Field, nothing further is needed — now trivially true, because
+  //       nothing was needed the first time either.
+  it('asks for nothing on the second visit either', async () => {
+    await bindLocal();
 
     const again = await begin({ environment: 'local' });
     expect(again.status).toBe(200);
@@ -257,51 +301,54 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
   });
 
   it('re-points the existing pairing at the NEW address', async () => {
-    // The half that is easy to get wrong: the trust survived, but `register()`
-    // minted a fresh id, so without a rebind nothing could be delivered and the
-    // user would be told "no code needed" over a dead channel.
-    const firstId = await pairLocal();
+    // `register()` mints a fresh id on every NDV open, so the durable pairing
+    // must be moved to it or the user is told "connected" over a dead channel.
+    const firstId = await bindLocal();
     const again = await begin({ environment: 'local' });
 
     expect(again.body.target.targetFieldId).not.toBe(firstId);
     expect(again.body.rebound).toBeGreaterThan(0);
-    expect((await send(KEY_B, again.body.target.targetFieldId)).status).toBe(200);
+    expect((await send(KEY_A, again.body.target.targetFieldId)).status).toBe(200);
   });
 
   it('survives the node being CLOSED in between', async () => {
     // `target/release` fires on every NDV close, including the sendBeacon on
-    // page unload. It used to revoke the pairing, which is what made the code
-    // come back every single time.
-    const firstId = await pairLocal();
+    // page unload. It must drop the address without dropping the pairing.
+    const firstId = await bindLocal();
     await request(app).post('/inspector/target/release')
       .set('x-api-key', KEY_A).send({ targetFieldId: firstId });
 
     const again = await begin({ environment: 'local' });
     expect(again.body.step).toBe('targeting');
     expect(again.body.code).toBeUndefined();
+    // And still genuinely usable, not merely reported as connected.
+    expect((await send(KEY_A, again.body.target.targetFieldId)).status).toBe(200);
   });
 
-  it('still asks for a code for a DIFFERENT field', async () => {
-    await pairLocal();
+  it('asks for nothing for a DIFFERENT field either', async () => {
+    await bindLocal();
     const other = await begin({
       environment: 'local', nodeId: 'node-9', fieldKey: 'url', action: 'goto',
     });
-    expect(other.body.step).toBe('authorize');
-    expect(other.body.code).toMatch(/^[A-Z0-9]{8}$/);
+    expect(other.body.step).toBe('targeting');
+    expect(other.body.code).toBeUndefined();
+    expect(other.body.consent).toBeNull();
   });
 
-  it('still asks for a code in a different workflow', async () => {
-    await pairLocal({ workflowId: 'wf1' });
+  it('asks for nothing in a different workflow either', async () => {
+    await bindLocal({ workflowId: 'wf1' });
     const elsewhere = await begin({ environment: 'local', workflowId: 'wf2' });
-    expect(elsewhere.body.step).toBe('authorize');
+    expect(elsewhere.body.step).toBe('targeting');
+    expect(elsewhere.body.code).toBeUndefined();
   });
 
-  it('shows the chooser that the field is already paired', async () => {
-    await pairLocal();
+  it('shows the chooser that LOCAL needs no authorization and no approval', async () => {
+    await bindLocal();
     const res = await options();
     expect(res.body.paired).toBe(true);
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
     expect(local.needsAuthorization).toBe(false);
+    expect(local.needsRemoteApproval).toBe(false);
   });
 });
 
@@ -310,31 +357,41 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('GET /inspector/targeting/status', () => {
-  it('reports "still waiting" while the code is untyped', async () => {
+  it('reports LOCAL already paired the instant targeting begins', async () => {
+    // OLD BEHAVIOUR: this reported `paired:false` / `step:'authorize'`, because
+    // the pairing did not exist yet — it would only come into being once the
+    // operator carried an 8-character code from the dashboard into the
+    // extension. This route was how the dashboard polled for that to happen.
+    //
+    // There is nothing left to wait FOR. The server binds the destination
+    // during `begin`, so the very first poll already reports the finished
+    // state. That is what makes the LOCAL screen a progress indicator rather
+    // than a form: it is describing work that is already done.
     const res = await begin({ environment: 'local' });
     const status = await request(app).get('/inspector/targeting/status')
       .set('x-api-key', KEY_A)
       .query({ targetFieldId: res.body.target.targetFieldId });
 
     expect(status.status).toBe(200);
-    expect(status.body.paired).toBe(false);
-    expect(status.body.step).toBe('authorize');
+    expect(status.body.paired).toBe(true);
+    expect(status.body.step).toBe('targeting');
     expect(status.body.environment).toBe('local');
   });
 
-  it('flips to "targeting" once the extension redeems the code', async () => {
-    // The dashboard cannot watch the extension directly — different browsers,
-    // which is the entire point of LOCAL — so the server is the only party that
-    // sees both sides.
+  it('never regresses to "authorize", however many times it is polled', async () => {
+    // The dashboard polls this while the LOCAL progress screen animates. If any
+    // poll answered 'authorize' the screen would snap back to a credential
+    // form mid-progression, which is precisely the symptom being fixed. Polled
+    // repeatedly because a one-shot check cannot catch a state that decays.
     const res = await begin({ environment: 'local' });
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: res.body.code });
+    const id = res.body.target.targetFieldId;
 
-    const status = await request(app).get('/inspector/targeting/status')
-      .set('x-api-key', KEY_A)
-      .query({ targetFieldId: res.body.target.targetFieldId });
-    expect(status.body.paired).toBe(true);
-    expect(status.body.step).toBe('targeting');
+    for (let i = 0; i < 3; i += 1) {
+      const status = await request(app).get('/inspector/targeting/status')
+        .set('x-api-key', KEY_A).query({ targetFieldId: id });
+      expect(status.body.step).toBe('targeting');
+      expect(status.body.paired).toBe(true);
+    }
   });
 
   it('404s for a target that does not exist', async () => {
@@ -347,18 +404,50 @@ describe('GET /inspector/targeting/status', () => {
 });
 
 describe('POST /inspector/targeting/unpair', () => {
-  it('is the ONLY thing that makes the code come back', async () => {
+  it('really drops the durable pairing, not just the reported count', async () => {
+    // OLD BEHAVIOUR: this asserted that unpairing "makes the code come back",
+    // i.e. that the next `begin` returned `step:'authorize'`. That is no longer
+    // a meaningful observation — no `begin` in any environment returns
+    // 'authorize' any more — so the assertion could only ever fail.
+    //
+    // What unpair is FOR survives the change intact, and is asserted instead:
+    // it forgets the RELATIONSHIP between this user and this field. Read back
+    // out of the registry rather than trusted from the response, because a route
+    // that reported `unpaired:1` without touching the store would satisfy any
+    // response-level assertion.
+    //
+    // Note what is deliberately NOT asserted here: that the in-flight ADDRESS
+    // binding also dies. `unpair` and `revoke` are separate on purpose and were
+    // before this change — «Drops the ADDRESS only. The PAIRING is untouched» —
+    // so conflating them in a test would invent a contract the code never had.
     const res = await begin({ environment: 'local' });
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: res.body.code });
-    expect((await begin({ environment: 'local' })).body.step).toBe('targeting');
+    const pairingKey = res.body.target.pairingKey;
+    expect(inspectorAuth.isPairedForUser('local', pairingKey)).toBe(true);
 
     const gone = await request(app).post('/inspector/targeting/unpair')
       .set('x-api-key', KEY_A)
       .send({ nodeId: 'node-7', fieldKey: 'selector', workflowId: 'wf1' });
     expect(gone.body.unpaired).toBe(1);
 
-    expect((await begin({ environment: 'local' })).body.step).toBe('authorize');
+    expect(inspectorAuth.isPairedForUser('local', pairingKey)).toBe(false);
+  });
+
+  it('re-targeting after an unpair attaches again with no ceremony', async () => {
+    // Unpair must be recoverable WITHOUT reintroducing setup. Under the old
+    // contract this was the moment the credential form reappeared; now the same
+    // crosshair click is the whole recovery, and it must land on a working
+    // binding rather than merely a hopeful screen.
+    const first = await begin({ environment: 'local' });
+    await request(app).post('/inspector/targeting/unpair')
+      .set('x-api-key', KEY_A)
+      .send({ nodeId: 'node-7', fieldKey: 'selector', workflowId: 'wf1' });
+
+    const again = await begin({ environment: 'local' });
+    expect(again.body.step).toBe('targeting');
+    expect(again.body.code).toBeUndefined();
+    expect(again.body.consent).toBeNull();
+    expect(again.body.target.pairingKey).toBe(first.body.target.pairingKey);
+    expect((await send(KEY_A, again.body.target.targetFieldId)).status).toBe(200);
   });
 
   it('reports nothing removed for a pairing this user does not hold', async () => {
@@ -375,39 +464,56 @@ describe('POST /inspector/targeting/unpair', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('the scenario from the requirement, start to finish', () => {
-  it('pairs product_selector once, then never again — but product_url still pairs', async () => {
-    // 1. First target chosen with LOCAL BROWSER: a code is issued.
+  it('attaches product_selector with no setup, and product_url the same way', async () => {
+    // The operator's scenario, re-read under the final contract. Every step the
+    // user PERFORMS is unchanged; what changed is that the two steps which were
+    // pure ceremony — read a code, retype a code — are simply gone:
+    //
+    //   Target This Field → LOCAL BROWSER → …resolve internally… → Ready to Send
+    //
+    // 1. First target chosen with LOCAL BROWSER. Attached immediately.
     const first = await begin({
       environment: 'local', nodeId: 'node-8f21', fieldKey: 'selector', action: 'click',
     });
-    expect(first.body.step).toBe('authorize');
-
-    // 2. The user types it into the extension.
-    await request(app).post('/inspector/pair')
-      .set('x-api-key', KEY_B).send({ code: first.body.code });
+    expect(first.body.step).toBe('targeting');
+    expect(first.body.code).toBeUndefined();
+    expect(first.body.runtime).toBe('server-local');
+    // No step 2 any more: nothing is typed anywhere. Asserted by SENDING, since
+    // "Connected to Target / Ready to Send" has to be true and not merely shown.
+    expect((await send(KEY_A, first.body.target.targetFieldId)).status).toBe(200);
 
     // The node is closed, as it would be in real use.
     await request(app).post('/inspector/target/release')
       .set('x-api-key', KEY_A)
       .send({ targetFieldId: first.body.target.targetFieldId });
 
-    // 3. Next time, the SAME Target Field: no new code.
+    // 2. Next time, the SAME Target Field: still nothing to do, and the durable
+    //    pairing identity is the same one — a re-open, not a re-setup.
     const secondVisit = await begin({
       environment: 'local', nodeId: 'node-8f21', fieldKey: 'selector', action: 'click',
     });
     expect(secondVisit.body.step).toBe('targeting');
     expect(secondVisit.body.code).toBeUndefined();
-    // …and it genuinely works, rather than merely claiming to.
-    expect((await send(KEY_B, secondVisit.body.target.targetFieldId)).status).toBe(200);
+    expect(secondVisit.body.target.pairingKey).toBe(first.body.target.pairingKey);
+    expect((await send(KEY_A, secondVisit.body.target.targetFieldId)).status).toBe(200);
 
-    // 4. But a NEW target requires new Authorization/Pairing.
+    // 3. A NEW field is a genuinely different destination — it gets its own
+    //    pairing identity, so the two can be detached independently — but it
+    //    costs the user no setup either. This is the assertion that used to
+    //    demand a fresh 8-character code.
     const newTarget = await begin({
       environment: 'local', nodeId: 'node-92aa', fieldKey: 'url', action: 'goto',
     });
-    expect(newTarget.body.step).toBe('authorize');
-    expect(newTarget.body.code).toMatch(/^[A-Z0-9]{8}$/);
-    expect((await send(KEY_B, newTarget.body.target.targetFieldId)).body.reason)
-      .toBe('TARGET_NOT_AUTHORIZED');
+    expect(newTarget.body.step).toBe('targeting');
+    expect(newTarget.body.code).toBeUndefined();
+    expect(newTarget.body.target.pairingKey).not.toBe(first.body.target.pairingKey);
+    expect((await send(KEY_A, newTarget.body.target.targetFieldId)).status).toBe(200);
+
+    // 4. And the destinations stay distinct: attaching the second field must not
+    //    have quietly re-pointed the first. Otherwise «switch current target»
+    //    would silently become «overwrite the previous target».
+    expect(newTarget.body.target.targetFieldId)
+      .not.toBe(secondVisit.body.target.targetFieldId);
   });
 
   it('keeps the two environments’ concerns apart on one field', async () => {
