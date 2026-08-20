@@ -1347,15 +1347,23 @@
       // یکی‌شدن واژگانشان همان اشتباهی است که این تغییر برای رفعش نوشته شد.
       'tgt.title': 'هدف‌گیری با کدام مرورگر؟',
       'tgt.subtitle': 'انتخاب کنید المان را در کدام مرورگر نشان می‌دهید.',
+      // نام‌ها از دید «پروژه» خوانده می‌شوند، نه از دید کاربر. محلی یعنی محلیِ
+      // نسبت به پروژه: همان ماشینی که بک‌اند روی آن اجرا می‌شود. ریموت یعنی
+      // دور از پروژه: ماشین شخصی خود کاربر. جابه‌جا بودن همین دو توضیح تمام
+      // اشکالِ گزارش‌شده بود:
+      //
+      //     «وقتی لوکال میزنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
       'tgt.local': 'مرورگر محلی',
-      'tgt.localDesc': 'مرورگر روی همین سرور. اتصال کاملاً خودکار است و چیزی از شما پرسیده نمی‌شود.',
+      'tgt.localDesc': 'مرورگر روی همین سرور. خودِ سرور آن را باز می‌کند و در همان تب از شما تأیید می‌گیرد — نه آدرس، نه کلید، نه کد.',
       'tgt.remote': 'مرورگر ریموت',
-      'tgt.remoteDesc': 'مرورگر روی سرور. یک تب تازه باز می‌شود و همان‌جا انتخاب می‌کنید.',
-      // برچسبی که پیش از انتخاب می‌گوید چه چیزی در انتظار کاربر است. تنها
-      // تفاوت واقعی میان دو گزینه همین است: ریموت یک تأیید در خود مرورگر
-      // می‌خواهد، محلی هیچ چیز. کلیدهای پیشین (needsCode / noCode / paired)
-      // حذف شدند، چون هر سه دربارهٔ «کد مجوز» بودند و کد دیگر وجود ندارد.
+      'tgt.remoteDesc': 'مرورگر روی ماشین شخصی خودتان. چون دو ماشین جداست، به یک Base URL و یک کد مجوز نیاز دارد.',
+      // برچسبی که پیش از انتخاب می‌گوید چه چیزی در انتظار کاربر است. حالا دو
+      // انتظار واقعاً متفاوت وجود دارد و هر کدام کلید خودش را دارد: محلی یک
+      // تأیید درون همان مرورگر می‌خواهد، ریموت یک کد که باید به ماشین دیگر
+      // برده شود. `needsCode` به همین دلیل برگشت — نه چون فرم قدیمی برگشته،
+      // بلکه چون فاصلهٔ اعتماد میان دو ماشین واقعی است.
       'tgt.needsApproval': 'در همان مرورگر یک تأیید لازم دارد',
+      'tgt.needsCode': 'یک کد مجوز برای ماشین دیگر می‌دهد',
       'tgt.automatic': 'اتصال خودکار — بدون کد و بدون تنظیم',
       // چرا یک گزینه در دسترس نیست. به‌جای پنهان‌کردنش دلیل گفته می‌شود،
       // چون گزینهٔ ناپیدا سؤال می‌سازد و گزینهٔ توضیح‌دار پاسخ.
@@ -1375,16 +1383,41 @@
       'tgt.readyToSend': 'آمادهٔ ارسال',
       'tgt.close': 'بستن',
       'tgt.readyLocal': 'آماده است. المان را در مرورگر انتخاب کنید.',
-      'tgt.readyRemote': 'مرورگر ریموت در حال باز شدن است…',
-      'tgt.consentAsked': 'مرورگر ریموت از قبل باز است — در همان تب اجازهٔ اتصال را بدهید.',
-      'tgt.consentWaiting': 'هنوز منتظر اجازهٔ شما در تب مرورگر ریموت هستیم.',
+      // ریموت هیچ تبی باز نمی‌کند: مرورگر روی ماشین خود کاربر است و همین حالا
+      // هم باز است. آن‌چه اتفاق می‌افتد ثبت شدن کد است، نه بالا آمدن پنجره.
+      'tgt.readyRemote': 'مرورگرِ خودتان متصل شد. المان را همان‌جا انتخاب کنید.',
+      // این دو پیام متعلق به حالت «محلی» هستند، چون تأییدِ درون‌صفحه را سرور
+      // در مرورگر خودش بالا می‌آورد. یک مرورگرِ سرور میان همهٔ فیلدها مشترک
+      // است و از هر انتخاب عمر بیشتری دارد، پس باید به آن گفته شود این بار
+      // کدام فیلد است — تأیید برای همین است، نه برای اعتماد.
+      'tgt.consentAsked': 'مرورگر سرور آماده است — در همان تب اجازهٔ اتصال به این فیلد را بدهید.',
+      'tgt.consentWaiting': 'هنوز منتظر اجازهٔ شما در تب مرورگر سرور هستیم.',
       'tgt.failed': 'شروع هدف‌گیری ممکن نشد. دوباره تلاش کنید.',
       'tgt.unpair': 'قطع اتصال این فیلد',
       'tgt.unpaired': 'اتصال این فیلد قطع شد. دفعهٔ بعد کد تازه لازم است.',
-      // حذف‌شده: tgt.baseUrl / baseConfigured / baseRequest / baseDetected /
-      // baseLoopback / copied / copyManual / authCode / authTitle / authHint /
-      // waiting / pairedNow. همه متعلق به صفحهٔ «کد مجوز» بودند؛ آن صفحه حذف شد،
-      // چون مرورگر محلی روی همین سرور اجرا می‌شود و چیزی برای جابه‌جا کردن نیست.
+      // ── فقط برای «مرورگر ریموت» ────────────────────────────────────────
+      //
+      // این کلیدها یک بار حذف شدند، با این استدلال که «مرورگر محلی روی همین
+      // سرور اجرا می‌شود و چیزی برای جابه‌جا کردن نیست». آن جمله درست بود اما
+      // به گزینهٔ اشتباه چسبانده شده بود: محلی همان مرورگرِ سرور است و واقعاً
+      // چیزی برای بردن ندارد، ولی ریموت مرورگرِ ماشین شخصی کاربر است و دو
+      // ماشین جدا بدون آدرس و بدون کد نمی‌توانند به هم اعتماد کنند. پس این
+      // کلیدها برنگشتند چون فرم قدیمی برگشته — برگشتند چون به نیمهٔ دیگر
+      // ماجرا تعلق دارند.
+      //
+      // هر بار یک کد تازه برای یک فیلد نام‌دار صادر می‌شود؛ همین چیزی است که
+      // اتصال را همیشه به فیلد جدید می‌بندد:
+      //
+      //     «هر بار فیلد جدید اتورایز جدید باعث شد ما همیشه با فیلد جدید ست بمونیم»
+      'tgt.authTitle': 'مرورگر ریموت را وصل کنید',
+      'tgt.authHint': 'این دو مقدار را در افزونهٔ روی ماشین خودتان وارد کنید',
+      'tgt.authCode': 'کد مجوز',
+      'tgt.baseUrl': 'Base URL',
+      'tgt.copy': 'کپی',
+      'tgt.copied': 'کپی شد',
+      'tgt.copyManual': 'دستی کپی کنید',
+      'tgt.waiting': 'در انتظار اتصال مرورگر ریموت…',
+      'tgt.pairedNow': 'مرورگر ریموت وصل شد. المان را همان‌جا انتخاب کنید.',
 
       'mode.title': 'حالت مرورگر',
       'mode.remote': 'مرورگر ریموت',
@@ -2684,15 +2717,27 @@
       // was written to remove.
       'tgt.title': 'Target with which browser?',
       'tgt.subtitle': 'Choose where you will point at the element.',
+      // The names are read from the PROJECT's point of view, not the operator's.
+      // LOCAL means local TO THE PROJECT: the same machine the backend runs on.
+      // REMOTE means remote FROM THE PROJECT: the operator's own machine. These
+      // two descriptions were attached to the wrong cards, and that swap was the
+      // entire reported defect:
+      //
+      //     «وقتی لوکال میزنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
+      //     (pressing LOCAL should bring up the LOCAL SERVER browser, but it is
+      //      reversed)
       'tgt.local': 'Local Browser',
-      'tgt.localDesc': 'The browser runtime on this same server. Connects automatically — nothing to enter.',
+      'tgt.localDesc': 'The browser on this same server. The server opens it and asks you to approve the field in that tab — no address, no key, no code.',
       'tgt.remote': 'Remote Browser',
-      'tgt.remoteDesc': 'The browser on the server. A new tab opens and you pick there.',
-      // Says what is coming BEFORE the user commits. The only real difference
-      // between the two cards is now whether an approval will be raised inside
-      // the browser. REPLACES needsCode / noCode / paired, all three of which
-      // were statements about an Authorization Code that no longer exists.
+      'tgt.remoteDesc': 'The browser on your own machine. Two separate machines, so it needs a Base URL and an authorization code.',
+      // Says what is coming BEFORE the user commits. There are now two genuinely
+      // different things to expect, so each has its own key: LOCAL raises an
+      // approval inside that browser, REMOTE hands over a code to be carried to
+      // another machine. `needsCode` came back for that second reason — not
+      // because the old credential form returned, but because the trust gap
+      // between two machines is real.
       'tgt.needsApproval': 'Asks you to approve in that browser',
+      'tgt.needsCode': 'Gives you a code for the other machine',
       'tgt.automatic': 'Connects automatically — no code, no setup',
       // Why an option cannot be used. Explained rather than hidden: a missing
       // option raises a question, an explained one answers it.
@@ -2712,22 +2757,50 @@
       'tgt.readyToSend': 'Ready to send',
       'tgt.close': 'Close',
       'tgt.readyLocal': 'Ready. Pick the element in the browser.',
-      'tgt.readyRemote': 'Opening the Remote Browser…',
-      // The Remote Browser was ALREADY open, so it was not relaunched. What the
-      // operator has to do next is answer the prompt inside it — saying
-      // "opening…" here would be a lie about a tab that never appears.
-      'tgt.consentAsked': 'The Remote Browser is already open — allow the connection in that tab.',
-      'tgt.consentWaiting': 'Still waiting for you to allow the connection in the Remote Browser tab.',
+      // REMOTE opens no tab at all: that browser is on the operator's own
+      // machine and is already running. What happens is a code being redeemed,
+      // not a window appearing — so this cannot say "opening".
+      'tgt.readyRemote': 'Your own browser is connected. Pick the element there.',
+      // These two belong to LOCAL, because the in-page approval is raised by the
+      // server inside ITS OWN browser. One server browser is shared by every
+      // field and outlives any single pick, so it has to be told which field
+      // this one is. That is what the approval is for — not trust.
+      'tgt.consentAsked': 'The server browser is ready — allow the connection to this field in that tab.',
+      'tgt.consentWaiting': 'Still waiting for you to allow the connection in the server browser tab.',
       'tgt.failed': 'Targeting could not be started. Try again.',
       'tgt.unpair': 'Unpair this field',
       'tgt.unpaired': 'This field was unpaired. Next time a new code will be needed.',
-      // REMOVED: tgt.baseUrl / baseConfigured / baseRequest / baseDetected /
-      // baseLoopback / copied / copyManual / authCode / authTitle / authHint /
-      // waiting / pairedNow. Every one belonged to the Authorization Code screen.
-      // That screen is gone because the LOCAL browser runs on this same server,
-      // so there is no longer anything for the operator to carry between two
-      // machines -- and a dictionary that still speaks the language of a
-      // credential form is how such a form comes back.
+      // ── REMOTE BROWSER ONLY ────────────────────────────────────────────
+      //
+      // These keys were removed once, on the argument that "the LOCAL browser
+      // runs on this same server, so there is nothing for the operator to carry
+      // between two machines". That sentence was true but was pinned to the
+      // wrong option. LOCAL *is* the server's own browser and really does carry
+      // nothing; REMOTE is the browser on the operator's personal machine, and
+      // two separate machines cannot trust each other without an address and a
+      // code. So these did not come back because the old credential form came
+      // back — they came back because they belong to the OTHER half of the
+      // story, the half that was mislabelled.
+      //
+      // A fresh code is minted per NAMED FIELD, which is precisely what keeps a
+      // binding attached to the field just picked:
+      //
+      //     «هر بار فیلد جدید اتورایز جدید باعث شد ما همیشه با فیلد جدید ست بمونیم»
+      //
+      // NOTE the deliberate omissions: baseConfigured / baseRequest /
+      // baseDetected / baseLoopback are NOT restored. Those exposed WHICH
+      // heuristic produced the address, and src/core/PublicBaseUrl.ts is now the
+      // single source that decides — the operator needs the address, not the
+      // provenance of the address.
+      'tgt.authTitle': 'Connect your Remote Browser',
+      'tgt.authHint': 'Enter these two values in the extension on your own machine',
+      'tgt.authCode': 'Authorization code',
+      'tgt.baseUrl': 'Base URL',
+      'tgt.copy': 'Copy',
+      'tgt.copied': 'Copied',
+      'tgt.copyManual': 'Copy manually',
+      'tgt.waiting': 'Waiting for the Remote Browser to connect…',
+      'tgt.pairedNow': 'Remote Browser connected. Pick the element there.',
 
       'mode.title': 'Browser mode',
       'mode.remote': 'Remote Browser',

@@ -217,10 +217,28 @@ export class RemoteTargetConsentRegistry {
       label?: string;
       action?: string;
       /**
-       * Defaults to 'remote' when omitted, because that is the only environment
-       * that legitimately raises a prompt: LOCAL authorizes with a code. A caller
-       * that forgets to say therefore gets the historical behaviour rather than a
-       * prompt that silently reaches the wrong browser.
+       * Defaults to 'local' when omitted, because that is the only environment
+       * that legitimately raises a prompt: REMOTE authorizes with a code, and
+       * this server cannot push a dialog into a browser on somebody else's
+       * desktop anyway.
+       *
+       * ── WHY THIS DEFAULT HAD TO MOVE WITH THE OTHER ONE ───────────────────
+       * It used to default to 'remote', from the same inverted reading that put
+       * the launch on REMOTE. Left behind after pendingFor() was made strict, the
+       * two defaults pointed in OPPOSITE directions:
+       *
+       *   request()    with no environment  ->  stamped 'remote'
+       *   pendingFor() with no declaration  ->  serves 'local' only
+       *
+       * A prompt raised without an explicit environment was therefore addressed
+       * to nobody: not to the server's browser, which is the only one that can
+       * see prompts at all, and not to an undeclared poller, which pendingFor()
+       * reads as the server's browser. It would sit pending until it expired,
+       * and the field would never bind — the reported symptom, reachable again
+       * through a caller that simply forgot an argument.
+       *
+       * The two defaults now agree, so an omission degrades to the environment
+       * the prompt mechanism exists for instead of to an unreachable state.
        */
       environment?: 'local' | 'remote';
     },
@@ -277,7 +295,7 @@ export class RemoteTargetConsentRegistry {
       fieldKey: clean(input.fieldKey, 200),
       label: clean(input.label, 200),
       action: clean(input.action, 200),
-      environment: input.environment === 'local' ? 'local' : 'remote',
+      environment: input.environment === 'remote' ? 'remote' : 'local',
       state: 'pending',
       requestedAt: now,
       expiresAt: now + CONSENT_TTL_MS,
@@ -302,22 +320,37 @@ export class RemoteTargetConsentRegistry {
     this.sweep(now);
     const owner = clean(userId, 200);
 
-    // An extension that DECLARES itself local is never shown a remote prompt.
+    // A browser is only ever shown prompts raised for ITS OWN environment.
     //
-    // This is the server half of «LOCAL = NO Remote Approval Alert». It cannot be
-    // done in the UI: the extension in the operator's own Chrome and the one in
-    // the server's browser poll this exact endpoint with the exact same account,
-    // so the only thing that can separate them is what they say they are.
+    // This is the server half of the separation. It cannot be done in the UI: the
+    // extension in the operator's own Chrome and the one in the server's browser
+    // poll this exact endpoint with the exact same account, so the only thing
+    // that can separate them is what they declare themselves to be.
     //
-    // An extension that declares NOTHING still sees remote prompts. Older builds
-    // send no environment, and the remote browser runs whichever build was
-    // side-loaded into it -- starving it would break REMOTE altogether. The
-    // asymmetry is deliberate: only an explicit 'local' filters anything out.
-    const askedBy = environment === 'local' ? 'local' : '';
+    // ── NOW STRICT IN BOTH DIRECTIONS ─────────────────────────────────────────
+    // It used to filter only for an explicit 'local', letting anything else see
+    // every prompt. That was defensible while prompts were raised for REMOTE:
+    // the server's own side-loaded browser was the REMOTE one, and an older
+    // build there sent no environment, so being permissive kept it working.
+    //
+    // With the environments the right way round, the prompt belongs to the
+    // server's browser (`local`) and the permissive branch points the wrong way:
+    // a browser on the operator's desktop, or one that declares nothing, would
+    // be offered a prompt raised for the server's browser and could approve it.
+    // That is a destination bound by the wrong machine, so an unrecognised
+    // declaration is now treated as "not the server's browser" rather than as
+    // "show everything".
+    //
+    // An empty declaration is still permitted to see LOCAL prompts, because the
+    // browser this server side-loads may be running an older build that sends
+    // nothing — and starving THAT would break the environment this prompt exists
+    // for. The client-side gate in background.js is the second, independent
+    // barrier for the operator's own browser.
+    const askedBy = environment === 'remote' ? 'remote' : 'local';
 
     return [...this.requests.values()]
       .filter((r) => r.userId === owner && r.state === 'pending')
-      .filter((r) => (askedBy === 'local' ? r.environment === 'local' : true))
+      .filter((r) => (askedBy === 'remote' ? r.environment === 'remote' : r.environment !== 'remote'))
       .sort((a, b) => a.requestedAt - b.requestedAt)
       .map(toPrompt);
   }

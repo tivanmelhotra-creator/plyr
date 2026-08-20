@@ -216,22 +216,36 @@ describe('registration refuses a fieldKey the action does not declare', () => {
   });
 });
 
-describe('the Authorization Code routes are gone, and stay gone', () => {
-  // WHAT THIS DESCRIBE USED TO BE. Four tests over POST /inspector/authorize and
-  // POST /inspector/pair: no code for an unknown id, an unknown code reported as
-  // INVALID rather than as a 500, a redeemed code refused a second time, and the
-  // pairing filed under the STABLE pairingKey so the legacy "Connect Inspector"
-  // button did not ask for a second code.
+describe('the code MINT route is gone; the REDEEM route is REMOTE-only', () => {
+  // WHY THE TWO ROUTES ARE TREATED DIFFERENTLY
   //
-  // Every one of them was a good test of a mechanism that must not exist. LOCAL
-  // is the Browser Runtime on the same server Plyr runs on, so a code asked the
-  // operator to carry a secret out of one of the server's own windows and back
-  // into another one to prove they were themselves.
+  // This describe asserted that BOTH `/inspector/authorize` and `/inspector/pair`
+  // 404, on the reasoning that a code asks the operator to carry a secret out of
+  // one of the server's own windows and back into another to prove they are
+  // themselves. That reasoning is exactly right — about LOCAL, which is the
+  // browser runtime on the same server this process runs on.
   //
-  // Deleting the tests along with the routes would have left the deletion
-  // unguarded — nothing would fail if a later change re-registered either route
-  // or put a `code` back on a targeting response. So the describe is repurposed:
-  // it now asserts the ABSENCE, over the same real HTTP the old tests used.
+  // It was applied to REMOTE too, and REMOTE is a browser on the operator's OWN
+  // machine:
+  //
+  //   «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند و ارتباط مستقیم با پلاگین
+  //    مرورگر رو نمی‌شه رفت … پس ما هم به یک اتورایز نیاز داریم»
+  //
+  // Two machines, a real trust gap, and no channel this server can push a dialog
+  // through. So the two routes part company:
+  //
+  //   /inspector/authorize  STAYS GONE. It minted a code on its own, which is how
+  //                         a code could exist naming no field — the operator
+  //                         holding one while Target stayed empty. Minting now
+  //                         happens INSIDE /inspector/targeting/begin, after the
+  //                         field is registered, so a code always names a field.
+  //
+  //   /inspector/pair       IS BACK, for REMOTE only. Redeeming is what creates
+  //                         the binding for a browser this server cannot vouch
+  //                         for by itself.
+  //
+  // The absence of the mint route stays guarded here, because nothing else would
+  // fail if a later change re-registered it.
 
   it('answers 404 to POST /inspector/authorize', async () => {
     // A live field, so a 404 can only mean the ROUTE is missing — not the target.
@@ -247,19 +261,76 @@ describe('the Authorization Code routes are gone, and stay gone', () => {
     expect(res.body.code).toBeUndefined();
   });
 
-  it('answers 404 to POST /inspector/pair', async () => {
+  it('serves POST /inspector/pair, and refuses a code it never issued', async () => {
+    // Present, and not permissive. A 403 with a §27 reason is the shape the route
+    // answers with: the request was well-formed, the credential was not accepted.
+    // A 404 here would mean the REMOTE handshake has no far end at all, which is
+    // what this test used to require.
     const res = await request(app)
       .post('/inspector/pair')
       .set('x-api-key', KEY_A)
       .send({ code: 'ZZZZZZZZ' });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+    expect(res.body.reason).toBe('INVALID_AUTHORIZATION_CODE');
+    // And the refusal hands out nothing: no binding, and no destination that
+    // could be reused as an address.
     expect(res.body.binding).toBeUndefined();
+    expect(res.body.targetFieldId).toBeUndefined();
   });
 
-  it('hands out no code, and no address to type it into', async () => {
-    // The two fields the popup used to have inputs for. Neither may come back on
-    // the one route that still starts a targeting run.
+  it('mints a code only through targeting/begin, never standing alone', async () => {
+    // The property the deleted mint route existed to violate, asserted from the
+    // other side: a code exists ONLY as the product of choosing REMOTE for a
+    // named field, so it can never be issued without a destination attached.
+    const res = await request(app)
+      .post('/inspector/targeting/begin')
+      .set('x-api-key', KEY_A)
+      .send({
+        nodeId: 'node-7', fieldKey: 'selector', action: 'click',
+        environment: 'remote',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.authorization.code).toBeTruthy();
+    // It names the field it was minted for — that is the whole reason the mint
+    // route had to go.
+    expect(res.body.authorization.nodeId).toBe('node-7');
+    expect(res.body.authorization.fieldKey).toBe('selector');
+    expect(res.body.target.targetFieldId).toBeTruthy();
+  });
+
+  it('redeems a real code, and refuses the same one twice', async () => {
+    // The end-to-end REMOTE handshake over real HTTP, plus the replay guard: a
+    // one-time code that still worked on a second use would leave a credential
+    // live on whatever screen the operator copied it from.
+    const begun = await request(app)
+      .post('/inspector/targeting/begin')
+      .set('x-api-key', KEY_A)
+      .send({
+        nodeId: 'node-7', fieldKey: 'selector', action: 'click',
+        environment: 'remote',
+      });
+    const code = begun.body.authorization.code;
+
+    const first = await request(app)
+      .post('/inspector/pair').set('x-api-key', KEY_A).send({ code });
+    expect(first.status).toBe(200);
+    expect(first.body.paired).toBe(true);
+    expect(first.body.targetFieldId).toBe(begun.body.target.targetFieldId);
+
+    const again = await request(app)
+      .post('/inspector/pair').set('x-api-key', KEY_A).send({ code });
+    expect(again.status).toBe(403);
+  });
+
+  it('hands out no code, and no address to type it into, on LOCAL', async () => {
+    // The two fields the popup must not show for LOCAL. Note the `environment`
+    // this always sent: 'local'. The assertion was right for this branch all
+    // along — it was the CLAIM around it («neither environment gets a code») that
+    // was too broad. Scoped to the branch it actually exercises, and REMOTE's
+    // credential is asserted separately above.
     const res = await request(app)
       .post('/inspector/targeting/begin')
       .set('x-api-key', KEY_A)

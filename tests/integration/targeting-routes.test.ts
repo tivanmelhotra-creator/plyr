@@ -15,10 +15,29 @@ import request from 'supertest';
 //
 // So these go over the wire and assert on the HTTP contract:
 //
-//   REMOTE  → 200, step 'targeting', no `code`, openRemoteBrowser, consent raised
-//   LOCAL   → 200, step 'targeting', NO code and NO consent, EVER — because LOCAL
-//             is the browser runtime on the same server as this process, so the
-//             server binds the field itself and there is nothing to hand over
+//   LOCAL   → 200, step 'targeting', no `code`, `openServerBrowser`, consent
+//             raised — because LOCAL is the browser runtime on the SAME server
+//             as this process. The server launches (or reuses) it and binds the
+//             field itself; the only open question is WHICH field the next pick
+//             belongs to, and a human answers that in the page.
+//
+//   REMOTE  → 200, step 'authorize', a `code` + a Base URL, NO consent and NO
+//             launch — because REMOTE is a browser on the operator's own
+//             machine. This server cannot vouch for it and cannot raise a dialog
+//             inside it, so the operator carries a credential across the gap.
+//
+// ── THIS FILE HAD THE TWO THE WRONG WAY ROUND ───────────────────────────
+//
+// It asserted the launch and the prompt on REMOTE, and asserted that NEITHER
+// environment ever needs a code. The operator reported the consequence from the
+// screen:
+//
+//   «وقتی روی پیکر می‌زنم و باکس بالا می‌آید که لوکال می‌خواهی یا ریموت، وقتی
+//    لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاید ولی برعکس است»
+//
+// The premise «no code in either environment» was reached by treating both
+// environments as the server's own browser. One of them is not, and that is the
+// whole correction: two machines cannot be bridged by a server-side grant.
 //
 // The scenario the operator wrote out by hand is at the bottom, end to end.
 // ════════════════════════════════════════════════════════════════
@@ -66,14 +85,22 @@ function options(q: Record<string, string> = {}) {
     .query({ nodeId: 'node-7', fieldKey: 'selector', workflowId: 'wf1', ...q });
 }
 
-/** Step two: the user chose an environment. */
+/**
+ * Step two: the user chose an environment.
+ *
+ * DEFAULTS TO 'local'. Every test that does not care which environment it is in
+ * wants the one where the server does the binding itself, because that is the
+ * path a pick can actually travel end to end inside a test: REMOTE deliberately
+ * grants nothing until a code is redeemed, so a default of 'remote' would make
+ * an unrelated assertion about, say, unpairing fail for the wrong reason.
+ */
 function begin(body: Record<string, unknown> = {}, key = KEY_A) {
   return request(app)
     .post('/inspector/targeting/begin')
     .set('x-api-key', key)
     .send({
       nodeId: 'node-7', fieldKey: 'selector', action: 'click', workflowId: 'wf1',
-      environment: 'remote', ...body,
+      environment: 'local', ...body,
     });
 }
 
@@ -113,34 +140,67 @@ describe('GET /inspector/targeting/options', () => {
     expect(inspectorAuth.pendingCount()).toBe(0);
   });
 
-  it('promises NEITHER environment will ask for a code, even on a fresh field', async () => {
-    // This test used to assert the opposite for LOCAL, and that inverted
-    // expectation is the whole defect in miniature: the chooser advertised
-    // «این محیط از شما Authorization Code می‌خواهد» before the user had picked
-    // anything, so the credential form was promised at the earliest possible
-    // moment. There is no longer a code in EITHER environment, so the promise
-    // is now false for both — and it is asserted on an unpaired field on
-    // purpose, since that was the one case that used to differ.
+  it('promises a code on REMOTE and none on LOCAL, on a fresh field', async () => {
+    // This asserted `false` for BOTH, on the premise that no environment needs a
+    // code. Half right, and the wrong half: LOCAL needs none because it is the
+    // browser on THIS server, and REMOTE needs one precisely because it is not.
+    //
+    //   «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند … پس ما هم به یک اتورایز
+    //    نیاز داریم»
+    //
+    // Asserted on an UNPAIRED field on purpose: that is when the chooser's
+    // promise is load-bearing, because there is no existing pairing to fall back
+    // on and the operator is deciding on the strength of this text alone.
     const res = await options();
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
     const remote = res.body.options.find((o: { id: string }) => o.id === 'remote');
     expect(res.body.paired).toBe(false);
     expect(local.needsAuthorization).toBe(false);
-    expect(remote.needsAuthorization).toBe(false);
+    expect(remote.needsAuthorization).toBe(true);
   });
 
-  it('marks the approval Alert as the ONE difference between the two', async () => {
-    // The environments are not interchangeable, and the chooser has to say so
-    // — but the difference is now a single flag rather than a whole extra
-    // screen. REMOTE binds a long-lived browser that may already be pointed at
-    // another field, so a human confirms WHICH field it should follow. LOCAL is
-    // resolved per run on this same machine, so there is nothing to
-    // disambiguate: «LOCAL → بدون Alert → اتصال خودکار».
+  it('marks LOCAL — and only LOCAL — as raising the approval Alert', async () => {
+    // The environments are not interchangeable and the chooser has to say so.
+    // The prompt belongs to LOCAL for a reason that cannot be configured away:
+    // the server's browser is ONE shared, long-lived window that outlives a
+    // targeting run, so when a second field is targeted it is already open and
+    // still holding the first field's address. Nothing in that address says
+    // which of the two the next pick belongs to, so a human must:
+    //
+    //   «مرورگر مجدد بالا نمیاد و فقط الرت بالا میاد … میگه که چه نودی، چه فیلدی»
+    //
+    // REMOTE cannot use a prompt at all — there is no channel from here into a
+    // browser on somebody else's desktop — and does not need one: the code it
+    // carries already named exactly one field.
     const res = await options();
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
     const remote = res.body.options.find((o: { id: string }) => o.id === 'remote');
-    expect(local.needsRemoteApproval).toBe(false);
-    expect(remote.needsRemoteApproval).toBe(true);
+    expect(local.needsInPageApproval).toBe(true);
+    expect(remote.needsInPageApproval).toBe(false);
+  });
+
+  it('marks LOCAL — and only LOCAL — as opening the server’s browser', async () => {
+    // The renamed flag, asserted at the route. `opensRemoteBrowser` was true for
+    // the environment that opens nothing here, which is how a chooser could
+    // promise a launch that never came:
+    //
+    //   «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
+    const res = await options();
+    const local = res.body.options.find((o: { id: string }) => o.id === 'local');
+    const remote = res.body.options.find((o: { id: string }) => o.id === 'remote');
+    expect(local.opensServerBrowser).toBe(true);
+    expect(remote.opensServerBrowser).toBe(false);
+  });
+
+  it('never promises both a code AND an approval for the same card', async () => {
+    // The two mechanisms are alternatives, not a pair. A card offering both would
+    // be describing the reported bug as if it were the design: a code typed in,
+    // and then an unexplained Alert minutes later that turns out to be what
+    // actually bound the field.
+    const res = await options();
+    for (const o of res.body.options as Array<Record<string, boolean>>) {
+      expect(o.needsAuthorization && o.needsInPageApproval).toBe(false);
+    }
   });
 
   it('returns the stable pairing key, so it survives a re-open', async () => {
@@ -168,46 +228,114 @@ describe('GET /inspector/targeting/options', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('POST /inspector/targeting/begin — REMOTE BROWSER', () => {
-  // [REQ] «برای REMOTE BROWSER نیازی به Authorization Code نیست.»
-  it('goes straight to targeting and issues NO code', async () => {
+  // [REQ] «در مورد ریموت فرق دارد … ما هم به یک اتورایز نیاز داریم تا تایید بشه
+  //        که فرد خودش است و هم به یک بیس یو ار ال»
+  //
+  // Every test in this block asserted the opposite: no code, a launch, and a
+  // prompt. That is the inversion at the route level.
+  it('stops at authorize and issues a code', async () => {
     const res = await begin({ environment: 'remote' });
     expect(res.status).toBe(200);
-    expect(res.body.step).toBe('targeting');
-    expect(res.body.code).toBeUndefined();
-    expect(inspectorAuth.pendingCount()).toBe(0);
+    // The second step exists again, for the ONE environment that always needed
+    // it. `step` is what the dialog switches on, so this is the assertion that
+    // decides whether the credential card is ever rendered.
+    expect(res.body.step).toBe('authorize');
+    expect(res.body.authorization).toBeTruthy();
+    expect(res.body.authorization.code).toBeTruthy();
+    expect(inspectorAuth.pendingCount()).toBe(1);
   });
 
-  it('tells the caller to open the server browser', async () => {
+  it('hands over the Base URL as well, resolved by the server', async () => {
+    // «و هم به یک بیس یو ار ال» — the far browser has to know where to reach
+    // this server, and the operator cannot be expected to know it. Resolved
+    // centrally (configured domain → proxy forwarded host → LAN → loopback), so
+    // it is never typed here.
     const res = await begin({ environment: 'remote' });
-    expect(res.body.openRemoteBrowser).toBe(true);
+    expect(typeof res.body.authorization.baseUrl).toBe('string');
+    expect(res.body.authorization.baseUrl.length).toBeGreaterThan(0);
+    // And the code names the field, so the operator can see what they are about
+    // to connect before they paste it.
+    expect(res.body.authorization.fieldKey).toBe('selector');
+    expect(res.body.authorization.nodeId).toBe('node-7');
+  });
+
+  it('opens nothing on this server, and raises no prompt', async () => {
+    const res = await begin({ environment: 'remote' });
+    // The launch belongs to LOCAL: the browser is not on this machine.
+    expect(res.body.openServerBrowser).toBe(false);
+    // And no dialog, because there is no channel to raise one through — plus
+    // the code already answered the only question a prompt would ask.
+    expect(res.body.consent).toBeNull();
   });
 
   it('records REMOTE on the destination itself', async () => {
+    // The stamp survives, and it matters more than it looks: the open target is
+    // the ONLY carrier of the operator's choice at the moment the credential
+    // card must be drawn, because the session is not bound yet and reports no
+    // environment of its own.
     const res = await begin({ environment: 'remote' });
     expect(res.body.target.environment).toBe('remote');
     expect(targetFields.resolve('local', res.body.target.targetFieldId)!.environment)
       .toBe('remote');
   });
 
-  it('binds the caller so a pick actually lands, with no pairing step', async () => {
-    // The half that would be easy to miss: "no code needed" is worthless if the
-    // submit is then refused as unauthorized.
+  it('grants NOTHING until the code is redeemed', async () => {
+    // The inverse of what this block asserted, and the security property that
+    // makes REMOTE meaningful. It read «binds the caller so a pick actually
+    // lands, with no pairing step» — i.e. this server vouching for a browser it
+    // has never seen, on the say-so of a request that merely claimed to be
+    // remote.
     const res = await begin({ environment: 'remote' });
-    const sent = await send(KEY_A, res.body.target.targetFieldId);
-    expect(sent.status).toBe(200);
-    expect(sent.body.fieldName).toBe('selector');
+    const id = res.body.target.targetFieldId;
+
+    expect(res.body.paired).toBe(false);
+    expect(inspectorAuth.isAuthorized(KEY_A, 'local', id)).toBe(false);
+    // So a submit is refused, and that refusal is correct rather than a bug.
+    expect((await send(KEY_A, id)).status).toBe(409);
   });
 
-  it('reports the environment on the delivery, from the server’s record', async () => {
+  it('DOES bind, and deliver, once the code is redeemed', async () => {
+    // The other half: the refusal above must be a step, not a dead end. This is
+    // the whole REMOTE handshake, over the wire.
     const res = await begin({ environment: 'remote' });
-    const sent = await send(KEY_A, res.body.target.targetFieldId);
+    const paired = await request(app).post('/inspector/pair')
+      .set('x-api-key', KEY_A)
+      .send({ code: res.body.authorization.code });
+
+    expect(paired.status).toBe(200);
+    expect(paired.body.paired).toBe(true);
+    // The destination comes off the binding the SERVER just created — the
+    // extension never chose it.
+    expect(paired.body.targetFieldId).toBe(res.body.target.targetFieldId);
+
+    const sent = await send(KEY_A, paired.body.targetFieldId);
+    expect(sent.status).toBe(200);
+    expect(sent.body.fieldName).toBe('selector');
+    // And the delivery reports the environment from the server's own record.
     expect(sent.body.delivery.environment).toBe('remote');
   });
 
+  it('mints a FRESH code per field, so the far browser can follow', async () => {
+    // «هر بار فیلد جدید اتورایز جدید باعث شد ما همیشه با فیلد جدید ست بمونیم»
+    // The code carries the destination, so one reusable code could not express
+    // a move from field to field.
+    const first = await begin({ environment: 'remote', nodeId: 'node-A' });
+    const second = await begin({
+      environment: 'remote', nodeId: 'node-B', fieldKey: 'url', action: 'goto',
+    });
+    expect(first.body.authorization.code).not.toBe(second.body.authorization.code);
+    expect(second.body.authorization.fieldKey).toBe('url');
+  });
+
   it('is the fallback for a missing or garbled environment', async () => {
+    // Unchanged in spirit, and now meaningful: an unrecognised declaration is
+    // planned as REMOTE because REMOTE is the branch that PROVES rather than
+    // assumes. Defaulting the other way would let a garbled request obtain a
+    // server-side grant, which is the one thing that must be earned.
     const res = await begin({ environment: 'sideways' });
     expect(res.body.environment).toBe('remote');
-    expect(res.body.step).toBe('targeting');
+    expect(res.body.step).toBe('authorize');
+    expect(res.body.paired).toBe(false);
   });
 });
 
@@ -219,18 +347,24 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, first time', () => 
   // [REQ] "Target This Field → LOCAL BROWSER → Detect local browser runtime →
   //        … → Connected to Target → Ready to Send", with no step in between
   //        that asks the operator for anything at all.
-  it('goes straight to targeting: no code, no approval, no server window', async () => {
+  it('goes straight to targeting, opens the server’s browser, and asks', async () => {
     const res = await begin({ environment: 'local' });
     expect(res.status).toBe(200);
-    // Was step 'authorize' carrying an 8-character code.
+    // No second step: nothing has to be carried anywhere, because the browser
+    // is on this machine.
     expect(res.body.step).toBe('targeting');
     expect(res.body.code).toBeUndefined();
-    expect(res.body.display).toBeUndefined();
-    expect(res.body.openRemoteBrowser).toBe(false);
-    // No approval alert for LOCAL — automatic connection instead.
-    expect(res.body.consent).toBeNull();
-    // Stated positively so the dashboard renders the automatic progression.
+    expect(res.body.authorization).toBeNull();
+    // It LAUNCHES (or reuses) the browser on this server — the behaviour the
+    // old `openRemoteBrowser: false` assertion here actively pinned shut.
+    expect(res.body.openServerBrowser).toBe(true);
     expect(res.body.runtime).toBe('server-local');
+    // And it raises the prompt there, naming the field. Not a hoop: it is what
+    // binds each NEW field on a window that is already open and already
+    // pointed somewhere else.
+    expect(res.body.consent).toBeTruthy();
+    expect(res.body.consent.nodeId).toBe('node-7');
+    expect(res.body.consent.fieldKey).toBe('selector');
     expect(res.body.paired).toBe(true);
   });
 
@@ -325,14 +459,25 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
     expect((await send(KEY_A, again.body.target.targetFieldId)).status).toBe(200);
   });
 
-  it('asks for nothing for a DIFFERENT field either', async () => {
+  it('needs no credential for a DIFFERENT field, but does re-ask WHICH', async () => {
+    // The distinction this test used to blur. «Nothing to do» is true of the
+    // CREDENTIAL — there is none, in either visit — and false of the question,
+    // because the server's browser is now open and still holding the first
+    // field's address. Asserting `consent` null here was asserting that a second
+    // field silently inherits the first one's window:
+    //
+    //   «دو تا فیلد با نودهای متفاوت … نمیدونه کدوم فیلد باید ارسال بشه»
     await bindLocal();
     const other = await begin({
       environment: 'local', nodeId: 'node-9', fieldKey: 'url', action: 'goto',
     });
     expect(other.body.step).toBe('targeting');
     expect(other.body.code).toBeUndefined();
-    expect(other.body.consent).toBeNull();
+    expect(other.body.authorization).toBeNull();
+    // A prompt, and one that names the NEW field rather than the old one.
+    expect(other.body.consent).toBeTruthy();
+    expect(other.body.consent.nodeId).toBe('node-9');
+    expect(other.body.consent.fieldKey).toBe('url');
   });
 
   it('asks for nothing in a different workflow either', async () => {
@@ -342,13 +487,16 @@ describe('POST /inspector/targeting/begin — LOCAL BROWSER, returning', () => {
     expect(elsewhere.body.code).toBeUndefined();
   });
 
-  it('shows the chooser that LOCAL needs no authorization and no approval', async () => {
+  it('shows the chooser that LOCAL still needs no credential, once paired', async () => {
     await bindLocal();
     const res = await options();
     expect(res.body.paired).toBe(true);
     const local = res.body.options.find((o: { id: string }) => o.id === 'local');
     expect(local.needsAuthorization).toBe(false);
-    expect(local.needsRemoteApproval).toBe(false);
+    // The approval, though, is advertised whether or not the field was bound
+    // before — it is per-PICK, not per-setup. A chooser that dropped the notice
+    // once paired would make the Alert look like a malfunction the second time.
+    expect(local.needsInPageApproval).toBe(true);
   });
 });
 
@@ -445,7 +593,11 @@ describe('POST /inspector/targeting/unpair', () => {
     const again = await begin({ environment: 'local' });
     expect(again.body.step).toBe('targeting');
     expect(again.body.code).toBeUndefined();
-    expect(again.body.consent).toBeNull();
+    // «No ceremony» means no CREDENTIAL. The prompt is still raised, and after a
+    // deliberate unpair that is the correct behaviour rather than a leftover:
+    // the operator just detached this field, so re-attaching it is exactly the
+    // decision a human should confirm.
+    expect(again.body.consent).toBeTruthy();
     expect(again.body.target.pairingKey).toBe(first.body.target.pairingKey);
     expect((await send(KEY_A, again.body.target.targetFieldId)).status).toBe(200);
   });

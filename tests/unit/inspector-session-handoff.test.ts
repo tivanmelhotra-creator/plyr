@@ -242,14 +242,53 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       });
     }
 
-    // `/inspector/pair` AND `/inspector/authorize` ARE DELIBERATELY ABSENT.
+    // ── THE REMOTE CREDENTIAL PATH ──────────────────────────────────
     //
-    // They used to be answered here, redeeming a code through auth.redeem(). Both
-    // routes are deleted from src/Routes/mode.routes.ts, so a fake that still
-    // served them would be MORE capable than the server — and any extension code
-    // that still called one would look healthy in this file while failing in
-    // production. They now fall through to the 404 at the bottom, which is
-    // exactly what the real backend answers, and one test below asserts that.
+    // `/inspector/pair` IS SERVED AGAIN, and `/inspector/authorize` is STILL not.
+    // That asymmetry is deliberate on the server, so the fake reproduces it.
+    //
+    // This file previously served NEITHER and asserted that the extension called
+    // neither, which was correct while the project believed no environment needed
+    // a code. It only ever half-believed it — the premise «no code anywhere» was
+    // reached by reasoning that BOTH environments were the server's own browser,
+    // and one of them is not:
+    //
+    //   «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند … پس ما هم به یک اتورایز
+    //    نیاز داریم»
+    //
+    // REMOTE is a browser on the operator's own machine. This server has no
+    // channel into it, so it cannot raise a prompt there and cannot vouch for it
+    // — a carried credential is the only handshake available. So `/inspector/pair`
+    // is back, mirrored here through the REAL auth.redeem() so a redemption in
+    // this file creates authority the same way the route does.
+    //
+    // `/inspector/authorize` stays absent, and that is the guard worth keeping:
+    // minting now happens INSIDE `/inspector/targeting/begin`, after the field is
+    // registered, so a code cannot exist that names no field. A standalone mint
+    // route is exactly how one could — which is how the operator ended up holding
+    // a code while Target stayed empty.
+    if (method === 'POST' && path === '/inspector/pair') {
+      const result = auth.redeem(key, String(body?.code || ''));
+      if (!result.ok) {
+        // 403 with a §27 reason, as the route answers: the request was
+        // well-formed and the credential was not accepted.
+        return reply(403, {
+          success: false,
+          reason: result.reason || 'INVALID_AUTHORIZATION_CODE',
+          error: 'That authorization code was not accepted.',
+        });
+      }
+      // The destination comes off the BINDING the server just created, never off
+      // anything the caller sent — §8, on the one path where the extension does
+      // speak first.
+      return reply(200, {
+        success: true,
+        paired: true,
+        environment: 'remote',
+        targetFieldId: result.binding.targetFieldId,
+        userId: result.binding.userId,
+      });
+    }
 
     // ── The REMOTE consent handshake ──────────────────────────────────────
     // Mirrors mode.routes.ts, including the two properties that matter most:
@@ -537,12 +576,16 @@ describe('the harness drives the real seam', () => {
     expect(h.auth.isAuthorized(API_KEY, USER, id)).toBe(true);
   });
 
-  it('never asks the backend for a code route, on any path it drives', async () => {
-    // The routes are deleted from src/Routes/mode.routes.ts and the fake above
-    // mirrors that, so a surviving caller would now 404. Driving the full
-    // lifecycle and asserting neither path is ever requested is the check that
-    // matters: a 404 probe would only prove the FAKE lacks the route, which is a
-    // fact about this file rather than about the extension.
+  it('reaches for no code route on the paths a bound field drives', async () => {
+    // Re-aimed, not weakened. It used to assert that NO path in the extension
+    // ever touches a code route, which stopped being true when `/inspector/pair`
+    // came back for REMOTE. What must still hold is that the ROUTINE lifecycle
+    // — submitting, reporting, releasing — never reaches for a credential: those
+    // paths run identically in both environments, and a code fetched from one of
+    // them would be a code the operator never asked for.
+    //
+    // The pairing here is a GRANT, i.e. the LOCAL shape: the server bound the
+    // field, and nothing was redeemed to get there.
     await pairTo(h);
     await h.send(submitMsg());
     await h.send({ type: 'AB_INSPECTOR_SESSION' });
@@ -556,15 +599,73 @@ describe('the harness drives the real seam', () => {
     expect(h.requests.length).toBeGreaterThan(0);
   });
 
-  it('does not handle AB_INSPECTOR_PAIR at all', async () => {
-    // The worker's dispatcher must not merely fail the message — it must not
-    // recognise it. `send()` rejects when the listener declines, which is what a
-    // message with no case does. Leaving the case in place but erroring would be
-    // a working half of the removed flow, waiting for a caller.
-    await expect(h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: 'ABCDEFGH' } }))
-      .rejects.toThrow(/declined/);
-    const bgSrc = readFileSync(resolve(__dirname, '../../extension/background.js'), 'utf8');
-    expect(bgSrc).not.toContain("case 'AB_INSPECTOR_PAIR':");
+  it('still asks for no MINT route, even on the path that does redeem', async () => {
+    // `/inspector/authorize` is the one that stays gone, and this is the test
+    // that keeps it gone. Minting lives inside `/inspector/targeting/begin`,
+    // after the field is registered, so a code always names a field. A separate
+    // mint route is how a code could exist naming none — which is the state the
+    // operator described: holding a code, with Target still empty.
+    const id = h.openField();
+    const target = h.registry.resolve(USER, id);
+    const offer = h.auth.issue(USER, id, Date.now(), target!.pairingKey);
+    const res = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: offer!.code } });
+
+    expect(res.ok).toBe(true);
+    expect(h.requests.some((r) => r.path === '/inspector/pair')).toBe(true);
+    expect(h.requests.some((r) => r.path === '/inspector/authorize')).toBe(false);
+  });
+
+  it('handles AB_INSPECTOR_PAIR, and binds the field the CODE named', async () => {
+    // The inverse of what this test asserted. It required the dispatcher not even
+    // to RECOGNISE the message, on the premise that no environment needs a code
+    // — and the premise was half right: LOCAL does not. REMOTE is a browser on
+    // another machine, and a carried code is the only handshake this server can
+    // complete with one.
+    //
+    // Driven through the real redemption, so the assertion is about authority the
+    // server created rather than about a string the worker stored.
+    const id = h.openField({ nodeId: 'search-box' });
+    const target = h.registry.resolve(USER, id);
+    const offer = h.auth.issue(USER, id, Date.now(), target!.pairingKey);
+
+    const res = await h.send({
+      type: 'AB_INSPECTOR_PAIR',
+      payload: { code: offer!.code, baseUrl: BASE },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.paired).toBe(true);
+    // Stamped REMOTE by the SERVER, which is the only party that knows: a code
+    // is only ever issued on the remote branch of the begin route.
+    expect(res.environment).toBe('remote');
+    // The destination is the one the code named — the extension never chose it.
+    expect(h.storage.ab_targetFieldId).toBe(id);
+    expect(h.auth.isAuthorized(API_KEY, USER, id)).toBe(true);
+  });
+
+  it('refuses a code the server never issued, and attaches nothing', async () => {
+    // The failure has to stay a failure: this is the only message that accepts
+    // operator-typed input, so a permissive fallback here would be a way to
+    // arrive at a destination without the server having agreed to one.
+    const h2 = loadWorker();
+    h2.storage.ab_baseUrl = BASE;
+    h2.storage.ab_apiKey = API_KEY;
+    h2.storage.ab_userId = USER;
+    h2.openField();
+
+    const res = await h2.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: 'ZZZZ-9999' } });
+
+    expect(res.ok).toBe(false);
+    expect(h2.storage.ab_targetFieldId).toBeFalsy();
+  });
+
+  it('asks for a code before making any request at all', async () => {
+    // An empty submission must not become a request: the server would answer 403
+    // and the operator would read a rejection where the real message is "you have
+    // not pasted it yet".
+    const res = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: '  ' } });
+    expect(res.ok).toBe(false);
+    expect(h.requests.some((r) => r.path === '/inspector/pair')).toBe(false);
   });
 });
 
@@ -811,23 +912,40 @@ describe('refusals stay explicit, and name the fix', () => {
     expect(res).toHaveProperty('targets');
   });
 
-  it('offers no local code validation, because there is no code to validate', async () => {
-    // ab-core.js still exports the validator (the Handoff subsystem has its own
-    // codes), so the guard is that the INSPECTOR path no longer reaches for it:
-    // no message accepts a code, and no refusal mentions one.
+  it('judges no code itself — only the server can say what it issued', async () => {
+    // Re-aimed. This asserted that the extension contains no code handling at
+    // all, which held while the project believed no environment needed a code.
+    // REMOTE does. What must NOT come back is the part that was actually wrong:
+    // the extension deciding LOCALLY whether a code is acceptable.
+    //
+    // A client-side verdict is unfalsifiable by definition — only the server
+    // knows what it minted, to whom, for which field, and whether it is spent —
+    // so a local check can only ever produce a confident wrong answer. That is
+    // the shape of the report: apparently connected, Target still empty.
     const bgSrc = readFileSync(resolve(__dirname, '../../extension/background.js'), 'utf8');
-    // Comments stripped first. background.js documents the deletion by NAME
-    // ('inspectorPair() IS DELETED'), which is worth keeping — it is what stops
-    // the next reader rebuilding it — but a bare substring search would count
-    // that prose as the function and this test would then be asserting the
-    // opposite of what it reads like.
     const code = bgSrc
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
-    expect(code).not.toContain('inspectorPair');
-    expect(code).not.toMatch(/INVALID_AUTHORIZATION_CODE/);
 
-    // And the refusal a user actually hits says nothing about one.
+    // No shape/checksum validator, and no locally MANUFACTURED verdict: the
+    // reason string may only ever be one the server sent back.
+    expect(code).not.toMatch(/isValidPairingCode|validatePairingCode/);
+    expect(code).not.toMatch(/reason:\s*'INVALID_AUTHORIZATION_CODE'/);
+
+    // The only two refusals it produces by itself are about EMPTINESS, which is
+    // a fact it can actually observe — no address typed, or no code typed.
+    const empty = await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: '' } });
+    expect(empty.ok).toBe(false);
+    expect(h.requests.some((r) => r.path === '/inspector/pair')).toBe(false);
+
+    // Anything else goes to the server and the server's own words come back.
+    const id = h.openField();
+    await h.send({ type: 'AB_INSPECTOR_PAIR', payload: { code: 'ABCD-1234' } });
+    expect(h.requests.some((r) => r.path === '/inspector/pair')).toBe(true);
+    expect(id).toBeTruthy();
+
+    // And the refusal on the BOUND-FIELD path still mentions no code, because
+    // that path belongs to both environments and LOCAL never has one.
     const res = await h.send(submitMsg());
     expect(String(res.error)).not.toMatch(/code/i);
   });
@@ -1104,16 +1222,32 @@ describe('the extension remembers the FIELD, not just the address', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// THE REMOTE CONSENT HANDSHAKE, ACROSS THE SEAM
+// THE IN-PAGE APPROVAL HANDSHAKE, ACROSS THE SEAM
+//
+// WHOSE HANDSHAKE THIS IS
+// -----------------------
+// The server's OWN browser: the one this process launches and side-loads the
+// extension into. Every worker in this block is built with `managed: true`,
+// which is `AB_BOOTSTRAP.managed` — a value only the server can seed, and
+// therefore unforgeable proof that the server created this browser.
+//
+// The block was titled REMOTE while building exactly that browser, and the
+// contradiction is the inversion itself, in one place:
+//
+//   «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
+//
+// Read from the PROJECT's point of view, a browser on this server is LOCAL.
+// It is also the only browser this server can raise a dialog inside, so the
+// approval prompt is LOCAL's handshake and could never have been REMOTE's:
+// there is no channel from here into a browser on somebody else's desktop.
 //
 // THE BUG THESE EXIST TO CATCH
 // ----------------------------
-// The browser on the server is, to this extension, an ordinary LOCAL browser:
-// same code, same storage, and a submit addressed with `ab_targetFieldId`. The
-// only writer of that value was inspectorPair() — redeeming an Authorization
-// Code — and REMOTE deliberately never issues one. So the value stayed empty,
-// submitElement() refused locally with TARGET_NOT_AUTHORIZED before any HTTP
-// request was made, and the operator saw:
+// A submit is addressed with `ab_targetFieldId`. The only writer of that value
+// was inspectorPair() — redeeming an Authorization Code — and this environment
+// deliberately issues none. So the value stayed empty, submitElement() refused
+// locally with TARGET_NOT_AUTHORIZED before any HTTP request was made, and the
+// operator saw:
 //
 //   «ظاهرا نمدونه به کدوم فیلد باید ارسال بشه» — Connection failed: network
 //
@@ -1123,7 +1257,7 @@ describe('the extension remembers the FIELD, not just the address', () => {
 // them at all — which is why every test below asserts zero codes were minted.
 // ════════════════════════════════════════════════════════════════
 
-describe('REMOTE consent — the extension learns its destination without a code', () => {
+describe('LOCAL approval — the extension learns its destination without a code', () => {
   /**
    * A configured worker.
    *
@@ -1135,10 +1269,11 @@ describe('REMOTE consent — the extension learns its destination without a code
    */
   function worker(opts: WorkerOpts = {}): Harness {
     // `managed: true` — every test in THIS block describes the browser the
-    // server launched and side-loaded the extension into. That is the only
-    // browser the consent handshake is for, and background.js now refuses to
-    // list or answer prompts anywhere else (the reported defect was this Alert
-    // appearing in the operator's own Chrome during a LOCAL session).
+    // server launched and side-loaded the extension into, i.e. the LOCAL one.
+    // That is the only browser the approval handshake is for, and background.js
+    // refuses to list or answer prompts anywhere else (the reported defect was
+    // this Alert appearing in the operator's own Chrome, where approving it
+    // would bind a destination from the wrong machine).
     const w = loadWorker({ managed: true, ...opts });
     w.storage.ab_baseUrl = BASE;
     w.storage.ab_apiKey = API_KEY;
@@ -1358,12 +1493,18 @@ describe('REMOTE consent — the extension learns its destination without a code
 
      Same worker, same server, same pending prompt — only the browser differs.
      `managed: false` is a hand-installed extension, i.e. the operator's personal
-     Chrome, which is where the Alert was reported appearing during a LOCAL
-     session minutes after they had already authorized with a code.
+     Chrome. That is the REMOTE browser, and it is where the Alert was reported
+     appearing minutes after they had already authorized with a code.
+
+     Why the browser, and not the account, is what decides: both extensions poll
+     the SAME endpoint with the SAME api key, because it is one operator with one
+     project. Nothing on the wire distinguishes them except what they declare
+     themselves to be — so the declaration is the whole mechanism, and it is
+     checked on both sides.
      -------------------------------------------------------------------------- */
 
-  /** A LOCAL browser: no server-seeded bootstrap, so no `AB_BOOTSTRAP.managed`. */
-  function localWorker(opts: WorkerOpts = {}): Harness {
+  /** A REMOTE browser: no server-seeded bootstrap, so no `AB_BOOTSTRAP.managed`. */
+  function remoteWorker(opts: WorkerOpts = {}): Harness {
     const w = loadWorker({ ...opts, managed: false });
     w.storage.ab_baseUrl = BASE;
     w.storage.ab_apiKey = API_KEY;
@@ -1371,14 +1512,15 @@ describe('REMOTE consent — the extension learns its destination without a code
     return w;
   }
 
-  it('a LOCAL browser is told nothing is pending, and asks the server nothing', async () => {
-    const h = localWorker();
+  it('a REMOTE browser is told nothing is pending, and asks the server nothing', async () => {
+    const h = remoteWorker();
     h.askFor(h.openField());
 
     const res = await h.send({ type: 'AB_CONSENT_LIST' });
     // `ok` with an empty list, not an error: "nothing is pending for you" is the
-    // TRUTH in a local browser, which binds by redeeming an Authorization Code.
-    // An error would make the caller back off and retry as if broken.
+    // TRUTH in a browser on the operator's own machine, which binds by redeeming
+    // an Authorization Code. An error would make the caller back off and retry as
+    // if the server were broken.
     expect(res.ok).toBe(true);
     expect(res.requests).toEqual([]);
     expect(res.count).toBe(0);
@@ -1387,30 +1529,41 @@ describe('REMOTE consent — the extension learns its destination without a code
     expect(h.requests.some((r) => r.path === '/inspector/consent')).toBe(false);
   });
 
-  it('a LOCAL browser cannot complete a remote grant even holding a valid handle', async () => {
+  it('a REMOTE browser cannot complete the approval even holding a valid handle', async () => {
     // Gating only the LIST would leave the write to `ab_targetFieldId` reachable
-    // from a stale card left in a tab by an earlier remote session.
-    const h = localWorker();
+    // from a stale card left in a tab by an earlier session — and this is the
+    // gate that was inverted in background.js: consentList() admitted `local`
+    // while consentDecide() admitted `remote`, so the server's own browser could
+    // SEE the Alert and then be refused `wrong_environment` on pressing Allow.
+    // The two now agree, and this test and the next one pin them together.
+    const h = remoteWorker();
     const consentId = h.askFor(h.openField());
 
     const res = await h.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('wrong_environment');
+    // And it names the way FORWARD rather than just refusing, because a remote
+    // operator seeing this has a real path: a code from the dashboard.
+    expect(String(res.error)).toMatch(/authorization code/i);
     // Nothing attached, and nothing even asked of the server.
     expect(h.storage.ab_targetFieldId).toBeFalsy();
     expect(h.requests.some((r) => r.path === '/inspector/consent/decide')).toBe(false);
   });
 
-  it('the same prompt is still there for the REMOTE browser', async () => {
-    // Proves the refusal above is SCOPING and not destruction: a local browser
-    // declining to look must not consume or expire the question the server's
+  it('the same prompt is still there for the SERVER\'s browser', async () => {
+    // Proves the refusal above is SCOPING and not destruction: a remote browser
+    // declining to look must not consume or expire the question the server's own
     // browser still has to answer.
+    //
+    // This is also the regression test for the gate contradiction: while the two
+    // gates disagreed, the second half of this test — the server's own browser
+    // pressing Allow — was the exact call that returned `wrong_environment`.
     const shared = worker();
     const consentId = shared.askFor(shared.openField());
 
-    const local = localWorker({ reuse: shared });
-    await local.send({ type: 'AB_CONSENT_LIST' });
-    await local.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
+    const remote = remoteWorker({ reuse: shared });
+    await remote.send({ type: 'AB_CONSENT_LIST' });
+    await remote.send({ type: 'AB_CONSENT_DECIDE', payload: { consentId, approve: true } });
 
     const list = await shared.send({ type: 'AB_CONSENT_LIST' });
     expect(list.count).toBe(1);
@@ -1420,16 +1573,23 @@ describe('REMOTE consent — the extension learns its destination without a code
   });
 
   it('declares its environment on the wire when it does ask', async () => {
-    // The server filters on the DECLARED environment, so a client that polls
-    // without declaring is served remote prompts for backward compatibility —
-    // exactly the ungated behaviour that caused the report.
+    // The server filters on the DECLARED environment, so the declaration has to
+    // reach it. Asserted on the REQUEST rather than on the outcome: a worker that
+    // declared nothing would still be served these prompts (pendingFor() treats
+    // an empty declaration as the server's browser, for older side-loaded
+    // builds), so every assertion in this block would pass while the wire went
+    // silent — and the operator's own Chrome, which relies on the same filter,
+    // would start seeing prompts again.
     const h = worker();
     h.askFor(h.openField());
     await h.send({ type: 'AB_CONSENT_LIST' });
 
     const asked = h.requests.filter((r) => r.path === '/inspector/consent');
     expect(asked).toHaveLength(1);
-    expect(asked[0].query).toBe('remote');
-    expect(asked[0].declaredEnv).toBe('remote');
+    // Both ways, as background.js sends them: the query is what a server log
+    // shows when diagnosing this, the header survives a proxy that rewrites
+    // query strings.
+    expect(asked[0].query).toBe('local');
+    expect(asked[0].declaredEnv).toBe('local');
   });
 });

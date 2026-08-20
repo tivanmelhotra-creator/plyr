@@ -522,25 +522,31 @@ describe('4. the panel advertises a configured domain ahead of any guess', () =>
     expect(r.baseUrl).toBe('https://panel.example.com');
   });
 
-  it('no longer asks a route to advertise an address, because nobody types one', async () => {
-    // SUPERSEDED WIRING, kept as an assertion rather than deleted.
+  it('advertises an address for REMOTE, and resolves it centrally rather than inline', async () => {
+    // TWICE-REVISED WIRING, and the second revision restores the first.
     //
-    // This used to require `configuredDomain: config.PUBLIC_DOMAIN` inside
-    // mode.routes.ts, because the route had to hand the pairing panel a Base URL
-    // for the operator to read off the screen and retype into the extension. The
-    // panel is gone, and with it the last reason for the server to compute an
-    // address for a HUMAN to carry:
+    // Originally the route had to hand the pairing panel a Base URL, because the
+    // operator read it off the screen and retyped it into the extension. Then it
+    // was asserted ABSENT, on the reasoning that both environments were the
+    // server's own browser and nobody had anything to carry anywhere.
     //
-    //     «LOCAL BROWSER → internal automatic Base URL → no API Key»
-    //     «REMOTE BROWSER → Base URL resolved automatically from the server's
-    //      public configuration»
+    // That reasoning was half right and pinned to the wrong half. LOCAL really is
+    // the server's own browser and really does carry nothing. REMOTE is the
+    // browser on the operator's OWN machine, and a second machine cannot guess
+    // the address of the first:
     //
-    // So the property is now the absence of that plumbing. Asserted, not merely
-    // dropped, because a future change that re-adds a base URL to a targeting
-    // response is re-adding the field the requirement removed.
+    //     «ما هم به یک اتورایز نیاز داریم … و هم به یک بیس یو ار ال»
+    //
+    // What is asserted now is not the presence of the field but WHERE the answer
+    // comes from: PublicBaseUrl is the single source, so the route resolves
+    // rather than assembles. An inline `req.headers.host` concatenation is the
+    // regression this guards, because behind a proxy that host is frequently the
+    // one address the other machine provably cannot use.
     const routes = code(await read('src/Routes/mode.routes.ts'));
-    expect(routes).not.toMatch(/configuredDomain:/);
-    expect(routes).not.toMatch(/baseUrl:/);
+    expect(routes).toMatch(/configuredDomain:/);
+    expect(routes).toMatch(/resolveBaseUrl/);
+    // …and it must not hand-roll one alongside the resolver.
+    expect(routes).not.toMatch(/['"`]https?:\/\/['"`]\s*\+/);
   });
 
   it('seeds the REMOTE browser from the server\u2019s own configuration instead', async () => {
@@ -562,38 +568,47 @@ describe('4. the panel advertises a configured domain ahead of any guess', () =>
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('6. the Base URL and the Browser Environment are not the same choice', () => {
-  it('REMOTE never requires an Authorization Code', async () => {
+  it('REMOTE requires an Authorization Code, because it is another machine', async () => {
     const { planTargeting } = await import('../../src/core/BrowserEnvironment');
     const plan = planTargeting({ environment: 'remote', paired: false });
-    // The server owns that Chromium and the extension inside it, so there is no
-    // trust gap to bridge. Asking for a code here would be asking the operator to
-    // authorise the server to itself.
-    expect(plan.needsAuthorization).toBe(false);
-    expect(plan.step).toBe('targeting');
+    // This assertion was the exact opposite one revision ago, and the argument
+    // it carried — "the server owns that Chromium, so there is no trust gap" —
+    // was sound reasoning about the OTHER environment. The browser the server
+    // owns is the LOCAL one. REMOTE is the operator's own desktop, which this
+    // process has never seen and cannot vouch for.
+    expect(plan.needsAuthorization).toBe(true);
+    expect(plan.step).toBe('authorize');
   });
 
-  it('REMOTE needs no code even when nothing has ever been paired', async () => {
+  it('REMOTE still requires one on a field that was paired before', async () => {
     const { planTargeting } = await import('../../src/core/BrowserEnvironment');
+    // Bound-ness does not close a gap between two machines, and a fresh code per
+    // field is the mechanism that keeps a binding attached to the field just
+    // picked rather than to whatever was picked first:
+    //
+    //     «هر بار فیلد جدید اتورایز جدید باعث شد ما همیشه با فیلد جدید ست بمونیم»
     for (const paired of [true, false]) {
       const plan = planTargeting({ environment: 'remote', paired });
-      expect(plan.needsAuthorization, `paired=${paired}`).toBe(false);
+      expect(plan.needsAuthorization, `paired=${paired}`).toBe(true);
+      expect(plan.serverMayGrant, `paired=${paired}`).toBe(false);
     }
   });
 
-  it('LOCAL never requires one either — it is a browser on THIS server', async () => {
-    // THE CORRECTION. This test previously asserted the opposite, and asserting
-    // it is what kept the credential form defensible: LOCAL was read as
-    // "somewhere else, so prove yourself". The product defines it as the browser
-    // runtime on the same machine as this process:
+  it('LOCAL requires none — it is a browser on THIS server', async () => {
+    // THE HALF THAT WAS ALWAYS RIGHT. LOCAL was once read as "somewhere else, so
+    // prove yourself", which is what kept a credential form defensible. The
+    // product defines it as the browser runtime on the same machine as this
+    // process:
     //
     //     «منظور از LOCAL BROWSER، Browser Runtime روی همان
     //      Server/Infrastructure است که Plyr روی آن اجرا می‌شود»
     //
-    // Both browsers are therefore started by this server and seeded with this
-    // server's own token, so a code in either would ask the operator to carry a
-    // secret out of one of the server's own windows and back into another one to
-    // prove they are themselves. Asserted for BOTH paired states, because the
-    // old contract differed between them and the new one must not.
+    // So this browser is started by this server and seeded with this server's own
+    // token, and a code here would ask the operator to carry a secret out of one
+    // of the server's own windows and back into another one to prove they are
+    // themselves. What was WRONG was generalising that to remote as well — see
+    // the two cases above. Asserted for BOTH paired states, because the old
+    // contract differed between them and this one must not.
     const { planTargeting } = await import('../../src/core/BrowserEnvironment');
     for (const paired of [true, false]) {
       const plan = planTargeting({ environment: 'local', paired });
@@ -604,14 +619,20 @@ describe('6. the Base URL and the Browser Environment are not the same choice', 
     }
   });
 
-  it('keeps the approval Alert as the one asymmetry between the environments', async () => {
-    // The environments are still not interchangeable, and this is now the ONLY
-    // difference: REMOTE binds a long-lived shared browser that may already be
-    // pointed at another field, so a human confirms which field it should
-    // follow. LOCAL is resolved per run, so «بدون Alert → اتصال خودکار».
+  it('puts the approval Alert on LOCAL, where the shared window actually is', async () => {
+    // The environments are not interchangeable, and the reason for the Alert was
+    // stated correctly before while being attached to the wrong id: it belongs to
+    // "a long-lived shared browser that may already be pointed at another field".
+    // That description fits the SERVER's browser exactly — one window, reused
+    // across every field, outliving any single pick. The operator's own browser
+    // needs no such question, because the code it redeemed already named one
+    // field. Confirmed for both states of that window:
+    //
+    //     «اگر بالا باشه که الرت میده، اگر بالا نباشه یکی بالا میاره و بعدش الرت میده»
     const { planTargeting } = await import('../../src/core/BrowserEnvironment');
-    expect(planTargeting({ environment: 'remote', paired: false }).needsRemoteApproval).toBe(true);
-    expect(planTargeting({ environment: 'local', paired: false }).needsRemoteApproval).toBe(false);
+    expect(planTargeting({ environment: 'local', paired: false }).needsInPageApproval).toBe(true);
+    expect(planTargeting({ environment: 'local', paired: true }).needsInPageApproval).toBe(true);
+    expect(planTargeting({ environment: 'remote', paired: false }).needsInPageApproval).toBe(false);
   });
 
   it('never silently downgrades LOCAL to REMOTE', async () => {
@@ -623,36 +644,55 @@ describe('6. the Base URL and the Browser Environment are not the same choice', 
     const plan = planTargeting({ environment: 'local', paired: false, localAvailable: false });
     expect(plan.environment).toBe('local');
     expect(plan.note).toBe('local_unavailable');
-    expect(plan.opensRemoteBrowser).toBe(false);
+    expect(plan.opensServerBrowser).toBe(false);
     // Honest about the work outstanding WITHOUT reintroducing a code: an
     // unavailable runtime is reported by withholding the server's grant, which
-    // is a fact about the runtime rather than a demand on the user.
+    // is a fact about the runtime rather than a demand on the user. This matters
+    // more now that a code exists somewhere in the system — a downgrade would
+    // spring REMOTE's credential form on somebody who chose the path with none.
     expect(plan.needsAuthorization).toBe(false);
     expect(plan.serverMayGrant).toBe(false);
   });
 
-  it('only REMOTE opens the server-owned browser', async () => {
+  it('only LOCAL opens the server-owned browser', async () => {
+    // [REQ] «وقتی لوکال میزنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
+    //
+    // The reported defect, reduced to two lines. The only browser this process
+    // can launch is the one on its own infrastructure, and the flag now says so
+    // in its own name.
     const { planTargeting } = await import('../../src/core/BrowserEnvironment');
-    expect(planTargeting({ environment: 'remote', paired: false }).opensRemoteBrowser).toBe(true);
-    expect(planTargeting({ environment: 'local', paired: true }).opensRemoteBrowser).toBe(false);
+    expect(planTargeting({ environment: 'local', paired: true }).opensServerBrowser).toBe(true);
+    expect(planTargeting({ environment: 'remote', paired: false }).opensServerBrowser).toBe(false);
   });
 
-  it('keeps the two concepts apart by no longer showing a Base URL at all', async () => {
-    // The two concepts still must not be conflated — that is a permanent rule —
-    // but the resolution changed. This test used to require a `baseUrlRow` in
-    // the dialog, i.e. it required the very field the requirement forbids:
+  it('keeps the two concepts apart by scoping the Base URL to REMOTE alone', async () => {
+    // The two concepts must never be conflated — that is a permanent rule — but
+    // the way this file enforced it has now been wrong twice in opposite
+    // directions. First it required a Base URL row unconditionally, i.e. on the
+    // path the requirement explicitly forbids one:
     //
     //     «LOCAL UI نباید این موارد را داشته باشد: Base URL / API Key / …»
     //
-    // Two things cannot be mistaken for each other when only one of them is on
-    // screen, so the assertion inverts: the environment choice stays, the
-    // address disappears.
+    // Then it forbade the row everywhere, which silently forbade it on the ONE
+    // path that genuinely needs it — a browser on another machine that cannot
+    // guess this server's address.
+    //
+    // So the rule is neither "always" nor "never" but "exactly once, and only on
+    // the authorize step". That is asserted structurally: the address row exists,
+    // and it is rendered by renderAuthorize rather than by the LOCAL screen.
     const flow = await read('public/js/targeting-flow.js');
     expect(flow).toMatch(/Browser Environment/);
     const body = code(flow);
-    expect(body).not.toMatch(/baseUrlRow/);
-    expect(body).not.toMatch(/copyButton/);
-    expect(body).not.toMatch(/writeClipboard/);
+    // The REMOTE screen and its two carried values.
+    expect(body).toMatch(/function\s+renderAuthorize/);
+    expect(body).toMatch(/tgt\.baseUrl/);
+    expect(body).toMatch(/tgt\.authCode/);
+    // …and the LOCAL screen still shows neither. Sliced at the function boundary
+    // so this cannot be satisfied by the file merely containing the strings
+    // somewhere.
+    const localScreen = body.slice(body.indexOf('function renderLocalProgress'));
+    expect(localScreen).not.toMatch(/tgt\.baseUrl/);
+    expect(localScreen).not.toMatch(/tgt\.authCode/);
   });
 
 

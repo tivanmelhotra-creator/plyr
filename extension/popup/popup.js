@@ -124,6 +124,10 @@
     // The FIRST step of targeting. Cards are built at runtime from the server's
     // own option list, so nothing here hard-codes which browsers exist.
     envCard: $('envCard'), envGrid: $('envGrid'), envStatus: $('envStatus'),
+    // REMOTE-only credential form. See paintAuthorization().
+    authCard: $('authCard'), authBase: $('authBase'), authCode: $('authCode'),
+    authConnect: $('authConnect'), authHint: $('authHint'), authStatus: $('authStatus'),
+    authPaste: $('authPaste'),
     // ── Inspect tab: the pick
     selList: $('selList'), selEmpty: $('selEmpty'),
     attrList: $('attrList'), attrEmpty: $('attrEmpty'), attrTools: $('attrTools'),
@@ -319,6 +323,12 @@
     // chosen is the one the SERVER has on record. Awaited so a caller that
     // re-reads after choosing sees the settled state.
     await paintEnvironment(target, res);
+    // AFTER paintEnvironment, never before: it is what settles envState.current,
+    // and this form's visibility is a function of that. Painting first would show
+    // (or hide) the REMOTE inputs based on the previous answer for one frame —
+    // and on the frame where the operator has just switched environments, that is
+    // exactly the frame they are looking at.
+    paintAuthorization();
 
     if (!res || !res.ok) {
       value(els.inspNode, '', 'none');
@@ -496,7 +506,7 @@
 
   // Which environment the server has on record for the field, so a re-opened
   // popup shows the choice already in force rather than an unanswered question.
-  var envState = { current: '', busy: false, nodeId: '', fieldKey: '', action: '', workflowId: '' };
+  var envState = { current: '', busy: false, nodeId: '', fieldKey: '', action: '', workflowId: '', authorization: null };
 
   function envCardEl(opt, chosen) {
     var isLocal = opt && opt.id === 'local';
@@ -519,21 +529,31 @@
 
     var desc = document.createElement('span');
     desc.className = 'envdesc';
+    // ── THE WORDING FOLLOWED THE MEANING ───────────────────────────────────
+    // These two descriptions were swapped. LOCAL is the browser ON THE SERVER —
+    // local to the project — and REMOTE is a browser on the operator's own
+    // machine, which is remote FROM the project. Reported as: «وقتی لوکال
+    // می‌زنم باید مرورگر لوکال سرور بالا بیاید ولی برعکس است».
     desc.textContent = isLocal
-      ? 'The browser runtime on this same server. Connects automatically.'
-      : 'The browser on the server. A tab opens and you approve the request there.';
+      ? 'Opens on the server. Connects itself \u2014 nothing to enter.'
+      : 'A browser on your own machine. Needs a Base URL and a code.';
     card.appendChild(desc);
 
     var note = document.createElement('span');
     if (!(opt && opt.available)) {
       note.className = 'envnote is-warn';
       note.textContent = opt && opt.note === 'local_disabled'
-        ? 'Local targeting is switched off for this instance.'
+        ? 'The server browser is switched off for this instance.'
         : 'Not available right now.';
-    } else if (opt && opt.needsRemoteApproval) {
-      // Named as the one human step, so REMOTE never looks like it wants a code.
+    } else if (opt && opt.needsAuthorization) {
+      // REMOTE. Say up front that there is a short setup, so the operator is
+      // never surprised by a form appearing after they commit.
       note.className = 'envnote is-code';
-      note.textContent = 'Needs Remote Approval \u2014 no code, no key.';
+      note.textContent = 'Needs a Base URL and an authorization code.';
+    } else if (opt && opt.needsInPageApproval) {
+      // LOCAL. No credential — but there IS one click, in the server's browser.
+      note.className = 'envnote is-ok';
+      note.textContent = 'Automatic \u2014 just approve it in that browser.';
     } else {
       note.className = 'envnote is-ok';
       note.textContent = 'Automatic \u2014 nothing to enter.';
@@ -632,7 +652,9 @@
       return;
     }
     envState.busy = true;
-    write(els.envStatus, env === 'local' ? 'Connecting to the local runtime\u2026' : 'Asking the remote browser\u2026', '');
+    write(els.envStatus, env === 'local'
+      ? 'Opening the browser on the server\u2026'
+      : 'Getting an authorization code\u2026', '');
 
     var res = await bg({
       type: 'AB_TARGETING_BEGIN',
@@ -651,6 +673,11 @@
       return;
     }
 
+    // REMOTE hands back a code and an address. Keep them so the form below can
+    // pre-fill the Base URL and show which field the code is for — the operator
+    // should never have to retype something the server already told us.
+    envState.authorization = (env === 'remote' && res.authorization) || null;
+
     // RE-READ FIRST, THEN REPORT — and the order is load-bearing.
     //
     // refreshInspector() re-paints every card from the server's answer, this
@@ -662,13 +689,118 @@
     // later, and the operator saw no confirmation that their click did anything.
     await refreshInspector(true);
 
-    if (env === 'remote' && res.openRemoteBrowser) {
-      // The prompt is answered in the OTHER browser, so this is the whole of
-      // this surface's job. Deliberately no code to carry across.
-      write(els.envStatus, 'Approve the request in the remote browser to bind this field.', 'warn');
+    if (env === 'local') {
+      // The server opened (or reused) its own browser and raised a prompt there.
+      // Answering it is the whole of the remaining work, and it happens in that
+      // window, not this one.
+      write(els.envStatus, res.consent
+        ? 'Approve the request in the server\u2019s browser to bind this field.'
+        : 'Connected to the target \u2014 ready to send.', res.consent ? 'warn' : 'ok');
     } else {
-      write(els.envStatus, 'Connected to the target \u2014 ready to send.', 'ok');
+      // REMOTE. There is a real setup step here, and this popup is where it is
+      // done — the operator is sitting in the very browser that needs pairing.
+      write(els.envStatus, 'Enter the code below to connect this browser.', 'warn');
     }
+  }
+
+  /**
+   * The REMOTE credential form: Base URL + Authorization Code.
+   *
+   * ── WHY THIS EXISTS, WHEN REMOVING IT WAS PREVIOUSLY CORRECT ───────────────
+   * A previous revision deleted every credential control from this popup, and
+   * for the browser it was thinking of that was right: the browser on the server
+   * shares one machine with the server, so a code there is ceremony.
+   *
+   * But REMOTE is the other case, and it is a genuinely different situation:
+   *
+   *   «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند … پس ما هم به یک اتورایز
+   *    نیاز داریم تا تایید بشه که فرد خودش است و هم به یک بیس یو ار ال»
+   *
+   * Two machines, no way for the server to reach in. So exactly two fields, and
+   * ONLY on the REMOTE path:
+   *
+   *   Base URL             where this browser can reach the server. Pre-filled
+   *                        from the server's own answer when it knows it, so it
+   *                        is usually a confirmation rather than a typing job.
+   *   Authorization Code   proof this operator is who they say. Minted per field,
+   *                        which is what keeps a far-away browser following the
+   *                        operator from field to field.
+   *
+   * There is deliberately NO API key box and NO password. Those were removed for
+   * a reason that still holds — the extension already authenticates with its own
+   * key — and this restores only the two things the two-machine case cannot do
+   * without.
+   */
+  function paintAuthorization() {
+    var auth = envState.authorization;
+    var showing = envState.current === 'remote' && !!auth;
+    els.authCard.hidden = !showing;
+    if (!showing) return;
+
+    // Pre-fill rather than demand. The server resolved its own public address
+    // (see PublicBaseUrl); asking the operator to retype it would invite a typo
+    // in the one field that cannot be validated locally.
+    if (auth.baseUrl && !els.authBase.value) els.authBase.value = auth.baseUrl;
+
+    var which = auth.label || auth.fieldKey || '';
+    write(els.authHint, which
+      ? 'This code is for \u201c' + which + '\u201d.'
+      : 'Paste the code shown in the dashboard.', '');
+  }
+
+  /**
+   * Fill the code box from the clipboard.
+   *
+   * A CONVENIENCE THAT IS ALSO A CORRECTNESS MEASURE. The code is single-use and
+   * short-lived, so the only two outcomes of typing it by hand are "it worked"
+   * and "it failed and I do not know whether I misread a character or the code
+   * expired". Pasting removes the first of those two explanations entirely,
+   * which is what makes the failure message believable when it does appear.
+   *
+   * Trimmed on the way in, because a value copied out of the dashboard's code
+   * row frequently arrives with a trailing newline that is invisible in the box
+   * and fatal to an exact-match comparison.
+   *
+   * DOES NOT SUBMIT. Paste puts the value where the operator can see it and
+   * leaves Connect to them: a clipboard holding something else entirely would
+   * otherwise spend a real attempt against a single-use code, and there is no
+   * second one.
+   */
+  async function pasteAuthorization() {
+    try {
+      var text = await navigator.clipboard.readText();
+      var code = String(text || '').trim();
+      if (!code) { write(els.authStatus, 'Clipboard is empty.', 'warn'); return; }
+      els.authCode.value = code;
+      els.authCode.focus();
+      write(els.authStatus, '', '');
+    } catch (e) {
+      // Clipboard read can be refused outright by permissions policy, and a
+      // silent no-op on a pressed button is indistinguishable from a broken
+      // one. Naming the fallback is the whole value of catching this.
+      write(els.authStatus, 'Could not read the clipboard \u2014 paste into the box instead.', 'warn');
+    }
+  }
+
+  async function submitAuthorization() {
+    var code = String(els.authCode.value || '').trim();
+    var base = String(els.authBase.value || '').trim();
+    if (!code) { write(els.authStatus, 'Enter the authorization code.', 'warn'); return; }
+
+    write(els.authStatus, 'Connecting\u2026', '');
+    var res = await bg({ type: 'AB_INSPECTOR_PAIR', payload: { code: code, baseUrl: base } });
+
+    if (!res || !res.ok) {
+      write(els.authStatus, (res && res.error) || 'That code was not accepted.', 'bad');
+      return;
+    }
+
+    // The code is single-use and now spent; leaving it on screen invites a
+    // second attempt that can only fail.
+    els.authCode.value = '';
+    envState.authorization = null;
+    await refreshInspector(true);
+    write(els.authStatus, 'Connected \u2014 this browser is bound to the field.', 'ok');
   }
 
   function paintConnection(res, paired, live, target) {
@@ -1221,10 +1353,24 @@
 
   // ---- wire up ---------------------------------------------------------
   //
-  // Nine listeners are gone from here, and their absence is the point: the two
-  // Base URL listeners, the API key one, the eye, the two backend mode cards, the
-  // Connect click, and the Authorization Code input + Enter handler. There is no
-  // control left on the Connection tab that a user can type into or submit.
+  // Most of the old Connection-tab listeners are still gone, and their absence is
+  // still the point: the API key input, the show/hide eye, and the two backend
+  // MODE cards that rewrote the Base URL for you. Those asked for facts the
+  // server already holds.
+  //
+  // Two are back, on the REMOTE path only, because a browser on the operator's
+  // own machine is the one case where the server cannot hand anything over —
+  // there is a real network in between. So #authConnect submits, and Enter in
+  // either input does the same thing, since a two-field form that ignores Enter
+  // reads as broken to anyone who types the code rather than pasting it.
+  els.authConnect.addEventListener('click', function () { submitAuthorization(); });
+  els.authPaste.addEventListener('click', function () { pasteAuthorization(); });
+  var authSubmitOnEnter = function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); submitAuthorization(); }
+  };
+  els.authBase.addEventListener('keydown', authSubmitOnEnter);
+  els.authCode.addEventListener('keydown', authSubmitOnEnter);
+
   els.inspUnpair.addEventListener('click', unpairInspector);
   els.inspect.addEventListener('click', startInspector);
   // Refresh now does BOTH jobs the old pair of buttons did: re-read the target

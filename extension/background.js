@@ -121,8 +121,23 @@ var abBootstrapReady = applyBootstrapDefaults().catch(function () { /* best-effo
  * from every hand-installed copy (see the guarded importScripts at the top of
  * this file). So its presence is not a preference and not a heuristic: it is the
  * server's own record of having created this browser. A user's Chrome cannot
- * acquire it by configuring anything, which is what makes "I am remote"
+ * acquire it by configuring anything, which is what makes the answer
  * unforgeable from the user side.
+ *
+ * ── WHICH ANSWER THAT PRESENCE MEANS, AND WHY IT FLIPPED ─────────────────────
+ * A managed copy means THIS IS THE BROWSER ON THE SERVER, and under the correct
+ * naming that browser is `local` — local to the project:
+ *
+ *   «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاید ولی برعکس است»
+ *
+ * A previous revision returned 'remote' here for exactly the same condition. It
+ * was reading the names from the OPERATOR's point of view ("the server is far
+ * away from me, so it is remote"), while the server reads them from the
+ * project's. Two points of view, one field, opposite answers — which is how the
+ * approval prompt ended up gated on the wrong browser.
+ *
+ * An unmanaged copy — a Chrome the operator installed this into themselves — is
+ * `remote`: a machine this server does not own and cannot launch.
  *
  * WHY IT IS NOT THE BACKEND URL
  * -----------------------------
@@ -136,24 +151,32 @@ var abBootstrapReady = applyBootstrapDefaults().catch(function () { /* best-effo
  * Those are independent, and deciding one from the other is how a local session
  * against a hosted backend ends up classified as remote and gets the Alert.
  *
- * WHY IT DEFAULTS TO 'local'
- * --------------------------
- * The failure modes are not symmetric. Guessing 'remote' in a local browser
- * shows an approval prompt that must never appear there — the reported bug.
- * Guessing 'local' in the remote browser withholds a prompt, and the operator
- * can still fall back to the dashboard. Withholding is recoverable; a spurious
- * grant path is not. Note this is deliberately the OPPOSITE default from
- * normalizeBrowserEnvironment() on the server, whose job is to describe where
- * automation should run rather than to decide who may be asked for consent.
+ * WHY IT DEFAULTS TO 'remote'
+ * ---------------------------
+ * The failure modes are not symmetric, and the safe default moved with the
+ * meaning. The prompt belongs to the server's own shared browser (`local`),
+ * because that is the one window that outlives a targeting run and can be
+ * holding the previous field's address. So:
+ *
+ *   Guessing 'local' in an operator's own Chrome would start the approval loop
+ *   in a browser that must never run it — it would poll for, and could accept,
+ *   prompts raised for a browser it is not. That is the unrecoverable direction.
+ *
+ *   Guessing 'remote' in the server's browser withholds a prompt. Recoverable:
+ *   the operator sees no approval card and can act from the dashboard.
+ *
+ * So the default is the withholding one, as before — it is only the LABEL that
+ * changed sides.
  */
 function browserEnvironment() {
   return abBootstrapReady.then(function () {
     try {
+      // Seeded by the server = the browser the server launched = LOCAL.
       if (typeof AB_BOOTSTRAP !== 'undefined' && AB_BOOTSTRAP && AB_BOOTSTRAP.managed === true) {
-        return 'remote';
+        return 'local';
       }
     } catch (e) { /* fall through to the safe answer */ }
-    return 'local';
+    return 'remote';
   });
 }
 
@@ -504,7 +527,25 @@ async function openPanel() {
  * something the user genuinely cannot fix by typing: no address could be
  * resolved from any internal source. The popup says so in those terms.
  */
-var LOOPBACK_FALLBACK_BASE = 'http://127.0.0.1:3000';
+/**
+ * The port to assume when NOTHING has told us better.
+ *
+ * A last resort, and it is a genuine guess — which is why the seeded bootstrap
+ * carries the real one (`AB_BOOTSTRAP.port`) and is preferred over this. It used
+ * to be baked into a hardcoded `http://127.0.0.1:3000` constant, so a server
+ * started with `PORT=8080` seeded a browser that talked to nothing and reported
+ * a network error the operator could do nothing about:
+ *
+ *   «روی 127.0.0.1:پورت پروژه که بالا آمده رو خودش ست کنه»
+ */
+var LOOPBACK_PORT_FALLBACK = 3000;
+
+/** Build the server-local address for a port. LOCAL environment only. */
+function loopbackBase(port) {
+  var n = parseInt(port, 10);
+  if (!isFinite(n) || n <= 0 || n > 65535) n = LOOPBACK_PORT_FALLBACK;
+  return 'http://127.0.0.1:' + n;
+}
 
 async function inspectorContext() {
   var cfg = await getSettings();
@@ -533,8 +574,18 @@ async function inspectorContext() {
   //     the same server", so loopback is not a fallback in spirit: it IS the
   //     address of a server-local backend, and it is what the server itself
   //     publishes to the copies it seeds.
+  //
+  //     The PORT comes from the seeded bootstrap when there is one, so this
+  //     tracks the port the server actually listens on instead of assuming the
+  //     default. Only a copy that was never seeded falls back to the guess.
   if (!base) {
-    base = normalizeBase(LOOPBACK_FALLBACK_BASE);
+    var seededPort = 0;
+    try {
+      if (typeof AB_BOOTSTRAP !== 'undefined' && AB_BOOTSTRAP && AB_BOOTSTRAP.port) {
+        seededPort = AB_BOOTSTRAP.port;
+      }
+    } catch (e) { /* unmanaged copy — the guess below is all there is */ }
+    base = normalizeBase(loopbackBase(seededPort));
     source = 'server-local';
   }
 
@@ -788,24 +839,31 @@ async function consentList() {
 
   var env = await browserEnvironment();
 
-  // A LOCAL browser is answered here and never asks the server.
+  // A REMOTE browser — one on the operator's own machine — is answered here and
+  // never asks the server.
+  //
+  // THE DIRECTION OF THIS GATE FLIPPED WITH THE NAMES. The approval prompt
+  // belongs to the SERVER's own browser (`local`), because that is the single
+  // shared window which outlives a targeting run and may still be holding the
+  // previous field's address. A browser on the operator's desktop acquires its
+  // target by redeeming an Authorization Code, which named exactly one field, so
+  // there is nothing left for it to be asked.
   //
   // This is the FIRST of two independent gates, and the reason there are two is
   // that they fail differently. The server-side filter (pendingFor) protects a
-  // browser running a CURRENT extension against a server that has a remote
-  // prompt outstanding. This one protects against the server too: an older
-  // backend, a backend that has not been redeployed, or any future route that
-  // forgets the filter, still cannot produce an Alert in a local browser,
-  // because in LOCAL mode the request is not made at all.
+  // browser running a CURRENT extension against a server that has a prompt
+  // outstanding for the other environment. This one protects against the server
+  // too: an older backend, a backend that has not been redeployed, or any future
+  // route that forgets the filter, still cannot produce an Alert in the
+  // operator's own browser, because there the request is not made at all.
   //
   // Returning `ok: true` with an empty list rather than an error is deliberate:
-  // "nothing is pending for you" is the TRUTH in local mode, because the server
-  // binds a LOCAL browser's field internally the moment the crosshair is used —
-  // a path that is complete on its own and needs no prompt, no polling and no
-  // timeout. An error here would make callers back off and retry as if something
-  // were broken.
-  if (env !== 'remote') {
-    return { ok: true, count: 0, requests: [], environment: env, skipped: 'local' };
+  // "nothing is pending for you" is the TRUTH here, because a REMOTE browser's
+  // binding was completed by the redemption — a path that is complete on its own
+  // and needs no prompt, no polling and no timeout. An error would make callers
+  // back off and retry as if something were broken.
+  if (env !== 'local') {
+    return { ok: true, count: 0, requests: [], environment: env, skipped: 'remote' };
   }
 
   // Declared BOTH ways on purpose. The query string is what the route reads
@@ -848,10 +906,25 @@ async function consentList() {
  * would be re-prompted every time and "click Allow every time" would simply be
  * a new spelling of the defect this work removes.
  *
- * This is the ONLY way a target arrives in this worker from a user action, and
- * it applies to REMOTE alone. LOCAL needs no counterpart: the server binds the
- * field itself the moment the crosshair is used, with nothing to answer and
- * nothing to type.
+ * ── WHICH BROWSER THIS BELONGS TO, AND THE CONTRADICTION IT RESOLVES ────────
+ *
+ * It applies to LOCAL alone — the browser runtime on the SAME server as the
+ * project. That window is one shared, long-lived browser: it outlives a single
+ * targeting run and may still be holding the previous field's address, so a
+ * human has to say which of them the next pick belongs to. The Alert names the
+ * node and the field, and pressing Allow is what writes `ab_targetFieldId`.
+ *
+ * REMOTE needs no counterpart. A browser on the operator's own machine acquires
+ * its destination by redeeming an Authorization Code, and that code named
+ * exactly one Target Field — so there is nothing left to be asked.
+ *
+ * THIS GATE POINTED THE OTHER WAY, AND THAT WAS A LIVE DEFECT, not merely a
+ * stale comment. consentList() above admits `local` and turns `remote` away;
+ * this one admitted `remote` and turned `local` away. The two together meant a
+ * LOCAL browser could SEE the Alert and then be refused the moment it pressed
+ * Allow — `wrong_environment` on the one environment that actually raises the
+ * prompt, and no binding written at all. The old name `needsRemoteApproval` is
+ * what let the pair read as consistent while they disagreed.
  */
 async function consentDecide(payload) {
   var ctx = await inspectorContext();
@@ -862,23 +935,28 @@ async function consentDecide(payload) {
     return { ok: false, reason: 'consent_not_found', error: 'Nothing to answer.' };
   }
 
-  // A LOCAL browser cannot complete a remote grant, even if a consentId reaches
-  // it somehow (a stale card left in a tab from a previous remote session, or a
-  // page that guesses an id). Gating the LIST alone would leave the write to
+  // A REMOTE browser cannot complete this grant, even if a consentId reaches it
+  // somehow (a stale card left in a tab from an earlier LOCAL session, or a page
+  // that guesses an id). Gating the LIST alone would leave the write to
   // `ab_targetFieldId` reachable, and that write is the whole point of the
-  // handshake. A LOCAL browser has no business answering it because it never
-  // needed to: the server bound its field internally when the crosshair was
-  // used, which is why the approval alert is a REMOTE-only surface.
+  // handshake. A browser on the operator's own machine has no business answering
+  // it because it never needed to: its field arrived with the Authorization Code
+  // it redeemed, which is why the Alert is a LOCAL-only surface.
+  //
+  // MIRRORS consentList() EXACTLY — admit `local`, refuse everything else — and
+  // that symmetry is the fix. While this said `remote`, the two gates disagreed
+  // and the server's own browser was shown a prompt it was then forbidden to
+  // answer.
   var env = await browserEnvironment();
-  if (env !== 'remote') {
+  if (env !== 'local') {
     return {
       ok: false,
       reason: 'wrong_environment',
-      // Was: '…Use the Authorization Code from the dashboard instead.' There is
-      // no code any more, and a local browser has nothing at all to do here.
-      error: 'Remote approval does not apply to a local browser. '
-        + 'A local browser is bound by the server automatically when you use '
-        + 'the crosshair on a field.',
+      // Names the path that DOES apply here, because a refusal the operator
+      // cannot act on is only half an answer.
+      error: 'This approval belongs to the browser running on the server. '
+        + 'To connect a browser on your own machine, use the Authorization Code '
+        + 'from the dashboard (Target This Field → Remote Browser).',
       environment: env,
     };
   }
@@ -918,7 +996,11 @@ async function consentDecide(payload) {
 
   // Reuses the `env` declared above (a second `var env` here was a duplicate
   // declaration that silently shadowed nothing and only confused readers).
-  env = (target && target.environment) || 'remote';
+  //
+  // The fallback is `local`, not `remote`: reaching this line at all means the
+  // gate above admitted this browser, and it admits `local` only. A `remote`
+  // default would have stamped the one environment that can never get here.
+  env = (target && target.environment) || 'local';
   await setTargetEnvironment(env);
 
   return {
@@ -1054,9 +1136,16 @@ async function submitElement(payload) {
  *
  * A READ: it registers nothing, mints no destination and creates no pairing,
  * because merely opening a chooser the user may cancel must not leave state
- * behind. `available` / `needsRemoteApproval` come from the server's own
- * environmentOptions(), so the popup can never offer a card the server would
- * then refuse, nor promise "automatic" for a card that raises an approval.
+ * behind. `available` / `needsInPageApproval` / `needsAuthorization` all come
+ * from the server's own environmentOptions(), so the popup can never offer a
+ * card the server would then refuse, nor promise "automatic" for a card that
+ * is about to ask for something.
+ *
+ * The middle name USED TO BE `needsRemoteApproval`, and it was true for
+ * `remote`. Both halves of that were wrong: the in-page approval is raised by
+ * the server inside ITS OWN browser, so it belongs to LOCAL, and the word
+ * "remote" in the identifier is exactly what made the mistake read as correct
+ * for as long as it did.
  */
 async function targetingOptions(payload) {
   var ctx = await inspectorContext();
@@ -1096,15 +1185,33 @@ async function targetingOptions(payload) {
  * credential all come back FROM the server, which is what keeps this surface
  * incapable of asserting a target for itself:
  *
- *   LOCAL   -> `paired: true`, `runtime: 'server-local'`, `consent: null`.
- *              Bound before the route answers, so the target is stored here and
- *              the operator is asked for nothing at all: no Base URL, no API
- *              key, no Authorization Code and no approval prompt.
- *   REMOTE  -> `openRemoteBrowser: true` and a consent prompt. The target is
- *              deliberately NOT stored on this path: it arrives through
- *              consentDecide() when the human presses Allow, which is what makes
- *              the approval meaningful rather than decorative, and what lets an
- *              already-running remote browser be reused for a new field.
+ *   LOCAL   -> `openServerBrowser: true` plus a consent prompt. LOCAL means
+ *              local TO THIS PROJECT: the browser on the same machine as the
+ *              backend, which is therefore the one thing this server can
+ *              actually launch. No Base URL, no API key and no Authorization
+ *              Code are asked for, because there is no second machine to carry
+ *              them to. What IS asked for is an approval inside that browser,
+ *              and not out of distrust: ONE server browser is shared by every
+ *              field and outlives any single pick, so it has to be told which
+ *              field this one is. True whether or not it was already running:
+ *
+ *                «اگر بالا باشه که الرت میده، اگر بالا نباشه یکی بالا میاره و بعدش الرت میده»
+ *
+ *   REMOTE  -> `step: 'authorize'` and an `authorization` payload. REMOTE means
+ *              remote FROM THIS PROJECT: the browser on the operator's own
+ *              personal machine. Two machines, a real trust gap, so a Base URL
+ *              and a fresh per-field code are required — and nothing is
+ *              launched, because that browser is already open and this server
+ *              cannot reach it.
+ *
+ * NEITHER branch stores the target here. LOCAL's destination is written by
+ * consentDecide() when the human presses Allow; REMOTE's by inspectorPair()
+ * when the code is redeemed. Storing it at BEGIN time would bind a field to a
+ * browser that never answered — which is the whole reason both settling acts
+ * exist. These two descriptions were previously attached to the wrong
+ * environments, and that swap was the reported defect:
+ *
+ *     «وقتی لوکال میزنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
  */
 async function targetingBegin(payload) {
   var ctx = await inspectorContext();
@@ -1144,13 +1251,20 @@ async function targetingBegin(payload) {
 
   var target = data.target || null;
 
-  // LOCAL only. See the doc block above for why REMOTE must wait for Allow.
-  if (environment === 'local' && target && target.targetFieldId) {
-    await setTargetFieldId(target.targetFieldId);
-    if (target.pairingKey) await setPairingKey(target.pairingKey);
-    await setTargetEnvironment('local');
-  }
-
+  // NOTHING IS STORED HERE, in either environment, and that is the whole point.
+  //
+  // A previous revision adopted the returned target immediately for `local`. It
+  // cannot: LOCAL is the server's shared browser, and the server answers a LOCAL
+  // begin by raising an in-page approval prompt. Storing the destination before
+  // that prompt is answered would make the Allow button decorative — the field
+  // would already be bound, and a pick could land in a node the operator never
+  // confirmed. Approval is what writes it (see AB_CONSENT_DECIDE).
+  //
+  // REMOTE stores nothing either, for the mirror-image reason: the destination
+  // arrives when the Authorization Code is redeemed, not when it is issued.
+  //
+  // So in both environments the destination is written by the ACT that settles
+  // it, never by this call.
   return {
     ok: true,
     environment: environment,
@@ -1158,9 +1272,67 @@ async function targetingBegin(payload) {
     target: target,
     paired: !!data.paired,
     runtime: data.runtime || '',
-    openRemoteBrowser: !!data.openRemoteBrowser,
-    consent: data.consent || null
+    // TRUE for LOCAL — the browser this server can actually launch. Named for
+    // what it opens; `openRemoteBrowser` said the opposite of what it did.
+    openServerBrowser: !!data.openServerBrowser,
+    consent: data.consent || null,
+    // REMOTE only: the code + Base URL the operator carries to their own
+    // browser. Null for LOCAL, where there is nothing to transcribe.
+    authorization: data.authorization || null
   };
+}
+
+/**
+ * Redeem an Authorization Code. THE REMOTE PATH, and the only writer of a
+ * REMOTE destination.
+ *
+ * This is what the operator's own browser does with the code the dashboard
+ * showed them. It is the mirror of consentDecide(): both end with a target field
+ * in storage, but they answer different questions —
+ *
+ *   consentDecide  "the server asked me to confirm a field; I approve."  LOCAL
+ *   inspectorPair  "I hold a code the server minted; here it is."        REMOTE
+ *
+ * `baseUrl` is accepted as an argument because in REMOTE the extension may not
+ * know the server's address yet — that is exactly the gap the Base URL box
+ * fills. It is persisted on success so subsequent calls need no argument.
+ */
+async function inspectorPair(payload) {
+  var typedBase = normalizeBase((payload && payload.baseUrl) || '');
+  var code = String((payload && payload.code) || '').trim();
+  if (!code) return { ok: false, error: 'Enter the authorization code from the dashboard.' };
+
+  var ctx = await inspectorContext();
+  // A typed address wins over a resolved one: the operator is telling us where
+  // the server is because nothing else could.
+  var base = typedBase || (ctx.error ? '' : ctx.base);
+  if (!base) return { ok: false, error: 'Enter the Base URL of your server.' };
+
+  var res = await apiFetch(
+    base + '/inspector/pair',
+    { method: 'POST', body: JSON.stringify({ code: code }) },
+    ctx.apiKey
+  );
+  var data = (res && res.data) || {};
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: data.reason || res.error,
+      error: data.error || res.message || 'That authorization code was not accepted.'
+    };
+  }
+
+  // Persist the address that worked, so the next field needs only a code.
+  if (typedBase) await new Promise(function (r) {
+    chrome.storage.local.set({ ab_baseUrl: typedBase }, function () { r(); });
+  });
+
+  if (data.targetFieldId) {
+    await setTargetFieldId(data.targetFieldId);
+    await setTargetEnvironment('remote');
+  }
+
+  return { ok: true, paired: true, environment: 'remote', targetFieldId: data.targetFieldId || '' };
 }
 
 /** Read the current browser mode (Remote / Local) for the popup's indicator. */
@@ -1372,6 +1544,9 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
       return true; // async
     case 'AB_TARGETING_BEGIN':
       targetingBegin(msg.payload).then(sendResponse);
+      return true; // async
+    case 'AB_INSPECTOR_PAIR':
+      inspectorPair(msg.payload).then(sendResponse);
       return true; // async
     case 'AB_INSPECTOR_UNPAIR':
       inspectorUnpair().then(sendResponse);

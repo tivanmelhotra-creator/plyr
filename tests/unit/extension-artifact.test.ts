@@ -163,18 +163,57 @@ describe('the build emits a loadable unpacked extension', () => {
     expect(bg).toContain("case 'AB_TARGETING_BEGIN'");
   });
 
-  it('the built popup ships NO credential control — deleting those was correct', () => {
-    // The other half of the same staleness bug: the artifact the operator had
-    // installed still asked for a Base URL, an API key and an Authorization
-    // Code, all of which are gone from source. Restoring the environment
-    // selector must not bring any of them back, in source OR in the artifact.
+  it('the built popup ships the REMOTE credential card, hidden by default', () => {
+    // WHY THIS TEST WAS QUIETLY USELESS
+    //
+    // It asserted that no credential control ships at all, listing the OLD ids:
+    // `baseUrl`, `inspCode`, `connect`. Those ids no longer exist — the controls
+    // were rebuilt as `authBase` / `authCode` / `authConnect` inside `#authCard`
+    // — so the loop passed while the popup shipped a Base URL field and a code
+    // field. It was testing spelling, not absence.
+    //
+    // And the absence it claimed is no longer the contract. REMOTE is a browser
+    // on the operator's own machine, so it needs both:
+    //
+    //   «پس ما هم به یک اتورایز نیاز داریم … و هم به یک بیس یو ار ال»
+    //
+    // What still matters is that the card SHIPS and starts HIDDEN, because it is
+    // shown only after REMOTE is chosen. A card that shipped visible would put
+    // the credential form back at the earliest possible moment, which is the
+    // original complaint.
+    const html = artifactFile('popup/popup.html');
+    expect(html).toContain('id="authCard"');
+    expect(html).toContain('id="authBase"');
+    expect(html).toContain('id="authCode"');
+    expect(html).toContain('id="authConnect"');
+    // Per the operator's own mockup, a Paste button beside the code field.
+    expect(html).toContain('id="authPaste"');
+
+    // Hidden in the markup, not merely hidden by script: the popup paints on a
+    // round trip, and a card that starts visible would flash the form open for
+    // every LOCAL user before the first response lands.
+    expect(html).toMatch(/id="authCard"[^>]*\shidden/);
+
+    // The worker half must ship, or pressing Connect answers with an unhandled
+    // message — the same class of failure as a card with no renderer.
+    const bg = artifactFile('background.js');
+    expect(bg).toContain("case 'AB_INSPECTOR_PAIR'");
+  });
+
+  it('the built popup ships NONE of the controls that were rightly deleted', () => {
+    // The surviving half of the old test, aimed at what is actually gone. These
+    // are the LOCAL-side credential controls: a browser on this server proves
+    // nothing by carrying a secret between two of the server's own windows, and
+    // its address is resolved automatically — «Resolved automatically by the
+    // server that runs this browser. There is nothing to enter.»
     const html = artifactFile('popup/popup.html');
     for (const dead of [
       'modeLocal', 'modeRemote', 'modeLocalUrl', 'modeRemoteUrl',
-      'baseUrl', 'apiKey', 'apiKeyPeek', 'inspCode', 'connect',
+      'apiKey', 'apiKeyPeek', 'inspCode', 'connect',
     ]) {
       expect(html, `the built popup still declares #${dead}`).not.toContain(`id="${dead}"`);
     }
+    // No API key input anywhere: the key is provisioned, never typed.
     expect(html, 'the built popup still has a password input').not.toMatch(/type="password"/i);
   });
 

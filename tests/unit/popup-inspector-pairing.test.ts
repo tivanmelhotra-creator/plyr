@@ -225,12 +225,39 @@ function boot(replies: Replies = {}): Harness {
   };
 }
 
-/** A session reply describing one open field this extension IS connected to. */
-function connected(over: Record<string, unknown> = {}) {
+/**
+ * A session reply describing one open field this extension IS connected to.
+ *
+ * `targetEnv` stamps the OPEN TARGET's own environment, and it is a second
+ * argument rather than part of `over` because the two are different facts that
+ * the popup reads in a specific order:
+ *
+ *   over.environment  → res.environment, the SESSION's environment. Non-empty
+ *                       only once this extension is bound to the field, because
+ *                       background.js derives it from `res.target`, and that is
+ *                       null until a destination is stored.
+ *   targetEnv         → the environment recorded ON the open field itself.
+ *
+ * WHY THE SECOND ONE HAD TO EXIST. TargetFieldRegistry.register() writes an
+ * `environment` on every target it creates — it is coerced, never omitted (see
+ * normalizeBrowserEnvironment) — and /inspector/targeting/begin registers the
+ * field BEFORE it branches on the environment. So by the time a REMOTE begin
+ * answers, the server is already listing an open target stamped `remote`.
+ *
+ * This fixture omitted it, which made it describe a server that cannot exist,
+ * and that difference was not cosmetic: on the REMOTE path nothing is stored
+ * until the code is redeemed, so `res.target` is null, `res.environment` is
+ * empty, and the ONLY carrier of "which browser did the operator just choose"
+ * is the open target's own stamp. A fixture without it tested the one code path
+ * that never runs, and it did so at the exact moment the operator is waiting
+ * for the code box.
+ */
+function connected(over: Record<string, unknown> = {}, targetEnv = '') {
   const target = {
     targetFieldId: 'node_n1__url__a1b2c3d4',
     nodeId: 'n1', fieldKey: 'url', action: 'http_request',
     label: 'HTTP Request → url', registeredAt: Date.now(),
+    ...(targetEnv ? { environment: targetEnv } : {}),
   };
   return {
     ok: true,
@@ -415,9 +442,23 @@ describe('popup: the binding is not the popup\'s to make (§8)', () => {
     }
   });
 
-  it('never sends AB_INSPECTOR_PAIR, through any interaction it still has', async () => {
-    // Every surviving control, driven in turn. The old test could only prove the
-    // pair message carried nothing extra; this proves it is never sent at all.
+  it('sends AB_INSPECTOR_PAIR only when the operator submits a code, never on its own', async () => {
+    // WHAT THIS TEST USED TO PROVE, AND WHY THE WEAKER-LOOKING VERSION IS
+    // ACTUALLY THE STRONGER ONE.
+    //
+    // It used to assert the message is never sent at all, and that the worker
+    // would not even answer it. That was the correct guard for a system in which
+    // both environments were the server's own browser, because then nothing
+    // anywhere had a code to redeem. Under the corrected naming REMOTE is the
+    // operator's own machine, and redemption is the ONLY act that can prove a
+    // browser the server has never seen belongs here.
+    //
+    // So "never sent" is no longer available, and the property that mattered is
+    // restated precisely: the popup does not pair SPONTANEOUSLY. Refresh,
+    // Release — every control that is not the credential form — must leave the
+    // pair channel silent, because a popup that could bind a field as a side
+    // effect of being opened is the original defect regardless of which
+    // environment it happens on.
     const h = boot({ AB_INSPECTOR_SESSION: connected(), AB_INSPECTOR_UNPAIR: { ok: true } });
     await h.settle();
     h.el('inspRefresh').fire('click');
@@ -426,10 +467,27 @@ describe('popup: the binding is not the popup\'s to make (§8)', () => {
     await h.settle();
 
     expect(h.sentOf('AB_INSPECTOR_PAIR')).toEqual([]);
-    // And the worker would not answer it either, so nothing could regress by
-    // re-adding a caller alone.
+    // And the ONE deliberate caller is reachable only from the submit control,
+    // which cannot be pressed without a code in the box.
+    const popupSrc = readFileSync(resolve(ROOT, 'extension/popup/popup.js'), 'utf8');
+    expect(popupSrc).toMatch(/AB_INSPECTOR_PAIR/);
+    expect(popupSrc).toMatch(/function\s+submitAuthorization/);
+    // The worker answers it, because the redemption has to reach the server.
     const bgSrc = readFileSync(resolve(ROOT, 'extension/background.js'), 'utf8');
-    expect(bgSrc).not.toContain("case 'AB_INSPECTOR_PAIR':");
+    expect(bgSrc).toContain("case 'AB_INSPECTOR_PAIR':");
+  });
+
+  it('refuses to submit an empty code, so a stray Enter cannot spend a request', async () => {
+    // The other half of "never spontaneously". A form that posts an empty string
+    // would turn a mis-hit Enter into a failed pairing attempt against a
+    // single-use code, and the operator would be told their code was rejected
+    // when it was never sent.
+    const h = boot({ AB_INSPECTOR_SESSION: connected() });
+    await h.settle();
+    h.el('authConnect').fire('click');
+    await h.settle();
+    expect(h.sentOf('AB_INSPECTOR_PAIR')).toEqual([]);
+    expect(h.text('authStatus')).toMatch(/code/i);
   });
 
   it('still names no target of its own — it only reports the server\'s', async () => {
@@ -781,9 +839,18 @@ function options(over: Record<string, unknown> = {}) {
     ok: true,
     paired: false,
     localEnabled: true,
+    // Mirrors what src/core/BrowserEnvironment.ts#environmentOptions() actually
+    // emits, flag names included. Both were previously `needsRemoteApproval`,
+    // set on the wrong environment — so this fixture was quietly asserting the
+    // inverted contract and every test built on it passed.
+    //
+    //   LOCAL  the server's own browser: it launches, it grants, and it raises
+    //          the in-page approval that names the field.
+    //   REMOTE the operator's own browser: a code and a Base URL, no launch,
+    //          no approval, and `paired` reports the field's REAL state.
     options: [
-      { id: 'local', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: false, note: '' },
-      { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
+      { id: 'local', available: true, paired: true, needsAuthorization: false, needsInPageApproval: true, opensServerBrowser: true, note: '' },
+      { id: 'remote', available: true, paired: false, needsAuthorization: true, needsInPageApproval: false, opensServerBrowser: false, note: '' },
     ],
     ...over,
   };
@@ -959,15 +1026,20 @@ describe('§2 — LOCAL: internal, automatic, and free of every credential', () 
   });
 });
 
-describe('§3 — REMOTE: automatic address, Remote Approval, no code', () => {
-  it('pressing REMOTE sends environment:remote and asks for approval, not a code', async () => {
+describe('§3 — REMOTE: the operator’s own machine, so a code and an address', () => {
+  it('pressing REMOTE sends environment:remote and receives a code to redeem', async () => {
     const h = boot({
-      AB_INSPECTOR_SESSION: connected(),
+      // The open field is stamped `remote`, because the route registers it with
+      // the chosen environment BEFORE it branches. That stamp is the only thing
+      // that says "remote" here: no destination is stored until the code is
+      // redeemed, so the session's own `environment` is still empty.
+      AB_INSPECTOR_SESSION: connected({}, 'remote'),
       AB_TARGETING_OPTIONS: options(),
       AB_TARGETING_BEGIN: {
-        ok: true, environment: 'remote', step: 'targeting', paired: true,
-        openRemoteBrowser: true,
-        consent: { consentId: 'c1', nodeId: 'n1', fieldKey: 'url' },
+        ok: true, environment: 'remote', step: 'authorize', paired: false,
+        openServerBrowser: false,
+        consent: null,
+        authorization: { code: 'ABCD-1234', baseUrl: 'https://panel.example.com', label: 'URL', fieldKey: 'url', nodeId: 'n1' },
         target: { targetFieldId: 'node_n1__url__a1b2c3d4', pairingKey: 'tf:_:n1:url', nodeId: 'n1', fieldKey: 'url', action: 'http_request', environment: 'remote' },
       },
     });
@@ -980,23 +1052,97 @@ describe('§3 — REMOTE: automatic address, Remote Approval, no code', () => {
     expect(began).toHaveLength(1);
     expect(began[0].payload).toMatchObject({ environment: 'remote' });
 
-    // The one human step is an APPROVAL. Nothing is transcribed.
-    expect(h.text('envStatus')).toMatch(/approve/i);
-    expect(h.text('envStatus')).not.toMatch(/code|key|url/i);
+    // THE INVERSION, AT THE ONE PLACE THE OPERATOR MEETS IT. This used to expect
+    // /approve/i and to BAN the word "code" outright. The approval belongs to the
+    // server's own shared window, which is LOCAL; the code belongs here, because
+    // the browser being connected is on another machine.
+    expect(h.text('envStatus')).toMatch(/code/i);
 
+    // WHAT IS STILL BANNED, AND IT IS THE PART THAT ALWAYS MATTERED: the popup
+    // sends the CHOICE and nothing else. Every credential travels server → popup,
+    // never popup → server, so nothing here can assert its own way in.
     const wire = JSON.stringify(began[0].payload).toLowerCase();
     for (const banned of ['baseurl', 'apikey', 'authorization', 'token']) {
       expect(wire, `REMOTE must not send ${banned}`).not.toContain(banned);
     }
+    // And the credential card is now on screen, pre-filled from the server.
+    expect(h.hidden('authCard')).toBe(false);
+    expect(h.el('authBase').value).toBe('https://panel.example.com');
   });
 
-  it('the REMOTE card names the approval, and never a code, before being pressed', async () => {
+  it('shows the code box off the OPEN FIELD\'s environment, with no session env yet', async () => {
+    // THE REGRESSION THIS EXISTS TO CATCH, and it is a production one rather
+    // than a wording one.
+    //
+    // REMOTE deliberately stores nothing at `begin` — the destination is written
+    // when the code is redeemed, not when it is issued. So at the moment the
+    // operator needs the two inputs, background.js has no `ab_targetFieldId`,
+    // `res.target` is null and `res.environment` is ''. If the credential card
+    // were gated on the SESSION's environment alone it would stay hidden exactly
+    // then, and the flow would dead-end with a code the operator has nowhere to
+    // type. paintEnvironment()'s single-open-field fallback is what carries the
+    // choice across that gap.
+    const h = boot({
+      AB_INSPECTOR_SESSION: connected({ environment: '', authorized: false, targetFieldId: '' }, 'remote'),
+      AB_TARGETING_OPTIONS: options(),
+      AB_TARGETING_BEGIN: {
+        ok: true, environment: 'remote', step: 'authorize', paired: false,
+        openServerBrowser: false, consent: null,
+        authorization: { code: 'EFGH-5678', baseUrl: 'https://panel.example.com', label: 'URL', fieldKey: 'url', nodeId: 'n1' },
+        target: null,
+      },
+    });
+    await h.settle();
+
+    cards(h)[1].click();
+    await h.settle();
+
+    expect(h.hidden('authCard')).toBe(false);
+    // And it names WHICH field the code is for, because a single-use code with
+    // no destination on screen is one the operator cannot check before spending.
+    expect(h.text('authHint')).toMatch(/url/i);
+  });
+
+  it('the REMOTE card names the code, and never an approval, before being pressed', async () => {
     const h = boot({ AB_INSPECTOR_SESSION: connected(), AB_TARGETING_OPTIONS: options() });
     await h.settle();
 
     const remote = cards(h)[1].childNodes.map((k) => k.textContent).join(' ');
-    expect(remote).toMatch(/remote approval/i);
-    expect(remote).toMatch(/no code/i);
+    // Said BEFORE the press, because a card promising "connects automatically"
+    // that then produces a credential form is worse than one that warns.
+    expect(remote).toMatch(/code/i);
+    expect(remote).not.toMatch(/approv/i);
+  });
+
+  it('the LOCAL card names the approval, and never a code', async () => {
+    // The mirror, asserted on the same fixture so the two cards cannot both drift
+    // in the same direction — which is exactly how the inversion stayed hidden.
+    const h = boot({ AB_INSPECTOR_SESSION: connected(), AB_TARGETING_OPTIONS: options() });
+    await h.settle();
+
+    const local = cards(h)[0].childNodes.map((k) => k.textContent).join(' ');
+    expect(local).toMatch(/approv/i);
+    expect(local).not.toMatch(/\bcode\b/i);
+  });
+
+  it('LOCAL leaves the credential card hidden, whatever REMOTE did before it', async () => {
+    // The card is REMOTE's alone. Leaving it up after a switch back to LOCAL
+    // would put two inputs in front of somebody on the path defined by having
+    // none — and it would do so with a spent code still in the box.
+    const h = boot({
+      AB_INSPECTOR_SESSION: connected(),
+      AB_TARGETING_OPTIONS: options(),
+      AB_TARGETING_BEGIN: {
+        ok: true, environment: 'local', step: 'targeting', paired: true,
+        openServerBrowser: true, authorization: null,
+        consent: { consentId: 'c1', nodeId: 'n1', fieldKey: 'url' },
+        target: { targetFieldId: 'node_n1__url__a1b2c3d4', pairingKey: 'tf:_:n1:url', nodeId: 'n1', fieldKey: 'url', action: 'http_request', environment: 'local' },
+      },
+    });
+    await h.settle();
+    cards(h)[0].click();
+    await h.settle();
+    expect(h.hidden('authCard')).toBe(true);
   });
 
   it('does not open a second browser for a second field — the choice is all it sends', async () => {
@@ -1068,14 +1214,31 @@ describe('§4 — the chooser reflects the SERVER\'s record, not a local guess',
 });
 
 describe('§5 — restoring the chooser did NOT restore the credentials', () => {
-  it('popup.html still declares no credential control of any kind', () => {
-    // The correction is explicit that removing these was CORRECT. Re-adding a
-    // chooser must not smuggle any of them back.
+  it('declares none of the DELETED credential controls, and no secret box at all', () => {
+    // The correction is explicit that removing these was CORRECT, and every one
+    // of them stays removed by name. Re-adding a chooser must not smuggle any
+    // back, and neither must re-adding REMOTE's two inputs.
+    //
+    // #baseUrl and #apiKey were the BACKEND form's — an address and a key for
+    // reaching the server, asked of every user on every path. #modeLocal /
+    // #modeRemote chose between two hardcoded backend URLs. #inspCode and
+    // #connect were the per-field code row. All eight are gone and stay gone;
+    // what REMOTE has instead is #authBase and #authCode, which are scoped to one
+    // browser, live in a card that ships hidden, and exist only because the
+    // machines are genuinely different.
     for (const dead of ['modeLocal', 'modeRemote', 'modeLocalUrl', 'modeRemoteUrl', 'baseUrl', 'apiKey', 'inspCode', 'connect']) {
       expect(HTML, `#${dead} must stay deleted`).not.toContain(`id="${dead}"`);
     }
+    // NO API KEY AND NO PASSWORD, ANYWHERE, ON EITHER PATH. This is the
+    // assertion that did not change and must not: the extension already
+    // authenticates with its own key, so asking for one again would be asking the
+    // operator to re-supply something we hold.
     expect(HTML).not.toMatch(/type="password"/i);
-    expect(HTML).not.toMatch(/Authorization Code\s*<\/(label|span)>/i);
+    expect(HTML).not.toMatch(/API key\s*<\/(label|span)>/i);
+    expect(HTML).not.toMatch(/id="authKey"/i);
+    // The Authorization Code label IS present now, and exactly once — a second
+    // one would mean a code box had appeared somewhere outside the REMOTE card.
+    expect((HTML.match(/Authorization code\s*<\/label>/gi) || []).length).toBe(1);
   });
 
   it('the Inspect panel has no text input at all', () => {
