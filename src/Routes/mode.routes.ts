@@ -45,6 +45,7 @@ import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
 import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
 import { inspectorAuth } from '../core/InspectorAuthorization';
 import { remoteTargetConsent } from '../core/RemoteTargetConsent';
+import { resolveBaseUrl, requestHints } from '../core/PublicBaseUrl';
 import {
   planTargeting,
   type TargetingStep,
@@ -213,12 +214,23 @@ const REFUSAL_MESSAGES: Record<InspectorRefusal, string> = {
     'Unable to send attribute. Select one attribute with a value, then retry the send.',
 };
 
-/* AUTHORIZATION_MESSAGES is gone with the routes it served.
+/**
+ * What to tell the operator when a code is refused.
  *
- * It mapped INVALID_AUTHORIZATION_CODE / AUTHORIZATION_EXPIRED to advice about
- * requesting another Authorization Code. Both /inspector/authorize and
- * /inspector/pair are removed (see the block further down), so no request can
- * produce either reason and no message is needed for them. */
+ * Restored with `/inspector/pair`, and the two reasons are kept apart because
+ * they call for different actions: an expired code needs a new one, a wrong one
+ * needs re-reading. Collapsing them into "invalid code" is what makes an
+ * operator retype a correct code over and over.
+ *
+ * Reachable only in REMOTE. LOCAL never issues a code, so it can never refuse
+ * one — see planTargeting.
+ */
+const AUTHORIZATION_MESSAGES: Record<string, string> = {
+  INVALID_AUTHORIZATION_CODE:
+    'That authorization code is not valid. Check it, or choose Remote Browser again for a new one.',
+  AUTHORIZATION_EXPIRED:
+    'That authorization code has expired. Choose Remote Browser again to get a new one.',
+};
 
 /**
  * Why a Target Field could not be registered.
@@ -800,6 +812,25 @@ export const createModeRoutes = (): Router => {
   const localTargetingEnabled = (): boolean => reportBrowserMode(SINGLE_USER_ID).localEnabled;
 
   /**
+   * The address a browser ON ANOTHER MACHINE must reach this server on.
+   *
+   * REMOTE-only. The operator is shown this rather than asked for it:
+   *
+   *   «بیس یو ار ال هم خودش پروژه ست می‌کنه»
+   *
+   * Deliberately NOT loopback — see PublicBaseUrl, which prefers a configured
+   * domain, then the proxy's forwarded host, then a detected LAN address, and
+   * only falls back to loopback when there is genuinely nothing better. A
+   * loopback address handed to a browser on someone's desktop points at THEIR
+   * machine, which is the one failure this resolver exists to avoid.
+   */
+  const publicBaseUrl = (req: AuthenticatedRequest): string => resolveBaseUrl({
+    configuredDomain: config.PUBLIC_DOMAIN,
+    port: config.PORT,
+    request: requestHints(req as unknown as { headers?: Record<string, unknown> }),
+  }).baseUrl;
+
+  /**
    * Step ONE of the Targeting flow: what are my choices for this field?
    *
    *   «وقتی کاربر روی آیکون 🎯 Target This Field کلیک می‌کند، اولین مرحله باید
@@ -919,22 +950,20 @@ export const createModeRoutes = (): Router => {
       return;
     }
 
-    // ── BOTH ENVIRONMENTS: server-owned browser, server-granted binding ──────
+    // ── LOCAL — this server's OWN browser runtime ────────────────────────────
     //
-    // `plan.serverMayGrant` is now true for LOCAL as well as REMOTE, and that
-    // single change is what removes the Authorization Code from the LOCAL flow.
-    // It is not a relaxation of the trust model — it is the trust model finally
-    // matching the product:
+    // REPORTED, and the reason this branch and the next were swapped:
     //
-    //     «منظور از LOCAL BROWSER در این محصول، Browser Runtime روی همان
-    //      Server/Infrastructure است که Plyr روی آن اجرا می‌شود.»
+    //   «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاید ولی برعکس است»
     //
-    // Both browsers are launched by THIS server, on THIS server's own
-    // infrastructure, running the copy of the extension THIS server side-loaded
-    // and seeded with its own token. A code in either of them would ask the
-    // operator to carry a secret out of one of the server's own windows and back
-    // into another one to prove they are themselves. There is only ever one
-    // machine, so there is no trust gap for a code to bridge.
+    // LOCAL is named from the PROJECT's point of view: the browser on the same
+    // server/infrastructure this process runs on. So LOCAL is the environment
+    // that launches a browser here, and the one that needs no credential —
+    // there is one machine, one trust domain, and the address is this process's
+    // own loopback on its own configured port.
+    //
+    // The previous revision had this attached to `remote`, which is why
+    // pressing LOCAL launched nothing at all.
     if (plan.serverMayGrant) {
       inspectorAuth.grant(
         // The browser runs the extension THIS server side-loaded, seeded with
@@ -952,77 +981,38 @@ export const createModeRoutes = (): Router => {
         inspectorAuth.grant(req.apiKey, userId, target.targetFieldId, target.pairingKey);
       }
 
-      // ── LOCAL: the server-local runtime, attached with no further ceremony ──
-      //
-      // OLD BEHAVIOUR, and the reported defect: this same field arrived here and
-      // fell through to `inspectorAuth.issue(...)`, which minted an 8-character
-      // Authorization Code and returned it together with `baseUrl` /
-      // `baseUrlSource` for the operator to retype into the extension popup.
-      //
-      // There is nothing to type any more. The destination is attached by the
-      // grant above, the backend address is this process's own loopback and the
-      // credential is this process's own token — all three resolved internally,
-      // none of them ever shown to or asked of the user. And deliberately NO
-      // consent prompt: «بدون Alert → اتصال خودکار».
-      //
-      // The prompt is withheld here for a reason, not for symmetry. It exists to
-      // disambiguate WHICH field a shared, long-lived browser should bind to.
-      // The LOCAL runtime is resolved per targeting run and is never handed a
-      // second competing destination, so there is nothing for a human to
-      // disambiguate and an Alert would be pure ceremony.
-      if (!plan.needsRemoteApproval) {
-        // Re-point any pairing that outlived its old address. `paired` only
-        // changes the WORDING the UI shows ("reconnected" vs "connected"), never
-        // whether the field works — which is what makes re-opening a node
-        // silent instead of a second round of setup.
-        const rebound = inspectorAuth.rebindForUser(
-          userId,
-          target.targetFieldId,
-          target.pairingKey,
-        );
+      // Re-point any pairing that outlived its old address. `paired` only
+      // changes the WORDING the UI shows ("reconnected" vs "connected"), never
+      // whether the field works — which is what makes re-opening a node silent
+      // instead of a second round of setup.
+      const rebound = inspectorAuth.rebindForUser(
+        userId,
+        target.targetFieldId,
+        target.pairingKey,
+      );
 
-        // Any stale REMOTE prompt for this same field is dropped. Without this a
-        // field targeted in REMOTE and then re-targeted in LOCAL would leave an
-        // approval card sitting in the remote browser that, if approved later,
-        // would re-bind a destination the operator has already moved on from.
-        remoteTargetConsent.clearForPairing(userId, target.pairingKey);
-
-        res.json({
-          success: true,
-          environment,
-          step: 'targeting',
-          plan,
-          target,
-          paired: true,
-          rebound,
-          openRemoteBrowser: false,
-          // Stated positively so the dashboard can render the automatic
-          // progression ("runtime ready → target resolved → connected") instead
-          // of having to infer "nothing to do" from a set of absent fields.
-          runtime: 'server-local',
-          consent: null,
-        });
-        return;
-      }
-
-      // ── The half that was missing, and the reason REMOTE did not work ──────
+      // ── The in-page prompt, and why it belongs HERE and not to REMOTE ───────
       //
-      // REPORTED: «اگر کد اتورایز رو وارد نکنم … ظاهرا نمیدونه به کدوم فیلد باید
-      // ارسال بشه — Connection failed: network».
+      //   «ممکنه کاربر مرورگر ریموت رو از فیلد قبلی هنوز باز نگه داشته و الان که
+      //    فیلد جدید می‌خواد … به جای اینکه مرورگر دوباره بالا بیاد، یه الرت توی
+      //    صفحه مرورگر بالا میاد که بهمون میگه فیلد جدید فلانه، آیا می‌خواد ست
+      //    بشه — و کاربر با تایید خودش مطمئن می‌شه که کار ست شده»
       //
-      // The grant above authorizes the extension inside the remote browser, but
-      // that extension addresses its submit with `ab_targetFieldId` out of its
-      // own storage, and the ONLY writer of that value was redeeming a code —
-      // which REMOTE deliberately never issues. So it stayed empty and
-      // `sendElement` refused before making a request.
-      //
-      // A prompt is raised in the remote browser instead. It is not a
-      // notification: approving it is what attaches the destination, so the
-      // extension still never chooses a field, and with two nodes open the
-      // operator is asked WHICH — the ambiguity the report identifies.
+      // The server's browser is ONE shared, long-lived window. It outlives a
+      // single targeting run, so when the operator targets a second field it is
+      // already open and already holding the first field's address. Nothing in
+      // that address says which of the two the next pick belongs to, so a human
+      // has to say — and the prompt names the node and the field so they can
+      // confirm the system is aiming where they think.
       //
       // Idempotent per field: asking again for the same field refreshes the
-      // prompt rather than raising a second one.
+      // existing prompt rather than stacking a second one.
+      //
+      // And per the report, it does not matter whether the browser was already
+      // up: «فرق نمی‌کنه مرورگر بالا باشه یا نباشه … اگر بالا باشه که الرت میده،
+      // اگر بالا نباشه یکی بالا میاره و بعدش الرت میده». The launch/reuse
+      // decision is the caller's (see `opensServerBrowser`); the prompt is
+      // raised either way, right here.
       const consent = remoteTargetConsent.request({
         userId,
         targetFieldId: target.targetFieldId,
@@ -1031,11 +1021,11 @@ export const createModeRoutes = (): Router => {
         fieldKey: target.fieldKey,
         label: target.label,
         action: target.action,
-        // Stamped so the prompt can only ever be delivered to the browser it is
-        // addressed to. This branch is REMOTE-only -- `plan.serverMayGrant` is
-        // true for no other environment -- so the value is a constant, not a
+        // Stamped so a prompt can only ever be delivered to the browser it is
+        // addressed to. This branch is LOCAL-only — `plan.serverMayGrant` is
+        // true for no other environment — so the value is a constant, not a
         // pass-through of anything a caller sent.
-        environment: 'remote',
+        environment: 'local',
       });
 
       res.json({
@@ -1045,10 +1035,20 @@ export const createModeRoutes = (): Router => {
         plan,
         target,
         paired: true,
-        openRemoteBrowser: true,
-        // The prompt the operator must answer inside the remote browser, so the
-        // dashboard can say "approve it there" and poll for the outcome instead
-        // of claiming the field is ready before anyone has agreed.
+        rebound,
+        // Stated positively so the dashboard can render the automatic
+        // progression ("runtime ready → target resolved → connected") instead of
+        // inferring "nothing to do" from a set of absent fields.
+        runtime: 'server-local',
+        // TRUE for LOCAL — this is the browser this server can actually launch.
+        // Named `openServerBrowser`; the old `openRemoteBrowser` said the
+        // opposite of what it did.
+        openServerBrowser: true,
+        // Nothing to transcribe, stated explicitly rather than by omission.
+        authorization: null,
+        // The prompt to answer inside that browser, so the dashboard can say
+        // "approve it there" and poll for the outcome instead of claiming the
+        // field is ready before anyone agreed.
         consent: consent
           ? {
             consentId: consent.request.consentId,
@@ -1056,7 +1056,7 @@ export const createModeRoutes = (): Router => {
             expiresAt: consent.request.expiresAt,
             // TRUE when the prompt was already on screen for this field. The
             // dashboard uses it to say "still waiting" rather than repeating
-            // "look at the browser" — see the repeat case in the report.
+            // "look at the browser" — the repeat case in the report.
             reused: consent.reused,
             nodeId: consent.request.nodeId,
             fieldKey: consent.request.fieldKey,
@@ -1066,22 +1066,103 @@ export const createModeRoutes = (): Router => {
       return;
     }
 
+    // ── REMOTE — a browser on a machine this server does not own ─────────────
+    //
+    //   «در مورد ریموت فرق دارد … ما هم به یک اتورایز نیاز داریم تا تایید بشه
+    //    که فرد خودش است و هم به یک بیس یو ار ال، چون سرور و سیستم شخصی دو تا
+    //    ارتباط ریموتی دارند و ارتباط مستقیم با پلاگین مرورگر رو نمی‌شه رفت»
+    //
+    // That is a real trust gap between two machines, and it is bridged the only
+    // way it can be: a one-time Authorization Code, plus the Base URL the far
+    // end must reach this server on. Both are shown to the operator, who carries
+    // them to the extension in their own browser.
+    //
+    // NO GRANT HAPPENS HERE. This server will not vouch for a browser it has
+    // never seen; the binding is created when the code is redeemed at
+    // POST /inspector/pair, and not before. That is the whole difference from
+    // the LOCAL branch above.
+    //
+    // And no in-page prompt: the redeemed code named exactly one Target Field,
+    // so a second question would re-ask something already answered.
+    //
+    // WHY A FRESH CODE PER FIELD IS CORRECT, NOT A NUISANCE:
+    //   «هر بار فیلد جدید، اتورایز جدید — باعث شد ما همیشه با فیلد جدید ست
+    //    بمانیم»
+    // The code carries the destination. Minting one per field is exactly what
+    // keeps a far-away browser following the operator from field to field
+    // without the server having to guess which one they meant.
+    // NOTE the argument order: (userId, targetFieldId, now, pairingKey). Passing
+    // the pairing key THIRD would silently make it the clock, and the resulting
+    // code would expire at a nonsense time. `Date.now()` is stated explicitly
+    // rather than defaulted so the fourth argument can be reached at all.
+    //
+    // The pairing key is what makes «دفعات بعد دیگر Authorization Code لازم نیست»
+    // true: it is derived from workflow+node+field, so the durable pairing the
+    // redemption creates survives the node being closed and re-opened.
+    const issued = inspectorAuth.issue(
+      userId,
+      target.targetFieldId,
+      Date.now(),
+      target.pairingKey,
+    );
+
+    // `issue` returns null only for a blank userId/targetFieldId, both of which
+    // were validated above — but it is a nullable type, so it is checked rather
+    // than asserted away.
+    if (!issued) {
+      res.status(500).json({
+        success: false,
+        reason: 'ATTRIBUTE_SEND_FAILED',
+        error: 'An authorization code could not be issued. Try again.',
+        environment,
+        target,
+      });
+      return;
+    }
+
+    // Any stale LOCAL prompt for this same field is dropped. Without this, a
+    // field targeted in LOCAL and then re-targeted in REMOTE would leave an
+    // approval card sitting in the server's browser that, if approved later,
+    // would re-bind a destination the operator has already moved on from.
+    remoteTargetConsent.clearForPairing(userId, target.pairingKey);
+
+    res.json({
+      success: true,
+      environment,
+      step: 'authorize',
+      plan,
+      target,
+      // The field is NOT usable yet, and saying so is the point: the operator
+      // has a step left to do.
+      paired: false,
+      // This server launches nothing for REMOTE.
+      openServerBrowser: false,
+      consent: null,
+      // What the operator carries to the other browser.
+      authorization: {
+        code: issued.code,
+        expiresAt: issued.expiresAt,
+        // The address that browser must reach THIS server on. Resolved by the
+        // server, never typed here — the extension needs to be told it, but the
+        // dashboard already knows it.
+        baseUrl: publicBaseUrl(req),
+        nodeId: target.nodeId,
+        fieldKey: target.fieldKey,
+        label: target.label,
+      },
+    });
+    return;
+
     // ── UNREACHABLE BY CONSTRUCTION ──────────────────────────────────────────
     //
-    // Every plan that reaches this point has `serverMayGrant: true` and has
-    // already answered above; the only plans that do not are `local_disabled` /
-    // `local_unavailable`, which 409'd earlier in this handler.
+    // Both environments answer above: LOCAL through the `serverMayGrant` branch,
+    // REMOTE through the authorization branch that follows it. The only plans
+    // that reach neither are `local_disabled` / `local_unavailable`, and those
+    // 409'd earlier in this handler.
     //
-    // WHAT USED TO BE HERE: the two LOCAL branches — "already paired, rebind"
-    // and "first time, mint an Authorization Code with `inspectorAuth.issue()`
-    // and advertise a `baseUrl` for the operator to retype". Both are gone. The
-    // first moved up into the shared server-granted branch; the second is the
-    // reported defect and has no replacement, because there is nothing for a
-    // user to type when the browser is this server's own.
-    //
-    // Kept as an explicit 500 rather than deleted so that a future plan shape
-    // that forgets to set `serverMayGrant` fails loudly here instead of silently
-    // returning `undefined` and leaving the dashboard waiting forever.
+    // Kept as an explicit 500 rather than deleted so a future plan shape that
+    // forgets to decide fails loudly here instead of silently returning
+    // `undefined` and leaving the dashboard waiting forever.
     res.status(500).json({
       success: false,
       reason: 'ATTRIBUTE_SEND_FAILED',
@@ -1440,39 +1521,86 @@ export const createModeRoutes = (): Router => {
     res.json({ success: true, released, revoked, targets: targetFields.list(userId) });
   });
 
-  /* ==========================================================================
-     THE AUTHORIZATION CODE ROUTES ARE REMOVED.
-     --------------------------------------------------------------------------
-     Two routes lived here:
+  /**
+   * Redeem an Authorization Code. THE REMOTE HALF OF THE CONTRACT.
+   *
+   * ── WHY THIS ROUTE EXISTS AGAIN ────────────────────────────────────────────
+   * A previous revision deleted `/inspector/authorize` and `/inspector/pair`
+   * together, reasoning that «both browsers belong to this server, so neither
+   * environment has anything for the operator to transcribe». The reasoning was
+   * sound; the premise was inverted. REMOTE does not mean "the browser this
+   * server launches" — it means the opposite:
+   *
+   *   «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند و ارتباط مستقیم با پلاگین
+   *    مرورگر رو نمی‌شه رفت، پس ما هم به یک اتورایز نیاز داریم تا تایید بشه که
+   *    فرد خودش است و هم به یک بیس یو ار ال»
+   *
+   * There really are two machines in the REMOTE case, and this server really
+   * cannot reach into a browser on someone's desktop. A code carried by the
+   * operator is the only thing that closes that gap. So this is not a deleted
+   * flow growing back: it is the flow restored to the one environment that
+   * always needed it.
+   *
+   * `/inspector/authorize` is deliberately NOT restored alongside it. Minting is
+   * not a separate operator action any more — `/inspector/targeting/begin`
+   * issues the code as part of choosing REMOTE, so there is no way to obtain a
+   * code without having named the field it is for. A standalone minting endpoint
+   * would be a code with no destination attached, which is exactly the loose
+   * "Connect Inspector" button that the Targeting flow replaced.
+   *
+   * THE EXTENSION AUTHENTICATES WITH ITS OWN KEY, and the binding is filed
+   * against that key — so redeeming a code proves "this client, for that one
+   * field", never "this client, for anything it later asks about". The standing
+   * rule holds: «The Extension must NEVER be able to choose an arbitrary Target
+   * Field.» It names a code; the SERVER decides what that code meant.
+   */
+  router.post('/inspector/pair', (req: AuthenticatedRequest, res: Response) => {
+    const body = req.body || {};
+    const code = String(body.code || '');
+    // The caller's own key, not the server's seeded token: this is a browser on
+    // another machine, and the whole point is that it identifies itself.
+    const apiKey = String(req.apiKey || '');
 
-       POST /inspector/authorize  minted a one-time code for a Target Field and
-                                  returned it together with a Base URL to type
-                                  it into.
-       POST /inspector/pair       redeemed that code and bound the extension.
+    if (!apiKey) {
+      res.status(401).json({
+        success: false,
+        reason: 'INVALID_AUTHORIZATION_CODE',
+        error: 'This browser is not authenticated with the server.',
+      });
+      return;
+    }
 
-     They implemented an architecture that is withdrawn. Under the current
-     contract neither environment has a code, because neither environment has
-     anything for the operator to transcribe:
+    const result = inspectorAuth.redeem(apiKey, code);
 
-       LOCAL  the browser runtime on the SAME server as this process. The
-              server knows its own internal address and binds the target field
-              itself in /inspector/targeting/begin — see the
-              `!plan.needsRemoteApproval` branch, which rebinds and returns
-              `paired: true` with nothing to display.
-       REMOTE a browser on this server's infrastructure, side-loaded with the
-              extension and bootstrapped with the server's own public address.
-              It acquires its target by ANSWERING a request the server raised
-              (POST /inspector/consent/decide), never by receiving a secret.
+    if (!result.ok) {
+      const reason = String(result.reason || 'INVALID_AUTHORIZATION_CODE');
+      // 403 rather than 400: the request was well-formed, the credential was
+      // not accepted. The two reasons are kept distinct because "ask for a new
+      // code" and "check what you typed" are different instructions.
+      res.status(403).json({
+        success: false,
+        reason,
+        error: AUTHORIZATION_MESSAGES[reason]
+          || 'That authorization code was not accepted.',
+      });
+      return;
+    }
 
-     Deleting them rather than leaving them mounted-but-unreachable is
-     deliberate. A live code-minting endpoint is a working half of the removed
-     flow: the next UI that wanted to "just add a code box" would find the
-     server side already built, and the credential form would grow back. The
-     durable binding primitives it used (inspectorAuth.issue/redeem) remain in
-     InspectorAuthorization.ts because the browser-SESSION handoff subsystem —
-     a different concern, binding a browser rather than a field — still uses
-     them.
-     ========================================================================== */
+    // The extension learns its destination HERE, and only here. This is the
+    // value it will address every subsequent submit with — the answer to
+    // «ظاهرا نمیدونه به کدوم فیلد باید ارسال بشه» for the REMOTE case, exactly
+    // as the in-page prompt is the answer for LOCAL.
+    // The destination comes off the BINDING the server just created, not off
+    // anything the caller sent. `redeem` resolved the code to a field itself, so
+    // this response is the server telling the extension what it decided.
+    res.json({
+      success: true,
+      paired: true,
+      environment: 'remote',
+      targetFieldId: result.binding.targetFieldId,
+      userId: result.binding.userId,
+    });
+  });
 
   /**
    * The extension sends the ONE radio-selected attribute. THE route this whole

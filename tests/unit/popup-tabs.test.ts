@@ -361,25 +361,61 @@ describe('§6 — Connection is only Connection', () => {
     }
   });
 
-  it('contains no credential input of any kind', () => {
-    // The inverse, asserted by name. Listing the exact removed ids means a
-    // future change that reintroduces any one of them fails here rather than
-    // being noticed by the user as a form that came back.
+  it('contains exactly two inputs, both REMOTE-only, and none of the deleted ones', () => {
+    // THE ASSERTION THAT HAD TO CHANGE, AND WHY IT IS NOT A RELAXATION.
+    //
+    // This used to forbid `<input>` on the panel outright, which was the right
+    // rule stated one step too broadly. The requirement it enforced is about
+    // ONE browser:
+    //
+    //     «LOCAL UI نباید این موارد را داشته باشد:
+    //      Base URL / API Key / Authorization Code / Remote Approval»
+    //
+    // LOCAL is the browser on the SAME server as the project, so there is one
+    // machine and nothing a human could supply that the server does not already
+    // know. REMOTE is the browser on the operator's OWN machine, and no amount
+    // of server-side resolution can tell a far-away browser an address it has
+    // never been given:
+    //
+    //     «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند … پس ما هم به یک اتورایز
+    //      نیاز داریم … و هم به یک بیس یو ار ال»
+    //
+    // So the rule tightens rather than loosens: the OLD ids stay forbidden by
+    // name, the count is pinned at exactly two, both live inside #authCard, and
+    // that card ships hidden. A third input, or either of these escaping the
+    // card, fails here.
     const p = panel('p-connection');
     for (const dead of ['modeLocal', 'modeRemote', 'baseUrl', 'apiKey', 'inspCode', 'connect']) {
       expect(p, `Connection must not contain #${dead}`).not.toContain(`id="${dead}"`);
     }
-    // No free-text entry at all: an <input> or <textarea> here is something to
-    // type into, whatever it happens to be called.
-    expect(p).not.toMatch(/<input\b/i);
+    // Two, and exactly two.
+    const inputs = p.match(/<input\b/gi) || [];
+    expect(inputs.length, 'exactly two inputs, both REMOTE-only').toBe(2);
+    expect(p).toContain('id="authBase"');
+    expect(p).toContain('id="authCode"');
+    // Free-text areas remain banned outright: nothing here is prose.
     expect(p).not.toMatch(/<textarea\b/i);
+    // Both belong to the REMOTE card, which is hidden until REMOTE is chosen.
+    // Sliced rather than searched, so an input drifting out of the card fails.
+    const authCard = p.slice(p.indexOf('id="authCard"'));
+    expect((authCard.match(/<input\b/gi) || []).length).toBe(2);
+    expect(p).toMatch(/id="authCard"[^>]*\bhidden\b/);
   });
 
-  it('says plainly that there is nothing to enter', () => {
+  it('says there is nothing to enter, and says which browser that is true of', () => {
     // An empty panel is indistinguishable from a panel that failed to render. A
     // user who remembers typing an address needs to be told that not typing one
     // is now the correct state, or the fix reads as a bug.
-    expect(panel('p-connection')).toMatch(/nothing to enter/i);
+    //
+    // But the sentence has to be SCOPED, and unscoped is how it read before.
+    // "There is nothing to enter" is a promise this panel cannot keep once
+    // REMOTE is chosen and the credential card appears below it — and a lede
+    // contradicting the card under it reads as a bug in whichever of the two the
+    // user happens to believe. So the claim must name the local browser.
+    const p = panel('p-connection');
+    expect(p).toMatch(/nothing to enter/i);
+    const lede = (p.match(/[^<>]*nothing to enter[^<>]*/i) || [''])[0];
+    expect(lede, 'the claim must name the browser it is true of').toMatch(/local/i);
   });
 
 
@@ -399,22 +435,36 @@ describe('§6 — Connection is only Connection', () => {
     expect(p).not.toMatch(/workflow/i);
   });
 
-  it('offers no backend chooser, and still never mentions a Remote Browser', () => {
+  it('offers no BACKEND chooser, while hosting the BROWSER chooser under its own heading', () => {
     const p = panel('p-connection');
     // The rule this test enforces is unchanged and permanent: the three concepts
     // must not be conflated. BrowserEnvironment (LOCAL/REMOTE) decides which
     // browser does the picking, TargetField decides where the data lands, and
     // the Inspector sends one value.
     //
-    // What changed is that the popup's own Local/Remote control — a BACKEND URL
-    // choice, §1's, unrelated to BrowserEnvironment despite the identical words —
-    // is gone, because the backend address is resolved internally now. Removing
-    // it removes the likeliest source of the confusion this test guards against,
-    // so the first two assertions invert while the last two stand.
+    // The popup's own Local/Remote BACKEND control — §1's, an address choice that
+    // shared nothing but its two English words with BrowserEnvironment — stays
+    // gone, because the backend address is resolved by the server now. That was
+    // always the real source of the confusion this test guards.
     expect(p).not.toMatch(/Local Backend/);
     expect(p).not.toMatch(/Remote Backend/);
-    expect(p).not.toMatch(/Remote Browser/i);
     expect(p).not.toMatch(/move (a |your )?(running )?session/i);
+    // WHAT CHANGED: the phrase "Remote Browser" was previously banned from this
+    // panel outright, as a proxy for "no browser chooser here". The chooser now
+    // lives here deliberately, because the user asked for it and because the
+    // panel cannot be honest without it:
+    //
+    //     «باید دو بخش داشته باشیم توی تب کانکت چون دو نوع مرورگر داریم»
+    //
+    // A ban on the WORDS is no longer available as a proxy, so the property is
+    // asserted directly instead — the two questions are separate CARDS with
+    // separate headings, which is what actually prevents conflation.
+    expect(p).toContain('id="envCard"');
+    expect(p).toMatch(/Browser environment/i);
+    expect(p).toMatch(/Connection status/i);
+    // …and the browser words appear under the browser heading, not under the
+    // backend one. Order is the test: env card first, backend report after.
+    expect(p.indexOf('id="envCard"')).toBeLessThan(p.indexOf('id="connBackend"'));
   });
 
 

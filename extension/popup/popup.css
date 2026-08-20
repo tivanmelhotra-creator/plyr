@@ -126,8 +126,7 @@ body {
 /* The design's recurring label atom. Defined once, applied by role. */
 .card-hd h2,
 .tabs label,
-.field.stack span,
-.field.inline > span:first-child,
+.flabel,
 .legend .lg,
 .kv .k,
 .idlabel,
@@ -530,28 +529,87 @@ body {
    setting. */
 .envname { font: 700 11px/14px var(--mono); letter-spacing: .02em; }
 .envdesc { font-size: 11px; line-height: 14px; color: var(--muted); }
-/* What the card will ASK OF THE USER, stated before it is pressed: "Automatic"
-   or "Needs Remote Approval". Never a credential — there is none to ask for. */
+/* What the card will ASK OF THE USER, stated BEFORE it is pressed, so nobody
+   commits to a browser and is then surprised by a form. Three colours for three
+   different asks: is-ok = nothing to enter (LOCAL — approve the prompt in the
+   server's own browser), is-code = a Base URL and an authorization code (REMOTE,
+   the operator's own machine, the one case with a real trust gap), is-warn = this
+   browser is not available at all. */
 .envnote { font: 10px/13px var(--mono); }
 .envnote.is-ok { color: var(--green); }
 .envnote.is-code { color: var(--orange); }
 .envnote.is-warn { color: var(--danger); }
 
-/* ── Removed: the backend mode cards and the credential fields ────────────
-   The rules for `.modegrid` / `.modecard` / `.dot` / `.modemeta` / `.modename`
-   / `.modeurl`, and for `.field` / `.ibox` / `.peek`, are deleted along with the
-   markup they dressed: the Local-vs-Remote backend radio pair, the Base URL box,
-   the API key box with its show/hide eye, and the Authorization Code box.
+/* ── REMOTE BROWSER CONNECTION — the two inputs, and only those two ───────
+   STILL REMOVED, permanently: `.modegrid` / `.modecard` / `.dot` / `.modemeta` /
+   `.modename` / `.modeurl` (the Local-vs-Remote BACKEND radio pair, which wrote
+   a Base URL for you), and `.peek` (the API-key show/hide eye). The backend
+   address is resolved by the server, and the extension authenticates with its
+   own key — a stylesheet that still knew how to render an API-key box would be
+   half of a form we must never show.
 
-   The popup no longer has a single control a user types into. The address and
-   the token are resolved by the server that launched this browser and reported
-   as read-only rows in "Connection status"; the target is bound by the server
-   when the crosshair is used. Styles for input controls that may not exist are
-   removed rather than left behind, because a stylesheet that still knows how to
-   render a credential form is half of one.
+   RESTORED, scoped to REMOTE: `.field` and `.input`. Not a revival — the reason
+   the old ones went away does not apply here. They were deleted because the
+   server already held every value they asked for, which is true of the browser
+   ON the server and false of a browser on the operator's own machine. Across
+   that gap there is no channel except the operator, so exactly two boxes exist:
+   #authBase and #authCode, inside #authCard, which stays `hidden` until REMOTE
+   is chosen AND a code has actually been issued.
 
-   `.field` is deliberately gone too, even though it looks generic: its only
-   users were those three inputs. */
+   Sized and coloured like the read-only rows above them rather than like a
+   typical web form, so the panel still reads as one surface: the inputs are the
+   exception on it, not its purpose. */
+.field { display: block; margin-top: 10px; }
+.field:first-child { margin-top: 0; }
+/* Same mono/uppercase treatment as every other label atom in this popup — see
+   the shared rule near the top; this one is listed there too. */
+.flabel {
+  display: block;
+  font: 10px/13px var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 5px;
+  padding: 7px 9px;
+  font: 12px/16px var(--sans);
+  color: var(--text);
+  background: var(--panel3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+/* Both boxes hold machine text — a URL and a code — where l/1 and O/0 have to be
+   told apart by eye before the operator presses Connect. */
+.input.mono { font-family: var(--mono); }
+.input::placeholder { color: #5a5a5a; }
+.input:hover { border-color: #444; }
+.input:focus {
+  outline: none;
+  border-color: var(--orange);
+  background: #161616;
+}
+/* The code input and its Paste button on one line. The button is sized by its
+   own content and the input takes what is left, so a narrow popup shrinks the
+   box rather than wrapping the button underneath it — a Paste control that has
+   drifted away from the box it fills reads as belonging to the next field. */
+.inrow { display: flex; gap: 8px; align-items: flex-start; }
+.inrow .input { flex: 1 1 auto; min-width: 0; }
+/* Nudged down by the input's own top margin so the two line up on their first
+   text row, not on their box edges. */
+.inrow .btn { flex: 0 0 auto; margin-top: 5px; }
+/* Under the box, not beside it: this is why the value is what it is, and it has
+   to survive a long pre-filled URL without reflowing the row. */
+.fhelp { margin: 4px 0 0; font-size: 10px; line-height: 14px; color: var(--muted); }
+/* The Connect button is an ordinary-width primary, right-aligned, NOT the
+   full-width accent bar used by the crosshair. That bar marks the one thing a
+   first-time user should press; this is the tail of a step they already started
+   by choosing REMOTE, and giving it the same weight would make two competing
+   primary actions on adjacent tabs. */
+.cta.tight { margin-top: 10px; justify-content: flex-end; }
 
 /* ── SELECTED ELEMENT rows ────────────────────────────────────────────────
    The design's `.selected-item`: a 110px mono key column, then the value, one

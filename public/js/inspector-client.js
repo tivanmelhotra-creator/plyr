@@ -261,17 +261,22 @@
    * (src/Routes/mode.routes.ts) and its only caller — the per-field "Connect
    * Inspector" row in flow-editor.js — is deleted too.
    *
-   * Nothing replaces it on this client, because binding is no longer something
-   * the page asks for and then displays. `targetingBegin()` below does the whole
-   * job in one call:
+   * Nothing replaces it on this client, and that is still right — but for a
+   * narrower reason than was first written. The route was wrong because it could
+   * mint a code with NO FIELD attached, which is how a code ended up being
+   * something the operator carried around rather than something that pointed
+   * somewhere. Code minting now happens inside `/inspector/targeting/begin`, so
+   * a code cannot exist without the field it was issued for.
    *
-   *   LOCAL   the server rebinds the extension to the field internally and
-   *           answers `paired: true`. There is nothing to show.
-   *   REMOTE  the server raises a consent request; the remote browser answers it
-   *           and receives the target directly.
+   * `targetingBegin()` below does the whole job in one call:
    *
-   * Keeping a code-minting wrapper here with no route behind it would only
-   * invite a caller to be written for it. */
+   *   LOCAL   the server rebinds itself to the field, opens (or reuses) its own
+   *           browser and raises the prompt there. Nothing to display here.
+   *   REMOTE  the server returns a per-field code and its own public address,
+   *           for the extension on the operator's machine to redeem.
+   *
+   * Keeping a free-standing code-minting wrapper here would only invite a caller
+   * to be written for it — and that caller would be the unattached code again. */
 
   // ---------------------------------------------------------------------------
   // TARGETING — the LOCAL / REMOTE step that now opens the flow
@@ -309,10 +314,23 @@
    * The user chose an environment. Register the destination and find out what
    * happens next.
    *
-   * Resolves to the server's plan. `step` is always 'targeting' now — there is
-   * no 'authorize' step and no `code`, in either environment. The one difference
-   * left between them is `plan.needsRemoteApproval`: LOCAL is attached by this
-   * server before it answers, REMOTE asks the other browser for approval first.
+   * Resolves to the server's plan, and the two plans are genuinely different
+   * shapes — which is the correction. An earlier revision had `step` fixed at
+   * 'targeting' for both, on the belief that both browsers belonged to the
+   * server. Only one does:
+   *
+   *   LOCAL   `step:'targeting'`, `openServerBrowser:true`, `consent:{…}`.
+   *           The browser is on THIS server, so the server launches or reuses it
+   *           and raises an in-page prompt there naming the field. Nothing is
+   *           returned for the operator to enter, because there is nothing this
+   *           server does not already know about a machine that is itself.
+   *   REMOTE  `step:'authorize'`, `authorization:{code,baseUrl,…}`.
+   *           The browser is on the OPERATOR'S machine. The server cannot launch
+   *           it, cannot see it, and has no channel to it except the operator —
+   *           so it mints a single-use per-field code and reports its own public
+   *           address, and the pairing completes when the extension redeems them
+   *           through POST /inspector/pair.
+   *
    * Resolves to null on refusal rather than rejecting — the caller is a button,
    * and a failed request must leave the editor usable.
    */
@@ -337,7 +355,21 @@
   }
 
   /**
-   * Is the Remote Browser already up and answering?
+   * Is the browser ON THIS SERVER already up and answering?
+   *
+   * RENAMED from `remoteBrowserLive`, and the rename is the bug fix rather than
+   * cosmetics. The endpoint it calls has not changed and never could: /browser/
+   * real/health asks THIS server about the Chromium THIS server manages. That is
+   * the LOCAL browser under the project's own naming — local TO THE PROJECT —
+   * and calling it "remote" is what let the whole flow read backwards:
+   *
+   *   «مشکل از پروژه هست که نام گذاری اشتباهی داره — وقتی لوکال می‌زنم باید
+   *    مرورگر لوکال سرور بالا بیاد ولی برعکسه.»
+   *
+   * There is deliberately no equivalent probe for REMOTE, and there cannot be:
+   * a browser on the operator's own machine is behind their network, and this
+   * server has no route to ask it anything. Its liveness is discovered exactly
+   * once, when it redeems a code.
    *
    * Asked so the Targeting flow can DECLINE to relaunch a browser the operator
    * is already looking at:
@@ -356,7 +388,7 @@
    * the OLD behaviour (open the browser), because a spurious "already live" is
    * the one outcome that strands the flow.
    */
-  function remoteBrowserLive() {
+  function serverBrowserLive() {
     return get('/browser/real/health')
       .then(function (res) {
         return !!(res && res.success && res.running && res.responsive);
@@ -367,10 +399,15 @@
   /**
    * Is this Target Field attached to an Inspector yet?
    *
-   * No longer "has the user typed the code" — nothing is typed. LOCAL comes back
-   * attached, so this answers `paired:true` on the first poll. REMOTE genuinely
-   * resolves later, once the approval prompt is answered inside the other
-   * browser, and the server is the only party that sees both sides.
+   * Both environments can resolve later, for two different reasons, and the
+   * distinction was previously stated the wrong way round:
+   *
+   *   LOCAL   the server has already granted itself access, but the DESTINATION
+   *           is only written when the in-page prompt in its own browser is
+   *           approved. So `paired` can be true while the binding is still
+   *           pending — the approval is the act that settles it.
+   *   REMOTE  nothing is granted up front at all. This turns true when the
+   *           extension on the operator's machine redeems its code.
    */
   function targetingStatus(targetFieldId) {
     if (!targetFieldId) return Promise.resolve(null);
@@ -711,7 +748,10 @@
     targetingBegin: targetingBegin,
     targetingStatus: targetingStatus,
     /** Whether the server's browser is already up, so it need not be relaunched. */
-    remoteBrowserLive: remoteBrowserLive,
+    // Exported under the corrected name only. No `remoteBrowserLive` alias: an
+    // alias would let a caller keep asking this server about a browser it cannot
+    // reach and get a confident answer about a different one.
+    serverBrowserLive: serverBrowserLive,
     targetingUnpair: targetingUnpair,
     releaseTarget: releaseTarget,
     releaseNode: releaseNode,

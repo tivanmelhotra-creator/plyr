@@ -60,22 +60,37 @@
 
   The "Backend" row on CONNECTION is §1's distinction and ONLY that: the LOCATION
   OF THE BACKEND, reported after the server resolved it. The Browser Environment
-  is reported on INSPECT as a separate, differently-labelled row, because they
-  are different questions.
+  is CHOSEN on CONNECTION too, but as a separate card with its own heading, and
+  it is also reported on INSPECT as a differently-labelled row — the same two
+  English words for two unrelated questions is precisely why neither is allowed
+  to borrow the other's control.
 
-  NOTHING ON EITHER TAB IS A CREDENTIAL INPUT
-  ───────────────────────────────────────────
-  The Connection tab no longer contains #baseUrl, #apiKey, #apiKeyPeek, #inspCode
-  or #connect, and it no longer contains the Local/Remote backend radio pair
-  (#modeLocal / #modeRemote / #modeLocalUrl / #modeRemoteUrl). The server that
-  launched this browser already knows its own address and token, and this popup
-  reads them from the bootstrap it was seeded with — so a form here could only
-  ask the user to re-enter, by hand, something already known and correct.
+  ONE PATH ASKS FOR NOTHING; THE OTHER ASKS FOR EXACTLY TWO THINGS
+  ────────────────────────────────────────────────────────────────
+  The old blanket rule was "no credential input anywhere", and it was built on a
+  premise that turned out to be half right with the two names swapped. Corrected,
+  reading the words from where the PROJECT stands:
 
-  LOCAL  = the browser runtime on the same server as the app: internal address,
-           no key, no code, no prompt.
-  REMOTE = the browser on the server's own infrastructure: address from the
-           server's public configuration, no key, no code, one Remote Approval.
+  LOCAL  = the browser runtime on the SAME SERVER as this project — local TO THE
+           PROJECT. One machine. The server launches it (or reuses the window
+           already open), talks to it over its own loopback address on its own
+           real port, and raises an in-page prompt there naming the field. There
+           is nothing a user could supply that the server does not already hold,
+           so this path asks for nothing: no Base URL, no API key, no code.
+  REMOTE = a browser on the OPERATOR'S OWN machine — remote FROM the project. Two
+           machines, a real network between them, and no way for the server to
+           reach in. Only here does the popup ask, and only for the two facts the
+           gap makes unknowable: #authBase (where this browser can reach the
+           server, pre-filled from the server's own answer) and #authCode (a
+           single-use, per-field authorization code).
+
+  Still absent from both, permanently: #apiKey / #apiKeyPeek, and the Local/Remote
+  BACKEND radio pair (#modeLocal / #modeRemote / #modeLocalUrl / #modeRemoteUrl).
+  The backend location is resolved by the server, and the extension already
+  authenticates with its own key — asking again would be asking the user to
+  re-enter by hand something already known and correct. The old #baseUrl,
+  #inspCode and #connect ids are likewise not reinstated; the two inputs that do
+  exist are new, REMOTE-scoped, and hidden until REMOTE is actually chosen.
 
   THE TABS USE NO JAVASCRIPT. They are radio inputs plus <label>s switched by
   CSS `:checked ~` rules — an MV3 popup runs under a CSP that refuses inline
@@ -221,50 +236,23 @@
         </div>
       </section>
 
-      <!-- ── BROWSER ENVIRONMENT — THE FIRST STEP OF TARGETING ───────────
-           REPORTED, and the regression this section repairs:
+      <!-- ── WHERE THE BROWSER CHOICE LIVES NOW ──────────────────────────
+           The LOCAL / REMOTE chooser used to sit here, directly above the
+           crosshair. It has moved to the Connection tab, and the move is the
+           point rather than a tidy-up.
 
-             «UI فعلی دیگر هیچ انتخابی برای LOCAL BROWSER / REMOTE BROWSER
-              ندارد … این انتخاب باید در ابتدای Target This Field وجود داشته
-              باشد و state واقعی Browser Environment را تعیین کند.»
+           «باید دو بخش داشته باشیم توی تب کانکت چون دو نوع مرورگر داریم.»
 
-           Placed ABOVE the crosshair button, because that is what "at the start
-           of Target This Field" means: the environment is chosen, and only then
-           does the pick happen in it. Below the Target Field card, because which
-           FIELD is being targeted is the question this one is an answer about.
+           Choosing REMOTE now produces something to fill in — a Base URL and an
+           authorization code — and a form is not what this tab is for: Inspect
+           is one crosshair and one pick. Connection is where a destination is
+           established, which is exactly what these two sections do. Keeping the
+           chooser here while its consequence appeared over there would split one
+           act across two tabs.
 
-           NOT THE BACKEND CONNECTION — «این را با Backend Connection اشتباه
-           نکن.» The Connection tab's "Backend" row says WHERE THE SERVER IS; it
-           is resolved by the server and is not a choice. This is WHICH BROWSER
-           does the picking. Two different questions, which is why they live on
-           different tabs under different words.
-
-           WHAT IS DELIBERATELY ABSENT FROM BOTH CARDS
-           ───────────────────────────────────────────
-           No Base URL, no API key, no Authorization Code. Removing those was
-           correct and they are NOT coming back:
-
-             LOCAL  — the browser runtime on the SAME server as the app. Address
-                      and token are that server's own, resolved internally. One
-                      click, nothing to enter, no approval prompt.
-             REMOTE — the browser on the server's infrastructure. Address from
-                      the server's public configuration. Still no key and no
-                      code; the one human act is approving the Remote Approval
-                      prompt, which binds that browser to this field — and an
-                      already-running remote browser is reused, not replaced.
-
-           The cards are rendered by popup.js from the SERVER's own
-           environmentOptions(), so this panel can never offer a browser the
-           server would refuse. Buttons, not radios: choosing is an action that
-           registers the destination, not a setting that sits there. -->
-      <section class="card" id="envCard">
-        <div class="card-hd"><h2>Browser environment</h2></div>
-        <div class="card-bd">
-          <p class="lede">Choose which browser you will point at the element. Nothing to enter either way.</p>
-          <div class="envgrid" id="envGrid"></div>
-          <div class="status" id="envStatus"></div>
-        </div>
-      </section>
+           Nothing is lost from this tab: paintTarget() already names the browser
+           in force on the Target Field card above, so the state is still
+           readable from here — it is only no longer changed from here. -->
 
       <!-- ── THE PRIMARY ACTION ──────────────────────────────────────────
            Full-width, solid accent, crosshair mark — the one thing on this tab
@@ -359,12 +347,14 @@
     </section>
 
     <!-- ══ CONNECTION ═══════════════════════════════════════════════════
-         «Connection فقط Connection است.» — and Connection is now something the
-         user READS, never something they fill in.
+         «Connection فقط Connection است.» — Connection is where a destination is
+         ESTABLISHED, and nothing else lives here. Two browser types, so two
+         sections: «باید دو بخش داشته باشیم توی تب کانکت چون دو نوع مرورگر
+         داریم.»
 
-         WHAT USED TO BE HERE, AND WHY IT IS GONE
-         ────────────────────────────────────────
-         This panel used to open with three input controls and a Connect button:
+         WHAT USED TO BE HERE, WHAT STAYED GONE, AND WHAT CAME BACK
+         ─────────────────────────────────────────────────────────
+         This panel once opened with a form for everyone:
 
            Base URL            text input, placeholder http://127.0.0.1:3000
            API key             password input, with a show/hide eye
@@ -372,29 +362,80 @@
            [ Connect ]         redeemed the code against the backend
 
          plus a Local Backend / Remote Backend radio pair that wrote the Base URL
-         for you. All of it is deleted, because none of it may be asked for:
+         for you. Deleting it was right, and most of it stays deleted. What was
+         WRONG was deleting it for BOTH browsers, because the two are not in the
+         same situation at all — and the previous revision also had their names
+         the wrong way round, which is what hid the difference:
 
-           LOCAL BROWSER  → the browser runtime on the SAME server as the app.
-                            The backend address is internal and resolved by the
-                            server itself. No API key, no Authorization Code, no
-                            approval prompt — the connection is automatic.
-           REMOTE BROWSER → the browser on the server / remote infrastructure.
-                            Its address comes from the server's own public
-                            configuration. Still no API key and no Authorization
-                            Code; the one thing the user does is APPROVE the
-                            Remote Approval prompt, which binds that browser to
-                            the Target Field they are working on.
+           LOCAL BROWSER  → the browser runtime on the SAME server as this
+                            project. One machine. The address is that server's
+                            own loopback on its own real port, resolved
+                            internally, and the code would be the server proving
+                            its identity to itself. So: nothing to enter, ever.
+                            The single human act is approving the in-page prompt
+                            that the server raises in that browser.
+           REMOTE BROWSER → a browser on the OPERATOR'S OWN machine. Two
+                            machines, a real network between them, and no way for
+                            the server to reach in and hand anything over. There
+                            is genuinely no channel other than the operator, so
+                            this path — and ONLY this path — asks for a Base URL
+                            and a per-field authorization code.
 
-         In both cases the address and the credential are facts the SERVER
-         already holds — it is the party that launched this browser. Asking the
-         user to retype them here was asking them to re-supply, by hand and from
-         inside a browser they may not be able to read them from, values the
-         server had all along.
+         The Local Backend / Remote Backend radio pair and the API-key box are
+         still gone and are not coming back: the backend address is resolved by
+         the server, and the extension already authenticates with its own key.
+         What is asked for is exactly what the two-machine gap makes unknowable.
 
-         What replaces the form is the same information as an ANSWER: which
-         backend was resolved, whether it is reachable, and which Target Field a
-         pick would land in. -->
+         Everything else on this panel is still an ANSWER rather than a question:
+         which backend was resolved, whether it is reachable, and which Target
+         Field a pick would land in. -->
     <section class="panel" id="p-connection">
+
+      <!-- ── BROWSER ENVIRONMENT — THE FIRST STEP OF TARGETING ───────────
+           Two cards, and the words mean what the PROJECT means by them. That
+           correction is the whole fix; the previous revision had them the other
+           way round and the report was exact:
+
+             «مشکل از پروژه هست که نام گذاری اشتباهی داره — وقتی لوکال می‌زنم
+              باید مرورگر لوکال سرور بالا بیاد ولی برعکسه.»
+
+           Read from where the project stands:
+
+             LOCAL BROWSER  — the browser runtime on the SAME server as this
+                              project. Local TO THE PROJECT. The server launches
+                              it (or reuses the one already up), reaches it over
+                              its own loopback address on its own real port, and
+                              raises an in-page prompt there naming the field.
+                              One machine, no trust gap, so: no Base URL, no API
+                              key, no authorization code. Approving the prompt is
+                              the entire remaining act.
+             REMOTE BROWSER — a browser on the OPERATOR'S OWN machine. Remote
+                              FROM the project. Two machines with a real network
+                              between them, and the server cannot launch it or
+                              see it. That gap is why this one — and only this
+                              one — asks for a Base URL and an authorization
+                              code, in the card below.
+
+           NOT THE BACKEND CONNECTION. The "Backend" row underneath reports
+           WHERE THE SERVER IS, resolved by the server and not a choice. This is
+           WHICH BROWSER does the picking. Same two English words, two unrelated
+           questions — which is why they are separate cards with separate
+           headings rather than one control.
+
+           First on the panel because it decides what the rest of the panel
+           shows: pick LOCAL and there is nothing further to do here; pick REMOTE
+           and the credential card appears. Rendered by popup.js from the
+           SERVER's own environmentOptions(), so this can never offer a browser
+           the server would refuse. Buttons, not radios — choosing registers a
+           destination, it is not a setting that sits there. -->
+      <section class="card" id="envCard">
+        <div class="card-hd"><h2>Browser environment</h2></div>
+        <div class="card-bd">
+          <p class="lede">Choose which browser will do the picking. Local is on the server and connects itself; remote is this machine and needs a code.</p>
+          <div class="envgrid" id="envGrid"></div>
+          <div class="status" id="envStatus"></div>
+        </div>
+      </section>
 
       <section class="card">
         <div class="card-hd"><h2>Connection status</h2></div>
@@ -403,7 +444,13 @@
                form is otherwise indistinguishable from a form that failed to
                render. A user who remembers typing an address here needs to be
                told that not typing one is now the correct state. -->
-          <p class="lede">Resolved automatically by the server that runs this browser. There is nothing to enter.</p>
+          <!-- Scoped to the browser it is true of. Said unconditionally it was a
+               promise this panel cannot keep once REMOTE is chosen — and a lede
+               that contradicts the card below it reads as a bug in whichever of
+               the two the user believes. Local still asks for nothing at all;
+               that is the part worth stating, because a panel with no form is
+               otherwise indistinguishable from one that failed to render. -->
+          <p class="lede">Resolved by the server itself. With the local browser there is nothing to enter; only a remote browser on your own machine needs an address and a code.</p>
           <div class="statebox">
             <div class="tfstate" id="connState">—</div>
             <div class="splitrow">
@@ -440,6 +487,90 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- ── REMOTE BROWSER CONNECTION — SHOWN ONLY FOR REMOTE ───────────
+           Hidden by default and unhidden by paintAuthorization() only while
+           REMOTE is the chosen environment AND the server has actually issued a
+           code. It is not a form that sits here waiting; it is the second half
+           of one act the operator just started by pressing REMOTE BROWSER.
+
+           WHY THIS IS NOT THE RETURN OF WHAT WAS DELETED
+           ─────────────────────────────────────────────
+           A previous revision stripped every credential control out of this
+           panel, and for the browser it had in mind that was right. The mistake
+           was which browser it had in mind. The server's OWN browser needs
+           nothing — it is on the same machine — and it still asks for nothing.
+           What is restored here belongs to the other case only:
+
+             «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند … پس ما هم به یک
+              اتورایز نیاز داریم تا تایید بشه که فرد خودش است و هم به یک
+              بیس یو ار ال.»
+
+           Exactly two inputs, because exactly two facts cannot be known any
+           other way when the machines are different:
+
+             BASE URL            where THIS browser can reach the server. The
+                                 server resolves its own public address and we
+                                 pre-fill it, so this is normally a confirmation
+                                 rather than a typing job.
+             AUTHORIZATION CODE  proof the operator is who they claim. Minted per
+                                 field, single-use, and that is deliberate:
+                                 «هر بار فیلد جدید اتورایز جدید باعث شد ما همیشه
+                                  با فیلد جدید ست بمونیم» — a fresh code per
+                                 field is what keeps a far-away browser following
+                                 the operator from field to field instead of
+                                 drifting onto a stale binding.
+
+           There is NO API-key box and NO password, and there will not be: the
+           extension already authenticates with its own key, so asking again
+           would be asking the operator to re-supply something we hold. -->
+      <section class="card" id="authCard" hidden>
+        <div class="card-hd"><h2>Remote browser connection</h2></div>
+        <div class="card-bd">
+          <div class="field">
+            <label class="flabel" for="authBase">Base URL</label>
+            <input class="input mono" type="url" id="authBase" placeholder="https://your-server.com" autocomplete="off" spellcheck="false">
+            <p class="fhelp">Public address of the server, reachable from this machine.</p>
+          </div>
+          <div class="field">
+            <label class="flabel" for="authCode">Authorization code</label>
+            <!-- PASTE SITS ON THIS FIELD AND NOT ON THE OTHER ONE.
+                 Base URL above is pre-filled by the server and then normally
+                 left alone, so a Paste button there would be a button for
+                 replacing a correct answer. The code is the opposite: it exists
+                 for a few minutes, it is never memorised, and it has just been
+                 copied from the dashboard on the other machine. One press
+                 instead of a right-click menu is the difference between
+                 transcription and transfer — and a mistyped single-use code
+                 fails with nothing on screen that explains why. -->
+            <div class="inrow">
+              <input class="input mono" type="text" id="authCode" placeholder="Paste authorization code here" autocomplete="off" spellcheck="false">
+              <button class="btn ghost sm" type="button" id="authPaste">
+                <span class="bicon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7">
+                    <rect x="8.4" y="8.4" width="11.2" height="12.2" rx="1.8"></rect>
+                    <path d="M15.6 8.4V5.2a1.8 1.8 0 0 0-1.8-1.8H6.2a1.8 1.8 0 0 0-1.8 1.8v9.4a1.8 1.8 0 0 0 1.8 1.8h2.2"></path>
+                  </svg>
+                </span>Paste</button>
+            </div>
+            <!-- Names the field the code was minted for, written at runtime,
+                 because a single-use code that is pasted against the wrong
+                 field fails with nothing on screen explaining why. -->
+            <p class="fhelp" id="authHint">Shown on the server when you chose Remote Browser.</p>
+          </div>
+          <div class="cta tight">
+            <button class="btn primary" type="button" id="authConnect">
+              <span class="bicon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M9.5 14.5 14.5 9.5"></path>
+                  <path d="M12.8 7.2l1.6-1.6a3.4 3.4 0 0 1 4.8 4.8l-1.6 1.6"></path>
+                  <path d="M11.2 16.8l-1.6 1.6a3.4 3.4 0 0 1-4.8-4.8l1.6-1.6"></path>
+                </svg>
+              </span>Connect</button>
+          </div>
+          <div class="status" id="authStatus"></div>
         </div>
       </section>
 
@@ -508,10 +639,19 @@
                  binding outlives it, which is what makes returning to the same
                  field a no-op rather than a fresh setup.
 
-                 It no longer answers "will I be asked for another Authorization
-                 Code?", because no code is ever asked for. It answers the
-                 question that replaced it: is this browser still bound to the
-                 field, or will the next target need a new Remote Approval? -->
+                 WHAT IT ANSWERS DEPENDS ON WHICH BROWSER IS BOUND, and the
+                 previous wording here — "no code is ever asked for" — was only
+                 true of one of them. Under the corrected naming both readings
+                 are live at once, which is exactly why this row is worth having:
+
+                   LOCAL   is this server's own browser still bound, or will the
+                           next pick raise a fresh in-page approval in it?
+                   REMOTE  is the operator's own browser still bound, or will the
+                           next pick mint a new authorization code for it?
+
+                 One row, because the operator's question is the same either way
+                 — "do I have to do something before the next pick lands?" — and
+                 only the answer's shape differs. -->
             <div class="idrow">
               <span class="idicon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6">

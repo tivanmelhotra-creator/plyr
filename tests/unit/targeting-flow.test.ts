@@ -170,13 +170,17 @@ type Responses = {
   /** Make the execCommand fallback fail too — nothing can be copied. */
   execFails?: boolean;
   /**
-   * What /browser/real/health says, via InspectorClient.remoteBrowserLive().
+   * What /browser/real/health says, via InspectorClient.serverBrowserLive().
    *
    *   undefined — the method is absent entirely (an older dashboard bundle)
    *   true      — already up and answering, so it must NOT be relaunched
    *   false     — not up, or frozen, so it MUST be launched
+   *
+   * Probes the browser ON THIS SERVER, which is the LOCAL environment. It was
+   * called `remoteLive` / `remoteBrowserLive`, naming the one browser this
+   * dashboard can neither launch nor reach.
    */
-  remoteLive?: boolean;
+  serverLive?: boolean;
 };
 
 function boot(res: Responses): Harness {
@@ -252,10 +256,14 @@ function boot(res: Responses): Harness {
       // Installed only when the test says so, because "this dashboard has no
       // liveness probe" is a real state the flow has to survive by falling back
       // to the old launch-every-time behaviour.
-      ...(res.remoteLive === undefined ? {} : {
-        remoteBrowserLive: () => {
-          calls.push({ fn: 'remoteBrowserLive', args: [] });
-          return Promise.resolve(res.remoteLive);
+      //
+      // RENAMED WITH WHAT IT PROBES. It asks whether the browser ON THIS SERVER
+      // is up, which is the LOCAL environment — `remoteBrowserLive` named the
+      // one browser this dashboard can neither launch nor probe.
+      ...(res.serverLive === undefined ? {} : {
+        serverBrowserLive: () => {
+          calls.push({ fn: 'serverBrowserLive', args: [] });
+          return Promise.resolve(res.serverLive);
         },
       }),
     },
@@ -369,17 +377,27 @@ function ctx(h: Harness, over: Record<string, unknown> = {}) {
 }
 
 // The options fixtures mirror what `environmentOptions()` in
-// src/core/BrowserEnvironment.ts actually builds, field for field. Two of those
-// fields changed with the contract and the fixtures had kept the old shape,
-// which is why so much of this file was asserting a UI that no longer exists:
+// src/core/BrowserEnvironment.ts actually builds, field for field.
 //
-//   needsAuthorization  — now the literal `false` in every option, in every
-//                         state. It was `true` for a first-time LOCAL field.
-//   needsRemoteApproval — new, and the ONE asymmetry left between the two
-//                         environments: REMOTE raises an approval prompt in the
-//                         browser it shares across runs, LOCAL never does.
-//   paired              — reported `true` for both whenever the server may grant,
-//                         which it now may for LOCAL too.
+// ── WHAT CHANGED, AND WHY THE FIXTURES HID IT ──────────────────────────────
+// These carried `needsAuthorization: false` on BOTH options and an approval on
+// `remote`, which is the inverted contract. Read from the project's point of
+// view — LOCAL is the browser on THIS server, REMOTE is one on the operator's
+// own machine — the three behavioural flags are asymmetric the other way:
+//
+//   needsAuthorization    TRUE for REMOTE only. Two machines, a real trust gap,
+//                         so a code and a Base URL. Never for LOCAL: one machine,
+//                         nothing to prove, nothing to type.
+//   needsInPageApproval   TRUE for LOCAL only, and renamed from
+//                         `needsRemoteApproval` — the old name is exactly what
+//                         made the inversion read as correct. The server's
+//                         browser is one shared window that outlives a run, so a
+//                         human names the field: «اگر بالا باشه که الرت میده».
+//   opensServerBrowser    TRUE for LOCAL only. It is the only browser this
+//                         server can launch or reuse.
+//   paired                reported TRUE whenever the server may grant, which is
+//                         LOCAL. REMOTE reports its REAL pairing state, because
+//                         there a code genuinely may still be required.
 const OPTIONS_UNPAIRED = {
   success: true,
   pairingKey: 'tf:wf1:8f21:product_selector',
@@ -387,8 +405,8 @@ const OPTIONS_UNPAIRED = {
   localEnabled: true,
   mode: 'remote',
   options: [
-    { id: 'local', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: false, note: '' },
-    { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
+    { id: 'local', available: true, paired: true, needsAuthorization: false, needsInPageApproval: true, opensServerBrowser: true, note: '' },
+    { id: 'remote', available: true, paired: false, needsAuthorization: true, needsInPageApproval: false, opensServerBrowser: false, note: '' },
   ],
 };
 
@@ -396,8 +414,10 @@ const OPTIONS_PAIRED = {
   ...OPTIONS_UNPAIRED,
   paired: true,
   options: [
-    { id: 'local', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: false, note: '' },
-    { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
+    { id: 'local', available: true, paired: true, needsAuthorization: false, needsInPageApproval: true, opensServerBrowser: true, note: '' },
+    // STILL needs a code, even paired. A far browser proves itself per field:
+    // «هر بار فیلد جدید اتورایز جدید».
+    { id: 'remote', available: true, paired: true, needsAuthorization: true, needsInPageApproval: false, opensServerBrowser: false, note: '' },
   ],
 };
 
@@ -405,8 +425,8 @@ const OPTIONS_LOCAL_OFF = {
   ...OPTIONS_UNPAIRED,
   localEnabled: false,
   options: [
-    { id: 'local', available: false, paired: false, needsAuthorization: false, needsRemoteApproval: false, note: 'local_disabled' },
-    { id: 'remote', available: true, paired: true, needsAuthorization: false, needsRemoteApproval: true, note: '' },
+    { id: 'local', available: false, paired: false, needsAuthorization: false, needsInPageApproval: false, opensServerBrowser: false, note: 'local_disabled' },
+    { id: 'remote', available: true, paired: false, needsAuthorization: true, needsInPageApproval: false, opensServerBrowser: false, note: '' },
   ],
 };
 
@@ -495,92 +515,149 @@ describe('§1 — the chooser is the FIRST step, before any browser opens', () =
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('§2 — REMOTE needs no Authorization Code either, only an approval', () => {
+describe('§2 — REMOTE is the environment that DOES need a code', () => {
+  // ── WHAT THIS SECTION USED TO SAY, AND WHY EVERY TEST IN IT TURNED OVER ───
+  //
+  // It was titled «REMOTE needs no Authorization Code either, only an approval»
+  // and asserted that pressing REMOTE opens a browser, hands it a pre-claimed
+  // tab, and raises an approval prompt. Every one of those belongs to the OTHER
+  // environment, and the operator reported the consequence directly:
+  //
+  //   «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
+  //
+  // Read from the project's point of view, REMOTE is a browser on the operator's
+  // OWN machine. This page therefore cannot open it, cannot hand it a tab, and
+  // cannot raise a dialog in it. What it can do is exactly what the operator
+  // asked for:
+  //
+  //   «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند … پس ما هم به یک اتورایز
+  //    نیاز داریم تا تایید بشه که فرد خودش است و هم به یک بیس یو ار ال»
+  //
+  // So REMOTE goes to `step: 'authorize'` and shows a code plus a Base URL. The
+  // launching and prompting half of this section did not disappear — it moved to
+  // §11, under LOCAL, where the browser this server can actually reach lives.
   let h: Harness;
   beforeEach(() => {
     h = boot({
       options: OPTIONS_UNPAIRED,
       begin: (env: string) => (env === 'remote'
         ? {
-          success: true, environment: 'remote', step: 'targeting',
-          target: { ...TARGET, environment: 'remote' }, paired: true, openRemoteBrowser: true,
+          success: true, environment: 'remote', step: 'authorize',
+          target: { ...TARGET, environment: 'remote' }, paired: false,
+          openServerBrowser: false, consent: null,
+          authorization: {
+            code: 'ABCD-1234', baseUrl: 'https://panel.example.com',
+            nodeId: '8f21', fieldKey: 'product_selector',
+            label: 'Click → product_selector',
+          },
         }
         : null),
     });
   });
 
-  it('advertises the approval prompt, which is the only thing left to warn about', async () => {
-    // WAS `tgt.noCode` — a badge that said "no Authorization Code needed" and
-    // only made sense while the OTHER card still produced one. Neither does, so
-    // the phrase distinguishes nothing; what genuinely differs is that REMOTE
-    // asks the operator to approve inside the browser it shares across runs.
+  it('advertises the code up front, before the operator commits', async () => {
+    // The heavier promise of the two, so it is stated on the card rather than
+    // discovered after the click. A card that says "connects automatically" and
+    // then produces a credential form is worse than one that warns.
     await openChooser(h);
-    expect(card(h, 'remote').find('tgt-card-note')[0].text()).toBe('tgt.needsApproval');
+    expect(card(h, 'remote').find('tgt-card-note')[0].text()).toBe('tgt.needsCode');
   });
 
-  it('never says a code is coming, in either card', async () => {
+  it('promises the approval on LOCAL and the code on REMOTE, never both on one', async () => {
+    // The two cards read TOGETHER, because a drift in the same direction on both
+    // is exactly how the inversion stayed invisible: each card looked plausible
+    // on its own.
     await openChooser(h);
-    const notes = [
-      card(h, 'local').find('tgt-card-note')[0].text(),
-      card(h, 'remote').find('tgt-card-note')[0].text(),
-    ];
-    expect(notes).not.toContain('tgt.needsCode');
-    expect(notes).not.toContain('tgt.noCode');
+    const local = card(h, 'local').find('tgt-card-note')[0].text();
+    const remote = card(h, 'remote').find('tgt-card-note')[0].text();
+    expect(local).toBe('tgt.needsApproval');
+    expect(remote).toBe('tgt.needsCode');
+    // And the badge that said "no code needed" stays gone: it only ever made
+    // sense while neither environment produced one.
+    expect([local, remote]).not.toContain('tgt.noCode');
   });
 
-  it('goes straight to targeting — no code screen', async () => {
+  it('goes to the authorize step, which is where the code is shown', async () => {
     await openChooser(h);
     card(h, 'remote').fire('click');
     await settle();
     const begin = h.calls.filter((c) => c.fn === 'targetingBegin')[0];
     expect(begin.args[2]).toBe('remote');
-    expect(h.flow.isOpen()).toBe(false);
+    // The dialog STAYS OPEN, unlike LOCAL: there is something for the operator
+    // to read off it and carry to their own browser.
+    expect(h.flow.isOpen()).toBe(true);
   });
 
-  it('opens the Remote Browser and hands it the pre-claimed tab', async () => {
+  it('shows both values the far machine needs, and nothing else', async () => {
     await openChooser(h);
     card(h, 'remote').fire('click');
     await settle();
-    expect(h.realBrowser.length).toBe(1);
-    expect(h.realBrowser[0].url).toBe('https://shop.example/p/1');
-    expect(h.realBrowser[0].gotTab).toBe(true);
+
+    const panel = h.panel()!;
+    expect(panel.find('tgt-code')).toHaveLength(1);
+    expect(panel.find('tgt-code')[0].text()).toContain('ABCD-1234');
+    // The address is REMOTE's alone — «بیس یو ار ال» — and it is resolved by
+    // the server (PublicBaseUrl), never typed here.
+    const shown = panel.find('tgt-base').map((n) => n.text()).join(' ');
+    expect(shown).toContain('https://panel.example.com');
+    // Still no API key and no password anywhere: the extension already
+    // authenticates with its own key.
+    const all = panel.find('tgt-target-value').map((n) => n.text()).join(' ');
+    expect(all.toLowerCase()).not.toContain('api key');
   });
 
-  it('claims that tab SYNCHRONOUSLY, before the server is asked', async () => {
-    // THE POPUP-BLOCKER RULE: window.open() only survives inside the click
-    // gesture, so a tab opened after the await is silently blocked.
+  it('opens NO browser and claims NO tab — it cannot reach that machine', async () => {
+    // THE INVERTED ASSERTION, corrected. This test used to REQUIRE a launched
+    // browser and a pre-claimed tab on this branch, which is what made pressing
+    // REMOTE bring up the server's own window.
     await openChooser(h);
     card(h, 'remote').fire('click');
-    expect(h.tabs.length).toBe(1);            // already open, still inside the click
-    expect(h.calls.filter((c) => c.fn === 'targetingBegin').length).toBe(1);
-    expect(h.realBrowser.length).toBe(0);     // the await has not resolved yet
     await settle();
-    expect(h.realBrowser.length).toBe(1);
+    expect(h.realBrowser).toEqual([]);
+    expect(h.tabs).toEqual([]);
   });
 
-  it('arms the field as remote', async () => {
+  it('does not arm the field yet — redeeming the code is what binds it', async () => {
+    // The destination is written by the ACT that settles it. For REMOTE that is
+    // the redemption at /inspector/pair, not the issuing of the code, so arming
+    // here would claim a binding the server has not made.
     await openChooser(h);
     card(h, 'remote').fire('click');
     await settle();
-    expect(h.armed).toEqual([
-      { targetFieldId: 'node_8f21__product_selector__a73f', environment: 'remote' },
-    ]);
-    expect(h.toasts).toContain('tgt.readyRemote');
+    expect(h.armed).toEqual([]);
   });
 
-  it('does not claim a tab for the LOCAL branch', async () => {
+  it('polls for the redemption, so the dialog resolves itself', async () => {
+    // The operator finishes in ANOTHER browser, so this page cannot know it
+    // happened except by asking. This is the one place polling is still correct.
+    await openChooser(h);
+    card(h, 'remote').fire('click');
+    await settle();
+    await h.tick();
+    expect(h.calls.filter((c) => c.fn === 'targetingStatus').length).toBeGreaterThan(0);
+  });
+
+  it('claims the tab synchronously for LOCAL instead, inside the click', async () => {
+    // THE POPUP-BLOCKER RULE, on the branch that actually needs it: window.open()
+    // only survives inside the click gesture, so a tab opened after the await is
+    // silently blocked. It is claimed for LOCAL because LOCAL is the only branch
+    // that can put a window on screen.
     const local = boot({
       options: OPTIONS_PAIRED,
       begin: {
         success: true, environment: 'local', step: 'targeting',
-        target: TARGET, paired: true, rebound: 1, openRemoteBrowser: false,
+        target: TARGET, paired: true, rebound: 1, openServerBrowser: true,
+        runtime: 'server-local', consent: null,
       },
     });
     await openChooser(local);
     card(local, 'local').fire('click');
+    expect(local.tabs.length).toBe(1);          // already open, still inside the click
+    expect(local.realBrowser.length).toBe(0);   // the await has not resolved yet
     await settle();
-    expect(local.tabs).toEqual([]);
-    expect(local.realBrowser).toEqual([]);
+    expect(local.realBrowser.length).toBe(1);
+    expect(local.realBrowser[0].url).toBe('https://shop.example/p/1');
+    expect(local.realBrowser[0].gotTab).toBe(true);
   });
 });
 
@@ -608,17 +685,27 @@ describe('§3 — LOCAL, first time for this field: attached automatically', () 
       options: OPTIONS_UNPAIRED,
       begin: {
         success: true, environment: 'local', step: 'targeting', target: TARGET,
-        paired: true, rebound: 0, openRemoteBrowser: false,
+        // FALSE here on purpose: this section is the ALREADY-BOUND LOCAL field,
+        // where the server has nothing left to open and no prompt to raise. The
+        // launch/reuse path is §11.
+        paired: true, rebound: 0, openServerBrowser: false,
         runtime: 'server-local', consent: null,
       },
     });
   }
 
-  it('the local card promises an automatic connection, BEFORE it is clicked', async () => {
+  it('the local card promises no credential, BEFORE it is clicked', async () => {
     const h = bootLocal();
     await openChooser(h);
-    // WAS `tgt.needsCode` — "an Authorization Code will be shown".
-    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
+    // WAS `tgt.needsCode` — "an Authorization Code will be shown" — which is now
+    // REMOTE's badge and never LOCAL's.
+    //
+    // `tgt.needsApproval` rather than a flat `tgt.automatic`, because the
+    // fixtures report `needsInPageApproval: true` for LOCAL and that is honest:
+    // there IS one click left, in the server's own browser. Promising "automatic"
+    // outright would leave the operator waiting at a picker for a prompt nobody
+    // told them to answer — «اگر بالا باشه که الرت میده».
+    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.needsApproval');
   });
 
   it('shows the resolved steps instead of a code screen', async () => {
@@ -679,14 +766,18 @@ describe('§3 — LOCAL, first time for this field: attached automatically', () 
     expect(h.backdrop()).toBeNull();
   });
 
-  it('never opens the remote browser on the LOCAL path', async () => {
+  it('opens nothing when the server says there is nothing to open', async () => {
+    // Driven by the SERVER's flag, not by the environment argument: this fixture
+    // answers `openServerBrowser: false` (the field is already bound), so no
+    // window may appear. A page that launched on "environment === local" alone
+    // would relaunch a browser the operator is already working in — the
+    // complaint in «اگرم بیاد بهینه نیست».
     const h = bootLocal();
     await openChooser(h);
     card(h, 'local').fire('click');
     await settle();
     await h.flushTimeouts();
     expect(h.realBrowser).toEqual([]);
-    expect(h.tabs).toEqual([]);
   });
 
   it('leaves no timer behind when the dialog is cancelled', async () => {
@@ -744,7 +835,7 @@ describe('§8 — the LOCAL flow asks the operator to copy nothing', () => {
       options: OPTIONS_UNPAIRED,
       begin: {
         success: true, environment: 'local', step: 'targeting', target: TARGET,
-        paired: true, openRemoteBrowser: false, runtime: 'server-local', consent: null,
+        paired: true, openServerBrowser: false, runtime: 'server-local', consent: null,
       },
       ...over,
     });
@@ -798,7 +889,7 @@ describe('§4 — LOCAL again for the SAME field: still nothing to do', () => {
       options: OPTIONS_PAIRED,
       begin: {
         success: true, environment: 'local', step: 'targeting', target: TARGET,
-        paired: true, rebound: 1, openRemoteBrowser: false,
+        paired: true, rebound: 1, openServerBrowser: false,
       },
     });
   });
@@ -806,12 +897,19 @@ describe('§4 — LOCAL again for the SAME field: still nothing to do', () => {
   it('reads the same on the second visit as on the first', async () => {
     // WAS `tgt.paired` ("already paired") — the second half of a pair of badges
     // whose only job was to tell the operator whether a code was coming this
-    // time. With no code in either case there is nothing to distinguish, and
-    // `environmentOptions()` reports LOCAL as paired whenever the server may
-    // grant, which is always. Two badges that promise the same thing in
-    // different words would only invite the reader to look for a difference.
+    // time. No code is coming on this path in EITHER visit, so there is nothing
+    // to distinguish, and `environmentOptions()` reports LOCAL as paired whenever
+    // the server may grant. Two badges promising the same thing in different
+    // words would only invite the reader to look for a difference.
+    //
+    // The badge is `tgt.needsApproval`, and it is the same on both visits, which
+    // is the property under test. It is not `tgt.automatic` because the approval
+    // does not go away on a revisit: the server's browser is shared and still has
+    // to be told which field this pick is for — «فرق نمی‌کنه مرورگر بالا باشه یا
+    // نباشه». A badge that promised "automatic" the second time would be the
+    // repeat case the report singles out.
     await openChooser(h);
-    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
+    expect(card(h, 'local').find('tgt-card-note')[0].text()).toBe('tgt.needsApproval');
   });
 
   it('goes straight to targeting, showing no code at all', async () => {
@@ -870,13 +968,20 @@ describe('§5 — a DIFFERENT field is a different pairing, and needs no setup e
     // field. What is gone is the SETUP that used to accompany it. So the property
     // under test moves from "a new field asks for a code" to "a new field is a
     // distinct destination, resolved just as automatically as the first".
+    // Both read `tgt.needsApproval`: LOCAL needs no CODE on either field, and
+    // the one click it does need is per-field by design, which is exactly what
+    // keeps the second field from inheriting the first one's binding.
     const paired = boot({ options: OPTIONS_PAIRED });
     await openChooser(paired);
-    expect(card(paired, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
+    expect(card(paired, 'local').find('tgt-card-note')[0].text()).toBe('tgt.needsApproval');
 
     const other = boot({ options: OPTIONS_UNPAIRED });
     await openChooser(other, { nodeId: '92aa', fieldKey: 'product_url' });
-    expect(card(other, 'local').find('tgt-card-note')[0].text()).toBe('tgt.automatic');
+    expect(card(other, 'local').find('tgt-card-note')[0].text()).toBe('tgt.needsApproval');
+
+    // And on the REMOTE card the per-field cost IS a code, both times —
+    // «هر بار فیلد جدید اتورایز جدید».
+    expect(card(other, 'remote').find('tgt-card-note')[0].text()).toBe('tgt.needsCode');
 
     // The part that must NOT collapse: the second field is asked about on its
     // own identity, never inheriting the first one's answer.
@@ -912,13 +1017,32 @@ describe('§6 — refusals are loud, never a silent downgrade', () => {
     expect(h.armed).toEqual([]);
   });
 
-  it('a failed remote begin closes the tab it optimistically claimed', async () => {
+  it('a failed LOCAL begin closes the tab it optimistically claimed', async () => {
+    // MOVED FROM REMOTE, because the tab is claimed on the branch that can put a
+    // window on screen — and that is LOCAL. Asserting it on REMOTE passed only
+    // while the claim was on the wrong branch, so it was pinning the bug.
+    //
+    // The property itself is unchanged and still matters: a refusal must not
+    // leave a blank window parked on screen, which to the operator is
+    // indistinguishable from a hung launch.
+    const h = boot({ options: OPTIONS_UNPAIRED, begin: null });
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+    expect(h.tabs.length).toBe(1);
+    expect(h.tabs[0].closed).toBe(true);
+    expect(h.toasts).toContain('tgt.failed');
+  });
+
+  it('a failed REMOTE begin claims no tab to have to close', async () => {
+    // The mirror. REMOTE opens nothing even on the happy path, so a refusal has
+    // nothing to clean up — and if a tab DID appear here, the claim would be back
+    // on the branch that cannot use it.
     const h = boot({ options: OPTIONS_UNPAIRED, begin: null });
     await openChooser(h);
     card(h, 'remote').fire('click');
     await settle();
-    expect(h.tabs.length).toBe(1);
-    expect(h.tabs[0].closed).toBe(true);
+    expect(h.tabs).toEqual([]);
     expect(h.toasts).toContain('tgt.failed');
   });
 });
@@ -1001,13 +1125,28 @@ describe('§7 — the dialog behaves like a dialog', () => {
 //      failure that strands the flow with no way forward, so every doubtful case
 //      below asserts the old behaviour is preserved.
 // ═══════════════════════════════════════════════════════════════════════════
-describe('§11 — a live Remote Browser is reused, not relaunched', () => {
-  /** REMOTE plan + a consent prompt, which is what the server now returns. */
-  function remotePlan(over: Record<string, unknown> = {}) {
+describe('§11 — a live server browser is reused, not relaunched', () => {
+  // THE ENVIRONMENT THIS BLOCK IS ABOUT CHANGED, AND ONLY BECAUSE ITS NAME DID.
+  //
+  // Everything the block tests — launching a browser, reusing one that is
+  // already up, releasing the speculatively-claimed tab, and the approval prompt
+  // that names the field — can only apply to the browser ON THIS SERVER, because
+  // that is the only one this dashboard can open or probe. Under the corrected
+  // naming that browser is LOCAL:
+  //
+  //   «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه»
+  //
+  // A browser on the operator's own machine is already open and showing
+  // something; there is nothing to launch, nothing to probe and no dialog this
+  // server can raise in it. So REMOTE appears here only in the final test, as
+  // the path that must NOT be probed.
+
+  /** LOCAL plan + a consent prompt, which is what the server now returns. */
+  function localPlan(over: Record<string, unknown> = {}) {
     return {
-      success: true, environment: 'remote', step: 'targeting',
-      target: { ...TARGET, environment: 'remote' }, paired: true,
-      openRemoteBrowser: true,
+      success: true, environment: 'local', step: 'targeting',
+      target: { ...TARGET, environment: 'local' }, paired: true,
+      openServerBrowser: true,
       consent: { consentId: 'cns_' + 'a1b2c3d4e5f6a1b2c3d4e5f6', state: 'pending', reused: false },
       ...over,
     };
@@ -1022,35 +1161,35 @@ describe('§11 — a live Remote Browser is reused, not relaunched', () => {
    * saw no `success`, and the test "failed" on tgt.failed while appearing to
    * measure the toast wording. Two parameters make that mistake unexpressible.
    */
-  function bootRemote(over: Partial<Responses> = {}, planOver: Record<string, unknown> = {}) {
+  function bootLocal(over: Partial<Responses> = {}, planOver: Record<string, unknown> = {}) {
     return boot({
       options: OPTIONS_UNPAIRED,
       ...over,
-      begin: (env: string) => (env === 'remote' ? remotePlan(planOver) : null),
+      begin: (env: string) => (env === 'local' ? localPlan(planOver) : null),
     });
   }
 
-  async function pickRemote(h: Harness) {
+  async function pickLocal(h: Harness) {
     await openChooser(h);
-    card(h, 'remote').fire('click');
+    card(h, 'local').fire('click');
     await settle();
     await settle();
   }
 
   it('does NOT relaunch when the browser is already up and answering', async () => {
-    const h = bootRemote({ remoteLive: true });
-    await pickRemote(h);
+    const h = bootLocal({ serverLive: true });
+    await pickLocal(h);
 
     // THE FIX: «مرورگر مجدد بالا نمیاد».
     expect(h.realBrowser.length).toBe(0);
     // And the field is still armed — skipping the launch must not skip the arming.
     expect(h.armed.length).toBe(1);
-    expect(h.armed[0].environment).toBe('remote');
+    expect(h.armed[0].environment).toBe('local');
   });
 
   it('DOES launch when the browser is not up', async () => {
-    const h = bootRemote({ remoteLive: false });
-    await pickRemote(h);
+    const h = bootLocal({ serverLive: false });
+    await pickLocal(h);
     expect(h.realBrowser.length).toBe(1);
     expect(h.realBrowser[0].gotTab).toBe(true);
     expect(h.armed.length).toBe(1);
@@ -1061,96 +1200,106 @@ describe('§11 — a live Remote Browser is reused, not relaunched', () => {
     // is already up that tab is surplus, and leaving it would park a blank window
     // on screen — indistinguishable, to the operator, from the broken relaunch
     // this whole branch exists to prevent.
-    const h = bootRemote({ remoteLive: true });
-    await pickRemote(h);
+    const h = bootLocal({ serverLive: true });
+    await pickLocal(h);
     expect(h.tabs.length).toBe(1);
     expect(h.tabs[0].closed).toBe(true);
   });
 
   it('still claims the tab synchronously — the popup-blocker rule is untouched', async () => {
-    const h = bootRemote({ remoteLive: true });
+    const h = bootLocal({ serverLive: true });
     await openChooser(h);
-    card(h, 'remote').fire('click');
+    card(h, 'local').fire('click');
     // No await: the tab must exist before the server is ever asked, or the
-    // browser would have blocked it.
+    // browser would have blocked it. Claimed on the LOCAL branch now, because
+    // that is the branch that can actually put a window on screen.
     expect(h.tabs.length).toBe(1);
   });
 
   it('tells the operator to answer in the browser, not that one is opening', async () => {
-    const h = bootRemote({ remoteLive: true });
-    await pickRemote(h);
+    const h = bootLocal({ serverLive: true });
+    await pickLocal(h);
     // «فقط الرت بالا میاد» — the honest instruction. Announcing "opening the
-    // Remote Browser…" would promise a tab that never appears.
+    // browser…" would promise a tab that never appears.
     expect(h.toasts).toContain('tgt.consentAsked');
-    expect(h.toasts).not.toContain('tgt.readyRemote');
+    expect(h.toasts).not.toContain('tgt.readyLocal');
   });
 
   it('says "still waiting" when the server refreshed an existing prompt', async () => {
     // reused=true means the operator pressed the picker twice for the SAME field.
     // There is no second question to answer, so claiming a new prompt arrived
     // would send them looking for one.
-    const h = bootRemote(
-      { remoteLive: true },
+    const h = bootLocal(
+      { serverLive: true },
       { consent: { consentId: 'cns_x', state: 'pending', reused: true } },
     );
-    await pickRemote(h);
+    await pickLocal(h);
     expect(h.toasts).toContain('tgt.consentWaiting');
     expect(h.toasts).not.toContain('tgt.consentAsked');
   });
 
   it('keeps the original wording when it actually launches', async () => {
-    const h = bootRemote({ remoteLive: false });
-    await pickRemote(h);
-    expect(h.toasts).toContain('tgt.readyRemote');
+    const h = bootLocal({ serverLive: false });
+    await pickLocal(h);
+    expect(h.toasts).toContain('tgt.readyLocal');
     expect(h.toasts).not.toContain('tgt.consentAsked');
   });
 
   it('launches when the dashboard has no liveness probe at all', async () => {
-    // An older bundle without remoteBrowserLive() must behave exactly as before
+    // An older bundle without serverBrowserLive() must behave exactly as before
     // rather than silently never opening a browser again.
-    const h = bootRemote({}); // remoteLive undefined -> method absent
-    await pickRemote(h);
-    expect(h.calls.some((c) => c.fn === 'remoteBrowserLive')).toBe(false);
+    const h = bootLocal({}); // serverLive undefined -> method absent
+    await pickLocal(h);
+    expect(h.calls.some((c) => c.fn === 'serverBrowserLive')).toBe(false);
     expect(h.realBrowser.length).toBe(1);
-    expect(h.toasts).toContain('tgt.readyRemote');
+    expect(h.toasts).toContain('tgt.readyLocal');
   });
 
   it('asks the probe exactly once per pick', async () => {
     // A probe per pick, not per poll: this runs on a user gesture and must not
     // turn into background traffic.
-    const h = bootRemote({ remoteLive: true });
-    await pickRemote(h);
-    expect(h.calls.filter((c) => c.fn === 'remoteBrowserLive').length).toBe(1);
+    const h = bootLocal({ serverLive: true });
+    await pickLocal(h);
+    expect(h.calls.filter((c) => c.fn === 'serverBrowserLive').length).toBe(1);
   });
 
-  it('never probes on the LOCAL branch', async () => {
-    // LOCAL has nothing to relaunch; asking would be a pointless request and a
-    // confusing dependency between two independent paths.
+  it('never probes on the REMOTE branch', async () => {
+    // REMOTE has nothing to relaunch and nothing this dashboard could probe —
+    // the browser is on somebody else's machine. Asking would be a pointless
+    // request and a confusing dependency between two independent paths.
+    //
+    // WAS ASSERTED OF LOCAL, which is the environment that MUST be probed. That
+    // one inverted expectation would have hidden the whole reuse feature.
     const h = boot({
       options: OPTIONS_PAIRED,
-      remoteLive: true,
-      begin: (env: string) => (env === 'local'
+      serverLive: true,
+      begin: (env: string) => (env === 'remote'
         ? {
-          success: true, environment: 'local', step: 'targeting',
-          target: TARGET, paired: true, openRemoteBrowser: false,
+          success: true, environment: 'remote', step: 'authorize',
+          target: { ...TARGET, environment: 'remote' }, paired: false,
+          openServerBrowser: false,
+          authorization: {
+            code: 'ABCD-1234', baseUrl: 'https://panel.example.com',
+            nodeId: '8f21', fieldKey: 'product_selector', label: 'Click → product_selector',
+          },
         }
         : null),
     });
     await openChooser(h);
-    card(h, 'local').fire('click');
+    card(h, 'remote').fire('click');
     await settle();
     await settle();
-    expect(h.calls.some((c) => c.fn === 'remoteBrowserLive')).toBe(false);
+    expect(h.calls.some((c) => c.fn === 'serverBrowserLive')).toBe(false);
+    // And no window either: this page cannot open a browser on another machine.
     expect(h.realBrowser.length).toBe(0);
-    expect(h.toasts).toContain('tgt.readyLocal');
   });
 
   it('arms the field even when there is no BrowserView to open one with', async () => {
     // Nothing can be launched AND nothing can be reused, so the only correct
     // outcome is to arm the field anyway rather than drop the pick silently.
-    const h = bootRemote({ remoteLive: true });
+    const h = bootLocal({ serverLive: true });
     delete (h.win as Record<string, unknown>).BrowserView;
-    await pickRemote(h);
+    await pickLocal(h);
     expect(h.realBrowser.length).toBe(0);
     expect(h.armed.length).toBe(1);
   });

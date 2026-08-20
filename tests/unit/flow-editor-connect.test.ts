@@ -137,18 +137,46 @@ describe('the removed machinery is absent from the client and the server', () =>
     expect(client).not.toContain('/inspector/authorize');
   });
 
-  it('mode.routes.ts mounts neither /inspector/authorize nor /inspector/pair', () => {
+  it('mounts /inspector/pair but still refuses /inspector/authorize', () => {
     const routes = code(read('src/Routes/mode.routes.ts'));
-    // Asserted on the ROUTER CALL, not the string: the file still explains in
-    // prose what these endpoints were, and that documentation is worth keeping.
+    // Asserted on the ROUTER CALL, not the string: the file explains in prose
+    // what these endpoints are and were, and that documentation is worth keeping.
+    //
+    // THESE TWO ENDPOINTS ARE NOT A PAIR, WHICH IS WHY ONLY ONE CAME BACK.
+    //
+    // `/inspector/pair` REDEEMS a code, and it had to return with the REMOTE
+    // path: the operator's own browser is on another machine, so redemption is
+    // the only act that can prove it belongs and the only writer of a REMOTE
+    // destination.
+    //
+    // `/inspector/authorize` MINTED a code on request, and it stays gone for a
+    // reason that survived the inversion entirely — it could mint a code before
+    // any field was named, so a valid credential could exist with nothing to
+    // bind. Minting now happens INSIDE /inspector/targeting/begin, which cannot
+    // run without a Target Field, so \"a code with no field\" is unrepresentable
+    // rather than merely discouraged.
     expect(routes).not.toMatch(/router\.post\(\s*['"]\/inspector\/authorize['"]/);
-    expect(routes).not.toMatch(/router\.post\(\s*['"]\/inspector\/pair['"]/);
+    expect(routes).toMatch(/router\.post\(\s*['"]\/inspector\/pair['"]/);
+    // And the mint is reachable only through the targeting route.
+    expect(routes).toMatch(/inspectorAuth\.issue\(/);
   });
 
-  it('i18n.js no longer carries the credential keys in either language', () => {
+  it('i18n.js carries the two REMOTE keys and none of the per-field row keys', () => {
     const i18n = read('public/js/i18n.js');
-    for (const key of ['tgt.authCode', 'tgt.baseUrl', 'insp.codeReady', 'insp.connect']) {
+    // `insp.*` were the PER-FIELD ROW's strings — a code minted from a button
+    // beside every input in the node detail view. That row is what the user
+    // objected to and it stays deleted, so its vocabulary stays deleted with it;
+    // a dictionary that still speaks a form's language is how the form returns.
+    for (const key of ['insp.codeReady', 'insp.codeExpires', 'insp.codeFailed', 'insp.connect', 'insp.connectHint']) {
       expect(i18n).not.toContain(`'${key}'`);
+    }
+    // `tgt.*` are the TARGETING FLOW's, and these two came back with the REMOTE
+    // branch, where a browser on another machine genuinely has to be told an
+    // address and given a code. Present in BOTH languages — a key that exists in
+    // one renders blank in the other, which is worse than a missing feature
+    // because it looks like a styling bug.
+    for (const key of ['tgt.authCode', 'tgt.baseUrl']) {
+      expect(i18n.split(`'${key}':`).length - 1, key).toBe(2);
     }
   });
 });
