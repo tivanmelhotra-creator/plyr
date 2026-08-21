@@ -115,6 +115,10 @@
     // in ctFieldId cannot express. See paintTarget() for why both are needed.
     ctEnv: $('ctEnv'), ctPairing: $('ctPairing'),
     ctState: $('ctState'), inspUnpair: $('inspUnpair'),
+    // The design's "● Connection Active" pill in the CONNECTED TO TARGET
+    // heading. Written from the SAME verdict as ctState — see paintTarget() —
+    // so the heading and the rows under it cannot disagree.
+    ctLive: $('ctLive'),
     // ── Inspect tab: target
     inspNodeName: $('inspNodeName'), inspFieldName: $('inspFieldName'),
     inspFieldId: $('inspFieldId'), inspEnv: $('inspEnv'),
@@ -171,8 +175,28 @@
     el.textContent = text == null || text === '' ? '\u2014' : String(text);
     el.className = 'ivalue mono' + (tone ? ' ' + tone : '');
   }
+  /**
+   * A state line: a coloured dot, then a sentence.
+   *
+   * ── WHY THE GLYPH IS STRIPPED HERE ─────────────────────────────
+   * THE DOT IS DRAWN BY CSS — `.tfstate::before` is a 7px disc that the tone
+   * class recolours (green for ok, orange for warn, grey otherwise). Several call
+   * sites ALSO began their text with a literal ● or ○, and the two mechanisms
+   * are additive: the built artifact rendered "● ● Connected", two bullets side
+   * by side, where both reference images show exactly one.
+   *
+   * Stripped centrally rather than at each call site, because there are seven of
+   * them and a fix applied six times is a fix that comes back. The CSS disc is the
+   * survivor for a concrete reason: a glyph baked into a string cannot be
+   * recoloured by state, so the tone classes would have no visible effect on it.
+   *
+   * Screenshotting the built artifact is what found this. Every assertion in the
+   * suite was green, because the markup and the stylesheet were each correct on
+   * their own — the defect existed only in their sum.
+   */
   function stateLine(el, text, tone) {
-    el.textContent = text || '';
+    var t = String(text == null ? '' : text).replace(/^[\u25cf\u25cb\u25cb\u25aa]\s*/, '');
+    el.textContent = t;
     el.className = 'tfstate' + (tone ? ' ' + tone : '');
   }
   // The DESTINATION card's rows, which are `.v` rather than `.ivalue`.
@@ -316,6 +340,9 @@
     var target = (res && res.target) || null;
 
     paintTarget(paired, live, target, res);
+    // Seeds the cached session; the AUTHORITATIVE paint happens after
+    // paintEnvironment() below, once envState.current is settled. Called here
+    // anyway so the card is never momentarily empty on a cold popup.
     paintConnection(res, paired, live, target);
     paintDestination();
     // The Browser Environment chooser — the FIRST step of Target This Field.
@@ -329,6 +356,17 @@
     // and on the frame where the operator has just switched environments, that is
     // exactly the frame they are looking at.
     paintAuthorization();
+    // ── ORDER IS THE BUG, NOT AN OPTIMISATION ─────────────────────────
+    // CONNECTION STATUS is now scoped to the chosen browser, and the thing that
+    // settles which browser is chosen is paintEnvironment() — which runs above,
+    // asynchronously, and only THEN assigns envState.current. Painting the card
+    // before that point read the PREVIOUS environment every single time, so on the
+    // very frame the operator switched to REMOTE the card still answered for
+    // LOCAL and printed the loopback address as the remote backend.
+    //
+    // Repainted here with no argument, so it reuses the same session answer rather
+    // than issuing a second request for a fact it already has.
+    paintConnection(undefined, paired, live, target);
 
     if (!res || !res.ok) {
       value(els.inspNode, '', 'none');
@@ -440,6 +478,25 @@
     // line reports is whether the binding is still in place — i.e. whether
     // returning to this field is a no-op or needs the crosshair again.
     var durable = !!(res && res.paired);
+    // ── WHY THIS ROW STAYS A SENTENCE, AGAINST THE MOCKUP'S OWN TEXT ────
+    // Both reference images print this row as a bare value — image 1 reads
+    // `Active`, image 2 an em-dash — and I did transcribe them that way. That was
+    // wrong, and the operator's own precedence rule is what makes it wrong:
+    // Layout and card order come from the references, but «منطق فنی و State را از
+    // اسپک قبلی بگیر، نه از متن‌های داخل Mockup» — and `Active` is a TEXT
+    // inside the mockup, in direct contradiction with the final logic.
+    //
+    // The logic it contradicts is load-bearing. This row is the ONLY place that
+    // reports the DURABLE pairing, which stays true across NDV re-opens while
+    // "Connected" — which tracks the live ADDRESS — goes false on every one of
+    // them. `Active` cannot carry that: it is indistinguishable from the address
+    // being up, which is the exact misreading that made the operator ask for a
+    // separate line. And when NOTHING is bound, an em-dash names no next action,
+    // whereas the action that binds it differs by environment.
+    //
+    // So the row keeps its sentence. Its bullet stays too: `value()` renders
+    // `.ivalue`, which — unlike `.tfstate` — has NO ::before disc, so this glyph
+    // is the row's only dot and not a duplicate of a CSS one.
     var pairText = durable
       ? '\u25cf Bound \u2014 this field stays targeted'
       : env === 'remote'
@@ -447,6 +504,20 @@
         : '\u25cb Not bound \u2014 use the crosshair on the field';
     value(els.ctPairing, pairText, durable ? 'ok' : 'none');
 
+    // ── THE ADDRESS LINE, WHICH IS NOT THE PAIRING LINE ─────────────
+    // This line reports the LIVE address; the BINDING row above reports the
+    // DURABLE pairing. Keeping them separate is the entire point of the split, so
+    // the stale case below must stay honest — "no longer open" — and must NOT
+    // borrow the pairing's good news, or a re-opened node reads as fully wired.
+    //
+    // I briefly moved the pairing's environment-specific guidance onto this line
+    // when the BINDING row went terse. That collapsed the two facts into one and
+    // is reverted: `stays targeted` belongs to the pairing, `no longer open` to
+    // the address, and neither may speak for the other.
+    //
+    // The leading glyphs here are stripped by stateLine(), because `.tfstate`
+    // draws its own dot in CSS. They are kept in the strings only so each state
+    // reads completely at its call site.
     var text = live
       ? '\u25cf Connected to this Field'
       : paired
@@ -454,7 +525,32 @@
         : '\u25cb Not bound \u2014 target the field from the project';
     var tone = live ? 'ok' : paired ? 'warn' : 'none';
     stateLine(els.inspTarget, text, tone);
-    stateLine(els.ctState, live ? '\u25cf Connection active' : text, tone);
+
+    // ── THIS LINE IS FOR THE NEWS THE PILL CANNOT CARRY ─────────
+    // It used to read '\u25cf Connection active' whenever `live` was true, which is
+    // the SAME fact the pill above already states, in the SAME card, two lines
+    // apart — visible in the render as "Connection Active" at the top-right and
+    // "Connection active" at the bottom-left. Both reference images print that
+    // fact exactly once, in the pill.
+    //
+    // Blanked instead of reworded, because `.tfstate:empty` is display:none: when
+    // there is nothing to add, the line is ABSENT rather than sitting there
+    // paraphrasing the pill. That is what makes it legible when it does speak —
+    // and it must still speak, so the stale case below is unchanged and stays
+    // pinned by 'survives the address going stale' in popup-inspector-pairing.
+    stateLine(els.ctState, live ? '' : text, live ? '' : tone);
+
+    // ── THE HEADING'S OWN VERDICT ───────────────────────────────
+    // The pill the supplied design puts at the top-right of this card. Driven by
+    // `live` — the same boolean as the state line above — rather than by anything
+    // of its own, because two independent readings of "is this connected" is
+    // exactly how a heading ends up contradicting the rows beneath it.
+    //
+    // Blanked rather than reworded when nothing is bound: `.hdstate:empty` is
+    // display:none, so the pill is absent instead of sitting there greyed out
+    // claiming a connection that has never existed.
+    els.ctLive.textContent = live ? 'Connection Active' : '';
+    els.ctLive.className = 'hdstate' + (live ? ' ok' : '');
 
     // Release is offered whenever a binding exists, including a stale one:
     // clearing a binding that points at a closed field is a thing to be able to
@@ -497,11 +593,36 @@
      pressing it and receiving a 409 — and this popup can never offer a browser
      the server would refuse.
 
-     WHY BUTTONS AND NOT RADIOS
-     --------------------------
-     Choosing registers a destination on the server. A radio implies an inert
-     setting that can be flipped back and forth for free; these are actions, and
-     the card that is currently in force is shown as such by `is-on`.
+     WHY RADIOS, AFTER ALL
+     ---------------------
+     This was a `<button>` pair, on the reasoning that "choosing registers a
+     destination on the server, and a radio implies an inert setting". The
+     reasoning was half right and the conclusion was wrong, for two reasons that
+     only became visible once the control was actually on screen.
+
+     First, the operator asked for a radio in so many words:
+
+       «اصلا اینپوت ردیو کجاست که انتخاب کنم ریموت یا لوکالشو؟»
+
+     Second — and this is the part the old comment had backwards — the choice
+     genuinely DOES sit there. It is re-read from the server on every repaint and
+     shown as the one in force, which is precisely the semantics of a radio group
+     and precisely not those of a button. A button that stays visibly pressed
+     forever is a radio denied the right markup, and the denial cost the control
+     its keyboard behaviour: arrow-key movement within a group is free with radios
+     and impossible with buttons.
+
+     WHAT CHANGES BECAUSE OF THE TAG — each one a real defect found by switching:
+
+       · `card.disabled` does not exist on a <label>. Setting it there was a
+         silent no-op, so an unavailable browser stayed pressable. Unavailability
+         now lives on the inner radio, which the browser itself refuses to check,
+         plus `aria-disabled` on the label for assistive tech.
+       · the handler must listen for `change` ON THE RADIO, not `click` on the
+         label. A click listener works for the mouse and silently drops keyboard
+         selection — the one capability the radio was adopted for.
+       · `:disabled` / `:focus-visible` no longer match the label, so popup.css
+         asks `:has(.envradio:checked)` / `:has(.envradio:focus-visible)` instead.
      ============================================================ */
 
   // Which environment the server has on record for the field, so a re-opened
@@ -510,61 +631,102 @@
 
   function envCardEl(opt, chosen) {
     var isLocal = opt && opt.id === 'local';
-    var card = document.createElement('button');
-    card.type = 'button';
+    var available = !!(opt && opt.available);
+
+    // A <label> wrapping a real radio, so the whole card is the hit target while
+    // the browser — not this code — owns checking, un-checking the sibling and
+    // arrow-key movement within the group.
+    var card = document.createElement('label');
     card.className = 'envcard'
-      + (opt && opt.available ? '' : ' is-off')
+      + (available ? '' : ' is-off')
       + (chosen ? ' is-on' : '');
     // Read by the tests and by anything that needs to find a specific card
     // without matching on human-readable text.
     card.setAttribute('data-env', (opt && opt.id) || '');
 
+    // THE CONTROL THE OPERATOR ASKED FOR, BY NAME:
+    //   «اصلا اینپوت ردیو کجاست که انتخاب کنم ریموت یا لوکالشو؟»
+    // One shared `name`, which is what makes the two mutually exclusive without a
+    // single line of script.
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'abenv';
+    radio.className = 'envradio';
+    radio.value = (opt && opt.id) || '';
+    radio.checked = !!chosen;
+    // `disabled` belongs HERE and not on the label — see the block above.
+    radio.disabled = !available;
+    card.appendChild(radio);
+
     var name = document.createElement('span');
     name.className = 'envname';
     // Spelled with "Browser" on purpose: the Connection tab uses the bare words
-    // "local"/"remote" for where the BACKEND is, and these two must not be read
-    // as the same setting.
+    // "local"/"remote" for where the BACKEND is, and these two must not be read as
+    // the same setting.
     name.textContent = isLocal ? 'Local Browser' : 'Remote Browser';
     card.appendChild(name);
 
+    // ── LINE 2 OF THE SUPPLIED DESIGN: the readiness dot ────────────────
+    // The mockups put a small green "● Ready" directly under each name. It answers
+    // exactly one question — may this browser be chosen at all — and the answer is
+    // the server's (`available`), never an assumption made here.
+    var state = document.createElement('span');
+    state.className = 'envstate ' + (available ? 'is-ok' : 'is-warn');
+    state.textContent = available ? '\u25cf Ready' : '\u25cb Unavailable';
+    card.appendChild(state);
+
     var desc = document.createElement('span');
     desc.className = 'envdesc';
-    // ── THE WORDING FOLLOWED THE MEANING ───────────────────────────────────
-    // These two descriptions were swapped. LOCAL is the browser ON THE SERVER —
-    // local to the project — and REMOTE is a browser on the operator's own
-    // machine, which is remote FROM the project. Reported as: «وقتی لوکال
-    // می‌زنم باید مرورگر لوکال سرور بالا بیاید ولی برعکس است».
-    desc.textContent = isLocal
-      ? 'Opens on the server. Connects itself \u2014 nothing to enter.'
-      : 'A browser on your own machine. Needs a Base URL and a code.';
-    card.appendChild(desc);
-
-    var note = document.createElement('span');
-    if (!(opt && opt.available)) {
-      note.className = 'envnote is-warn';
-      note.textContent = opt && opt.note === 'local_disabled'
+    // ── THE WORDING FOLLOWS THE MEANING, NOT THE MOCKUP ───────────────
+    // The supplied mockups print "Server browser" under REMOTE. That label is a
+    // survivor of the inverted UI the operator themselves reported — «وقتی لوکال
+    // می‌زنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه» — so copying it would
+    // re-introduce the very bug that was fixed, and it contradicts the LOCAL card
+    // beside it, which the same mockup labels "Connected automatically". Under the
+    // ruling that followed, LOCAL is the browser ON THE SERVER (local to the
+    // project) and REMOTE is a browser on the OPERATOR'S OWN machine.
+    //
+    // So the mockup's LAYOUT is followed exactly — name, dot, one sub-line — and
+    // its LOCAL sub-line is kept verbatim in substance ("connected automatically"),
+    // while REMOTE's names whose machine it actually is. Each line also carries
+    // what the card will ASK OF THE OPERATOR, stated before it is chosen, so nobody
+    // commits to a browser and is then surprised by a form.
+    if (!available) {
+      desc.textContent = opt && opt.note === 'local_disabled'
         ? 'The server browser is switched off for this instance.'
         : 'Not available right now.';
-    } else if (opt && opt.needsAuthorization) {
-      // REMOTE. Say up front that there is a short setup, so the operator is
-      // never surprised by a form appearing after they commit.
-      note.className = 'envnote is-code';
-      note.textContent = 'Needs a Base URL and an authorization code.';
-    } else if (opt && opt.needsInPageApproval) {
-      // LOCAL. No credential — but there IS one click, in the server's browser.
-      note.className = 'envnote is-ok';
-      note.textContent = 'Automatic \u2014 just approve it in that browser.';
+    } else if (isLocal) {
+      // "connected automatically" is the mockup's own LOCAL sub-line and is kept.
+      // The approval is appended because dropping it was a real regression: the
+      // previous card said "Automatic \u2014 just approve it in that browser", and
+      // LOCAL genuinely does wait for an in-page approval. Saying only
+      // "automatically" would promise a binding that then silently waits, so the
+      // one thing LOCAL asks of the operator would go unannounced. Driven off the
+      // server's own flag rather than off `isLocal`, so if LOCAL ever stops
+      // needing the approval this line stops claiming it.
+      // Both halves are load-bearing and neither may be dropped:
+      //   "nothing to enter"  → the credential surface is EMPTY. No Base URL, no
+      //                          API key, no Authorization Code, ever.
+      //   "just approve it"   → the one action LOCAL does ask for, stated up front
+      //                          so the binding is not seen to hang unexplained.
+      // Dropping the second half was a real regression; dropping the first would
+      // read as though LOCAL might ask for a credential after all.
+      desc.textContent = opt && opt.needsInPageApproval
+        ? 'On the server \u2014 connects automatically, nothing to enter, just approve it there.'
+        : 'On the server \u2014 connected automatically, nothing to enter.';
     } else {
-      note.className = 'envnote is-ok';
-      note.textContent = 'Automatic \u2014 nothing to enter.';
+      desc.textContent = 'Your own machine \u2014 needs a Base URL and a code.';
     }
-    card.appendChild(note);
+    card.appendChild(desc);
 
-    if (!(opt && opt.available)) {
-      card.disabled = true;
+    if (!available) {
+      // The label cannot be disabled, so say so to assistive tech and leave the
+      // refusal itself to the radio, which the browser will not check.
       card.setAttribute('aria-disabled', 'true');
     } else {
-      card.addEventListener('click', function () { chooseEnvironment(opt.id); });
+      radio.addEventListener('change', function () {
+        if (radio.checked) chooseEnvironment(opt.id);
+      });
     }
     return card;
   }
@@ -620,7 +782,12 @@
     var nodeId = (t && t.nodeId) || '';
     var fieldKey = (t && t.fieldKey) || '';
 
-    envState.current = (res && res.environment) || (t && t.environment) || '';
+    // `|| envState.current` is load-bearing. With no field open there is nothing on
+    // the server to read a choice back from, so a repaint blanked the radio the
+    // operator had just ticked and the selection appeared to bounce back on its
+    // own. Server truth still WINS wherever it exists — it is simply no longer
+    // allowed to erase a local choice with an empty string.
+    envState.current = (res && res.environment) || (t && t.environment) || envState.current || '';
     envState.nodeId = nodeId;
     envState.fieldKey = fieldKey;
     envState.action = (t && t.action) || '';
@@ -680,7 +847,29 @@
   async function chooseEnvironment(env) {
     if (envState.busy) return;
     if (!envState.nodeId || !envState.fieldKey) {
-      write(els.envStatus, 'No field is being targeted yet.', 'warn');
+      // ── A CHOICE WITH NO FIELD IS RECORDED, NOT REFUSED ──────────────
+      // This used to `return` on the spot, which left the radios inert on a cold
+      // popup: the operator could tick REMOTE and nothing whatsoever happened —
+      // including the two inputs they were asking for.
+      //
+      // The rule being protected is real — NEVER bind a field the operator did not
+      // name — and it is untouched: no AB_TARGETING_BEGIN is sent, so no
+      // destination and no pairing is minted. What changes is that the choice is
+      // remembered LOCALLY, which is enough to reveal the REMOTE form so the Base
+      // URL and the code can be filled in up front, and to say what is still
+      // missing instead of saying nothing at all.
+      envState.current = env;
+      paintAuthorization();
+      // The CONNECTION STATUS card reports a DIFFERENT SUBJECT for each browser
+      // (see paintConnection), so changing the browser changes what that card is
+      // even about. Repainted from the cached session rather than by re-asking
+      // the server: switching a radio is not a network event, and a card left
+      // showing the other environment's answer is precisely how the project's own
+      // loopback address came to be labelled as the remote backend.
+      paintConnection(undefined, current.paired, current.live, null);
+      write(els.envStatus, env === 'remote'
+        ? 'Remote Browser selected. Fill in the connection below, then use the crosshair on the field in the project.'
+        : 'Local Browser selected. Use the crosshair on the field in the project to target it.', 'warn');
       return;
     }
     envState.busy = true;
@@ -765,19 +954,38 @@
    */
   function paintAuthorization() {
     var auth = envState.authorization;
-    var showing = envState.current === 'remote' && !!auth;
+
+    // ── THE DEADLOCK THIS GATE USED TO CREATE ───────────────────────
+    // The condition was `envState.current === 'remote' && !!auth`, i.e. the card
+    // appeared only once the server had already handed back a code. But a code can
+    // only come back from a request that REACHED the server, and Base URL is the
+    // field that says where the server is. The one input needed to obtain the code
+    // was hidden until the code arrived — a closed loop — so on a fresh install the
+    // operator asked, correctly:
+    //
+    //   «کجاس فیلد اتورایزشن؟»  /  «این کجاشه فیلد های بخش ریموت؟»
+    //
+    // The gate is now the environment alone. `auth` still decides whether the hint
+    // can name a field and whether Base URL can be pre-filled — it is enrichment,
+    // never the price of admission.
+    //
+    // LOCAL IS UNCHANGED AND STAYS UNCHANGED: the whole card is hidden, so that
+    // path has no authorization surface at all, ever. That is the invariant this
+    // edit is most at risk of breaking, and it is asserted on directly.
+    var showing = envState.current === 'remote';
     els.authCard.hidden = !showing;
     if (!showing) return;
 
     // Pre-fill rather than demand. The server resolved its own public address
     // (see PublicBaseUrl); asking the operator to retype it would invite a typo
     // in the one field that cannot be validated locally.
-    if (auth.baseUrl && !els.authBase.value) els.authBase.value = auth.baseUrl;
+    // Null-safe now, because this runs before any code exists.
+    if (auth && auth.baseUrl && !els.authBase.value) els.authBase.value = auth.baseUrl;
 
-    var which = auth.label || auth.fieldKey || '';
+    var which = (auth && (auth.label || auth.fieldKey)) || '';
     write(els.authHint, which
       ? 'This code is for \u201c' + which + '\u201d.'
-      : 'Paste the code shown in the dashboard.', '');
+      : 'Get this code from your server \u2014 Target This Field \u2192 Remote Browser.', '');
   }
 
   /**
@@ -835,31 +1043,87 @@
     write(els.authStatus, 'Connected \u2014 this browser is bound to the field.', 'ok');
   }
 
+  /**
+   * The last session answer, kept so the CONNECTION STATUS card can be repainted
+   * when the *environment* changes without re-asking the server. The card reports
+   * two different subjects depending on which browser is chosen, and switching
+   * browsers is not a reason to go back over the network.
+   */
+  var lastSession = null;
+
   function paintConnection(res, paired, live, target) {
-    var reachable = !!(res && res.ok);
-    // The address the SERVER resolved, reported back by the worker — not read out
-    // of an input box, because there is no input box. `res.baseUrl` is the
-    // context background.js actually used for this very request, so this line
-    // cannot disagree with where the data went; a value taken from a field the
-    // user had typed into always could.
-    var url = (res && res.baseUrl) || '';
+    if (res !== undefined) lastSession = res;
+    res = lastSession;
+
+    // ── WHOSE CONNECTION IS THIS CARD ABOUT? ─────────────────────────
+    // It used to be about exactly one thing — the server this extension talks to
+    // — and that was wrong for half of the panel's states. The session answer
+    // below always comes from the SERVER-LOCAL context (see inspectorContext():
+    // storage, then the seeded bootstrap, then loopback). It proves the PROJECT
+    // is up. It says nothing whatever about a browser on the operator's own
+    // machine.
+    //
+    // So under REMOTE the old code printed the project's own loopback address in
+    // a row headed BACKEND, on a card headed CONNECTION STATUS, directly above
+    // the empty Base URL box that the remote address is supposed to go in. The
+    // report was exact:
+    //
+    //   «هیچ 127.0.0.1:3000 یا Backend Local نباید به‌عنوان Remote Backend
+    //    نمایش داده شود.»
+    //
+    // Worse than unhelpful: it is FALSE, and it is false in the direction that
+    // hides a misconfiguration. An operator who has not yet entered an address
+    // reads "Connected — 127.0.0.1:3000" and concludes the remote browser is
+    // wired up, when nothing remote exists at all.
+    //
+    // The row is therefore scoped to the environment it is true of:
+    //
+    //   LOCAL  — the server's own browser on the server's own loopback. The
+    //            session answer IS the subject. Printed, as before.
+    //   REMOTE — the operator's machine. The subject is whatever address they
+    //            have given, and until they give one there is no answer to show.
+    var isRemote = envState.current === 'remote';
+    var typedBase = isRemote ? String((els.authBase && els.authBase.value) || '').trim() : '';
+
+    // The REMOTE connection is real only once this browser is actually bound to a
+    // field through it. `live` is that fact, and it comes from the server.
+    var reachable = isRemote ? !!(res && res.ok && live) : !!(res && res.ok);
+    var url = isRemote ? typedBase : ((res && res.baseUrl) || '');
 
     if (reachable) {
       stateLine(els.connState, '\u25cf Connected', 'ok');
       els.conn.textContent = '\u25cf online';
       els.conn.className = 'conn ok';
+    } else if (isRemote) {
+      // Named for what it is, and never as a failure: nothing has gone wrong
+      // when an address has simply not been typed yet. «Connection UI ≠
+      // Authorization UI» — showing the card is not a claim that a new
+      // authorization is owed, so this line does not ask for one either.
+      stateLine(els.connState, typedBase
+        ? '\u25cb Not connected yet'
+        : '\u25cb Waiting for a base URL', 'none');
+      els.conn.textContent = '\u25cf offline';
+      els.conn.className = 'conn bad';
     } else {
       stateLine(els.connState, '\u25cb ' + shortError(res), 'none');
       els.conn.textContent = '\u25cf offline';
       els.conn.className = 'conn bad';
     }
+    // An em-dash, never a blank: a blank row is indistinguishable from a row that
+    // failed to render, which is the same class of defect as printing a raw error
+    // token where a sentence belongs.
     monoValue(els.connBackend, url, url ? '' : 'none');
 
     // "Reachable" and "may write to the field I am pointed at" are different
     // failures with different fixes, so they get different lines. A backend that
     // answers but refuses this field is the case that a single "Connected" would
     // hide until the first send failed.
-    if (!reachable) value(els.connAuth, 'unknown', 'none');
+    // FIELD ACCESS answers a different question from BACKEND — "may I write to the
+    // field I am pointed at" rather than "can I reach the server" — which is why
+    // it is a separate row. A backend that answers but refuses this field is the
+    // case a single "Connected" would hide until the first send failed.
+    if (isRemote && !typedBase) value(els.connAuth, '\u2014', 'none');
+    else if (!reachable) value(els.connAuth, 'unknown', 'none');
     else if (live) value(els.connAuth, 'Allowed', 'ok');
     else if (paired) value(els.connAuth, 'Field no longer open', 'warn');
     else value(els.connAuth, 'No field bound yet', 'none');
@@ -1400,6 +1664,13 @@
   var authSubmitOnEnter = function (e) {
     if (e.key === 'Enter') { e.preventDefault(); submitAuthorization(); }
   };
+  // The one field the operator can set in REMOTE, and the BACKEND row is where
+  // they confirm it took effect. Without this the address they typed had no
+  // visible consequence anywhere on the panel until a connect attempt succeeded,
+  // which made a typo indistinguishable from a refused code.
+  els.authBase.addEventListener('input', function () {
+    paintConnection(undefined, current.paired, current.live, null);
+  });
   els.authBase.addEventListener('keydown', authSubmitOnEnter);
   els.authCode.addEventListener('keydown', authSubmitOnEnter);
 

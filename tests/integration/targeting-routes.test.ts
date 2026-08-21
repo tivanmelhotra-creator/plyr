@@ -216,10 +216,40 @@ describe('GET /inspector/targeting/options', () => {
     expect(a.body.pairingKey).not.toBe(b.body.pairingKey);
   });
 
-  it('refuses without a node and field rather than guessing one', async () => {
+  // THIS TEST USED TO ASSERT `400`, AND THAT ASSERTION WAS THE BUG.
+  //
+  // The popup asks this endpoint what browsers exist the moment it opens — which
+  // is necessarily BEFORE anything has been targeted, because choosing a browser
+  // is the first step of targeting, not a consequence of it. Answering 400 there
+  // meant the extension could never learn that LOCAL and REMOTE exist, so it
+  // rendered a bare error token where the two choices belong, and the operator
+  // asked, correctly: «اصلا اینپوت ردیو کجاست که انتخاب کنم ریموت یا لوکالشو؟»
+  //
+  // The legitimate half of the old test is preserved in full: the endpoint must
+  // still never INVENT a field or a pairing key to fill the gap. So the refusal
+  // is inverted — answer the catalogue — while "guess nothing" is asserted
+  // harder than before.
+  it('answers without a field, but invents neither a field nor a pairing', async () => {
     const res = await request(app)
       .get('/inspector/targeting/options').set('x-api-key', KEY_A).query({});
-    expect(res.status).toBe(400);
+
+    expect(res.status).toBe(200);
+    // The catalogue is exactly the pair, so the chooser can be drawn.
+    expect((res.body.options as Array<{ id: string }>).map((o) => o.id)).toEqual(['local', 'remote']);
+    // And it says plainly that it is NOT about any particular field, so the
+    // caller cannot mistake this for a binding.
+    expect(res.body.fieldScoped).toBe(false);
+    expect(res.body.pairingKey).toBe('');
+    expect(res.body.paired).toBe(false);
+    // Nothing was minted. This is the part of the old test worth keeping.
+    expect(JSON.stringify(res.body)).not.toContain('targetFieldId');
+  });
+
+  it('still marks a field-scoped answer as such, so the two cannot be confused', async () => {
+    const res = await options({ nodeId: 'node-1', fieldKey: 'url' });
+    expect(res.status).toBe(200);
+    expect(res.body.fieldScoped).toBe(true);
+    expect(res.body.pairingKey).not.toBe('');
   });
 });
 

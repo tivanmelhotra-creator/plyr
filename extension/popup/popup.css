@@ -107,6 +107,16 @@
 
 body {
   margin: 0;
+  /* WITHOUT THIS, THE RADIOS RENDER WHITE.
+     `accent-color` only tints the CHECKED dot; the ring and the unchecked disc
+     are drawn from the page's colour scheme, and a page that never declares one
+     is assumed LIGHT. So on this dark panel Chromium painted each radio as a
+     white disc with a grey ring — nothing like the supplied design, and the one
+     control the operator specifically asked to see. Declaring the scheme makes
+     the native widget use its dark-mode form, which is the hollow ring the
+     mockups show. Caught by screenshotting the built artifact; no DOM assertion
+     would have found it, because the markup was already correct. */
+  color-scheme: dark;
   /* The design's --w. Wider than a minimal popup because the Connection tab
      keeps a full Base URL on one line and the attribute table keeps name and
      value side by side without either being truncated to nothing. */
@@ -279,8 +289,21 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   margin-bottom: 12px;
-  overflow: hidden;
+  /* NO `overflow: hidden` HERE — it clipped the flow connector.
+     The ↓ between cards is a ::before on the FOLLOWING card, pulled up by
+     `margin: -8px 0 6px` so it lands in the 12px gutter — which is OUTSIDE its
+     own card's box. `overflow: hidden` on the card therefore cut the glyph down
+     to the orange sliver visible in the render, while every DOM assertion stayed
+     green because the markup and the stylesheet were each valid on their own.
+     The clipping the radius actually needs is done by `.card > *` below, which
+     contains the CHILDREN without touching the card's own pseudo-element. */
+  overflow: visible;
 }
+/* The rounded corners still have to contain the card's CONTENT — this is what
+   `overflow: hidden` was for. Applied to the children instead of the card, so a
+   child can no longer square off the radius and the connector can still hang
+   outside. */
+.card > * { border-radius: inherit; overflow: hidden; }
 /* The last card keeps its gap. Collapsing it to 0 put the card's bottom border
    flush against the footer's top hairline, reading as one thick seam and making
    the card look clipped rather than finished — and when the panel is scrolled to
@@ -385,7 +408,12 @@ body {
   font: 12px/16px var(--mono);
   white-space: normal;
   overflow: visible;
-  overflow-wrap: anywhere;
+  /* `anywhere` broke a URL mid-token: "https://ops.example.com" wrapped with its
+     final "m" alone on the next line, under a BACKEND label — a corrupted-looking
+     address in the one row whose entire job is to be trusted. `break-word` breaks
+     a long token ONLY when it cannot fit otherwise, so a loopback address or a
+     field id still wraps rather than overflowing, without splitting gratuitously. */
+  overflow-wrap: break-word;
 }
 .ivalue.ok { color: var(--green); }
 .ivalue.warn { color: var(--orange); }
@@ -423,11 +451,165 @@ body {
 .tfstate.none { color: var(--muted); }
 
 /* CONNECTION STATUS: the verdict, then the two facts behind it side by side,
-   as the design's `.status-grid`. */
+   as the design's `.status-grid`.
+
+   ── WHY THE INNER BOX IS CONDITIONAL ─────────────────────────────
+   The two supplied mockups draw this card DIFFERENTLY, and the difference is not
+   decoration. Connected (REMOTE, image 1): the verdict and both facts sit inside
+   a single inset panel, one row, reading as a settled result. Not connected
+   (LOCAL, image 2): no inset panel, the facts stacked with em-dashes, reading as
+   a form that has not been filled in.
+
+   Rather than script two layouts, the box is drawn only when the verdict is
+   actually good — `:has(.tfstate.ok)` — so the card arrives at each mockup's
+   appearance from the same markup, driven by the state the server reports. An
+   inset panel around a row of dashes would claim a result that does not exist. */
 .statebox { display: block; }
 .statebox .tfstate { margin: 0; padding: 0; border-top: 0; font-size: 11px; }
+.statebox:has(.tfstate.ok) {
+  display: grid;
+  /* 1fr / 2.2fr, NOT the near-even 1fr / 1.15fr this used to be.
+     The left column holds one word ("Connected"); the right holds a full URL
+     plus FIELD ACCESS. Splitting them evenly left the address 164px inside a
+     460px popup, so Chromium broke "https://ops.example.com" and stranded the
+     final "m" on its own line under a BACKEND label — an address that reads as
+     corrupted in the one row whose whole job is to be trusted. A ratio rather
+     than a pixel width, so it still holds if the popup is resized. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel3);
+}
+/* In the connected layout the two facts stack in the right-hand column as a
+   label/value table, which is how the design lines "BACKEND" up over
+   "FIELD ACCESS". Unset back to one column so `.splitrow`'s side-by-side rule
+   does not fight it. */
+.statebox:has(.tfstate.ok) .splitrow {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  margin-top: 0;
+}
 .splitrow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
 .splitrow .idrow { padding: 0; min-width: 0; }
+
+/* ── THE FLOW CONNECTORS ──────────────────────────────────────
+   The design puts a small orange ↓ between consecutive cards on this tab, and it
+   carries real meaning: these four cards are the STEPS of one act, in order —
+   choose a browser, see whether it connected, supply what that browser needs,
+   confirm the field it landed on. Without the arrows they read as four unrelated
+   settings panels, which is how the operator described the old screen.
+
+   Generated, not marked up, so it cannot drift out of step with which cards are
+   on screen: `+` only matches ADJACENT siblings, so when #authCard is hidden for
+   LOCAL its arrow disappears with it, and no arrow is ever drawn above the first
+   card. This is exactly the difference between the two mockups — image 1 (REMOTE)
+   shows three arrows, image 2 (LOCAL) shows the same stack with the REMOTE card
+   and its arrow both gone.
+
+   `[hidden]` is excluded explicitly because the attribute alone does not stop an
+   element being a CSS sibling: a hidden #authCard would still have grown an
+   arrow above the card after it, leaving a stray ↓ pointing at nothing. */
+/* ── AND NOT ABOVE THE FOOTNOTE ─────────────────────────────────
+   `.panel .card:not([hidden]) + .note::before` used to be in this selector list,
+   and it did two kinds of damage at once.
+
+   `.note` is itself a GRID — `grid-template-columns: 16px minmax(0, 1fr)`, a
+   narrow column for the circled-i glyph and a wide one for the sentence. A
+   `::before` on a grid CONTAINER is not an overlay drawn above the box; it is a
+   GRID ITEM, and being first it claimed the 16px column. Everything shifted one
+   slot: the icon moved into the text column, the sentence into the 16px one, and
+   the footnote rendered as a vertical column of single words with a stray orange
+   arrow sitting where its icon belonged.
+
+   Both reference images were re-examined before deleting it, and they agree with
+   each other: image 1 has exactly three arrows and image 2 has none, and in
+   NEITHER is there an arrow above the footnote. That is not an oversight in the
+   design — the arrows chain the STEPS of one act, and the footnote is not a step.
+   It is a standing remark about all of them, so there is nothing for an arrow to
+   point from.
+
+   Found by screenshotting the built artifact. No DOM assertion could have caught
+   it: the markup was correct and the stylesheet was valid; the damage was done
+   entirely by where the generated box landed in a grid. */
+.panel .card + .card:not([hidden])::before {
+  content: '\2193';
+  display: block;
+  margin: -8px 0 6px;
+  text-align: center;
+  font: 12px/12px var(--mono);
+  color: var(--orange);
+}
+/* The arrow is drawn by the FOLLOWING card, so a hidden card must not leave the
+   gap its arrow occupied. */
+.panel .card[hidden] { display: none; }
+
+/* ── [hidden] MUST ACTUALLY HIDE ────────────────────────────
+   The UA default is `[hidden] { display: none }` — a bare ATTRIBUTE selector, so
+   any class rule that sets `display` outranks it on specificity. `.btn` sets
+   `display: inline-flex`, which meant #inspUnpair carried hidden="" and reported
+   `el.hidden === true` while Chromium still painted it 141×30px: "RELEASE THIS
+   FIELD" offering to release a field that was never bound, directly under a
+   column of em-dashes.
+
+   Every DOM assertion agreed the button was hidden, because the ATTRIBUTE was set
+   correctly by popup.js — the failure was entirely in the cascade. Only a
+   screenshot of the built artifact could show it.
+
+   Global, and `!important`, on purpose. The rule above patches `.card` alone, and
+   that per-element approach is what let `.btn` slip through; any future
+   display-setting class would need its own twin and the next one added would
+   silently reintroduce the bug. `!important` is the honest tool because a class
+   rule beats a bare attribute selector regardless of source order. */
+[hidden] { display: none !important; }
+
+/* ── "● Connection Active" ───────────────────────────────────
+   Both mockups put this in the CONNECTED TO TARGET header, drawn as a green pill
+   switch. Deliberately NOT an <input>: a switch invites the operator to flip it,
+   and there is nothing to flip — the connection is a consequence of a binding,
+   not a setting. Reproducing the design's shape as a READ-ONLY indicator keeps
+   its meaning ("this is live") without offering an action that would either do
+   nothing or silently release the field.
+
+   Releasing IS offered, once, by the button the design already puts at the
+   bottom of the same card: RELEASE THIS FIELD. One affordance, where it is
+   labelled with what it does. */
+.hdstate {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  font: 500 11px/14px var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+}
+.hdstate::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.hdstate::after {
+  content: '';
+  width: 28px;
+  height: 15px;
+  border-radius: 999px;
+  background: #2a2a2a;
+  /* The knob, as an inset shadow, so the pill needs no child element. */
+  box-shadow: inset 13px 0 0 -2px #666;
+  transition: background .14s, box-shadow .14s;
+}
+.hdstate.ok { color: var(--green); }
+.hdstate.ok::before { background: var(--green); box-shadow: 0 0 7px #00c85366; }
+/* Knob to the right and the track green — the design's "on" state. */
+.hdstate.ok::after { background: var(--green); box-shadow: inset -13px 0 0 -2px #fff; }
+.hdstate:empty { display: none; }
+/* The header becomes a row once it carries a state on its right. */
+.card-hd.split { display: flex; align-items: center; gap: 10px; }
 
 /* ── Buttons ──────────────────────────────────────────────────────────────
    The design's primary is a full-width solid orange bar, 40px, with dark
@@ -499,10 +681,19 @@ body {
   gap: 8px;
   margin-top: 8px;
 }
+/* A <label> now, wrapping a real radio — see "WHY RADIOS, AFTER ALL" in popup.js.
+   Laid out exactly as the supplied design draws it: the radio in a narrow
+   top-left gutter, and three stacked lines to its right (name / readiness /
+   sub-line). A two-column GRID rather than a flex column, because the second and
+   third lines must align under the FIRST LINE OF TEXT and not under the radio —
+   that alignment is what makes the two cards read as one pair of choices rather
+   than as two separately indented lists. */
 .envcard {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  grid-column-gap: 8px;
+  grid-row-gap: 2px;
+  align-items: start;
   padding: 9px 10px;
   text-align: left;
   border: 1px solid var(--border);
@@ -512,22 +703,58 @@ body {
   cursor: pointer;
   font-family: var(--sans);
 }
-.envcard:hover:not(:disabled) { border-color: #444; background: #161616; }
-/* focus-visible only: a keyboard user needs the ring; a mouse user who just
-   pressed a card does not want one left behind on it. */
-.envcard:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
-/* The card currently in force. Orange is this panel's "active" colour
-   everywhere else (card titles, the selected tab), so an operator re-opening the
-   popup reads which browser is chosen without having to compare the two. */
-.envcard.is-on { border-color: var(--orange); background: #ff66000f; }
+/* Lines 2 and 3 skip the radio's gutter and sit under the name. */
+.envcard > .envstate,
+.envcard > .envdesc,
+.envcard > .envnote { grid-column: 2; }
+/* `:not(:disabled)` could never match a <label> — a label has no disabled state —
+   so the hover lit up even on a browser the server had refused. Asked of the
+   things that DO carry the state. */
+.envcard:hover:not(.is-off):not([aria-disabled="true"]) { border-color: #444; background: #161616; }
+/* focus-visible, asked of the RADIO rather than the label: a label is not
+   focusable, so `.envcard:focus-visible` matched nothing and a keyboard user
+   moving through the group got no ring at all. */
+.envcard:has(.envradio:focus-visible) { outline: 2px solid var(--orange); outline-offset: 1px; }
+/* The card currently in force — the orange outline the design gives the selected
+   browser. Orange is this panel's "active" colour everywhere else (card titles,
+   the selected tab), so an operator re-opening the popup reads which browser is
+   chosen without having to compare the two.
+
+   BOTH `.is-on` (written by the renderer from the SERVER's record) and
+   `:has(:checked)` (written by the browser the instant the operator ticks it).
+   One alone is not enough: without the second the highlight would lag a
+   round-trip behind the click; without the first a repaint that re-creates the
+   cards would show nothing selected until the next interaction. */
+.envcard.is-on,
+.envcard:has(.envradio:checked) { border-color: var(--orange); background: #ff66000f; }
 .envcard.is-off,
-.envcard:disabled { opacity: .5; cursor: default; }
+.envcard[aria-disabled="true"] { opacity: .5; cursor: default; }
+
+/* The radio itself. `accent-color` is what makes the dot orange instead of the
+   platform blue — this is the one control on the panel that would otherwise
+   ignore the design's palette completely. */
+.envradio {
+  margin: 1px 0 0;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+.envcard.is-off .envradio,
+.envcard[aria-disabled="true"] .envradio { cursor: default; }
 
 /* The label carries the word "Browser" — mono, like every other technical
    identity in this popup — because the Connection tab uses the bare words
    local/remote for where the BACKEND is, and the two must not be read as one
    setting. */
 .envname { font: 700 11px/14px var(--mono); letter-spacing: .02em; }
+/* LINE 2 of the supplied design — the small green "● Ready" under each name. Its
+   own class rather than a reused `.envnote`, because it answers a different
+   question (may this be chosen at all?) from the sub-line beneath it (what will
+   choosing it ask of me?), and the design gives the two different colours. */
+.envstate { font: 10px/13px var(--mono); }
+.envstate.is-ok { color: var(--green); }
+.envstate.is-warn { color: var(--danger); }
 .envdesc { font-size: 11px; line-height: 14px; color: var(--muted); }
 /* What the card will ASK OF THE USER, stated BEFORE it is pressed, so nobody
    commits to a browser and is then surprised by a form. Three colours for three
