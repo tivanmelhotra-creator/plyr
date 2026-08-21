@@ -855,11 +855,37 @@ export const createModeRoutes = (): Router => {
     const fieldKey = String(req.query.fieldKey || '');
     const workflowId = String(req.query.workflowId || '') || undefined;
 
-    if (!nodeId || !fieldKey) {
-      res.status(400).json({
-        success: false,
-        reason: 'invalid_node_id',
-        error: 'nodeId and fieldKey are required.',
+    // ── ANSWERING WITHOUT A FIELD IS THE POINT, NOT AN ABUSE ─────────────
+    // This returned 400 whenever nodeId/fieldKey were absent, and that is what
+    // made the browser chooser unreachable: the extension popup asks this the
+    // instant it opens, which is necessarily BEFORE a field has been targeted.
+    // A 400 there left the popup with no options to draw, so the operator saw an
+    // error token where the LOCAL / REMOTE radios were supposed to be.
+    //
+    // WHICH BROWSERS THIS SERVER OFFERS is not a per-field fact. It is one
+    // setting (is the local runtime enabled?) plus the fixed catalogue in
+    // BrowserEnvironment.ts. So it is answerable, and answering it registers
+    // nothing whatsoever.
+    //
+    // WHAT IS STILL REFUSED, deliberately: inventing a field. No pairingKey is
+    // computed, `paired` is reported false, and `fieldScoped: false` says so out
+    // loud — so a caller can never read "not paired" here as "this field is not
+    // paired". There is no field.
+    const fieldScoped = Boolean(nodeId && fieldKey);
+    if (!fieldScoped) {
+      const localEnabledOnly = localTargetingEnabled();
+      res.json({
+        success: true,
+        fieldScoped: false,
+        pairingKey: '',
+        paired: false,
+        localEnabled: localEnabledOnly,
+        options: environmentOptions({
+          paired: false,
+          localEnabled: localEnabledOnly,
+          localAvailable: true,
+        }),
+        mode: browserModes.modeOf(userId),
       });
       return;
     }
@@ -870,6 +896,9 @@ export const createModeRoutes = (): Router => {
 
     res.json({
       success: true,
+      // Marked, so the two answers this route can give are never confused: a
+      // field-scoped `paired` is a real answer about a real field.
+      fieldScoped: true,
       pairingKey,
       paired,
       localEnabled,

@@ -1165,7 +1165,59 @@ async function targetingOptions(payload) {
 
   var nodeId = String((payload && payload.nodeId) || '').trim();
   var fieldKey = String((payload && payload.fieldKey) || '').trim();
-  if (!nodeId || !fieldKey) return { ok: false, error: 'no_target_field', options: [] };
+  // ── NO FIELD YET IS THE NORMAL CASE, NOT AN ERROR ─────────────────────
+  // This line used to be the whole of what the operator was looking at. It read
+  //   `return { ok: false, error: 'no_target_field', options: [] };`
+  // and produced, verbatim on screen, the questions:
+  //
+  //   «این کجاشه فیلد های بخش ریموت؟»
+  //   «کجاس فیلد اتورایزشن؟»
+  //   «اصلا اینپوت ردیو کجاست که انتخاب کنم ریموت یا لوکالشو؟»
+  //
+  // The popup asks this question THE MOMENT IT OPENS — before anything has been
+  // targeted, because that is what a chooser is FOR. Refusing then meant the
+  // popup received zero options, rendered zero cards, and printed the raw token
+  // `no_target_field` exactly where the two radios belong. Un-hiding #envCard
+  // could not help: there was nothing to put inside it.
+  //
+  // WHICH BROWSERS EXIST DOES NOT DEPEND ON A FIELD. It is a property of the
+  // server (is the local runtime switched on?) and of the fixed catalogue in
+  // BrowserEnvironment.ts. So ask the server WITHOUT a field, and fall back to
+  // the pair we know it publishes if it cannot be reached at all — an offline
+  // popup must still be able to show that a choice exists.
+  //
+  // `fieldScoped: false` is carried out so nothing downstream can mistake this
+  // for an answer about a particular field: `paired` is false and `pairingKey`
+  // is empty here BECAUSE THERE IS NO FIELD, not because a field is unpaired.
+  if (!nodeId || !fieldKey) {
+    var res0 = await apiFetch(ctx.base + '/inspector/targeting/options', { method: 'GET' }, ctx.apiKey);
+    var d0 = (res0 && res0.data) || {};
+    if (res0 && res0.ok && Array.isArray(d0.options) && d0.options.length) {
+      return {
+        ok: true,
+        fieldScoped: false,
+        options: d0.options,
+        paired: false,
+        localEnabled: !!d0.localEnabled,
+        pairingKey: ''
+      };
+    }
+    // Offline fallback, mirroring src/core/BrowserEnvironment.ts. Marked
+    // `offline` so a status line can explain why nothing is pre-selected rather
+    // than implying the server answered.
+    return {
+      ok: true,
+      fieldScoped: false,
+      offline: true,
+      options: [
+        { id: 'local',  available: true, paired: false, needsAuthorization: false, needsInPageApproval: true,  opensServerBrowser: true,  note: '' },
+        { id: 'remote', available: true, paired: false, needsAuthorization: true,  needsInPageApproval: false, opensServerBrowser: false, note: '' }
+      ],
+      paired: false,
+      localEnabled: true,
+      pairingKey: ''
+    };
+  }
 
   var qs = '?nodeId=' + encodeURIComponent(nodeId) + '&fieldKey=' + encodeURIComponent(fieldKey);
   if (payload && payload.workflowId) qs += '&workflowId=' + encodeURIComponent(payload.workflowId);

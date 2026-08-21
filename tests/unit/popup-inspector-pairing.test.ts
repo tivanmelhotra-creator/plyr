@@ -45,11 +45,25 @@ class El {
   value = '';
   hidden = false;
   disabled = false;
+  // The Browser Environment chooser is a <label> wrapping <input type="radio">
+  // now, not a <button>, so the fake DOM has to model the three properties a
+  // radio actually carries. Without them every card looked like a plain DIV and
+  // ten tests in this file failed for a reason that had nothing to do with the
+  // behaviour they were checking.
+  checked = false;
+  type = '';
+  name = '';
   dataset: Record<string, string> = {};
   childNodes: El[] = [];
   listeners: Record<string, Array<(e: unknown) => void>> = {};
 
-  constructor(id = '') { this.id = id; }
+  /**
+   * Every element ever created, so `click()` can find the other radios in the
+   * same group. A real browser walks the document for this; there is no document
+   * here, and a flat list is enough because `name` is what scopes the search.
+   */
+  static registry: El[] = [];
+  constructor(id = '') { this.id = id; El.registry.push(this); }
   /**
    * popup.js drives some buttons through classList.toggle. Without this the
    * controller rejects during load — and vitest is right to call that a
@@ -88,7 +102,36 @@ class El {
   addEventListener(t: string, fn: (e: unknown) => void) { (this.listeners[t] ||= []).push(fn); }
   removeEventListener() {}
   focus() {}
-  click() { this.fire('click'); }
+  /**
+   * ── WHAT A BROWSER REALLY DOES WHEN A <label> IS CLICKED ─────────────
+   *
+   * This used to be `this.fire('click')` and nothing more, which was faithful
+   * while the cards were <button>s. Now that they are labels wrapping a radio,
+   * that single line models the wrong machine: the tests press the CARD, but the
+   * product listens for `change` on the INPUT, so every press was silently
+   * dropped and the failures pointed at the product rather than at the harness.
+   *
+   * Three things happen in a real browser, in this order, and all three matter:
+   *   1. the radio inside the label becomes checked;
+   *   2. every other radio sharing its `name` becomes unchecked — which is the
+   *      entire point of a group, and what makes "only one browser is selected"
+   *      a fact rather than an assumption;
+   *   3. `change` fires ON THE INPUT (not on the label).
+   *
+   * A disabled radio does none of it, which is how the "cannot be pressed" test
+   * keeps its meaning without asserting on a property a <label> does not have.
+   */
+  click() {
+    const radio = this.childNodes.find((c) => c.type === 'radio');
+    if (radio && !radio.disabled) {
+      El.registry.forEach((el) => {
+        if (el !== radio && el.type === 'radio' && el.name === radio.name) el.checked = false;
+      });
+      radio.checked = true;
+      radio.fire('change');
+    }
+    this.fire('click');
+  }
   fire(t: string, evt: Record<string, unknown> = {}) {
     (this.listeners[t] || []).slice().forEach((fn) => fn({
       preventDefault() {}, stopPropagation() {}, target: this, ...evt,
@@ -1070,7 +1113,19 @@ describe('§2 — LOCAL: internal, automatic, and free of every credential', () 
     // Still OFFERED — the pair must remain visible — but refused locally rather
     // than pressed into a 409.
     expect(envIds(h)).toEqual(['local', 'remote']);
-    expect(cards(h)[0].disabled).toBe(true);
+    // The card is a <label> now, and a <label> has no `disabled` property at all
+    // — so the old assertion would read `undefined` and pass for any markup
+    // whatsoever. The refusal has to be asserted where it actually lives: on the
+    // radio the browser will not check, and on the aria attribute that tells
+    // assistive tech the same thing the greyed-out styling tells the eye.
+    const localRadio = cards(h)[0].childNodes.find((k) => k.type === 'radio');
+    expect(localRadio).toBeTruthy();
+    expect(localRadio?.disabled).toBe(true);
+    expect(cards(h)[0].getAttribute('aria-disabled')).toBe('true');
+    // And the OTHER one must stay pressable, or "disabled" would just mean
+    // "the whole chooser is dead".
+    const remoteRadio = cards(h)[1].childNodes.find((k) => k.type === 'radio');
+    expect(remoteRadio?.disabled).toBe(false);
     expect(cards(h)[0].childNodes.map((k) => k.textContent).join(' ')).toMatch(/switched off/i);
 
     cards(h)[0].click();

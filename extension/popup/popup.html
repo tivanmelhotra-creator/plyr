@@ -532,7 +532,13 @@
           <div class="field">
             <label class="flabel" for="authBase">Base URL</label>
             <input class="input mono" type="url" id="authBase" placeholder="https://your-server.com" autocomplete="off" spellcheck="false">
-            <p class="fhelp">Public address of the server, reachable from this machine.</p>
+            <!-- The mockup prints "Public URL of your <product> server (e.g.
+                 https://your-server.com)". The example is dropped because the
+                 input's own placeholder already shows it — printing it twice,
+                 six pixels apart, reads as a rendering fault rather than as
+                 help. What the mockup's line adds over the old one is the word
+                 PUBLIC and the reason it matters, and that is kept. -->
+            <p class="fhelp">Public address of your server — it must be reachable from THIS machine.</p>
           </div>
           <div class="field">
             <label class="flabel" for="authCode">Authorization code</label>
@@ -558,7 +564,13 @@
             <!-- Names the field the code was minted for, written at runtime,
                  because a single-use code that is pasted against the wrong
                  field fails with nothing on screen explaining why. -->
-            <p class="fhelp" id="authHint">Shown on the server when you chose Remote Browser.</p>
+            <!-- Rewritten to the mockup's wording, which is better than what
+                 was here: it names WHERE the code comes from and the exact path
+                 taken to produce it, so an operator who has not got one knows
+                 what to go and do. Overwritten at runtime by
+                 paintAuthorization() once a code exists, to name the field it
+                 was minted for. -->
+            <p class="fhelp" id="authHint">Get this code from your server — Target This Field → Remote Browser.</p>
           </div>
           <div class="cta tight">
             <button class="btn primary" type="button" id="authConnect">
@@ -575,7 +587,29 @@
       </section>
 
       <section class="card">
-        <div class="card-hd"><h2>Connected to target</h2></div>
+        <!-- ── "● CONNECTION ACTIVE" ───────────────────────────────
+             Both supplied mockups put this at the right of this card's heading,
+             drawn as a green pill switch.
+
+             IT IS AN INDICATOR, NOT A SWITCH, and that is a deliberate departure
+             from the mockup's SHAPE while keeping its meaning. A switch invites
+             the operator to flip it, and there is nothing here to flip: the
+             connection is a CONSEQUENCE of a binding, not a setting that holds
+             it open. A real toggle would have to either do nothing when pressed
+             — the worst kind of control — or silently release the field, which
+             this card already offers explicitly, once, at the bottom, on a button
+             that says RELEASE THIS FIELD.
+
+             So the design's shape is reproduced (green pill, knob to the right,
+             green dot, the words "Connection Active") on a <span>, written by
+             paintTarget() from the same verdict that drives #ctState. It cannot
+             disagree with the rows underneath it, because it is the same fact
+             rendered twice — which is the whole reason the design puts it in the
+             heading: the answer is readable without reading five rows. -->
+        <div class="card-hd split">
+          <h2>Connected to target</h2>
+          <span class="hdstate" id="ctLive"></span>
+        </div>
         <!-- §26: «The target confirmation is essential.» A connection that is up
              but pointed somewhere unexpected is worse than no connection,
              because the send succeeds. -->
