@@ -419,10 +419,20 @@
    * /inspector/authorize minted codes with no field attached. That route is NOT
    * restored. This code is minted inside /inspector/targeting/begin, so it cannot
    * exist without the field it was issued for — which is why the field is named
-   * on screen, and why a fresh code per field is the desired behaviour rather
-   * than a nuisance:
+   * on screen.
    *
-   *   «هر بار فیلد جدید اتورایز جدید باعث شد ما همیشه با فیلد جدید ست بمونیم»
+   * A PREVIOUS VERSION OF THIS COMMENT WENT ON TO CLAIM that "a fresh code per
+   * field is the desired behaviour rather than a nuisance". That was wrong. It
+   * described what the unconditional minting in /inspector/targeting/begin
+   * happened to DO and then promoted the side effect into a rule. The actual
+   * rule is
+   *
+   *   «این سیستم نباید با هر تغییر کوچک، Authorization جدید تولید کند.»
+   *
+   * and the criterion is MATCH vs MISMATCH — never "did the field change". A code
+   * is minted when the extension is pointed at a DIFFERENT field, or at none;
+   * when it already holds this field, nothing is minted and this screen is not
+   * reached at all. See syncDecision() in src/core/FieldIdentity.ts.
    *
    * The poll is on `targetingStatus`, not on a timer that assumes success. The
    * pairing completes on the OTHER machine, so this page cannot know it happened

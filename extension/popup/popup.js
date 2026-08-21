@@ -570,12 +570,27 @@
   }
 
   /**
-   * Render the chooser for the field this extension is pointed at.
+   * Render the LOCAL / REMOTE chooser.
    *
-   * Hidden entirely when there is no field: an environment is a choice ABOUT a
-   * destination, and offering it with nothing to target would register a
-   * destination for a field the user never named. The Target Field card already
-   * says what to do in that case.
+   * ALWAYS SHOWN. Choosing a browser is the FIRST step of targeting:
+   *
+   *   «وقتی کاربر روی آیکن Picker کنار یک Field کلیک می‌کند، پنجره‌ای نمایش داده
+   *    می‌شود که کاربر می‌تواند انتخاب کند: Local Browser / Remote Browser»
+   *
+   * The previous rule — "hidden entirely when there is no field" — inverted
+   * cause and effect. The choice is what PRODUCES a binding, so requiring a
+   * binding before the choice may be seen makes it unreachable exactly when it
+   * is needed, and the operator is left with one card reading `127.0.0.1:3000`
+   * and no choice at all:
+   *
+   *   «توی تب کانکشن ها فقط یک بخش وجود داره که نوشته 127.0.0.1:3000 و هیچ حق
+   *    انتخابی نذاشته برام که لوکال باشه یا ریموت»
+   *
+   * A field is still needed to REGISTER a destination, but that belongs to the
+   * press, not to the render: pressing a card with nothing open reports what is
+   * missing (see chooseEnvironment) instead of the card being absent with no
+   * explanation. Visibility here is a UI-design decision and is deliberately NOT
+   * a function of the Authorization logic — «Connection UI ≠ Authorization UI».
    */
   async function paintEnvironment(target, res) {
     // FALLING BACK TO THE OPEN FIELD IS THE WHOLE POINT, not a convenience.
@@ -593,7 +608,13 @@
     // operator never named.
     var t = target || null;
     if (!t) {
-      var open = (res && res.data && res.data.targets) || [];
+      // `res.targets`, NOT `res.data.targets`. inspectorSession() in
+      // background.js copies the server's fields onto the response object
+      // itself and never builds a `data` envelope, so the old path read
+      // undefined every single time and the fallback below could never fire.
+      // That is a second, independent reason the chooser stayed invisible — and
+      // it survived because the popup suites only ever grepped the source text.
+      var open = (res && res.targets) || [];
       if (open.length === 1) t = open[0];
     }
     var nodeId = (t && t.nodeId) || '';
@@ -605,12 +626,9 @@
     envState.action = (t && t.action) || '';
     envState.workflowId = (t && t.workflowId) || '';
 
-    if (!nodeId || !fieldKey) {
-      els.envCard.hidden = true;
-      els.envGrid.textContent = '';
-      write(els.envStatus, '', '');
-      return;
-    }
+    // The card stays visible whether or not a field is open. What CHANGES with
+    // no field is only the sentence underneath: the cards still render, so the
+    // operator can see the two browsers exist and which one is current.
     els.envCard.hidden = false;
 
     var opts = await bg({
@@ -629,13 +647,27 @@
     for (var i = 0; i < list.length; i++) {
       els.envGrid.appendChild(envCardEl(list[i], list[i].id === envState.current));
     }
-    write(
-      els.envStatus,
-      envState.current === 'local' ? 'Targeting in the Local Browser.'
-        : envState.current === 'remote' ? 'Targeting in the Remote Browser.'
-          : 'Choose a browser to target this field in.',
-      envState.current ? 'ok' : ''
-    );
+    // Four sentences, because there are four genuinely different situations and
+    // collapsing any two of them hides what the operator has to do next. The
+    // no-field case is the one the old code could not express at all: it hid the
+    // whole card instead, which reads as "this feature is missing" rather than
+    // "target a field first".
+    var msg;
+    var kind;
+    if (!nodeId || !fieldKey) {
+      msg = 'No field is being targeted yet \u2014 use the crosshair on the field in the project.';
+      kind = 'warn';
+    } else if (envState.current === 'local') {
+      msg = 'Targeting in the Local Browser.';
+      kind = 'ok';
+    } else if (envState.current === 'remote') {
+      msg = 'Targeting in the Remote Browser.';
+      kind = 'ok';
+    } else {
+      msg = 'Choose a browser to target this field in.';
+      kind = '';
+    }
+    write(els.envStatus, msg, kind);
   }
 
   /**

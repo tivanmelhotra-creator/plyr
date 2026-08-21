@@ -270,10 +270,23 @@
    *
    * `targetingBegin()` below does the whole job in one call:
    *
-   *   LOCAL   the server rebinds itself to the field, opens (or reuses) its own
-   *           browser and raises the prompt there. Nothing to display here.
-   *   REMOTE  the server returns a per-field code and its own public address,
-   *           for the extension on the operator's machine to redeem.
+   *   LOCAL   the server rebinds itself to the field and opens — or REUSES, if
+   *           one is already running — its own browser. A prompt is raised there
+   *           ONLY on a MISMATCH; if the extension already holds this field there
+   *           is nothing to confirm. Either way, nothing to display here, and
+   *           LOCAL never has an authorization code at all.
+   *   REMOTE  the server returns a per-field code and its own public address for
+   *           the extension on the operator's machine to redeem — again ONLY on a
+   *           MISMATCH. On a match it returns `authorization: null` and the field
+   *           is already usable.
+   *
+   * NOTE what this client CANNOT contribute to that decision. It runs in the
+   * dashboard, a DIFFERENT browser from the extension, with no access to the
+   * extension's chrome.storage.local — so it can never declare which field the
+   * extension holds. Its requests therefore carry no field identity, land on
+   * `null`, and are treated as MISMATCH. That is the correct safe default and
+   * needs no special case: the rule is uniform, only the source of the
+   * right-hand operand differs.
    *
    * Keeping a free-standing code-minting wrapper here would only invite a caller
    * to be written for it — and that caller would be the unattached code again. */
