@@ -825,6 +825,18 @@ function unbound(over: Record<string, unknown> = {}) {
     targetFieldId: '',
     authorized: false,
     target: null,
+    // FLAT, not wrapped in `data`. inspectorSession() in background.js copies the
+    // server's fields onto the response object itself and never builds a `data`
+    // envelope — so this fixture previously described a shape the extension can
+    // never actually receive.
+    //
+    // That mattered more than it looks. popup.js read `res.data.targets`, which
+    // is `undefined` on every real call, so the fallback that finds the single
+    // open field could never fire in production. This fixture supplied the
+    // missing envelope and so CONCEALED the defect: the test passed against a
+    // reality that did not exist. `data` is kept alongside for the assertions
+    // that still read it, but `targets` is now where the popup actually looks.
+    targets: [target],
     data: {
       success: true, mode: 'remote', modes: ['remote', 'local'], localAvailable: false,
       targets: [target], authorized: [], pending: 0,
@@ -918,15 +930,56 @@ describe('§1 — the chooser EXISTS on this surface and offers both browsers', 
     expect(h.sentOf('AB_TARGETING_OPTIONS')[0].payload).toMatchObject({ nodeId: 'n7', fieldKey: 'url' });
   });
 
-  it('hides the card when there is no field to target, rather than binding a guess', async () => {
+  it('STILL shows the card when there is no field to target, and says what is missing', async () => {
+    // ── THIS TEST USED TO ASSERT THE BUG ─────────────────────────────────
+    //
+    // It read `expect(h.hidden('envCard')).toBe(true)` — it REQUIRED the chooser
+    // to vanish when no field was open, under the heading "rather than binding a
+    // guess". The two halves of that sentence do not follow from one another:
+    // not binding a guess is right, but hiding the control is not how you avoid
+    // guessing. Refusing on PRESS avoids guessing; hiding on RENDER merely
+    // removes the control.
+    //
+    // And it removed it at the worst possible moment. Choosing a browser is the
+    // FIRST step of targeting — the choice is what PRODUCES a binding — so
+    // gating the choice on a binding already existing inverts cause and effect
+    // and makes the control unreachable exactly when it is needed. That is what
+    // the operator hit:
+    //
+    //   «توی تب کانکشن ها فقط یک بخش وجود داره که نوشته 127.0.0.1:3000 و هیچ حق
+    //    انتخابی نذاشته برام که لوکال باشه یا ریموت»
+    //
+    // A green test asserting the defect is worse than no test: it makes the bug
+    // look like a decision, and the next reader defends it. So the expectation
+    // is inverted deliberately, with the reason recorded — the card stays, and
+    // what changes with no field open is only the sentence underneath it.
     const h = boot({
-      AB_INSPECTOR_SESSION: { ok: true, targetFieldId: '', authorized: false, target: null, data: { targets: [] } },
+      AB_INSPECTOR_SESSION: { ok: true, targetFieldId: '', authorized: false, target: null, targets: [], data: { targets: [] } },
       AB_TARGETING_OPTIONS: options(),
     });
     await h.settle();
 
-    expect(h.hidden('envCard')).toBe(true);
-    expect(h.sentOf('AB_TARGETING_OPTIONS')).toHaveLength(0);
+    expect(h.hidden('envCard')).toBe(false);
+    // The choices are still fetched and still rendered — the operator can see
+    // that two browsers exist and which one is current.
+    expect(h.sentOf('AB_TARGETING_OPTIONS').length).toBeGreaterThan(0);
+    expect(envIds(h)).toEqual(['local', 'remote']);
+  });
+
+  it('names the missing precondition instead of going silent', async () => {
+    // The legitimate half of the old test, kept and pointed at the right thing.
+    // Not binding a guess is a requirement; the way to honour it is to SAY what
+    // is missing, so the operator learns the crosshair is the next step rather
+    // than concluding the extension is broken.
+    const h = boot({
+      AB_INSPECTOR_SESSION: { ok: true, targetFieldId: '', authorized: false, target: null, targets: [], data: { targets: [] } },
+      AB_TARGETING_OPTIONS: options(),
+    });
+    await h.settle();
+
+    expect(h.text('envStatus')).toMatch(/no field|crosshair/i);
+    // And nothing was begun: no destination was minted from a guess.
+    expect(h.sentOf('AB_TARGETING_BEGIN')).toHaveLength(0);
   });
 
   it('says so when the options cannot be loaded, instead of showing an empty chooser', async () => {

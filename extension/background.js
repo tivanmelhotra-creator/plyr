@@ -743,30 +743,42 @@ async function inspectorSession() {
 }
 
 /**
- * inspectorPair() IS DELETED.
+ * WHAT THE TWO ENVIRONMENTS ACTUALLY MEAN.
  *
- * It was the extension's half of the Authorization Code architecture: it POSTed
- * a user-typed code to `/inspector/pair`, and the server answered with the field
- * that code had been scoped to, which the extension then stored.
+ * This block used to claim "inspectorPair() IS DELETED" and that REMOTE meant
+ * "the server's own browser". Both statements were false, and the second was the
+ * original LOCAL/REMOTE inversion surviving in prose after the code had been
+ * corrected. inspectorPair() is defined below and IS routed (AB_INSPECTOR_PAIR).
+ * Stale prose that contradicts adjacent code is not a harmless leftover: it is
+ * how the inversion got re-introduced once already, because the next reader
+ * trusts the comment over the call graph.
  *
- * That architecture is withdrawn. Neither environment issues a code any more:
+ *   LOCAL BROWSER  — the Project and the browser are on the SAME customer
+ *                    server. The address is therefore something the PROJECT
+ *                    knows and sets; the operator has nothing to type. There is
+ *                    NO authorization code in LOCAL — not a field for one, not a
+ *                    generate button, not a refresh. When the field identity the
+ *                    extension holds does not match the field the project is
+ *                    targeting (MISMATCH, which includes holding nothing at
+ *                    all), the server raises a confirmation prompt and the
+ *                    operator approves it — see consentDecide() below.
  *
- *   LOCAL BROWSER  — the browser runtime on the same server as the application.
- *                    The server binds the target itself when the crosshair is
- *                    used; there is no credential and no prompt.
- *   REMOTE BROWSER — the server's own browser. It binds on the user APPROVING
- *                    the Remote Approval prompt, which is handled by
- *                    consentDecide() below.
+ *   REMOTE BROWSER — the browser is on the OPERATOR'S OWN machine, reaching a
+ *                    server somewhere else. Nothing can resolve that address for
+ *                    them, so the Base URL is fully theirs to set: a different
+ *                    IP, domain or port per install. Authorization exists here,
+ *                    and only here, and is minted only on MISMATCH.
  *
- * So there is nothing left for this function to redeem. Deleting it, rather than
- * leaving it unreachable, is deliberate: a live code-redemption path in the
- * worker is a working half of the removed flow, and the next UI that wanted to
- * "just add a code box" would find it already built and waiting.
+ * The deciding criterion in BOTH environments is field identity — MATCH versus
+ * MISMATCH — and never "did something change". A matching field needs no prompt
+ * and no new code, because the extension is already pointed where the project
+ * wants it. See syncDecision() in src/core/FieldIdentity.ts for the single
+ * comparison both branches consult.
  *
- * consentDecide() is its replacement, and the two are worth comparing — same
- * outcome (a stored target the extension did not choose), reached by ANSWERING a
- * question the server asked instead of by transcribing a secret the server
- * printed.
+ * consentDecide() and inspectorPair() are the two ways a target lands in storage,
+ * and they are worth comparing — same outcome, reached by ANSWERING a question
+ * the server asked (LOCAL) versus transcribing a secret the server minted
+ * (REMOTE).
  */
 
 /**
@@ -1231,9 +1243,48 @@ async function targetingBegin(payload) {
   if (payload && payload.workflowId) body.workflowId = payload.workflowId;
   if (payload && payload.label) body.label = payload.label;
 
+  // ── FIELD IDENTITY: the half of the comparison only THIS side knows ────────
+  //
+  // The server decides MATCH vs MISMATCH by comparing the field the Project is
+  // targeting against the field THIS EXTENSION currently holds. It has the first
+  // operand; only we have the second, because it lives in this browser's
+  // chrome.storage.local under `ab_targetFieldId`.
+  //
+  // Until this line existed the value was stored, read by the popup, and never
+  // once transmitted — so the server had nothing to compare against and could
+  // only act unconditionally. That missing wire is why re-opening an
+  // already-bound field still raised a prompt (LOCAL) or minted a fresh code
+  // (REMOTE): not a policy decision, just an operand that never arrived.
+  //
+  // Declared BOTH ways on purpose, exactly as `x-browser-environment` is on the
+  // consent-polling call: the query string is visible in a server log when
+  // diagnosing this class of bug, and the header survives a proxy that rewrites
+  // query strings. src/core/FieldIdentity.ts accepts either and treats them
+  // identically.
+  //
+  // An EMPTY value is sent as nothing at all rather than as `''` or the string
+  // 'null'. "I hold no field" is a real, common answer — a freshly installed
+  // extension — and it must reach the server as absent, which the rule turns
+  // into MISMATCH. Sending the literal text 'null' would be a stringification
+  // accident that only LOOKED like a mismatch, for the wrong reason.
+  // THE STABLE identity, not the address. `ab_targetFieldId` is re-minted on
+  // every NDV open (see getPairingKey's doc comment above), so declaring it here
+  // would guarantee a MISMATCH forever — the server would compare two
+  // freshly-minted random strings and, quite correctly, find them different every
+  // time. `ab_pairingKey` is derived from workflow+node+field and is identical on
+  // the next open, which is the only reason "the same field" is a question that
+  // can be answered at all.
+  var heldFieldId = await getPairingKey();
+  var beginUrl = ctx.base + '/inspector/targeting/begin';
+  var beginHeaders = {};
+  if (heldFieldId) {
+    beginHeaders['x-extension-field-id'] = heldFieldId;
+    beginUrl += '?extensionFieldId=' + encodeURIComponent(heldFieldId);
+  }
+
   var res = await apiFetch(
-    ctx.base + '/inspector/targeting/begin',
-    { method: 'POST', body: JSON.stringify(body) },
+    beginUrl,
+    { method: 'POST', headers: beginHeaders, body: JSON.stringify(body) },
     ctx.apiKey
   );
   var data = (res && res.data) || {};
@@ -1523,14 +1574,22 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
     case 'AB_INSPECTOR_SESSION':
       inspectorSession().then(sendResponse);
       return true; // async
-    // There is deliberately NO 'AB_INSPECTOR_PAIR' case here any more.
+    // AB_INSPECTOR_PAIR IS routed — see the case further down. The comment that
+    // used to sit here said the opposite ("deliberately NO 'AB_INSPECTOR_PAIR'
+    // case here any more") while the case was fifteen lines below it, and also
+    // had the environments backwards. Corrected rather than deleted, because the
+    // distinction it was reaching for is real:
     //
-    // It used to route to inspectorPair(), which redeemed a user-typed
-    // Authorization Code against POST /inspector/pair. Both the function and
-    // the code architecture are gone: the server now binds the target field
-    // itself when the operator clicks the crosshair (LOCAL, silently) or
-    // approves the request (REMOTE, via AB_CONSENT_DECIDE below). No caller
-    // in this repo sends this message.
+    //   inspectorPair()  REMOTE only. Redeems an authorization code against
+    //                    POST /inspector/pair. REMOTE is the operator's own
+    //                    machine, so a credential is the only thing that can
+    //                    prove which field they are allowed to bind.
+    //   consentDecide()  LOCAL only. No code exists in LOCAL; the operator
+    //                    approves a prompt instead (AB_CONSENT_DECIDE below).
+    //
+    // Either way the server acts only on MISMATCH: an extension already holding
+    // the field the project is targeting is prompted for nothing and issued
+    // nothing.
     //
     // Note AB_HANDOFF_PAIR further down is a DIFFERENT subsystem — it binds a
     // BROWSER SESSION, not a target field — and is intentionally untouched.

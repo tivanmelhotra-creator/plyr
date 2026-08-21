@@ -53,6 +53,10 @@ import {
   normalizeBrowserEnvironment,
 } from '../core/BrowserEnvironment';
 import {
+  syncDecision,
+  extensionFieldIdFromRequest,
+} from '../core/FieldIdentity';
+import {
   sessionHandoff,
   formatPairingCode,
   buildSnapshot,
@@ -937,6 +941,43 @@ export const createModeRoutes = (): Router => {
       localAvailable: true,
     });
 
+    // ── FIELD IDENTITY — the one comparison both branches below obey ────────
+    //
+    //   «Project همیشه Source of Truth است. Project > Extension.»
+    //
+    // The Project's id is `target.targetFieldId`, minted by the registry from
+    // workflow+node+field just above. The Extension's is whatever it declared on
+    // the request — or null, when it declared nothing OR when the caller is the
+    // Dashboard, which runs in a different browser and CANNOT read the
+    // extension's chrome.storage.local. Both of those are MISMATCH by the rule,
+    // which is the safe direction: a prompt or a code that turns out to have been
+    // unnecessary, rather than a browser silently declared bound to a field it
+    // has never heard of.
+    //
+    // Computed ONCE, here, before the environment branch. Each branch then acts
+    // on `identity.requiresSync` and neither re-derives the test, so LOCAL and
+    // REMOTE cannot drift into disagreeing about what a match is.
+    //
+    // NOTE what this is NOT keyed on: whether anything CHANGED. Re-opening the
+    // same field is a new run but a MATCH, and must therefore be silent —
+    //   «این سیستم نباید با هر تغییر کوچک، Authorization جدید تولید کند.»
+    // WHICH id is compared is the whole correctness of this feature, and the
+    // obvious choice is the WRONG one. `target.targetFieldId` carries a
+    // `crypto.randomBytes(4)` suffix and is re-minted on EVERY registration —
+    // background.js documents it as "the ADDRESS … re-minted whenever the node is
+    // re-opened". Comparing it could therefore never once return MATCH, and the
+    // feature would silently degrade into exactly the behaviour it was written
+    // to remove: a prompt or a code on every single visit.
+    //
+    // `pairingKey` is the STABLE identity — `tf:${workflowId}:${nodeId}:${fieldKey}`,
+    // derived from the same three facts every time, which is what lets "the same
+    // field" mean anything at all across two visits. It is the id the extension
+    // durably stores as `ab_pairingKey`, and the one this comparison uses.
+    const identity = syncDecision(
+      target.pairingKey,
+      extensionFieldIdFromRequest(req),
+    );
+
     // Refuse loudly instead of silently falling back to the other environment.
     if (plan.note === 'local_disabled' || plan.note === 'local_unavailable') {
       res.status(409).json({
@@ -1008,25 +1049,53 @@ export const createModeRoutes = (): Router => {
       // Idempotent per field: asking again for the same field refreshes the
       // existing prompt rather than stacking a second one.
       //
-      // And per the report, it does not matter whether the browser was already
-      // up: «فرق نمی‌کنه مرورگر بالا باشه یا نباشه … اگر بالا باشه که الرت میده،
-      // اگر بالا نباشه یکی بالا میاره و بعدش الرت میده». The launch/reuse
-      // decision is the caller's (see `opensServerBrowser`); the prompt is
-      // raised either way, right here.
-      const consent = remoteTargetConsent.request({
-        userId,
-        targetFieldId: target.targetFieldId,
-        pairingKey: target.pairingKey,
-        nodeId: target.nodeId,
-        fieldKey: target.fieldKey,
-        label: target.label,
-        action: target.action,
-        // Stamped so a prompt can only ever be delivered to the browser it is
-        // addressed to. This branch is LOCAL-only — `plan.serverMayGrant` is
-        // true for no other environment — so the value is a constant, not a
-        // pass-through of anything a caller sent.
-        environment: 'local',
-      });
+      // ── RAISED ONLY ON MISMATCH ─────────────────────────────────────────
+      //
+      //   «LOCAL: بدون Alert وقتی MATCH است؛ در Local فقط در صورت Mismatch،
+      //    Alert نمایش داده می‌شود»
+      //
+      // This used to fire unconditionally, and that was the defect: an extension
+      // ALREADY holding this exact field was asked to confirm a move to the
+      // field it was already on. There is nothing for the human to decide there,
+      // and asking anyway trains them to approve prompts without reading them —
+      // which is precisely how a real mismatch later gets waved through.
+      //
+      // A MATCH therefore produces `consent: null` below. Note what that does
+      // NOT mean: it is not a signal to hide the Connection card or change the
+      // chooser — «Connection/Browser UI را با Authorization قاطی نکن.» The card's
+      // visibility follows the existing UI design and is not derived from this.
+      //
+      // BROWSER LAUNCH IS A SEPARATE CONCERN and is deliberately NOT gated on
+      // the verdict. Per the report it does not matter whether the browser was
+      // already up — «فرق نمی‌کنه مرورگر بالا باشه یا نباشه»: an already-running
+      // local browser is REUSED (the field shown in a new tab) and only an
+      // absent one is launched. That reuse/launch decision belongs to the caller
+      // via `openServerBrowser`, which stays TRUE on a MATCH — the operator
+      // still needs to SEE the field, they just do not need to re-approve it.
+      const consent = identity.requiresSync
+        ? remoteTargetConsent.request({
+          userId,
+          targetFieldId: target.targetFieldId,
+          pairingKey: target.pairingKey,
+          nodeId: target.nodeId,
+          fieldKey: target.fieldKey,
+          label: target.label,
+          action: target.action,
+          // Stamped so a prompt can only ever be delivered to the browser it is
+          // addressed to. This branch is LOCAL-only — `plan.serverMayGrant` is
+          // true for no other environment — so the value is a constant, not a
+          // pass-through of anything a caller sent.
+          environment: 'local',
+        })
+        : null;
+
+      // A field that now MATCHES must not leave an older prompt for itself
+      // sitting unanswered in the browser. Approving that stale card later would
+      // re-settle a binding that is already correct, and — worse — would make
+      // the prompt look required after all.
+      if (!identity.requiresSync) {
+        remoteTargetConsent.clearForPairing(userId, target.pairingKey);
+      }
 
       res.json({
         success: true,
@@ -1044,8 +1113,28 @@ export const createModeRoutes = (): Router => {
         // Named `openServerBrowser`; the old `openRemoteBrowser` said the
         // opposite of what it did.
         openServerBrowser: true,
-        // Nothing to transcribe, stated explicitly rather than by omission.
+        // ── ZERO AUTHORIZATION SURFACE IN LOCAL ─────────────────────────────────
+        //
+        //   «LOCAL هیچ Authorization‌ای ندارد.» — no code, no generate, no
+        //   refresh, no field for it, ever.
+        //
+        // Stated as an explicit `null` rather than by omission, and it is `null`
+        // on BOTH verdicts: a LOCAL mismatch is settled by the operator
+        // approving the prompt above, never by transcribing anything. LOCAL means
+        // the Project and the browser are on the SAME customer server, so there
+        // is no trust gap between two machines for a code to bridge — and the
+        // Base URL is likewise the PROJECT's to set, not the operator's to type.
         authorization: null,
+        // The comparison that decided the prompt, reported so the dashboard can
+        // say WHY it is or is not asking. Informational: no client may recompute
+        // the verdict from it, and no UI card's visibility depends on it.
+        identity: {
+          verdict: identity.verdict,
+          matched: identity.matched,
+          reason: identity.reason,
+          projectFieldId: identity.projectFieldId,
+          extensionFieldId: identity.extensionFieldId,
+        },
         // The prompt to answer inside that browser, so the dashboard can say
         // "approve it there" and poll for the outcome instead of claiming the
         // field is ready before anyone agreed.
@@ -1085,12 +1174,25 @@ export const createModeRoutes = (): Router => {
     // And no in-page prompt: the redeemed code named exactly one Target Field,
     // so a second question would re-ask something already answered.
     //
-    // WHY A FRESH CODE PER FIELD IS CORRECT, NOT A NUISANCE:
-    //   «هر بار فیلد جدید، اتورایز جدید — باعث شد ما همیشه با فیلد جدید ست
-    //    بمانیم»
-    // The code carries the destination. Minting one per field is exactly what
-    // keeps a far-away browser following the operator from field to field
-    // without the server having to guess which one they meant.
+    // ── MINTED ONLY ON MISMATCH ───────────────────────────────────────────
+    //
+    //   «REMOTE: بدون Authorization جدید وقتی MATCH است؛ در Remote فقط در صورت
+    //    Mismatch، Authorization جدید Generate می‌شود»
+    //
+    // A COMMENT HERE PREVIOUSLY ARGUED THE OPPOSITE, under the heading "WHY A
+    // FRESH CODE PER FIELD IS CORRECT, NOT A NUISANCE". That was wrong, and it
+    // is worth naming the error precisely because it is easy to repeat: the old
+    // text observed what the unconditional `issue()` below happened to DO and
+    // then promoted that result into a design rule. The actual rule is
+    //
+    //   «این سیستم نباید با هر تغییر کوچک، Authorization جدید تولید کند.»
+    //
+    // and the criterion is MATCH vs MISMATCH, never "did the field change". The
+    // half the old comment got right is that the code carries the destination —
+    // which is exactly why it is needed when the extension is pointed somewhere
+    // ELSE (or nowhere), and exactly why it is pure friction when the extension
+    // is already on this field.
+    //
     // NOTE the argument order: (userId, targetFieldId, now, pairingKey). Passing
     // the pairing key THIRD would silently make it the clock, and the resulting
     // code would expire at a nonsense time. `Date.now()` is stated explicitly
@@ -1098,18 +1200,26 @@ export const createModeRoutes = (): Router => {
     //
     // The pairing key is what makes «دفعات بعد دیگر Authorization Code لازم نیست»
     // true: it is derived from workflow+node+field, so the durable pairing the
-    // redemption creates survives the node being closed and re-opened.
-    const issued = inspectorAuth.issue(
-      userId,
-      target.targetFieldId,
-      Date.now(),
-      target.pairingKey,
-    );
-
+    // redemption creates survives the node being closed and re-opened — and on
+    // the next visit that same field is a MATCH, so nothing is minted at all.
+    const issued = identity.requiresSync
+      ? inspectorAuth.issue(
+        userId,
+        target.targetFieldId,
+        Date.now(),
+        target.pairingKey,
+      )
+      : null;
     // `issue` returns null only for a blank userId/targetFieldId, both of which
     // were validated above — but it is a nullable type, so it is checked rather
     // than asserted away.
-    if (!issued) {
+    //
+    // Guarded on `requiresSync` as well, because on a MATCH `issued` is null BY
+    // DESIGN and must not be mistaken for the failure case. Without that
+    // conjunct, every matching REMOTE field would answer HTTP 500 — turning
+    // "nothing needed doing" into an error, which is the exact opposite of the
+    // required behaviour.
+    if (identity.requiresSync && !issued) {
       res.status(500).json({
         success: false,
         reason: 'ATTRIBUTE_SEND_FAILED',
@@ -1129,27 +1239,59 @@ export const createModeRoutes = (): Router => {
     res.json({
       success: true,
       environment,
-      step: 'authorize',
+      // ── THE STEP DEPENDS ON THE VERDICT ────────────────────────────────────
+      //
+      // MISMATCH → 'authorize': there is a code to carry and a step left to do.
+      // MATCH    → 'targeting': the extension is already pointed at this exact
+      //              field, so it is usable NOW and there is nothing to
+      //              transcribe. Reporting 'authorize' on a match would send the
+      //              dashboard looking for a code that was deliberately not
+      //              minted, and the operator would sit waiting for a box that
+      //              never fills.
+      step: identity.requiresSync ? 'authorize' : 'targeting',
       plan,
       target,
-      // The field is NOT usable yet, and saying so is the point: the operator
-      // has a step left to do.
-      paired: false,
-      // This server launches nothing for REMOTE.
+      // TRUE only on a MATCH — a durable pairing already covers this field, so
+      // the field really is ready to use. On a MISMATCH the field is NOT usable
+      // yet, and saying so is the point: the operator has a step left to do.
+      paired: !identity.requiresSync,
+      // This server launches nothing for REMOTE. The browser is on the
+      // operator's own machine; nothing here can reach it.
       openServerBrowser: false,
+      // No in-page prompt in REMOTE, on either verdict — the prompt is LOCAL's
+      // settling act, a code is REMOTE's.
       consent: null,
-      // What the operator carries to the other browser.
-      authorization: {
-        code: issued.code,
-        expiresAt: issued.expiresAt,
-        // The address that browser must reach THIS server on. Resolved by the
-        // server, never typed here — the extension needs to be told it, but the
-        // dashboard already knows it.
-        baseUrl: publicBaseUrl(req),
-        nodeId: target.nodeId,
-        fieldKey: target.fieldKey,
-        label: target.label,
+      // The comparison that decided whether a code was minted, reported so the
+      // dashboard can say WHY. Informational only: no client recomputes the
+      // verdict, and no card's visibility is derived from it —
+      // «Connection/Browser UI را با Authorization قاطی نکن.»
+      identity: {
+        verdict: identity.verdict,
+        matched: identity.matched,
+        reason: identity.reason,
+        projectFieldId: identity.projectFieldId,
+        extensionFieldId: identity.extensionFieldId,
       },
+      // What the operator carries to the other browser — and `null` on a MATCH,
+      // which is the whole requirement:
+      //   «REMOTE: بدون Authorization جدید وقتی MATCH است»
+      // Note the Base URL is NOT part of this object's purpose in REMOTE: it is
+      // the operator's to set, because a browser on their machine may have to
+      // reach this server on a different IP, domain or port per install. It is
+      // reported here only as the server's best suggestion.
+      authorization: issued
+        ? {
+          code: issued.code,
+          expiresAt: issued.expiresAt,
+          // The address that browser must reach THIS server on. Offered as the
+          // server's own resolution, but in REMOTE the operator may override it
+          // — nothing here can know how their network routes to us.
+          baseUrl: publicBaseUrl(req),
+          nodeId: target.nodeId,
+          fieldKey: target.fieldKey,
+          label: target.label,
+        }
+        : null,
     });
     return;
 
