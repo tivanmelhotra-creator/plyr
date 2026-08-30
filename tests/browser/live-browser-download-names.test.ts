@@ -1,10 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'http';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { config } from '../../src/config';
 import { LiveBrowserManager } from '../../src/core/LiveBrowser';
 import { downloadDirFor } from '../../src/core/RemoteDownloads';
+import { describeBrowser, ensureProbed, closeSharedBrowser } from './real-browser';
+
+// Resolve the Chromium availability probe before the first describeBrowser()
+// call below, so an unavailable browser produces a visible SKIP.
+await ensureProbed();
 
 // ════════════════════════════════════════════════════════════════════════════
 // THE DASHBOARD's Live Browser shelf — does a downloaded file keep the name and
@@ -60,9 +65,21 @@ import { downloadDirFor } from '../../src/core/RemoteDownloads';
 // Plus the one measured win that is unambiguously new: the declared Content-Type
 // is what lets an extensionless download get a usable suffix.
 //
-// Skips itself when Chromium cannot launch, matching picker-drive.test.ts, so
-// the suite stays green on a machine without Playwright's system libraries:
-//     sudo npx playwright install-deps chromium
+// ── WHY THIS FILE IS IN tests/browser/ AND NOT tests/unit/ ─────────────────
+// It launches a real Chromium through a real LiveBrowserManager and serves real
+// HTTP, which is the opposite of what tests/unit/ promises. It moved here with
+// picker-drive.test.ts for the reported reason:
+//
+//   «npm test هنگ می‌کند … یک unit test نباید این کار را بکند»
+//
+// `npm test` no longer collects it. `npm run test:browser` does, and CI installs
+// Chromium and runs it there. When no browser can be launched the whole block is
+// reported SKIPPED by tests/browser/real-browser.ts, which also bounds the
+// launch so the discovery is fast instead of a per-file timeout.
+//
+// To run it locally:
+//     npx playwright install --with-deps chromium
+//     npm run test:browser
 // ════════════════════════════════════════════════════════════════════════════
 
 /** One case: what the server sends, and what must end up on disk. */
@@ -232,6 +249,11 @@ beforeAll(async () => {
   // an X server it may not have.
   (config as unknown as Record<string, unknown>).REAL_CHROME_ENABLED = false;
 
+  // The try/catch stays, but it is no longer the SKIP mechanism — describeBrowser
+  // already decided that, before this hook ran, from a probe that is bounded and
+  // shared. What it still does is keep a session failure from being reported as a
+  // hook crash for every test in the file when the browser IS available but this
+  // particular session cannot start.
   try {
     mgr = new LiveBrowserManager(2);
     session = mgr.create(USER);
@@ -244,7 +266,7 @@ beforeAll(async () => {
     await session.start();
     available = true;
   } catch (e) {
-    available = false;                       // no browser deps here → skip below
+    available = false;
     skipReason = String((e as Error)?.message || e);
   }
 }, 180_000);
@@ -252,15 +274,23 @@ beforeAll(async () => {
 afterAll(async () => {
   if (mgr) await mgr.shutdown().catch(() => { /* teardown is best-effort */ });
   if (server) await new Promise<void>((r) => server!.close(() => r()));
+  await closeSharedBrowser();
 });
 
-/** `it` that becomes a pass-through skip when Chromium is unavailable. */
+/**
+ * `it` with a browser-sized timeout.
+ *
+ * The availability check it still carries is now a NARROW one: describeBrowser
+ * has already skipped the whole block if Chromium cannot launch at all, so
+ * reaching here with `available === false` means the browser launched but this
+ * suite's own session did not start. That is a genuine failure signal rather
+ * than an environment one, so it is surfaced instead of silently passing.
+ */
 const browserIt = (name: string, fn: () => Promise<void>, timeout = 60_000) =>
   it(name, async () => {
-    if (!available) {
-      expect(skipReason, 'skipped: Chromium could not launch').toBeTruthy();
-      return;
-    }
+    // Fail loudly rather than passing quietly: the environment was already
+    // cleared by the probe, so this is the product's own session refusing.
+    expect(available, `LiveBrowser session failed to start: ${skipReason}`).toBe(true);
     await fn();
   }, timeout);
 
@@ -292,7 +322,7 @@ function onDisk(row: { token?: string; name: string }) {
   return join(downloadDirFor(USER), String(row.token), row.name);
 }
 
-describe('the declared filename reaches the shelf and the disk', () => {
+describeBrowser('the declared filename reaches the shelf and the disk', () => {
   for (const c of CASES) {
     browserIt(`${c.want} — ${c.why}`, async () => {
       const row = await download(c.path);
@@ -310,7 +340,7 @@ describe('the declared filename reaches the shelf and the disk', () => {
   }
 });
 
-describe('a name the site gave without an extension still gets one', () => {
+describeBrowser('a name the site gave without an extension still gets one', () => {
   // THE ONE UNAMBIGUOUSLY NEW WIN, and the only claim here that a reverted line
   // makes fail behaviourally. `trackDownload` passes the response's own
   // Content-Type into `ensureUsableExtension`; drop that argument and each of
@@ -331,7 +361,7 @@ describe('a name the site gave without an extension still gets one', () => {
   }
 });
 
-describe('the shelf never hands out a path or a placeholder', () => {
+describeBrowser('the shelf never hands out a path or a placeholder', () => {
   browserIt('gives the client a token, never a filesystem path', async () => {
     const row = await download('/plain');
     expect(row.token).toMatch(/^dl_[0-9a-f]+$/);
@@ -366,7 +396,7 @@ describe('the shelf never hands out a path or a placeholder', () => {
 // user-visible bug once.
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('contingency 1: the browser is launched in a UTF-8 locale', () => {
+describeBrowser('contingency 1: the browser is launched in a UTF-8 locale', () => {
   it('forces a UTF-8 LANG, because without one Chromium answers "download"', async () => {
     const { withUtf8Locale } = await import('../../src/core/BrowserProfile');
 
@@ -392,7 +422,7 @@ describe('contingency 1: the browser is launched in a UTF-8 locale', () => {
   });
 });
 
-describe('contingency 2: what the site declared is remembered independently', () => {
+describeBrowser('contingency 2: what the site declared is remembered independently', () => {
   it('records a declaration from the response and prefers it over a guess', async () => {
     const { DownloadHeaderIndex } = await import('../../src/core/DownloadHeaders');
     const { preferDeclaredName } = await import('../../src/core/RealChromeShelf');

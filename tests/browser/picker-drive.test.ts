@@ -22,12 +22,33 @@
  *      "invalid selector" (-1), because that number is the only defence against
  *      a selector that silently matches 40 nodes
  *
- * Skips itself (rather than failing) when Chromium cannot launch, so the suite
- * stays green on machines without Playwright's system libraries:
- *     sudo npx playwright install-deps chromium
+ * ── WHY THIS FILE IS IN tests/browser/ AND NOT tests/unit/ ─────────────────
+ * REPORTED: «npm test هنگ می‌کند — tests/unit/picker-drive.test.ts مرورگر واقعی
+ * اجرا می‌کند. یک unit test نباید این کار را بکند».
+ *
+ * Agreed, and the fix is the directory rather than the suite: what this file
+ * asserts is exactly what nothing else can (see above), so weakening it would
+ * lose real coverage. It simply is not a unit test — it needs a ~400 MB browser
+ * and system libraries, whereas tests/unit/ is the tier people run in a loop.
+ *
+ * `npm test` no longer collects it; `npm run test:browser` does, and CI installs
+ * Chromium and runs it there. The launch itself is bounded and probed once by
+ * tests/browser/real-browser.ts, so on a machine with no browser this whole
+ * block is reported as SKIPPED — not as a hang, and not as a fake pass.
+ *
+ * To run it locally:
+ *     npx playwright install --with-deps chromium
+ *     npm run test:browser
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { it, expect, afterAll } from 'vitest';
 import { PICKER_SCRIPT } from '../../src/core/LiveBrowser';
+import {
+  describeBrowser, ensureProbed, sharedBrowser, closeSharedBrowser,
+} from './real-browser';
+
+// Resolves the availability probe BEFORE the first describeBrowser() call, so
+// the skip decision can be made synchronously and therefore VISIBLY.
+await ensureProbed();
 
 type Payload = {
   k: string; css: string; xpath: string; tag?: string; text?: string;
@@ -50,20 +71,9 @@ const FIXTURE = `<!doctype html><html><head><meta charset="utf-8"><style>
   <div class="row" id="r3"><a href="/navigated.html" id="link">Link</a></div>
 </body></html>`;
 
-let browser: any = null;
-let available = false;
-
-beforeAll(async () => {
-  try {
-    const { chromium } = await import('playwright');
-    browser = await chromium.launch();
-    available = true;
-  } catch {
-    available = false;   // no browser deps in this environment → skip below
-  }
-}, 60_000);
-
-afterAll(async () => { if (browser) await browser.close(); });
+// The browser is launched ONCE per process by real-browser.ts and shared with
+// the other suite in this directory. Each test still gets an isolated page.
+afterAll(async () => { await closeSharedBrowser(); });
 
 /**
  * Fresh page with the fixture loaded, the picker injected, and the binding
@@ -71,6 +81,7 @@ afterAll(async () => { if (browser) await browser.close(); });
  * LiveBrowserSession.start() + setPicker(true) set up in production.
  */
 async function armedPage() {
+  const browser = await sharedBrowser();
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const seen: Payload[] = [];
   await page.exposeBinding('__abReportPick', (_src: unknown, data: Payload) => {
@@ -85,14 +96,19 @@ async function armedPage() {
   return { page, seen, last };
 }
 
-// `it` that becomes a skip when Chromium is unavailable.
+/**
+ * A plain `it` with a browser-sized timeout.
+ *
+ * It no longer needs an availability check of its own: `describeBrowser` skips
+ * the entire block when Chromium cannot launch. The previous version did
+ * `if (!available) { expect(available).toBe(false); return; }`, which reported a
+ * PASS for a test that had asserted nothing about the product — the silent
+ * no-op that lets a browser-dependent regression ship green.
+ */
 const browserIt = (name: string, fn: () => Promise<void>, timeout = 30_000) =>
-  it(name, async () => {
-    if (!available) { expect(available).toBe(false); return; }   // skipped
-    await fn();
-  }, timeout);
+  it(name, fn, timeout);
 
-describe('picker drive: hover previews the element under the pointer', () => {
+describeBrowser('picker drive: hover previews the element under the pointer', () => {
   browserIt('reports a css selector that resolves back to the hovered element', async () => {
     const { page, last } = await armedPage();
     const box = (await page.locator('#r2 button').boundingBox())!;
@@ -126,7 +142,7 @@ describe('picker drive: hover previews the element under the pointer', () => {
   });
 });
 
-describe('picker drive: a click locks without letting the page act', () => {
+describeBrowser('picker drive: a click locks without letting the page act', () => {
   browserIt('emits kind "pick" and does not navigate away from the page', async () => {
     const { page, last } = await armedPage();
     const before = page.url();
@@ -162,7 +178,7 @@ describe('picker drive: a click locks without letting the page act', () => {
   });
 });
 
-describe('picker drive: DOM traversal', () => {
+describeBrowser('picker drive: DOM traversal', () => {
   browserIt('walks up to the parent and back down to the first child', async () => {
     const { page, last } = await armedPage();
     const box = (await page.locator('#r2 button').boundingBox())!;
@@ -199,7 +215,7 @@ describe('picker drive: DOM traversal', () => {
   });
 });
 
-describe('picker drive: the match count is the truth', () => {
+describeBrowser('picker drive: the match count is the truth', () => {
   browserIt('counts a unique selector as 1 and a shared class as many', async () => {
     const { page, last } = await armedPage();
     expect(await page.evaluate(() => (window as any).__abVerify('#r2 button'))).toBe(1);
@@ -249,7 +265,7 @@ describe('picker drive: the match count is the truth', () => {
   });
 });
 
-describe('picker drive: candidate selectors (§ 6.5)', () => {
+describeBrowser('picker drive: candidate selectors (§ 6.5)', () => {
   browserIt('offers stable hooks before the brittle nth-of-type path', async () => {
     const { page, last } = await armedPage();
     const box = (await page.locator('[data-testid="hero-badge"]').boundingBox())!;
@@ -310,7 +326,7 @@ describe('picker drive: candidate selectors (§ 6.5)', () => {
   });
 });
 
-describe('picker drive: programmatic clicks are not picks', () => {
+describeBrowser('picker drive: programmatic clicks are not picks', () => {
   // The cookie-consent auto-dismisser calls el.click() while the picker is
   // armed. If the picker swallowed that (capture + preventDefault) the consent
   // wall would never close, and the picker would also hijack any click the page
@@ -333,7 +349,7 @@ describe('picker drive: programmatic clicks are not picks', () => {
   });
 });
 
-describe('picker drive: teardown', () => {
+describeBrowser('picker drive: teardown', () => {
   browserIt('__abStopPicker removes the overlay and stops reporting', async () => {
     const { page, seen } = await armedPage();
     await page.evaluate(() => (window as any).__abStopPicker());
