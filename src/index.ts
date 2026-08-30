@@ -16,13 +16,14 @@ import { ProfileManager } from './core/ProfileManager';
 import { UserManager } from './core/UserManager';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
-import { smartLimiter, adminLimiter } from './rate-limit';
+import { smartLimiter, adminLimiter, pairingLimiter } from './rate-limit';
 import { sanitizeLogMessage } from './validation';
 import {
   requireApiKey,
   initApiKeyManager,
   getApiKeyManager,
-  AuthenticatedRequest
+  AuthenticatedRequest,
+  SINGLE_USER_ID
 } from './middleware/auth';
 import { asyncBlockCheck } from './middleware/block-check';
 
@@ -48,6 +49,11 @@ import { enforceStartupValidation } from './core/StartupValidation';
 import { localBridges, agentConnectPath } from './core/LocalBridge';
 import { InspectorSocketServer } from './core/InspectorSocket';
 import { onLocalBridgeLost } from './core/BrowserAdapter';
+// The Inspector's own credential store. Imported here rather than inside
+// middleware/auth.ts on purpose: core/ already imports from middleware/
+// (DesktopProxy, LiveServer), so the reverse direction would close an import
+// cycle. Composing the two at the mount point keeps the dependency one-way.
+import { inspectorAuth } from './core/InspectorAuthorization';
 
 import { setLiveSessionRebuilder } from './Routes/browser.routes';
 
@@ -268,10 +274,34 @@ const asyncAuthMiddleware = (
   requireApiKey(req as AuthenticatedRequest, res, next).catch(next);
 };
 
+/**
+ * The credential a request presents, read from every place one may arrive.
+ *
+ * DELIBERATELY THE SAME FOUR PLACES, IN THE SAME ORDER, as `requireApiKey`.
+ * A second reader that disagreed with the first about where a credential lives
+ * would authenticate one string and authorize another — so this mirrors that
+ * function exactly, and returns the RAW value without judging it. Deciding what
+ * the value means is the caller's job.
+ */
+function readPresentedKey(req: express.Request): string {
+  const header = req.headers['x-api-key'];
+  if (typeof header === 'string' && header.length > 0) return header;
+  if (req.query.api_key) return String(req.query.api_key);
+  if (req.query.token) return String(req.query.token);
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) return authHeader.substring(7).trim();
+  return '';
+}
+
 // Rate limiting
 app.use('/run', smartLimiter);
 app.use('/cancel', smartLimiter);
 app.use('/admin', adminLimiter);
+// Mounted BEFORE the inspector auth middleware, so a flood of guesses is
+// rejected without ever reaching the code-comparison path. Scoped to the exact
+// route that accepts no key — the rest of /inspector is credential-gated and
+// needs no separate budget.
+app.use('/inspector/pair', pairingLimiter);
 
 // API Key authentication
 app.use('/run', asyncAuthMiddleware);
@@ -287,7 +317,123 @@ app.use('/browser', asyncAuthMiddleware);
 // inspector routes carry element data read off logged-in pages. Neither may be
 // reachable without a key.
 app.use('/browser-mode', asyncAuthMiddleware);
-app.use('/inspector', asyncAuthMiddleware);
+
+/**
+ * INSPECTOR AUTH — an API key, OR a credential the Inspector itself issued.
+ *
+ * ── THE BUG THIS FIXES ─────────────────────────────────────────────────────
+ * REPORTED, with a correct Base URL and a correct code:
+ *
+ *   «در حالت ریموت وقتی ادرس و کد اتورایز رو وارد کردم این ارور رو داد در حالی
+ *    که هر دو درست بودن — That authorization code was not accepted.»
+ *
+ * The code was never looked at. `/inspector/*` sat behind `asyncAuthMiddleware`
+ * wholesale, and a REMOTE extension is one the operator installed BY HAND from
+ * artifacts/ — it has no `bootstrap.config.js`, so it holds no API key. The
+ * request was refused with 401 before `/inspector/pair` ever ran, and the popup
+ * reported its generic fallback ("not accepted"), naming the code for what was
+ * really a missing credential.
+ *
+ * That was a circular requirement, not a missing key: REMOTE exists precisely
+ * because the two machines share no channel but the operator, so demanding the
+ * far end already hold this server's key in order to redeem a code makes the
+ * code meaningless — whoever has the key needs no code, and whoever lacks it
+ * cannot redeem one.
+ *
+ * ── WHAT IS OPENED, AND WHAT IS EMPHATICALLY NOT ───────────────────────────
+ * EXACTLY TWO PATHS relax, and only to the extent that the caller presents
+ * something this server itself minted:
+ *
+ *   POST /inspector/pair     — may be called with NO key. The one-time code IS
+ *                              the credential; the route hands back a scoped
+ *                              client token. Codes are single-use, 5-minute,
+ *                              8 chars from a 31-symbol alphabet, and rate
+ *                              limited below, so this is not a guessing surface.
+ *
+ *   POST /inspector/element  — accepted with a client token in place of a key.
+ *   GET  /inspector/target*  — the token identifies the CLIENT; the server still
+ *   GET  /inspector/consent* — decides from its binding table which fields that
+ *                              client may touch.
+ *
+ * Everything else under /inspector — and in particular
+ * `/inspector/targeting/begin`, the route that MINTS codes — still requires a
+ * real API key. That asymmetry is the whole security argument: minting is a
+ * dashboard act by an authenticated operator, redeeming is a transcription act
+ * by the human holding the other browser. A token can never mint itself a new
+ * code, so it cannot escalate from "one field I was given" to "any field".
+ *
+ * The standing rule is untouched: «The Extension must NEVER be able to choose an
+ * arbitrary Target Field.» The token says WHO; the server decides WHAT.
+ */
+// Every entry is a route that actually exists in mode.routes.ts — verified
+// against it, because a name that matches nothing is a silent hole in the other
+// direction: it looks like the token was granted a path when in fact the request
+// 404s, and a genuinely needed path stays refused with a confusing 401.
+const inspectorTokenPaths = new Set([
+  // The route this whole subsystem exists for: submit the picked element.
+  '/element',
+  // Acknowledge a delivery, and read what is queued for this client.
+  '/ack',
+  '/inbox',
+  // Session/target bookkeeping the extension does on its own behalf.
+  '/session',
+  '/target',
+  '/target/release',
+  // Poll for the outcome of the pairing this token came from.
+  '/targeting/status',
+  // The in-page approval prompt. Included because the SERVER's own browser may
+  // run a hand-installed copy too, and a prompt it cannot poll for is a prompt
+  // that never appears — bug #3's failure mode, arriving by a different road.
+  '/consent',
+  '/consent/decide',
+  '/consent/status',
+]);
+
+const inspectorAuthMiddleware = (
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) => {
+  // `req.path` here is relative to the mount point ('/pair', '/element', …).
+  const sub = req.path || '';
+
+  // ── 1. The pairing route: no credential required, by design ───────────────
+  //
+  // The route itself still validates the code and still refuses a bad one — see
+  // `redeem()`. What changes is only that a keyless caller now REACHES it.
+  if (sub === '/pair') {
+    // A key is still read when present, so a dashboard or a server-seeded
+    // extension keeps its identity and its existing bindings instead of being
+    // handed a second, anonymous one.
+    const presented = readPresentedKey(req);
+    if (presented && config.IS_SINGLE_USER && presented === config.API_TOKEN) {
+      (req as AuthenticatedRequest).apiKey = presented;
+      (req as AuthenticatedRequest).apiKeyUserId = SINGLE_USER_ID;
+    }
+    return next();
+  }
+
+  // ── 2. A client token, on the paths it is scoped to ───────────────────────
+  if (inspectorTokenPaths.has(sub)) {
+    const presented = readPresentedKey(req);
+    const ct = presented ? inspectorAuth.resolveClientToken(presented) : null;
+    if (ct) {
+      // Adopted as this request's identity. Downstream code reads `req.apiKey`
+      // to look up bindings, and the token's client id is derived from this
+      // exact string — so the binding table resolves to the same client that
+      // redeemed the code, and to no other.
+      (req as AuthenticatedRequest).apiKey = presented;
+      (req as AuthenticatedRequest).apiKeyUserId = ct.userId;
+      (req as AuthenticatedRequest).apiKeyPrefix = presented.slice(0, 15);
+      return next();
+    }
+  }
+
+  // ── 3. Everything else: unchanged. A real API key or nothing ──────────────
+  return asyncAuthMiddleware(req, res, next);
+};
+
+app.use('/inspector', inspectorAuthMiddleware);
 
 // Block check
 const blockCheck = asyncBlockCheck(connection);

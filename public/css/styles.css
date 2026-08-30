@@ -6999,6 +6999,60 @@ body.route-fullbleed .fe-mm-restore {
 }
 .tgt-base-copy { padding: 5px 11px; font-size: 11.5px; white-space: nowrap; }
 
+/* The "Connected to target" identity block — node, field, and the address the
+   picked value will land at.
+
+   THESE CLASSES WERE REFERENCED BY targeting-flow.js AND DEFINED NOWHERE. That
+   is the third half of «اسم نود و فیلد … خالی بودند»: even on the rare path that
+   did reach the renderer, the rows were unstyled inline spans with no gap and no
+   label/value distinction, so the label ran straight into the value and the
+   block read as empty space rather than as a list of facts. */
+.tgt-target {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.tgt-target-head {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.tgt-target-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.tgt-target-label { color: var(--text-dim); flex: 0 0 auto; }
+/* LTR and monospace for the same reason as .tgt-base-url: a node id and a target
+   address are machine identifiers, and bidi reordering them next to Persian
+   labels is what makes them unreadable and unquotable in a bug report. */
+.tgt-target-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: end;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+  direction: ltr;
+  unicode-bidi: isolate;
+  user-select: all;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+/* An absent value is now SHOWN as absent instead of having its row dropped. */
+.tgt-target-value.is-missing {
+  color: var(--text-dim);
+  opacity: 0.7;
+  font-family: inherit;
+  user-select: none;
+}
+
 /* The code now sits in the same labelled frame as the Base URL, so both say
    what they are and both carry their own Copy. The frame is transparent here:
    .tgt-code already draws its own dashed box, and nesting two borders would make

@@ -1380,6 +1380,14 @@
       'tgt.stepContextOk': 'به‌صورت خودکار حل شد',
       'tgt.stepTarget': 'فیلد هدف',
       'tgt.connectedTo': 'متصل به هدف',
+      // هویتِ آن‌چه متصل شده. این سه کلید قبلاً `insp.*` بودند و هیچ‌کدام در این
+      // فایل تعریف نشده بود، پس t() خودِ کلید را برمی‌گرداند و برچسب‌ها به شکل
+      // «insp.node» دیده می‌شدند.
+      'tgt.targetNode': 'نود',
+      'tgt.targetField': 'فیلد',
+      'tgt.targetAddress': 'شناسهٔ هدف',
+      'tgt.targetUnknown': '—',
+      'tgt.awaitingConsent': 'در انتظار تأیید در مرورگر سرور',
       'tgt.readyToSend': 'آمادهٔ ارسال',
       'tgt.close': 'بستن',
       'tgt.readyLocal': 'آماده است. المان را در مرورگر انتخاب کنید.',
@@ -2754,6 +2762,14 @@
       'tgt.stepContextOk': 'resolved automatically',
       'tgt.stepTarget': 'Target field',
       'tgt.connectedTo': 'Connected to target',
+      // The identity of what is connected. These three were `insp.*` keys that
+      // existed nowhere in this file, so t() fell through to the key itself and
+      // the panel showed labels reading literally "insp.node".
+      'tgt.targetNode': 'Node',
+      'tgt.targetField': 'Field',
+      'tgt.targetAddress': 'Target id',
+      'tgt.targetUnknown': '—',
+      'tgt.awaitingConsent': 'Waiting for approval in the server browser',
       'tgt.readyToSend': 'Ready to send',
       'tgt.close': 'Close',
       'tgt.readyLocal': 'Ready. Pick the element in the browser.',
