@@ -557,7 +557,8 @@
    * to tell "connected" from "silently did nothing" — the same ambiguity the old
    * dialog's confirmation delay existed to prevent.
    */
-  function renderLocalProgress(panel, res, ctx) {
+  function renderLocalProgress(panel, res, ctx, opts) {
+    var o = opts || {};
     var dlg = openDialog;
     header(panel, 'tgt.localTitle', t('tgt.localAuto'));
 
@@ -586,24 +587,54 @@
     // named is exactly as unverifiable as the silent close above.
     var idw = el('div', 'tgt-target');
     idw.appendChild(el('div', 'tgt-target-head', t('tgt.connectedTo')));
+    // KEYS: these were `insp.node` / `insp.field` / `insp.fieldId`, and NONE of
+    // the three existed in i18n.js. t() returns the key itself when it misses,
+    // so even when this panel did render, its labels read literally "insp.node"
+    // and "insp.field" — the second half of the reported emptiness. They now use
+    // the `tgt.` namespace this dialog owns, and the keys are defined in both
+    // languages.
     var pairs = [
-      ['insp.node', target.nodeId || ctx.nodeId || ''],
-      ['insp.field', target.label || target.fieldKey || ctx.fieldKey || ''],
-      ['insp.fieldId', target.targetFieldId || ''],
+      ['tgt.targetNode', target.nodeId || ctx.nodeId || ''],
+      ['tgt.targetField', target.label || target.fieldKey || ctx.fieldKey || ''],
+      ['tgt.targetAddress', target.targetFieldId || ''],
     ];
     for (var j = 0; j < pairs.length; j++) {
-      if (!pairs[j][1]) continue;
+      // `continue` on a falsy value USED TO BE HERE, and it is deliberately
+      // gone. Silently dropping a row is what turned a missing nodeId into an
+      // empty area with no hint that anything was absent — indistinguishable
+      // from "not connected". A row that is present but marked unknown can be
+      // reported; a row that was never drawn cannot.
       var line = el('div', 'tgt-target-row');
       line.appendChild(el('span', 'tgt-target-label', t(pairs[j][0])));
-      line.appendChild(el('span', 'tgt-target-value', String(pairs[j][1])));
+      var val = pairs[j][1];
+      line.appendChild(el(
+        'span',
+        'tgt-target-value' + (val ? '' : ' is-missing'),
+        val ? String(val) : t('tgt.targetUnknown')
+      ));
       idw.appendChild(line);
     }
     panel.appendChild(idw);
 
-    var status = el('div', 'tgt-status is-ok', t('tgt.readyToSend'));
+    // In the deferred case the browser is being opened/reused right now and the
+    // in-page prompt is the operator's next move, so claiming "Ready to send"
+    // would be the same false confidence this panel exists to remove.
+    var pending = o.defer && res.consent && res.consent.state === 'pending';
+    var status = el(
+      'div',
+      'tgt-status' + (pending ? '' : ' is-ok'),
+      t(pending ? 'tgt.awaitingConsent' : 'tgt.readyToSend')
+    );
     panel.appendChild(status);
 
     footer(panel, [button(t('tgt.close'), 'is-ghost', closeDialog)]);
+
+    // When the caller is opening the server's browser it owns the arming and the
+    // toast (it knows whether the window was launched or reused), and it must
+    // not be duplicated here. The panel also stays put in that case: it is the
+    // record of WHICH field is connected, and auto-closing it after 1.6s is what
+    // left the operator with nothing to read.
+    if (o.defer) return;
 
     // Arm immediately — the field IS live, so withholding it until the operator
     // dismisses a confirmation would make the dialog load-bearing. It closes on
@@ -682,7 +713,31 @@
       // Driven by the SERVER's flag rather than by the `environment` argument, so
       // a server that declines to open anything cannot be overruled by this page.
       if (res.openServerBrowser) {
-        closeDialog();
+        // REPORTED: «توی بخشی که اگر نود کانکت باشه اسم نود و فیلد ثبت میشد هم
+        // خالی بودند» — the node name and field were never recorded.
+        //
+        // This branch used to call closeDialog() and return, and that WAS the
+        // bug. renderLocalProgress() below is the only function in this file
+        // that draws the "Connected to target" rows (node / field / address),
+        // and the normal LOCAL path is exactly the path that returned before
+        // reaching it. The server sends a complete `target` — verified live:
+        //
+        //   target: { targetFieldId: "node_nQ__selector__344de025",
+        //             pairingKey: "tf:wfQ:nQ:selector", nodeId: "nQ",
+        //             fieldKey: "selector", label: "CSS Selector", ... }
+        //
+        // so nothing was missing from the response; the panel that displays it
+        // was simply torn down one line before it could be built. The field
+        // showed as connected — because it WAS — with no identity beside it.
+        //
+        // The panel is now rendered FIRST and the browser opened behind it, in
+        // that order: buildShell() calls closeDialog() internally, so opening
+        // the browser first would have the launch's own dialog state clobbered
+        // by the shell. `defer` hands the arming to openOrReuseServerBrowser()
+        // so the operator gets ONE toast naming the real next step (approve the
+        // prompt / pick an element) instead of two that contradict each other.
+        var sdlg = buildShell();
+        renderLocalProgress(sdlg.panel, res, ctx, { defer: true });
         openOrReuseServerBrowser(res, ctx, environment, tab);
         return;
       }

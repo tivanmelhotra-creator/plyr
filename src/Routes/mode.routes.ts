@@ -1728,19 +1728,29 @@ export const createModeRoutes = (): Router => {
   router.post('/inspector/pair', (req: AuthenticatedRequest, res: Response) => {
     const body = req.body || {};
     const code = String(body.code || '');
-    // The caller's own key, not the server's seeded token: this is a browser on
-    // another machine, and the whole point is that it identifies itself.
+    // The caller's own key when it HAS one — a server-seeded extension, or the
+    // dashboard — so an already-authenticated client keeps its identity and the
+    // bindings filed against it.
     const apiKey = String(req.apiKey || '');
 
-    if (!apiKey) {
-      res.status(401).json({
-        success: false,
-        reason: 'INVALID_AUTHORIZATION_CODE',
-        error: 'This browser is not authenticated with the server.',
-      });
-      return;
-    }
-
+    // ── A KEYLESS CALLER IS THE NORMAL CASE HERE, NOT AN ERROR ──────────────
+    //
+    // This route used to answer 401 when `req.apiKey` was empty. REPORTED:
+    //
+    //   «در حالت ریموت وقتی ادرس و کد اتورایز رو وارد کردم این ارور رو داد در
+    //    حالی که هر دو درست بودن»
+    //
+    // …and both really were correct. A REMOTE extension is installed by hand
+    // from artifacts/, so it carries no `bootstrap.config.js` and therefore no
+    // key; the refusal fired before the code was examined, and the popup's
+    // fallback sentence blamed the code. Worse, the 401 was dressed as
+    // INVALID_AUTHORIZATION_CODE — reporting a wrong secret for an absent one.
+    //
+    // The check is gone rather than relaxed, because requiring a key to redeem a
+    // code is self-contradictory: REMOTE's premise is that the two machines
+    // share no channel but the operator. `redeem()` now identifies a keyless
+    // caller by minting it a scoped client token, and the CODE is the proof —
+    // which is exactly what a single-use, 5-minute, high-entropy secret is for.
     const result = inspectorAuth.redeem(apiKey, code);
 
     if (!result.ok) {
@@ -1770,6 +1780,21 @@ export const createModeRoutes = (): Router => {
       environment: 'remote',
       targetFieldId: result.binding.targetFieldId,
       userId: result.binding.userId,
+      // ── THE CREDENTIAL FOR EVERYTHING AFTER THIS ────────────────────────
+      //
+      // Present ONLY when the caller had no API key, which is the hand-installed
+      // REMOTE case. This is the single moment the value exists — the server
+      // keeps a lookup entry, never the means to re-derive it — so an extension
+      // that fails to store it must redeem another code.
+      //
+      // It is NOT the server's API_TOKEN and grants none of its powers: it is
+      // accepted on the element-submission and status paths only, and even there
+      // the server consults its own binding table to decide which fields this
+      // client may write to. See the inspector auth middleware in src/index.ts.
+      //
+      // Omitted entirely for a keyed caller, so a dashboard never receives a
+      // second credential it has no use for.
+      ...(result.clientToken ? { clientToken: result.clientToken } : {}),
     });
   });
 

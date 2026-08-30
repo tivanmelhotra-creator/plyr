@@ -137,8 +137,68 @@ export type RedeemFailure =
   | 'AUTHORIZATION_EXPIRED';
 
 export type RedeemResult =
-  | { ok: true; binding: Binding }
+  | { ok: true; binding: Binding; clientToken?: string }
   | { ok: false; reason: RedeemFailure };
+
+/**
+ * A CLIENT TOKEN — the credential a redeemed code produces.
+ *
+ * ── WHY THIS TYPE HAD TO EXIST ─────────────────────────────────────────────
+ * REPORTED, with a correct Base URL and a correct code:
+ *
+ *   «در حالت ریموت وقتی ادرس و کد اتورایز رو وارد کردم این ارور رو داد در حالی
+ *    که هر دو درست بودن — That authorization code was not accepted.»
+ *
+ * The code was never examined. `/inspector/pair` sits behind the global API-key
+ * middleware, and a REMOTE extension is one the operator installed by hand:
+ * there is no `bootstrap.config.js` in it, so `ab_apiKey` is empty and the
+ * request arrived unauthenticated. The middleware answered 401 before the route
+ * ran, and the popup printed its generic fallback sentence — reporting a bad
+ * code for what was actually a missing credential.
+ *
+ * That is a contradiction in the design rather than a slip. REMOTE's entire
+ * premise is «سرور و سیستم شخصی دو تا ارتباط ریموتی دارند» — two machines, no
+ * channel between them but the operator. Requiring the far end to ALREADY hold
+ * this server's key to redeem a code makes the code pointless: anything holding
+ * the key needs no code, and anything lacking it cannot redeem one.
+ *
+ * ── THE RESOLUTION ─────────────────────────────────────────────────────────
+ * THE CODE IS THE CREDENTIAL, once, and redeeming it mints a narrow token that
+ * the extension uses for everything afterwards. So:
+ *
+ *   - the code proves "the human holding this browser is the human who was
+ *     looking at that field on the dashboard" — which is exactly what a
+ *     transcribed one-time secret can prove, and all it needs to prove;
+ *   - the token that comes back is NOT the server's API_TOKEN and grants none
+ *     of its powers. It is accepted on the inspector's element-submission path
+ *     alone, and only for target fields this client has actually paired with.
+ *
+ * The standing rule is untouched: «The Extension must NEVER be able to choose an
+ * arbitrary Target Field.» The token identifies a client; the SERVER still
+ * decides, from its own binding table, which fields that client may write to.
+ */
+export interface ClientToken {
+  token: string;
+  /** The client identity this token stands in for — same space as clientIdOf(). */
+  clientId: string;
+  userId: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+/** Prefix so the token is recognisable in a log and cannot be confused for a key. */
+const CLIENT_TOKEN_PREFIX = 'ict_';
+
+/**
+ * How long a client token lives.
+ *
+ * Matched to PAIRING_TTL_MS, because the two describe the same relationship: the
+ * pairing says this extension and this field know each other, and the token is
+ * how the extension proves it is that extension. A token that died first would
+ * silently demote a live pairing into "not accepted" — the very failure this
+ * whole change exists to remove.
+ */
+export const CLIENT_TOKEN_TTL_MS = PAIRING_TTL_MS;
 
 /**
  * Identify an API key without storing it.
@@ -171,6 +231,16 @@ export class InspectorAuthorizationRegistry {
    * build lost the pairing every time the node was re-opened.
    */
   private pairings = new Map<string, Map<string, Pairing>>();
+  /**
+   * token -> the client it identifies. The credential a redeemed code mints.
+   *
+   * Keyed by the token because that is what arrives on a request. Stored in full
+   * rather than hashed — unlike an API key, this value is MINTED here and never
+   * seen anywhere else, so the map is its only record and there is nothing to
+   * protect it from that hashing would help with. (Hashing the key in the maps
+   * above is worth it because that key exists in the operator's .env too.)
+   */
+  private clientTokens = new Map<string, ClientToken>();
 
   /**
    * Issue a code for one Target Field.
@@ -227,7 +297,16 @@ export class InspectorAuthorizationRegistry {
   redeem(apiKey: string, codeInput: string, now = Date.now()): RedeemResult {
     const key = clean(apiKey, 400);
     const code = clean(codeInput, 32).toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (!key || !code) return { ok: false, reason: 'INVALID_AUTHORIZATION_CODE' };
+    // ── AN EMPTY KEY IS NO LONGER A REFUSAL ────────────────────────────────
+    //
+    // It used to be, and that was the reported bug: a hand-installed REMOTE
+    // extension has no key, so this returned INVALID_AUTHORIZATION_CODE for a
+    // code that was perfectly valid — blaming the code for a missing credential.
+    //
+    // A keyless caller is now identified by the code itself. The client id is
+    // derived from a freshly minted secret below, so two keyless extensions get
+    // two distinct identities rather than colliding on the digest of ''.
+    if (!code) return { ok: false, reason: 'INVALID_AUTHORIZATION_CODE' };
 
     let found: PendingCode | null = null;
     for (const p of this.pending.values()) {
@@ -239,7 +318,18 @@ export class InspectorAuthorizationRegistry {
     this.pending.delete(found.code);
     if (now > found.expiresAt) return { ok: false, reason: 'AUTHORIZATION_EXPIRED' };
 
-    const clientId = clientIdOf(key);
+    // ── WHO IS THIS CLIENT? ────────────────────────────────────────────────
+    //
+    // With a key, the client is that key — unchanged, so a dashboard or a
+    // server-seeded extension keeps exactly the identity it had.
+    //
+    // Without one, the client is a NEW identity minted here. It cannot be
+    // `clientIdOf('')`: every keyless extension in the world would hash to that
+    // same value, and one operator's binding would answer for another's. The
+    // token issued below is the only way to present this identity again, which
+    // is what makes it a credential rather than a guess.
+    const clientSecret = key || `${CLIENT_TOKEN_PREFIX}${crypto.randomBytes(24).toString('hex')}`;
+    const clientId = clientIdOf(clientSecret);
     let mine = this.bindings.get(clientId);
     if (!mine) { mine = new Map(); this.bindings.set(clientId, mine); }
 
@@ -261,6 +351,24 @@ export class InspectorAuthorizationRegistry {
       pairedAt: now,
       via: 'code',
     });
+
+    // ── THE TOKEN, ISSUED ONLY TO A CALLER THAT HAD NO KEY ─────────────────
+    //
+    // A caller that already authenticated needs nothing further, and handing it
+    // a second credential would be pure surface area. A keyless caller gets the
+    // token that lets it come back — this is the single moment its identity is
+    // expressible, so if it is not returned here it is lost.
+    if (!key) {
+      const ct: ClientToken = {
+        token: clientSecret,
+        clientId,
+        userId: found.userId,
+        issuedAt: now,
+        expiresAt: now + CLIENT_TOKEN_TTL_MS,
+      };
+      this.clientTokens.set(ct.token, ct);
+      return { ok: true, binding, clientToken: ct.token };
+    }
 
     return { ok: true, binding };
   }
@@ -513,6 +621,43 @@ export class InspectorAuthorizationRegistry {
     return this.pending.size;
   }
 
+  /**
+   * Resolve a client token to the client it identifies, or null.
+   *
+   * THE ONLY WAY A TOKEN BECOMES AUTHORITY. Note what it deliberately does not
+   * do: it does not say what the client may write to. The caller must still ask
+   * `isAuthorized(token, targetFieldId)`, which consults the binding table — so
+   * a valid token for client A cannot reach client B's field, and the rule «The
+   * Extension must NEVER be able to choose an arbitrary Target Field» survives
+   * the introduction of a credential the extension holds.
+   *
+   * Expiry is enforced here rather than only in `sweep()`, because a sweep runs
+   * on a timer and this runs on every request: a token that expired one second
+   * ago must not be honoured just because the broom has not come round yet.
+   */
+  resolveClientToken(token: unknown, now = Date.now()): ClientToken | null {
+    const t = clean(token, 200);
+    if (!t) return null;
+    const ct = this.clientTokens.get(t);
+    if (!ct) return null;
+    if (now > ct.expiresAt) { this.clientTokens.delete(t); return null; }
+    return { ...ct };
+  }
+
+  /**
+   * Is this token a recognised client at all? A cheap boolean for middleware
+   * that only needs to decide whether to let the request reach a route.
+   */
+  isClientToken(token: unknown, now = Date.now()): boolean {
+    return this.resolveClientToken(token, now) !== null;
+  }
+
+  /** Forget one client token — the extension unpaired, or the operator revoked it. */
+  revokeClientToken(token: unknown): boolean {
+    const t = clean(token, 200);
+    return t ? this.clientTokens.delete(t) : false;
+  }
+
   /** Drop expired codes and bindings. */
   sweep(now = Date.now()): void {
     for (const [code, p] of this.pending) {
@@ -530,12 +675,19 @@ export class InspectorAuthorizationRegistry {
       }
       if (!mine.size) this.pairings.delete(clientId);
     }
+    // Client tokens expire too. `resolveClientToken` already refuses an expired
+    // one on the request path, so this is purely about not growing the map
+    // forever — the correctness is enforced where it is read, not here.
+    for (const [token, ct] of this.clientTokens) {
+      if (now > ct.expiresAt) this.clientTokens.delete(token);
+    }
   }
 
   clear(): void {
     this.pending.clear();
     this.bindings.clear();
     this.pairings.clear();
+    this.clientTokens.clear();
   }
 }
 

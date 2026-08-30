@@ -1006,24 +1006,108 @@
    * otherwise spend a real attempt against a single-use code, and there is no
    * second one.
    */
+  /**
+   * Normalize a pasted code the way the SERVER will read it.
+   *
+   * The dashboard displays `ABCD-EFGH` (formatPairingCode), the operator copies
+   * that dash, and the server's `redeem()` strips every non-alphanumeric before
+   * comparing. Doing the same here means the box shows exactly the string that
+   * will be sent, so a code that is going to be refused cannot LOOK correct in
+   * the field. Truncated to 16 to mirror normalizePairingCode's own ceiling.
+   *
+   * Deliberately not upper-cased for DISPLAY only — the alphabet is uppercase,
+   * so a lowercase paste is a copy artefact, and showing it corrected is more
+   * honest than accepting it silently and failing later.
+   */
+  function normalizeAuthCode(raw) {
+    return String(raw || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .slice(0, 16);
+  }
+
+  /**
+   * Read the clipboard, with a REAL fallback rather than an instruction.
+   *
+   * ── WHY THIS WAS BROKEN ──────────────────────────────────────────────────
+   * REPORTED: «دکمه پیست اتورایز کار نمیکرد».
+   *
+   * `navigator.clipboard.readText()` is not governed by the transient
+   * user-gesture rule here: inside an extension page Chrome requires the
+   * `clipboardRead` permission, which manifest.json did not declare. Every press
+   * therefore rejected, landed in the catch below, and printed a warning telling
+   * the operator to do the thing the button exists to avoid. The permission is
+   * now declared — that alone fixes the reported symptom.
+   *
+   * ── AND WHY THE PERMISSION ALONE IS NOT ENOUGH ───────────────────────────
+   * A rejected clipboard read has more than one cause, and only one of them is
+   * fixable from the manifest: the popup may not be the focused document at the
+   * moment of the call (a known Chrome quirk when the press lands while focus is
+   * still settling), and some enterprise policies refuse the API outright.
+   * Leaving those cases as a text instruction reproduces the same dead button
+   * for a smaller audience, which is the harder bug to report.
+   *
+   * So the fallback is now a MECHANISM, not advice: focus the input and issue
+   * `document.execCommand('paste')`, which is exempt from `clipboardRead`
+   * because it targets a focused editable element and pastes only into it. If
+   * even that is refused, the field is left focused and selected so the
+   * operator's own Ctrl+V lands correctly with no further clicks.
+   */
   async function pasteAuthorization() {
+    var before = String(els.authCode.value || '');
+
+    // Path 1 — the documented API, now that the permission is declared.
     try {
       var text = await navigator.clipboard.readText();
-      var code = String(text || '').trim();
-      if (!code) { write(els.authStatus, 'Clipboard is empty.', 'warn'); return; }
-      els.authCode.value = code;
+      var code = normalizeAuthCode(text);
+      if (code) {
+        els.authCode.value = code;
+        els.authCode.focus();
+        els.authCode.select();
+        write(els.authStatus, '', '');
+        return;
+      }
+      // An empty clipboard is a real answer, not a failure: say so and stop
+      // rather than falling through to execCommand, which would report the
+      // same nothing a second time.
+      if (!String(text || '').trim()) {
+        write(els.authStatus, 'Clipboard is empty \u2014 copy the code on the dashboard first.', 'warn');
+        return;
+      }
+      // Non-empty but nothing code-like in it. Naming that is more useful than
+      // silently clearing the box.
+      write(els.authStatus, 'The clipboard does not contain an authorization code.', 'warn');
+      return;
+    } catch (e) { /* fall through to the command path */ }
+
+    // Path 2 — paste INTO the focused field. Needs no clipboardRead because the
+    // page never sees the text; the browser writes it straight into the input.
+    try {
       els.authCode.focus();
-      write(els.authStatus, '', '');
-    } catch (e) {
-      // Clipboard read can be refused outright by permissions policy, and a
-      // silent no-op on a pressed button is indistinguishable from a broken
-      // one. Naming the fallback is the whole value of catching this.
-      write(els.authStatus, 'Could not read the clipboard \u2014 paste into the box instead.', 'warn');
-    }
+      els.authCode.select();
+      var ok = document.execCommand && document.execCommand('paste');
+      var now = String(els.authCode.value || '');
+      if (ok && now && now !== before) {
+        els.authCode.value = normalizeAuthCode(now);
+        els.authCode.select();
+        write(els.authStatus, '', '');
+        return;
+      }
+    } catch (e2) { /* fall through to the honest instruction */ }
+
+    // Path 3 — neither worked. The field is already focused and selected, so
+    // Ctrl+V is now a single keystroke rather than a hunt.
+    els.authCode.focus();
+    els.authCode.select();
+    write(els.authStatus, 'Chrome blocked the clipboard \u2014 press Ctrl+V (\u2318V) to paste.', 'warn');
   }
 
   async function submitAuthorization() {
-    var code = String(els.authCode.value || '').trim();
+    // Normalized, not merely trimmed. A code typed as `abcd-efgh`, or pasted
+    // with the display dash and a trailing newline, is the SAME code — the
+    // server strips all of it before comparing. Doing it here too means the
+    // single-use attempt is never spent on a formatting difference.
+    var code = normalizeAuthCode(els.authCode.value);
     var base = String(els.authBase.value || '').trim();
     if (!code) { write(els.authStatus, 'Enter the authorization code.', 'warn'); return; }
 

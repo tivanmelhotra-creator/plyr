@@ -3,7 +3,8 @@
   "name": "Automation Backend Helper",
   "version": "1.1.0",
   "description": "Element Inspector, action recorder, and Remote→Local session handoff for automation-backend. Inspect any element (Ctrl+Shift+C), and move a running remote browser session onto this machine with a pairing code — same tabs, same order, same active tab.",
-  "permissions": ["storage", "activeTab", "scripting", "tabs"],
+  "_comment_clipboardRead": "REPORTED: the Paste button on the Authorization Code field did nothing. `navigator.clipboard.readText()` in an extension page is NOT covered by the user-gesture rule that makes it work on an ordinary web page — Chrome refuses it outright unless the extension holds `clipboardRead`, and the refusal arrives as a rejected promise, which the old code caught and reported as a generic 'could not read'. So the button was permanently broken rather than occasionally. `clipboardWrite` is listed alongside it because the popup also COPIES (the last pick, the selector), and while document.execCommand('copy') happens to work without it, relying on a deprecated fallback for a documented permission is how the read path broke in the first place.",
+  "permissions": ["storage", "activeTab", "scripting", "tabs", "clipboardRead", "clipboardWrite"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "Element Inspector",

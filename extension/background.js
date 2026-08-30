@@ -1402,7 +1402,15 @@ async function targetingBegin(payload) {
  */
 async function inspectorPair(payload) {
   var typedBase = normalizeBase((payload && payload.baseUrl) || '');
-  var code = String((payload && payload.code) || '').trim();
+  // Normalized exactly as the server will read it: the dashboard DISPLAYS
+  // `ABCD-EFGH`, and `redeem()` strips every non-alphanumeric before comparing.
+  // Sending the dash would have been fine, but normalizing here means the string
+  // shown in the popup is the string that gets compared — so a code cannot fail
+  // for a formatting reason the operator can see and cannot explain.
+  var code = String((payload && payload.code) || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 16);
   if (!code) return { ok: false, error: 'Enter the authorization code from the dashboard.' };
 
   var ctx = await inspectorContext();
@@ -1429,6 +1437,35 @@ async function inspectorPair(payload) {
   if (typedBase) await new Promise(function (r) {
     chrome.storage.local.set({ ab_baseUrl: typedBase }, function () { r(); });
   });
+
+  // ── STORE THE CLIENT TOKEN. THE STEP THAT MAKES REMOTE WORK AT ALL ────────
+  //
+  // Returned only when this extension had no credential of its own, which is
+  // the hand-installed REMOTE case — and this is the ONLY moment it exists. The
+  // server keeps a lookup entry, not a way to re-derive it, so an extension that
+  // drops it here must redeem another code to get back in.
+  //
+  // Filed as `ab_apiKey` deliberately, rather than as a new key of its own.
+  // `apiFetch` already attaches that value as `x-api-key` on every call, and
+  // `inspectorContext()` already resolves it — so one write makes the token flow
+  // through submits, consent polls and status checks with no other change. The
+  // server accepts it on exactly those paths (see the inspector auth middleware
+  // in src/index.ts) and nowhere else, so widening the storage key does not
+  // widen what the token can do.
+  //
+  // Written BEFORE the target field id, because a stored destination that no
+  // request can authenticate against is the worse of the two half-states.
+  if (data.clientToken) {
+    await new Promise(function (r) {
+      chrome.storage.local.set({
+        ab_apiKey: data.clientToken,
+        // Recorded so the popup can tell the operator WHY it is connected
+        // without a key they ever typed, and so a future 'unpair' knows there is
+        // a server-side token to revoke rather than a key to leave alone.
+        ab_credentialKind: 'client_token'
+      }, function () { r(); });
+    });
+  }
 
   if (data.targetFieldId) {
     await setTargetFieldId(data.targetFieldId);

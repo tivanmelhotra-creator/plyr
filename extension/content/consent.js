@@ -111,16 +111,17 @@
     shown: {},
     timer: null,
     stopped: false,
-    // Has the environment gate at the bottom of this file confirmed REMOTE?
+    // Has the environment gate at the bottom of this file confirmed that this is
+    // the SERVER's own browser (environment 'local')?
     //
     // Starts false and is the ONLY thing that may set it true. It exists because
     // the gate is asynchronous (a sendMessage round-trip) while the
     // visibilitychange listener is not: a tab that loads hidden and is revealed
     // before the gate answers would otherwise find `stopped === false` and
-    // `timer === null` and start polling — reintroducing the Alert in a local
-    // browser through the exact timing path that made the original report say
-    // "minutes later". `stopped` cannot serve this purpose because "not yet
-    // decided" and "decided: remote" must not look the same.
+    // `timer === null` and start polling — reintroducing the Alert in the
+    // operator's OWN browser through the exact timing path that made the
+    // original report say "minutes later". `stopped` cannot serve this purpose
+    // because "not yet decided" and "decided: not ours" must not look the same.
     armed: false,
   };
 
@@ -348,16 +349,43 @@
   try {
     chrome.runtime.sendMessage({ type: 'AB_ENVIRONMENT' }, function (res) {
       var err = chrome.runtime.lastError;
-      if (err || !res || !res.ok || res.environment !== 'remote') {
-        // Not the server's browser (or not answerable) — this file does nothing
-        // at all here. No poll, no timer, no prompt, and no Alert during a LOCAL
-        // session, which binds its target by redeeming an Authorization Code and
-        // needs none of this.
+      if (err || !res || !res.ok || res.environment !== 'local') {
+        // ── THE COMPARISON THAT WAS INVERTED ──────────────────────────────
+        //
+        // REPORTED: «در حالت لوکال هیچ الرتی نیومد … ارتباط رو کانکت زده بود در
+        // حالت لوکال پیش‌فرض ولی هیچ الرتی نمیومد و … اسم نود و فیلد هم خالی
+        // بودند».
+        //
+        // This read `!== 'remote'`, so it started the poll ONLY in a browser
+        // that answered 'remote'. But `consentList()` in background.js — the
+        // very function this poll calls — returns an empty list unless the
+        // environment is 'local', and the server stamps every LOCAL consent
+        // with `environment: 'local'` and filters on it. So the two gates were
+        // exact opposites and could never both pass: in the server's browser
+        // this file refused to poll, and in the operator's own browser the poll
+        // was answered with nothing. The Alert was unreachable in every
+        // environment, which is precisely what was observed.
+        //
+        // WHICH ONE WAS WRONG IS NOT A COIN FLIP. The prompt belongs to the
+        // SERVER's browser and nowhere else:
+        //   - it is the single shared window that outlives one targeting run, so
+        //     it is the only browser that can be holding a previous field's
+        //     address and therefore the only one that has to be asked;
+        //   - REMOTE acquires its target by redeeming a code that named exactly
+        //     one field, so there is nothing left to ask there;
+        //   - browserEnvironment() answers 'local' for exactly the browser the
+        //     server launched (AB_BOOTSTRAP.managed === true).
+        // The server, background.js and this file now all agree on 'local'.
+        //
+        // Any failure to get an answer still means NO POLLING: an unanswerable
+        // gate is treated as "not ours", so a missing prompt stays recoverable
+        // from the dashboard rather than a prompt appearing where it has no
+        // meaning.
         state.stopped = true;
         return;
       }
-      // Confirmed REMOTE: only now may the loop run, here or from the
-      // visibilitychange listener above.
+      // Confirmed to be the server's own browser: only now may the loop run,
+      // here or from the visibilitychange listener above.
       state.armed = true;
       if (!document.hidden) poll();
     });
