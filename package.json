@@ -10,6 +10,8 @@
     "build:extension": "node scripts/build-extension.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:all": "npm test && npm run test:browser",
     "check": "tsc --noEmit",
     "start": "node dist/index.js",
     "clean": "rimraf dist artifacts",

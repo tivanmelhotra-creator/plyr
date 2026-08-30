@@ -710,6 +710,36 @@ export class RealChrome {
     const headless = config.REAL_CHROME_HEADLESS === true;
     const vp = this.viewport();
 
+    // PROVISION THE DISPLAY BEFORE ASKING A HEADED CHROME TO USE ONE.
+    //
+    // Reported: "the `development` profile runs a headed browser and requires
+    // Xvfb" -- i.e. on a box with no X server the launch simply failed, and the
+    // operator was expected to go start one by hand.
+    //
+    // The capability to fix that already existed: Desktop.ensureDisplay() finds
+    // an existing display, and otherwise installs Xvfb and starts one. But
+    // nothing on THIS path called it. The only caller was SelfHeal, which runs
+    // AFTER a crash -- so a first launch on a fresh box could only fail, and the
+    // catch block below could only explain the failure, never prevent it.
+    //
+    // DEGRADE, NEVER THROW. If provisioning is impossible (no apt privilege,
+    // no network), we deliberately continue to the launch attempt: a display may
+    // already exist by some other means, and if it does not, the existing
+    // `X server|DISPLAY` catch below produces a SPECIFIC, actionable message
+    // naming the missing binaries. Throwing here would replace that good error
+    // with a worse, more generic one.
+    if (!headless) {
+      try {
+        await Desktop.ensureDisplay();
+      } catch (e) {
+        console.warn(
+          '[REAL-CHROME] could not provision an X display automatically: '
+          + `${(e as Error).message}. Continuing — a display may already exist, `
+          + 'and the launch error below (if any) will say what to install.',
+        );
+      }
+    }
+
     // FILL THE SCREEN. The operator saw the browser occupying part of the tab
     // with the rest black. MEASURED: screen 1600x900 but window 1288x811+10+10,
     // i.e. COVERAGE 72.5% -- the remaining 27.5% is bare X root window, and the
@@ -717,6 +747,9 @@ export class RealChrome {
     // by us (so it does not follow REAL_CHROME_WINDOW_*), which is the normal
     // case. Ask X how big the screen really is and match it; fall back to the
     // configured size when there is no display to ask (headless, no xdpyinfo).
+    //
+    // Measured AFTER the provisioning above on purpose: a display we just
+    // started is the one we should be measuring.
     const screen = headless ? null : await Desktop.screenSize();
 
     // The switches now come from the CATALOGUE (src/core/ChromeFlags.ts) rather

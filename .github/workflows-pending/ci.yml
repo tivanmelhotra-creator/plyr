@@ -120,7 +120,11 @@ jobs:
           echo "artifact verified:"
           find "$DIR" -type f | sort
 
-      - name: Test
+      # `npm test` is the unit + integration tier ONLY (vitest.config.ts). It
+      # launches no browser, which is why SKIP_BROWSER_INSTALL above is safe
+      # here. The suites that DO need a real Chromium live in tests/browser/**
+      # and run in the `browser` job below, which installs one.
+      - name: Test (unit + integration)
         run: npm test
 
       # THE DELIVERABLE. Downloadable from the run's summary page, so a user can
@@ -134,3 +138,94 @@ jobs:
           path: artifacts/element-inspector-extension
           if-no-files-found: error
           retention-days: 30
+
+  # ── The browser tier ──────────────────────────────────────────────────────
+  #
+  # WHY A SEPARATE JOB. Two suites (tests/browser/**) drive a REAL Chromium:
+  # the element picker's overlay geometry and the download-filename logic can
+  # only be proven against a live renderer, so they cannot be moved into the
+  # unit tier and cannot be mocked away without proving nothing.
+  #
+  # They are kept OUT of `npm test` on purpose. `npm test` must stay fast and
+  # browser-free for the developer running it locally — the reported symptom was
+  # `npm test` hanging on a machine with no browser. So the browser stays here,
+  # in the one place that is willing to pay ~400 MB and a minute for it.
+  #
+  # This job does NOT gate the deliverable. `needs:` is deliberately absent so
+  # it runs in parallel with `build`, and a browser-infrastructure hiccup cannot
+  # stop the extension artifact from being produced.
+  browser:
+    name: browser tier (real Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      # Same reason as the build job: postinstall's Chromium download is the
+      # slow, unpinned one. We install the browser explicitly below instead, so
+      # the version comes from the lockfile's Playwright and the step is cached.
+      SKIP_BROWSER_INSTALL: '1'
+      NODE_ENV: test
+      CI: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies (clean, from lockfile)
+        run: npm ci
+
+      # Read the version out of the INSTALLED Playwright rather than hard-coding
+      # it, so the cache key follows package-lock.json automatically. A stale key
+      # here is worse than no cache: it restores browsers built for another
+      # Playwright and they fail to launch.
+      - name: Resolve the Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Chromium download
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+
+      # `--with-deps` is the load-bearing half on a bare ubuntu-latest runner: it
+      # apt-installs the shared libraries (and Xvfb) that the Chromium binary
+      # links against. Without it the download succeeds and every launch then
+      # fails with a missing-.so error, which is the confusing failure mode.
+      #
+      # On a cache hit the browser is already on disk, but the SYSTEM PACKAGES
+      # are not — apt state is never cached — so deps are installed either way
+      # and only the ~400 MB download is skipped.
+      - name: Install Chromium and its system libraries
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+
+      # Proves the browser can actually START before any test blames itself for
+      # failing to launch one. tests/browser/real-browser.ts SKIPS honestly when
+      # no browser is available, so without this check a broken install would
+      # show up as a fully green run that tested nothing at all.
+      - name: Verify Chromium launches
+        run: |
+          node -e "
+            const { chromium } = require('playwright');
+            chromium.launch()
+              .then(async (b) => {
+                console.log('chromium launched: ' + b.version());
+                await b.close();
+              })
+              .catch((e) => { console.error('::error::Chromium cannot launch: ' + e.message); process.exit(1); });
+          "
+
+      - name: Test (browser tier)
+        run: npm run test:browser

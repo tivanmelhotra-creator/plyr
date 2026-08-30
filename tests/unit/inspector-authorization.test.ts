@@ -111,10 +111,77 @@ describe('redeeming a code', () => {
     expect(auth.redeem(KEY, ` ${typed} `).ok).toBe(true);
   });
 
-  it('refuses an empty code or an empty key', () => {
-    const offer = auth.issue(USER, T1)!;
+  it('refuses an empty code', () => {
     expect(auth.redeem(KEY, '').ok).toBe(false);
-    expect(auth.redeem('', offer.code).ok).toBe(false);
+  });
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     AN EMPTY KEY IS NOT A REFUSAL ANY MORE.
+
+     This block replaces an assertion that used to read
+     `expect(auth.redeem('', offer.code).ok).toBe(false)`. That assertion
+     described the REPORTED BUG rather than the requirement:
+
+       «در حالت ریموت وقتی ادرس و کد اتورایز رو وارد کردم این ارور رو داد در حالی
+        که هر دو درست بودن — That authorization code was not accepted.»
+
+     A hand-installed REMOTE extension has no `bootstrap.config.js`, so it has no
+     API key. Refusing a keyless redemption made the code pointless: whoever held
+     the key needed no code, and whoever needed a code could not present one. The
+     code is now the credential exactly once, and redeeming it keylessly mints a
+     narrowly scoped client token.
+
+     Keeping the old assertion green would have meant re-introducing the bug, so
+     what is pinned here instead is the new contract AND the two properties that
+     stop it from being a hole.
+     ────────────────────────────────────────────────────────────────────────── */
+  it('accepts a keyless redemption and mints a client token for it', () => {
+    const offer = auth.issue(USER, T1)!;
+    const r = auth.redeem('', offer.code);
+    expect(r.ok).toBe(true);
+    // The token is the ONLY way this identity can ever be presented again, so it
+    // has to come back from this one call or it is lost.
+    expect(r.ok === true && typeof r.clientToken).toBe('string');
+    expect(r.ok === true && r.clientToken!.startsWith('ict_')).toBe(true);
+    // And it must resolve to a live client scoped to the redeeming user.
+    const ct = auth.resolveClientToken(r.ok === true ? r.clientToken : '');
+    expect(ct).not.toBeNull();
+    expect(ct!.userId).toBe(USER);
+  });
+
+  it('gives two keyless extensions two DIFFERENT identities', () => {
+    // The reason the client secret is randomly minted rather than `clientIdOf('')`:
+    // every keyless extension in the world would otherwise hash to one value, and
+    // one operator's binding would answer for another's.
+    const a = auth.redeem('', auth.issue(USER, T1)!.code);
+    const b = auth.redeem('', auth.issue(OTHER, T2)!.code);
+    expect(a.ok && b.ok).toBe(true);
+    const ta = a.ok === true ? a.clientToken! : '';
+    const tb = b.ok === true ? b.clientToken! : '';
+    expect(ta).not.toBe(tb);
+    expect(auth.resolveClientToken(ta)!.clientId)
+      .not.toBe(auth.resolveClientToken(tb)!.clientId);
+  });
+
+  it('does not hand a client token to a caller that already had a key', () => {
+    // A caller that already authenticated needs nothing further; a second
+    // credential would be pure surface area.
+    const r = auth.redeem(KEY, auth.issue(USER, T1)!.code);
+    expect(r.ok).toBe(true);
+    expect(r.ok === true && r.clientToken).toBeUndefined();
+  });
+
+  it('does not accept an invented or expired client token', () => {
+    expect(auth.resolveClientToken('ict_not_a_real_token')).toBeNull();
+    expect(auth.resolveClientToken('')).toBeNull();
+    expect(auth.isClientToken('ict_nope')).toBe(false);
+  });
+
+  it('still refuses a keyless redemption of a WRONG code', () => {
+    // Dropping the empty-key refusal must not turn the endpoint into a way in:
+    // the code is now the whole credential, so a bad one has to fail.
+    auth.issue(USER, T1);
+    expect(auth.redeem('', 'ZZZZZZZZ').ok).toBe(false);
   });
 });
 
