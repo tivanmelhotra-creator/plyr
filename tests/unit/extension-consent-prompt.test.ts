@@ -273,6 +273,14 @@ interface Harness {
   /** chrome.runtime.lastError for the next message reply. */
   lastError: { value: unknown };
   /**
+   * Deliver a message FROM the service worker, as `chrome.runtime.onMessage`
+   * would — the push the worker sends when the active tab changes
+   * (`AB_CONSENT_OWNER_CHANGED`). Settles the microtasks it triggers.
+   */
+  push(msg: Record<string, unknown>): Promise<void>;
+  /** The `data-ab-owner` mirror on the host, or null when no host exists. */
+  owner(): string | null;
+  /**
    * Settle the `AB_ENVIRONMENT` gate the prompt asks on load.
    *
    * Needed only by tests that manipulate `lastError`, because the gate is a
@@ -337,13 +345,22 @@ function boot(env: EnvReply = 'local'): Harness {
     documentElement: documentEl,
     get hidden() { return hidden.value; },
     createElement: (tag: string) => new FakeNode(tag),
+    // The icons are inline SVG built with createElementNS — never innerHTML,
+    // because the dialog shows operator-supplied text. Namespaced elements
+    // are plain nodes to this fake; the tag is all the census looks at.
+    createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
     addEventListener(t: string, fn: (e: unknown) => void) { (docListeners[t] ||= []).push(fn); },
     removeEventListener() {},
   };
 
+  const workerListeners: Array<(m: unknown) => void> = [];
+
   const chrome = {
     runtime: {
       get lastError() { return lastError.value; },
+      onMessage: {
+        addListener(fn: (m: unknown) => void) { workerListeners.push(fn); },
+      },
       sendMessage(msg: Record<string, unknown>, cb?: (r: unknown) => void) {
         sent.push(msg);
         // Async like the real one, so a test cannot accidentally depend on a
@@ -466,6 +483,14 @@ function boot(env: EnvReply = 'local'): Harness {
     },
     timerCount: () => timers.length,
     async ready() { await settle(); },
+    async push(msg: Record<string, unknown>) {
+      workerListeners.slice().forEach((fn) => fn(msg));
+      await settle();
+    },
+    owner() {
+      const host = h.host();
+      return host ? host.getAttribute('data-ab-owner') : null;
+    },
   };
   return h;
 }
@@ -1191,5 +1216,147 @@ describe('the consent prompt is scoped to the LOCAL (server-launched) browser', 
     // the server that side-loaded the extension into the browser it launched
     // itself, so a user's own Chrome cannot acquire it by configuring anything.
     expect(BG).toContain('AB_BOOTSTRAP.managed === true');
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════
+   ONE ALERT, OWNED BY THE ACTIVE TAB
+
+   THE REPORTED BUG
+     «Alert در تمام Tabها نمایش داده می‌شود» — with three tabs open in the
+     Local Browser, all three showed the dialog. Expected: Tab 2 active →
+     0 / 1 / 0, and switching to Tab 3 → 0 / 0 / 1 (MOVED, not duplicated).
+
+   WHY THE PAGE CANNOT DECIDE THIS ITSELF
+     Measured in the real Chrome: all three tabs of one window report
+     `document.visibilityState === 'visible'` and two of them `hasFocus()`
+     true, while `chrome.tabs.query({active:true})` names exactly ONE. So the
+     verdict lives in the service worker, which knows `sender.tab.id`, and it
+     travels in the poll reply as `owner: true|false` — plus a push
+     (`AB_CONSENT_OWNER_CHANGED`) the moment the active tab changes, so the
+     Alert leaves the old tab and appears in the new one in the same breath.
+
+   The content script's contract, asserted here:
+     - `owner:false` reply  → draw nothing, and take down anything drawn
+     - push owner:false     → take it down NOW, without waiting for a tick
+     - push owner:true      → ask NOW (one poll loop, not two)
+     - the host mirrors ownership as `data-ab-owner` for the CDP census
+   ════════════════════════════════════════════════════════════════ */
+describe('the Alert belongs to the ACTIVE tab only', () => {
+  it('draws NOTHING in a tab the worker says is not the active one', async () => {
+    // Tabs 1 and 3 in the bug report. Their poll reaches the worker, the
+    // worker answers owner:false with an empty list — and the page stays
+    // untouched: no host, no dialog, no census attribute to mirror.
+    const h = boot();
+    h.queueList({ ok: true, count: 0, requests: [], owner: false, skipped: 'not_active_tab' });
+    await h.tick();
+    expect(h.prompts().length).toBe(0);
+    expect(h.host()).toBeNull();
+  });
+
+  it('draws the prompt in the tab the worker says IS the active one, and says so on the host', async () => {
+    const h = boot();
+    h.queueList({ ok: true, count: 1, requests: [prompt()], owner: true });
+    await h.tick();
+    expect(h.prompts().length).toBe(1);
+    expect(h.dialog()!.open).toBe(true);
+    expect(h.owner()).toBe('1');
+  });
+
+  it('takes the prompt DOWN when the next poll says another tab is active now', async () => {
+    // Tab 2 held the Alert; the operator clicked Tab 3. Tab 2's next poll
+    // comes back owner:false. The old Alert must not remain visible there.
+    const h = await withPrompt();
+    expect(h.prompts().length).toBe(1);
+
+    h.queueList({ ok: true, count: 0, requests: [], owner: false, skipped: 'not_active_tab' });
+    await h.tickPolls();
+
+    expect(h.prompts().length).toBe(0);
+    expect(h.dialog()!.open).toBe(false);
+    expect(h.owner()).toBe('0');
+    expect(h.host()!.getAttribute('data-ab-open')).toBe('0');
+  });
+
+  it('takes the prompt down IMMEDIATELY on the worker\'s owner:false push, before any tick', async () => {
+    // Waiting up to 4s for the next poll would leave two Alerts on screen for
+    // that long. The push closes the window.
+    const h = await withPrompt();
+    expect(h.prompts().length).toBe(1);
+
+    await h.push({ type: 'AB_CONSENT_OWNER_CHANGED', owner: false });
+
+    expect(h.prompts().length).toBe(0);
+    expect(h.dialog()!.open).toBe(false);
+    expect(h.owner()).toBe('0');
+  });
+
+  it('asks the worker AT ONCE on an owner:true push, and keeps exactly one poll loop', async () => {
+    const h = boot();
+    await h.tick();                 // gate settled, loop armed, one poll timer waiting
+    const before = h.sent.filter((m) => m.type === 'AB_CONSENT_LIST').length;
+    expect(h.timerCount()).toBe(1);
+
+    h.queueList({ ok: true, count: 1, requests: [prompt()], owner: true });
+    await h.push({ type: 'AB_CONSENT_OWNER_CHANGED', owner: true });
+
+    // One more poll went out without a timer firing …
+    expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST').length).toBe(before + 1);
+    // … the Alert is up in the newly active tab …
+    expect(h.prompts().length).toBe(1);
+    // … and the previously armed timer was cancelled: still ONE loop.
+    expect(h.timerCount()).toBe(1);
+  });
+
+  it('does not let an owner:true push START a loop the environment gate refused', async () => {
+    // A push reaches every tab in the browser, including one whose gate said
+    // REMOTE. It must stay silent: the gate, not the push, decides whether the
+    // prompt exists in this browser at all.
+    const h = boot('remote');
+    await h.tick();
+    h.queueList({ ok: true, count: 1, requests: [prompt()], owner: true });
+    await h.push({ type: 'AB_CONSENT_OWNER_CHANGED', owner: true });
+    expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST').length).toBe(0);
+    expect(h.prompts().length).toBe(0);
+  });
+
+  it('a tab that goes hidden gives the Alert up (hidden is never active)', async () => {
+    const h = await withPrompt();
+    h.hidden.value = true;
+    await h.visibility();
+    expect(h.prompts().length).toBe(0);
+    expect(h.owner()).toBe('0');
+  });
+
+  it('the WORKER answers the poll with an ownership verdict and gates on it', () => {
+    // The seam again (see the vocabulary block): the content script's
+    // behaviour above is only real if the worker actually produces
+    // `owner:false` for a non-active sender and pushes the change.
+    expect(BG).toContain("skipped: 'not_active_tab'");
+    expect(BG).toMatch(/owner:\s*false/);
+    expect(BG).toMatch(/owner:\s*true/);
+    expect(BG).toMatch(/chrome\.tabs\.query\(\{\s*active:\s*true/);
+    expect(BG).toContain('chrome.tabs.onActivated.addListener');
+    expect(BG).toContain('chrome.windows.onFocusChanged.addListener');
+    expect(BG).toContain("'AB_CONSENT_OWNER_CHANGED'");
+    expect(SRC).toContain("'AB_CONSENT_OWNER_CHANGED'");
+  });
+
+  it('the dialog is content-sized, not a full-height sheet', () => {
+    // BUG 2: `all:initial` + `inset:0` with no height stretched the dialog to
+    // the whole viewport (measured 310×660). The size must come from the
+    // content, capped at a confirm-box width.
+    expect(SRC).toMatch(/dialog\{[^}]*height:fit-content/);
+    expect(SRC).toMatch(/dialog\{[^}]*width:fit-content/);
+    expect(SRC).toMatch(/dialog\{[^}]*max-width:min\(4\d0px/);
+    expect(SRC).not.toMatch(/dialog\{[^}]*min-height/);
+  });
+
+  it('pins its own writing direction, so an RTL host page cannot mirror it', () => {
+    // Measured on the Persian live-view page: an inherited `direction:rtl`
+    // reversed the flow strip and swapped the buttons to `[Allow] [Not now]`.
+    // The Alert is one fixed English UI on every page it overlays.
+    expect(SRC).toMatch(/dialog\{[^}]*direction:ltr/);
+    expect(SRC).toMatch(/dialog\{[^}]*text-align:left/);
   });
 });

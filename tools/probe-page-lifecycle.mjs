@@ -264,7 +264,14 @@ async function dialogDetail(list) {
         (n.children || []).forEach(collect);
         (n.shadowRoots || []).forEach(collect);
       })(d);
-      found.push({ page: p.url, open: 'open' in attrs, text: text.replace(/\s+/g, ' ').trim() });
+      // Only an OPEN dialog counts. Every tab keeps its one (closed, emptied)
+      // <dialog> element for reuse once it has ever been the owner — since the
+      // Alert now moves between tabs, a browser with N tabs legitimately holds
+      // up to N closed shells and exactly ONE open dialog. A closed, empty
+      // shell is not a dialog anyone can see, so counting it would report the
+      // ownership fix as stacking.
+      if (!('open' in attrs)) continue;
+      found.push({ page: p.url, open: true, text: text.replace(/\s+/g, ' ').trim() });
     }
   }
   return found;
@@ -390,8 +397,12 @@ async function record(name, prev) {
     // first version of this probe reported while proving nothing.
     check(st.detail.length === 1, `picker#${i}: EXACTLY one dialog, drawn and pierced`,
       `${st.detail.length} found`);
-    check(st.census.dialogs === 1, `picker#${i}: the host's own census agrees`,
-      `mirrored=${st.census.dialogs}`);
+    // `open`, not `dialogs`: since the Alert moves with the active tab, each
+    // tab that ever owned it keeps one CLOSED shell element, so the summed
+    // element count is "tabs that have been active", while the summed OPEN
+    // count is what is on screen — and that must be exactly one.
+    check(st.census.open === 1, `picker#${i}: the host's own census agrees`,
+      `open=${st.census.open} (shells=${st.census.dialogs})`);
     check(st.detail[0]?.open === true, `picker#${i}: that dialog is OPEN (showModal ran)`);
 
     const shown = st.detail[0]?.text || '';
