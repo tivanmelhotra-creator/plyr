@@ -845,11 +845,41 @@ async function inspectorUnpair() {
  * could store it and skip the prompt, which is the one thing the handshake
  * exists to prevent.
  */
-async function consentList() {
+async function consentList(sender) {
   var ctx = await inspectorContext();
   if (ctx.error) return { ok: false, error: ctx.error, requests: [] };
 
   var env = await browserEnvironment();
+
+  // ── ONE PENDING REQUEST, ONE ACTIVE TAB, ONE ALERT ─────────────────────
+  //
+  // REPORTED, with three tabs open in the Local Browser and only the third
+  // one visible:
+  //
+  //   «Tab 1 — [Picker Alert] / Tab 2 — [Picker Alert] / Tab 3 — [Picker Alert]
+  //    … هر Tab نباید independently همان pending picker request را render کند.»
+  //
+  // ROOT CAUSE. consent.js is a content script, so there is one copy of it per
+  // tab, and each copy polled this function on its own clock. This function
+  // answered every caller with the same list, so N tabs drew N copies of one
+  // question. `document.hidden` in the page could not fix it: MEASURED over
+  // CDP in the running browser, all three tabs of one window reported
+  // `visibilityState === 'visible'` while `chrome.tabs` reported exactly one
+  // `active: true`. The page cannot tell whether it is the tab the operator is
+  // looking at; the service worker can.
+  //
+  // So OWNERSHIP is decided HERE, once, by the only component that has the
+  // whole browser in view. The request belongs to the active tab of the
+  // focused window and to nothing else. A non-owner is told so explicitly
+  // (`owner: false`) rather than being handed an empty list it might read as
+  // "nothing pending": consent.js uses that flag to CLOSE a dialog it may
+  // still be showing from when it WAS the owner, so a tab switch moves the
+  // Alert instead of copying it. See consentOwnershipChanged() for the push
+  // that makes the hand-over immediate rather than one poll tick late.
+  var owner = await isConsentOwner(sender);
+  if (!owner) {
+    return { ok: true, count: 0, requests: [], environment: env, owner: false, skipped: 'not_active_tab' };
+  }
 
   // A REMOTE browser — one on the operator's own machine — is answered here and
   // never asks the server.
@@ -899,10 +929,108 @@ async function consentList() {
   }
   return {
     ok: true,
+    owner: true,
     count: data.count || 0,
     requests: data.requests || [],
     environment: env,
   };
+}
+
+/**
+ * WHICH TAB OWNS THE ALERT?
+ *
+ * The active tab of the last-focused window, and only that. `sender` is the
+ * `chrome.runtime.onMessage` sender, whose `.tab` is the tab the content
+ * script lives in — a value Chrome fills in itself, so a page cannot claim to
+ * be a tab it is not.
+ *
+ * Decided per call rather than cached: a cached owner would go stale on the
+ * very tab switch this exists to track. `lastFocusedWindow` rather than
+ * `currentWindow`: in a service worker there is no "current" window, and the
+ * documented meaning of currentWindow there is undefined.
+ *
+ * No sender tab (the popup, or a worker-internal call) is NOT an owner: the
+ * Alert is drawn in a page, so only a page can hold it.
+ */
+function isConsentOwner(sender) {
+  return new Promise(function (resolve) {
+    var tabId = sender && sender.tab && sender.tab.id;
+    if (tabId == null) { resolve(false); return; }
+    try {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, function (tabs) {
+        if (chrome.runtime.lastError) { resolve(false); return; }
+        var t = tabs && tabs[0];
+        if (t) { resolve(t.id === tabId); return; }
+        // No focused window at all (the operator is in another application).
+        // The active tab of the sender's OWN window is then the one they will
+        // see first when they come back, so it keeps the request rather than
+        // the request being orphaned until focus returns.
+        chrome.tabs.query({ active: true, windowId: sender.tab.windowId }, function (own) {
+          if (chrome.runtime.lastError) { resolve(false); return; }
+          var o = own && own[0];
+          resolve(!!(o && o.id === tabId));
+        });
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * The operator switched tabs (or windows): tell the OLD owner to stand down
+ * and the NEW owner to ask now.
+ *
+ * Without this push the hand-over would still happen — the old tab's next
+ * poll answers `owner:false` and it closes, the new tab's next poll draws —
+ * but "next poll" is up to 4s (20s when idle), and for that window BOTH tabs
+ * would show the Alert, which is exactly the duplicate the operator
+ * described:
+ *
+ *   «A نباید Alert قابل مشاهده داشته باشد / B نباید یک Alert duplicate بسازد»
+ *
+ * So the transition is made DETERMINISTIC: close-then-draw, in that order,
+ * driven by Chrome's own activation event. Tabs without the content script
+ * (chrome://, about:blank, the extension's own pages) simply fail the
+ * sendMessage, which is swallowed — there is nothing there to close.
+ */
+var lastConsentOwnerTabId = null;
+
+function tellTab(tabId, msg) {
+  if (tabId == null) return;
+  try {
+    chrome.tabs.sendMessage(tabId, msg, function () {
+      // Read lastError so Chrome does not log "Unchecked runtime.lastError".
+      void chrome.runtime.lastError;
+    });
+  } catch (e) { /* tab gone, or no content script — nothing to tell */ }
+}
+
+function consentOwnershipChanged(newTabId) {
+  if (newTabId == null || newTabId === lastConsentOwnerTabId) return;
+  var previous = lastConsentOwnerTabId;
+  lastConsentOwnerTabId = newTabId;
+  // The old owner FIRST, so at no instant are two dialogs open on purpose.
+  if (previous != null) tellTab(previous, { type: 'AB_CONSENT_OWNER_CHANGED', owner: false });
+  tellTab(newTabId, { type: 'AB_CONSENT_OWNER_CHANGED', owner: true });
+}
+
+if (chrome.tabs && chrome.tabs.onActivated) {
+  chrome.tabs.onActivated.addListener(function (info) {
+    if (info && info.tabId != null) consentOwnershipChanged(info.tabId);
+  });
+}
+if (chrome.windows && chrome.windows.onFocusChanged) {
+  chrome.windows.onFocusChanged.addListener(function (windowId) {
+    if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+    try {
+      chrome.tabs.query({ active: true, windowId: windowId }, function (tabs) {
+        if (chrome.runtime.lastError) return;
+        var t = tabs && tabs[0];
+        if (t && t.id != null) consentOwnershipChanged(t.id);
+      });
+    } catch (e) { /* no windows API in this context */ }
+  });
 }
 
 /**
@@ -1766,7 +1894,7 @@ async function relayToActiveTab(message) {
   });
 }
 
-chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
+chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || !msg.type) return;
   switch (msg.type) {
     case 'AB_SEND_FLOW':
@@ -1855,7 +1983,9 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
       });
       return true; // async
     case 'AB_CONSENT_LIST':
-      consentList().then(sendResponse);
+      // `sender` carries the calling tab; consentList() uses it to decide
+      // whether THIS tab is the one that may show the Alert.
+      consentList(sender).then(sendResponse);
       return true; // async
     case 'AB_CONSENT_DECIDE':
       consentDecide(msg.payload).then(sendResponse);

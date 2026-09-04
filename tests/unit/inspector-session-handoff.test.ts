@@ -61,7 +61,14 @@ type Listener = (msg: Msg, sender: unknown, respond: (r: unknown) => void) => un
 
 interface Harness {
   /** Send a message the way the popup / content script does, and await the reply. */
-  send(msg: Msg): Promise<Record<string, unknown>>;
+  /**
+   * Deliver a message to the worker as a CONTENT SCRIPT would. A content script
+   * always arrives with `sender.tab`; by default this models the ACTIVE tab
+   * (id 1 — the one `chrome.tabs.query({active:true})` answers with), because
+   * the consent poll is now answered by ownership: only the active tab is told
+   * the pending prompts. Pass another sender to model a background tab.
+   */
+  send(msg: Msg, sender?: unknown): Promise<Record<string, unknown>>;
   /** Every request background.js actually made, in order. */
   requests: Array<{
     method: string;
@@ -469,10 +476,10 @@ function loadWorker(opts: WorkerOpts = {}): Harness {
       if (!binding) throw new Error('fixture grant refused');
       return target.pairingKey;
     },
-    send(msg: Msg) {
+    send(msg: Msg, sender: unknown = { tab: { id: 1, windowId: 1 } }) {
       return new Promise<Record<string, unknown>>((res, rej) => {
         const t = setTimeout(() => rej(new Error(`no reply to ${String(msg.type)}`)), 5000);
-        const ok = (listener as Listener)(msg, null, (r) => {
+        const ok = (listener as Listener)(msg, sender, (r) => {
           clearTimeout(t);
           res((r || {}) as Record<string, unknown>);
         });
@@ -1303,6 +1310,34 @@ describe('LOCAL approval — the extension learns its destination without a code
     // …and what a machine needs in order to bypass the human is not.
     expect(list[0].targetFieldId).toBeUndefined();
     expect(list[0].pairingKey).toBeUndefined();
+  });
+
+  it('tells the question to the ACTIVE tab only — a background tab is answered owner:false, empty', async () => {
+    // «Alert در تمام Tabها نمایش داده می‌شود»: every tab's content script polls
+    // the same worker, and the worker used to answer them all identically. Now
+    // it decides ownership from `sender.tab.id` against
+    // `chrome.tabs.query({active:true})` (the fake's active tab is id 1). The
+    // page cannot decide this itself — three tabs of one window all report
+    // `visibilityState === 'visible'` — so the verdict has to come from here.
+    const h = worker();
+    const id = h.openField({ nodeId: 'search-box', label: 'Click → Selector' });
+    h.askFor(id);
+
+    const active = await h.send({ type: 'AB_CONSENT_LIST' }, { tab: { id: 1, windowId: 1 } });
+    expect(active.ok).toBe(true);
+    expect(active.owner).toBe(true);
+    expect(active.requests).toHaveLength(1);
+
+    const background = await h.send({ type: 'AB_CONSENT_LIST' }, { tab: { id: 2, windowId: 1 } });
+    expect(background.ok).toBe(true);
+    expect(background.owner).toBe(false);
+    expect(background.requests).toHaveLength(0);
+    expect(background.skipped).toBe('not_active_tab');
+
+    // A sender with no tab at all (popup, another worker) owns nothing either.
+    const noTab = await h.send({ type: 'AB_CONSENT_LIST' }, null);
+    expect(noTab.owner).toBe(false);
+    expect(noTab.requests).toHaveLength(0);
   });
 
   it('stores NOTHING while the prompt is merely listed', async () => {

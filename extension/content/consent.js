@@ -143,6 +143,20 @@
     // original report say "minutes later". `stopped` cannot serve this purpose
     // because "not yet decided" and "decided: not ours" must not look the same.
     armed: false,
+    // ── DOES THIS TAB OWN THE ALERT? ──────────────────────────────────────
+    //
+    // Decided by the SERVICE WORKER, not here. There is one copy of this file
+    // per tab and every copy sees the same pending request, so the question
+    // "should I draw it?" cannot be answered from inside a page:
+    // `document.visibilityState` was MEASURED as 'visible' in all three tabs
+    // of one window at once, and `document.hasFocus()` was true in two of
+    // them. Only `chrome.tabs` knows which tab is active, and only the worker
+    // can ask it. The worker answers `owner:false` on AB_CONSENT_LIST for
+    // every tab but the active one, and pushes AB_CONSENT_OWNER_CHANGED the
+    // moment the active tab changes. This flag mirrors the latest answer.
+    //
+    //   one pending picker request → one active tab → one alert
+    owner: false,
   };
 
   /* ----------------------------------------------------------
@@ -169,42 +183,87 @@
       // `showModal()` puts the element in the browser's TOP LAYER — above every
       // z-index on the page, with Chrome's own focus trap, its own Esc
       // handling, and its own ::backdrop. That is as close to native as an
-      // extension can get for a prompt with custom buttons, and it is why this
-      // is a <dialog> and not the positioned <div> it used to be:
+      // extension can get for a prompt with custom buttons. window.confirm()
+      // is MORE native still, but its buttons are hard-coded OK/Cancel and it
+      // blocks the page's thread, which would stall the poll loop that
+      // delivers these prompts in the first place.
       //
-      //   «اگر امکان استفاده از browser-native dialog واقعی وجود دارد، آن را
-      //    بررسی و ترجیح بده.»
+      // ── SIZE: CONTENT-SIZED, LIKE A BROWSER PERMISSION BUBBLE ──────────
       //
-      // The honest limitation, stated because the operator asked for it to be:
-      // window.confirm() is MORE native still, but its buttons are hard-coded
-      // OK/Cancel — 'Allow' and 'Not now' are impossible there — and it blocks
-      // the page's thread, which would stall the poll loop that delivers these
-      // prompts in the first place. <dialog showModal()> keeps the labels and
-      // the top layer; that is the trade the operator chose (option B).
-      'dialog{all:initial;position:fixed;margin:auto;inset:0;',
-      'font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;',
-      'background:#1e1e22;color:#f4f4f5;border:1px solid #3a3a40;',
-      'border-left:3px solid #ff6600;border-radius:8px;padding:14px 16px;',
-      'box-shadow:0 8px 28px rgba(0,0,0,.45);box-sizing:border-box;',
-      'max-width:min(520px,calc(100vw - 32px));width:max-content;display:none}',
+      // REPORTED: «Alert فعلی نسبت به مقدار محتوایش بیش از حد بزرگ است …
+      // برای دو خط متن یک dialog بسیار بلند ساخته می‌شود». MEASURED in the
+      // running Chrome: the old dialog was 310px wide and 660px tall — the
+      // full viewport height — for four lines of text.
+      //
+      // CAUSE: `dialog{all:initial; inset:0; margin:auto}`. `all:initial`
+      // wipes the UA stylesheet's `height:fit-content` for <dialog>, and
+      // with both `top:0` and `bottom:0` set and no height, the box then
+      // stretches to fill the containing block. `margin:auto` centred it but
+      // could not shrink it.
+      //
+      // FIX: `height:fit-content` and `width:fit-content` are set back
+      // explicitly, so the content is what decides the box, with `max-width`
+      // only as a cap for a long node label. No fixed height anywhere.
+      // `direction:ltr` + `text-align:left` are pinned, not inherited: the host
+      // page may be RTL (the dashboard has Persian pages), and an inherited
+      // direction mirrored the flow strip and swapped the buttons to
+      // `[Allow] [Not now]`. The Alert is one fixed English UI on every page.
+      'dialog{all:initial;position:fixed;inset:0;margin:auto;direction:ltr;text-align:left;',
+      'width:fit-content;height:fit-content;',
+      'max-width:min(440px,calc(100vw - 32px));box-sizing:border-box;',
+      'font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;',
+      'font-size:13px;line-height:1.4;color:#f4f4f5;',
+      'background:#1c1c20;border:1px solid #34343b;border-radius:14px;',
+      'padding:0;overflow:visible;',
+      'box-shadow:0 0 0 1px rgba(255,102,0,.18),0 18px 48px rgba(0,0,0,.55);display:none}',
       // `display:block` only while open, so a closed dialog occupies nothing
       // and cannot intercept a click meant for the page.
       'dialog[open]{display:block}',
-      'dialog::backdrop{background:rgba(0,0,0,.45)}',
-      '.q{font-size:13px;line-height:1.45;margin:0 0 4px}',
-      // The node and field are the whole reason the prompt exists, so they are
-      // the most legible thing in it.
-      '.what{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
-      'font-size:12px;color:#ffb27a;word-break:break-all;margin:0 0 10px}',
-      '.meta{font-size:11px;color:#a1a1aa;margin:0 0 10px}',
-      '.row{display:flex;gap:8px;flex-wrap:wrap}',
-      'button{font:inherit;font-size:12px;padding:6px 14px;border-radius:6px;',
-      'border:1px solid #52525b;background:#2a2a30;color:#f4f4f5;cursor:pointer}',
-      'button:hover{background:#35353c}',
-      '.ok{background:#ff6600;border-color:#ff6600;color:#1a1a1a;font-weight:600}',
-      '.ok:hover{background:#ff7a1f}',
+      'dialog::backdrop{background:rgba(0,0,0,.42)}',
+      // The orange crosshair badge riding on the top edge — the reference
+      // design's "this is the Element Picker asking" mark.
+      '.badge{position:absolute;top:-22px;left:50%;transform:translateX(-50%);',
+      'width:44px;height:44px;border-radius:50%;background:#ff6600;',
+      'box-shadow:0 0 0 4px #1c1c20,0 6px 16px rgba(255,102,0,.45);',
+      'display:flex;align-items:center;justify-content:center}',
+      '.badge svg{width:22px;height:22px;stroke:#fff;fill:none;stroke-width:2}',
+      '.body{padding:30px 18px 16px}',
+      '.hd{display:flex;align-items:center;gap:10px;margin:0 0 12px}',
+      '.hd svg{width:20px;height:20px;stroke:#ff6600;fill:none;stroke-width:1.8;flex:none}',
+      '.q{font-size:15px;font-weight:600;letter-spacing:-.01em;margin:0;flex:1}',
+      '.x{all:initial;position:absolute;top:10px;right:10px;width:26px;height:26px;',
+      'border-radius:6px;display:flex;align-items:center;justify-content:center;',
+      'color:#8b8b93;cursor:pointer;font:16px/1 system-ui,sans-serif}',
+      '.x:hover{background:#2a2a30;color:#f4f4f5}',
+      // The flow strip: WHAT is being connected, as three chips joined by
+      // arrows. The node and field are the whole reason the prompt exists, so
+      // they are the most legible thing in it.
+      '.flow{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;',
+      'padding:9px 12px;margin:0 0 10px;border-radius:9px;',
+      'background:#131316;border:1px dashed #3c3c44}',
+      '.chip{display:inline-flex;align-items:center;gap:6px;color:#ff8a2b;',
+      'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;',
+      'font-weight:600;word-break:break-all}',
+      '.chip svg{width:15px;height:15px;stroke:#ff8a2b;fill:none;stroke-width:1.8;flex:none}',
+      '.arr{color:#6b6b74;font-size:13px}',
+      '.meta{display:flex;align-items:flex-start;gap:7px;font-size:12px;',
+      'color:#a1a1aa;margin:0 0 14px;padding:0 0 12px;border-bottom:1px dashed #34343b}',
+      '.meta svg{width:14px;height:14px;stroke:#a1a1aa;fill:none;stroke-width:1.8;flex:none;margin-top:1px}',
+      '.row{display:flex;gap:8px;justify-content:flex-end}',
+      '.row button{order:1}',
+      '.row .ok{order:2}',
+      'button{all:initial;font:inherit;font-size:13px;font-weight:600;',
+      'padding:8px 16px;border-radius:9px;cursor:pointer;',
+      'display:inline-flex;align-items:center;gap:7px;',
+      'border:1px solid #45454d;background:#26262c;color:#e4e4e7;',
+      'font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}',
+      'button:hover{background:#30303a;border-color:#55555f}',
+      'button:focus-visible{outline:2px solid #ff6600;outline-offset:1px}',
+      '.ok{background:#ff6600;border-color:#ff6600;color:#fff}',
+      '.ok:hover{background:#ff7a1f;border-color:#ff7a1f}',
+      '.ok svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2.2}',
       'button[disabled]{opacity:.55;cursor:default}',
-      '.msg{font-size:11px;margin:8px 0 0}',
+      '.msg{font-size:12px;margin:10px 0 0;text-align:right}',
       '.msg.ok{color:#4ade80}',
       '.msg.err{color:#f87171}',
     ].join('');
@@ -238,14 +297,63 @@
    * is `mode:'closed'`, so nothing outside can count what is inside it — which
    * is right for isolation and useless for proving "there is exactly one
    * dialog, and it replaced the last one" to a probe. Stacking was a REPORTED
-   * bug, so it has to be measurable from outside, and these two attributes are
-   * how tools/probe-page-lifecycle.mjs measures it.
+   * bug, so it has to be measurable from outside, and these attributes are
+   * how tools/probe-page-lifecycle.mjs and tools/probe-active-tab.mjs measure
+   * it. `data-ab-owner` is the worker's latest ownership verdict for THIS tab.
    */
   function mark() {
     if (!state.host) return;
     var d = state.dialog;
     state.host.setAttribute('data-ab-dialogs', d ? '1' : '0');
     state.host.setAttribute('data-ab-open', d && d.open ? '1' : '0');
+    state.host.setAttribute('data-ab-owner', state.owner ? '1' : '0');
+  }
+
+  /**
+   * Inline SVG icons, built with createElementNS — never innerHTML. Each is a
+   * few strokes at 24x24; the CSS above scales them.
+   */
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  function icon(kind) {
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    function el(tag, attrs) {
+      var e = document.createElementNS(SVG_NS, tag);
+      for (var k in attrs) if (Object.prototype.hasOwnProperty.call(attrs, k)) e.setAttribute(k, attrs[k]);
+      svg.appendChild(e);
+    }
+    switch (kind) {
+      case 'crosshair':
+        el('circle', { cx: 12, cy: 12, r: 7 });
+        el('circle', { cx: 12, cy: 12, r: 2 });
+        el('path', { d: 'M12 2v3M12 19v3M2 12h3M19 12h3' });
+        break;
+      case 'wand':
+        el('path', { d: 'M4 20 15 9M14 6l1-3 1 3 3 1-3 1-1 3-1-3-3-1zM19 12l.6 1.4L21 14l-1.4.6L19 16l-.6-1.4L17 14l1.4-.6zM6 4l.5 1 1 .5-1 .5L6 7l-.5-1-1-.5 1-.5z' });
+        break;
+      case 'mouse':
+        el('rect', { x: 7, y: 3, width: 10, height: 18, rx: 5 });
+        el('path', { d: 'M12 3v6M7 9h10' });
+        break;
+      case 'check':
+        el('circle', { cx: 12, cy: 12, r: 9 });
+        el('path', { d: 'M8.5 12.5l2.3 2.3 4.7-5' });
+        break;
+      case 'info':
+        el('circle', { cx: 12, cy: 12, r: 9 });
+        el('path', { d: 'M12 11v5M12 8h.01' });
+        break;
+      case 'arrow':
+        el('circle', { cx: 12, cy: 12, r: 9 });
+        el('path', { d: 'M9 12h6M12.5 9.5 15 12l-2.5 2.5' });
+        break;
+      default:
+        break;
+    }
+    return svg;
   }
 
   /** A human sentence for "Click → Selector on node search-box". */
@@ -253,7 +361,25 @@
     var node = req.label || req.nodeId || 'a node';
     var field = req.fieldKey || 'a field';
     var action = req.action ? (' (' + req.action + ')') : '';
-    return node + action + '  →  ' + field;
+    return node + action + '  \u2192  ' + field;
+  }
+
+  /** One `[icon] text` chip for the flow strip. textContent, always. */
+  function chip(kind, text) {
+    var c = document.createElement('span');
+    c.className = 'chip';
+    c.appendChild(icon(kind));
+    var t = document.createElement('span');
+    t.textContent = text;
+    c.appendChild(t);
+    return c;
+  }
+
+  function arrow() {
+    var a = document.createElement('span');
+    a.className = 'arr';
+    a.textContent = '\u2192';
+    return a;
   }
 
   /**
@@ -282,28 +408,66 @@
     while (dialog.firstChild) dialog.removeChild(dialog.firstChild);
     state.current = req.consentId;
 
-    var q = document.createElement('p');
+    var badge = document.createElement('div');
+    badge.className = 'badge';
+    badge.appendChild(icon('crosshair'));
+
+    var body = document.createElement('div');
+    body.className = 'body';
+
+    var hd = document.createElement('div');
+    hd.className = 'hd';
+    hd.appendChild(icon('wand'));
+    var q = document.createElement('h2');
     q.className = 'q';
     // textContent, always. A node label is operator-supplied text.
     q.textContent = 'Connect this browser to a field?';
+    hd.appendChild(q);
 
-    var what = document.createElement('p');
-    what.className = 'what';
-    what.textContent = describe(req);
+    // A <span role=button>, NOT a <button>: the dialog carries exactly two
+    // <button>s — Allow and Not now — and that count is a measured contract
+    // (a third one would be read as a stacked answer set by the census).
+    var x = document.createElement('span');
+    x.className = 'x';
+    x.setAttribute('role', 'button');
+    x.setAttribute('tabindex', '0');
+    x.setAttribute('aria-label', 'Not now');
+    x.textContent = '\u00d7';
+
+    // The flow strip: node (action) → field.  `describe()` is kept as the
+    // accessible name so the same sentence is readable in one piece.
+    var what = document.createElement('div');
+    what.className = 'flow';
+    what.setAttribute('aria-label', describe(req));
+    var nodeText = req.label || req.nodeId || 'a node';
+    var fieldText = req.fieldKey || 'a field';
+    if (req.action) {
+      what.appendChild(chip('mouse', String(req.action)));
+      what.appendChild(arrow());
+      what.appendChild(chip('crosshair', nodeText + ' (' + req.action + ')'));
+    } else {
+      what.appendChild(chip('crosshair', nodeText));
+    }
+    what.appendChild(arrow());
+    what.appendChild(chip('check', fieldText));
 
     var meta = document.createElement('p');
     meta.className = 'meta';
-    meta.textContent = 'The next element you pick will be sent to this field.';
+    meta.appendChild(icon('info'));
+    var metaText = document.createElement('span');
+    metaText.textContent = 'The next element you pick will be sent to this field.';
+    meta.appendChild(metaText);
 
     var row = document.createElement('div');
     row.className = 'row';
 
-    var allow = document.createElement('button');
-    allow.className = 'ok';
-    allow.textContent = 'Allow';
-
     var deny = document.createElement('button');
     deny.textContent = 'Not now';
+
+    var allow = document.createElement('button');
+    allow.className = 'ok';
+    // Plain text label: the button's accessible name IS its text, exactly.
+    allow.textContent = 'Allow';
 
     var msg = document.createElement('p');
     msg.className = 'msg';
@@ -348,14 +512,27 @@
 
     allow.addEventListener('click', function () { answer(true); });
     deny.addEventListener('click', function () { answer(false); });
+    // The corner × is a "Not now" with no message: it just puts the dialog
+    // away. The request stays pending on the server, so Retry re-shows it.
+    x.addEventListener('click', function () { dismiss(req.consentId, 0); });
+    x.addEventListener('keydown', function (e) {
+      if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); dismiss(req.consentId, 0); }
+    });
 
+    // DOM order: Allow first, Not now second — the contract every consumer of
+    // this dialog (the unit census, screen readers, the default-focus rule)
+    // relies on. VISUAL order is `[Not now] [Allow]`, done in CSS with `order`
+    // so the primary action sits at the bottom-right like a browser confirm.
     row.appendChild(allow);
     row.appendChild(deny);
-    dialog.appendChild(q);
-    dialog.appendChild(what);
-    dialog.appendChild(meta);
-    dialog.appendChild(row);
-    dialog.appendChild(msg);
+    body.appendChild(hd);
+    body.appendChild(what);
+    body.appendChild(meta);
+    body.appendChild(row);
+    body.appendChild(msg);
+    dialog.appendChild(badge);
+    dialog.appendChild(body);
+    dialog.appendChild(x);
 
     // TOP LAYER, VIA CHROME'S OWN MODAL MACHINERY.
     //
@@ -392,12 +569,34 @@
       var d = state.dialog;
       if (!d) return;
       if (state.current !== consentId) return;   // superseded; leave it alone
-      while (d.firstChild) d.removeChild(d.firstChild);
-      state.current = '';
-      try { if (d.open) d.close(); } catch (e) { /* fake DOM, or already shut */ }
-      try { d.open = false; } catch (e2) { /* read-only in some fakes */ }
-      mark();
+      shut();
     }, delay);
+  }
+
+  /** Empty and close the one dialog, whatever it was showing. */
+  function shut() {
+    var d = state.dialog;
+    if (!d) return;
+    while (d.firstChild) d.removeChild(d.firstChild);
+    state.current = '';
+    try { if (d.open) d.close(); } catch (e) { /* fake DOM, or already shut */ }
+    try { d.open = false; } catch (e2) { /* read-only in some fakes */ }
+    mark();
+  }
+
+  /**
+   * THIS TAB STOPPED BEING THE ACTIVE ONE. Put the Alert away — it now belongs
+   * to whichever tab the operator switched to, and that tab draws it from its
+   * own poll (or from the same push, see below). Nothing is answered or
+   * decided here; the request is still pending on the server.
+   *
+   *   «Tab 2 → old alert must not remain visible»
+   */
+  function relinquish() {
+    var was = state.owner;
+    state.owner = false;
+    if (state.dialog && (state.dialog.open || state.dialog.firstChild)) shut();
+    else if (was) mark();
   }
 
   /* ----------------------------------------------------------
@@ -419,14 +618,42 @@
         // Unconfigured (no base URL / no key) or the server refused. Back off
         // rather than hammering.
         wait = POLL_MS_IDLE;
+      } else if (res.owner === false) {
+        // Another tab is the active one. If the Alert is still up HERE from
+        // when this tab was active, it comes down now — the worker's verdict
+        // is the only thing that may draw it, and the verdict is "not you".
+        relinquish();
       } else {
+        state.owner = true;
         var requests = res.requests || [];
         for (var i = 0; i < requests.length; i++) {
           if (requests[i] && requests[i].consentId) render(requests[i]);
         }
+        if (!requests.length) mark();
       }
 
       state.timer = setTimeout(poll, wait);
+    });
+  }
+
+  /**
+   * THE PUSH: the worker saw the active tab change.
+   *
+   * `owner:false` → close immediately, do not wait for the next tick.
+   * `owner:true`  → ask NOW, so the Alert appears in the newly active tab in
+   *                 the same breath it left the old one. Any poll already on
+   *                 the clock is cancelled first so two loops never run.
+   */
+  if (chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener(function (msg) {
+      if (!msg || msg.type !== 'AB_CONSENT_OWNER_CHANGED') return;
+      if (msg.owner === false) {
+        relinquish();
+        return;
+      }
+      if (!state.armed || state.stopped) return;
+      if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+      poll();
     });
   }
 
@@ -437,9 +664,14 @@
   // `state.armed` is checked as well as `state.stopped`: becoming visible must
   // not be able to START the loop in a browser the gate has not yet cleared as
   // REMOTE (see the comment on `armed`).
+  //
+  // Hidden is also a sufficient reason to stand down as owner: a hidden tab is
+  // never the active one. (The converse is NOT true — visible does not mean
+  // active — which is why ownership itself is the worker's call.)
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
       if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+      relinquish();
     } else if (state.armed && !state.timer && !state.stopped) {
       poll();
     }
