@@ -1400,6 +1400,77 @@ async function targetingBegin(payload) {
  * know the server's address yet — that is exactly the gap the Base URL box
  * fills. It is persisted on success so subsequent calls need no argument.
  */
+/**
+ * Turn a failed /inspector/pair attempt into a sentence that names the CAUSE.
+ *
+ * ── WHY THIS EXISTS ───────────────────────────────────────────────────────
+ * REPORTED: «با اینکه همه چیزم درسته هم خود Authorize ام و هم Base URL ام
+ * درسته خب بازم همون خطا را بهم برمی‌گردونه».
+ *
+ * `apiFetch` reduces every outcome to a token: 'network' for anything that
+ * prevented a response, 'http_<status>' for anything the server refused. Both
+ * were rendered by the popup as "That authorization code was not accepted",
+ * which is a diagnosis, not a report — and for two of the three cases it is the
+ * WRONG diagnosis. An operator told their code is bad will go and get another
+ * code. If the real problem is an unreachable address, a proxy in the way, or an
+ * https/http mismatch, they can repeat that loop indefinitely without ever
+ * touching the thing that is broken.
+ *
+ * ── THE THREE CASES, KEPT SEPARATE ────────────────────────────────────────
+ *   1. NO RESPONSE AT ALL ('network'). Nothing reached a server, so the code was
+ *      not even read. The address, the scheme, DNS, a firewall or a server that
+ *      is not running are the candidates — and they are the candidates the
+ *      operator can actually check. The address is quoted back for exactly the
+ *      reason a typo in it is invisible in a one-line input.
+ *   2. THE SERVER ANSWERED, WITH A STATUS. It exists and is reachable; that is
+ *      real progress and worth saying. 404 in particular means the address is
+ *      live but is not this application (a wrong port, or a proxy fronting
+ *      something else) — the single most common misconfiguration here, and
+ *      indistinguishable from a bad code in the old message.
+ *   3. THE SERVER REFUSED THE CODE, with a reason of its own. Only here is the
+ *      code the subject, and only here is the server's own wording used.
+ *
+ * Preferring `data.error` whenever the server sent one is deliberate: the server
+ * knows things this worker cannot (expired vs unknown vs already-redeemed), and
+ * overwriting its sentence with a guess would be the same mistake in reverse.
+ */
+function explainPairFailure(res, data, base) {
+  // Case 3 first: if the server said something, the server wins.
+  if (data && data.error) return String(data.error);
+
+  var status = (res && res.status) || 0;
+
+  // Case 1 — nothing came back.
+  if (!status || (res && res.error === 'network')) {
+    var why = (res && res.message) ? ' (' + res.message + ')' : '';
+    return 'Could not reach ' + base + why + '. The authorization code was never sent, '
+      + 'so it is still valid. Check that the Base URL is exactly the address the '
+      + 'dashboard showed, that it includes https:// if the server uses it, and that '
+      + 'this machine can open it in a tab.';
+  }
+
+  // Case 2 — a real HTTP answer, with the two statuses worth naming.
+  if (status === 404) {
+    return base + ' answered, but it has no /inspector/pair endpoint (HTTP 404). '
+      + 'That address is reachable but is not this application \u2014 check the port, '
+      + 'and any proxy in front of it.';
+  }
+  if (status === 429) {
+    return base + ' is rate-limiting pairing attempts (HTTP 429). Wait a moment, '
+      + 'then press Connect again with the same code.';
+  }
+  if (status >= 500) {
+    return base + ' returned a server error (HTTP ' + status + '). The address is '
+      + 'right; the server could not complete the pairing. Check the server log.';
+  }
+  if (status === 403 || status === 401) {
+    return 'The server refused this authorization code (HTTP ' + status + '). '
+      + 'Codes are single-use and short-lived \u2014 mint a fresh one from '
+      + 'Target This Field \u2192 Remote Browser.';
+  }
+  return base + ' refused the request (HTTP ' + status + ').';
+}
+
 async function inspectorPair(payload) {
   var typedBase = normalizeBase((payload && payload.baseUrl) || '');
   // Normalized exactly as the server will read it: the dashboard DISPLAYS
@@ -1414,10 +1485,68 @@ async function inspectorPair(payload) {
   if (!code) return { ok: false, error: 'Enter the authorization code from the dashboard.' };
 
   var ctx = await inspectorContext();
-  // A typed address wins over a resolved one: the operator is telling us where
-  // the server is because nothing else could.
-  var base = typedBase || (ctx.error ? '' : ctx.base);
-  if (!base) return { ok: false, error: 'Enter the Base URL of your server.' };
+
+  // ── WHY THE MANUFACTURED LOOPBACK GUESS IS REFUSED ON THIS PATH ───────────
+  //
+  // REPORTED: «هم خود Authorize ام و هم Base URL ام درسته خب بازم همون خطا را
+  // بهم برمی‌گردونه خب یعنی وصل نمیشه.»
+  //
+  // This line used to read:
+  //
+  //     var base = typedBase || (ctx.error ? '' : ctx.base);
+  //
+  // and `ctx.base` is never empty — inspectorContext() guarantees an address by
+  // falling back to `http://127.0.0.1:<port>` (see step 3 of its resolution
+  // order). That fallback is CORRECT for every other call in this file, because
+  // every other call is made by an extension the server itself seeded, where
+  // loopback really is the backend. It is WRONG here and only here, for a reason
+  // that is structural rather than incidental:
+  //
+  //     inspectorPair() is the REMOTE path. Its entire premise is that the
+  //     server is on a DIFFERENT machine. Loopback on this machine is therefore
+  //     the one address that is guaranteed not to be the server.
+  //
+  // So an empty Base URL box did not produce "tell me the address". It produced
+  // a POST to a port on the operator's own laptop, a connection refusal, and —
+  // because apiFetch collapses every transport failure to the token 'network' —
+  // a popup message blaming the authorization code. The operator re-copied a
+  // perfectly good code as many times as they liked; the request was never
+  // leaving their machine.
+  //
+  // ── WHAT IS REJECTED IS THE *GUESS*, NOT EVERY RESOLVED ADDRESS ───────────
+  //
+  // The first cut of this fix used `var base = typedBase;` — the typed box as
+  // the only source. That killed the bug but it also broke a true case, and the
+  // seam suite said so immediately: an extension the SERVER SEEDED carries a
+  // real, configured address (from `AB_BOOTSTRAP`, or stored from a pair that
+  // already worked) and may legitimately redeem a code without anyone retyping
+  // it. Refusing that would demand the operator hand-type an address the
+  // extension was literally installed with.
+  //
+  // inspectorContext() already draws exactly the line that matters, and it
+  // reports it in `baseUrlSource`:
+  //
+  //   'bootstrap' / stored → SOMEONE CONFIGURED THIS. Trustworthy: it came from
+  //                          the server that seeded the copy, or from an address
+  //                          that previously completed a pair.
+  //   'server-local'       → NOBODY CONFIGURED ANYTHING. `http://127.0.0.1:<port>`
+  //                          is manufactured by step 3 as a last resort.
+  //
+  // Only the manufactured one is refused here, and only on THIS path, because
+  // this path is REMOTE: its entire premise is that the server is on a DIFFERENT
+  // machine, so loopback on this machine is the one address guaranteed not to be
+  // it. Every other call in this file is made by a server-seeded extension where
+  // loopback genuinely IS the backend, which is why the guess stays correct
+  // everywhere else and must not be removed globally.
+  var guessedOnly = !ctx.error && ctx.baseUrlSource === 'server-local';
+  var base = typedBase || (ctx.error || guessedOnly ? '' : ctx.base);
+  if (!base) {
+    return {
+      ok: false,
+      reason: 'no_base_url',
+      error: 'Enter the Base URL of your server \u2014 the address this browser can reach it at.'
+    };
+  }
 
   var res = await apiFetch(
     base + '/inspector/pair',
@@ -1429,7 +1558,17 @@ async function inspectorPair(payload) {
     return {
       ok: false,
       reason: data.reason || res.error,
-      error: data.error || res.message || 'That authorization code was not accepted.'
+      // ── SAY WHICH THING FAILED ──────────────────────────────────────
+      // The second half of the reported bug. Every failure here used to arrive
+      // as "That authorization code was not accepted", including the failures
+      // that never reached a server and therefore never saw the code at all.
+      // That message sent the operator to fix the one input that was right.
+      //
+      // explainPairFailure() separates the three real cases — unreachable
+      // address, an HTTP status from a server that DID answer, and an actual
+      // refusal of the code — and names the address it tried, because a typo in
+      // the host is invisible in a short input box.
+      error: explainPairFailure(res, data, base)
     };
   }
 

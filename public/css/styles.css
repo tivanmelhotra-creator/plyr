@@ -2633,6 +2633,18 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
   background: rgba(255, 138, 31, 0.1);
 }
 .aria-iconbtn.is-picker { color: var(--primary); }
+/* The Retry button beside the crosshair. Deliberately QUIETER than .is-picker:
+   the crosshair is the primary action and starts a pick, while Retry only
+   repeats the last one. Colouring both in --primary would present two equal
+   choices and invite pressing Retry first, which is the one press that does
+   nothing until a crosshair has been used. It warms to --primary on hover so
+   it still reads as part of the same pair. */
+.aria-iconbtn.is-retry { color: var(--text-dim); }
+.aria-iconbtn.is-retry:hover {
+  color: var(--primary);
+  border-color: rgba(255, 138, 31, 0.5);
+  background: rgba(255, 138, 31, 0.1);
+}
 .aria-iconbtn.is-danger:hover {
   color: var(--danger);
   border-color: rgba(228, 85, 85, 0.45);
@@ -6933,6 +6945,23 @@ body.route-fullbleed .fe-mm-restore {
 .tgt-card-note.is-code { background: var(--info-soft); color: var(--info); }
 .tgt-card-note.is-warn { background: var(--danger-soft); color: var(--danger); }
 
+/* Shown above the grid when the environments could NOT be read from the server.
+   The chooser still appears — that is a rule, not a best effort — so this line
+   is what keeps it honest: the cards below are offered, but their badges were
+   not confirmed. Full-width rather than a pill, because it qualifies the whole
+   grid instead of one card. */
+.tgt-note {
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+/* An explicit amber tint rather than `var(--warn-soft)`: no such variable
+   exists, and falling back to --danger-soft would paint this red, which reads
+   as "something failed" when the message is "proceed, unverified". */
+.tgt-note.is-warn { background: rgba(245, 166, 35, 0.12); color: var(--warn); }
+
 /* The Authorization Code. Monospace, wide-tracked and LTR even in RTL: it is
    typed character by character into another application, and a bidi-reordered
    code is a code that gets mistyped. */
@@ -7061,6 +7090,39 @@ body.route-fullbleed .fe-mm-restore {
 .tgt-code-wrap .tgt-base-line { justify-content: center; }
 .tgt-code-wrap .tgt-code { align-self: auto; }
 .tgt-code-copy { padding: 5px 11px; font-size: 11.5px; white-space: nowrap; }
+
+/* ── COPY ALL (JSON) ──────────────────────────────────────────────────────
+   Both values in one press:
+
+     «کپی رو یه حالت JSON داشته باشیم که یه Copy All بذاریم»
+
+   Tinted with the accent and given a slightly heavier button than the two
+   individual Copy rows below it, because it is the RECOMMENDED route rather
+   than a third equal option — one paste fills both extension fields, so it is
+   the only route on which the operator cannot lose the first value while
+   fetching the second. */
+.tgt-copyall {
+  border-color: var(--primary, var(--border));
+  background: color-mix(in srgb, var(--primary, #4c8dff) 8%, transparent);
+}
+/* The hint is prose, not an identifier — so it is NOT forced to LTR/monospace
+   the way .tgt-base-url is, and it must wrap rather than scroll sideways. */
+.tgt-copyall-hint {
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  direction: inherit;
+  unicode-bidi: normal;
+  user-select: none;
+  white-space: normal;
+  overflow-x: visible;
+}
+.tgt-copyall-copy {
+  padding: 6px 13px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 /* Copy feedback ON the button. A clipboard button that looks identical before
    and after the click cannot be told from one that did nothing — and a failed

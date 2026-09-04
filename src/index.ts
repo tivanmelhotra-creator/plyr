@@ -397,6 +397,29 @@ const inspectorAuthMiddleware = (
   // `req.path` here is relative to the mount point ('/pair', '/element', …).
   const sub = req.path || '';
 
+  // ── 0. The consent HOST page: no credential, because none is possible ─────
+  //
+  // This is the page the server's own browser is navigated to so that the
+  // extension's content script has somewhere legal to run. It must be loadable
+  // by a Chromium window that has just started and has authenticated nothing:
+  // a browser navigating to a URL sends no x-api-key header, so gating it means
+  // it serves a 401 JSON body, no content script is injected, and the consent
+  // Alert has nowhere to render at all.
+  //
+  // MEASURED against the running server, which is the only way this surfaced.
+  // The route's own integration tests mount the router directly and so never
+  // pass through this middleware — they reported 200 while the real server
+  // reported 401 with «Authentication required». A route can be correct and
+  // still be unreachable; only the live request proves reachability.
+  //
+  // SAFE because the page is a blank canvas. It embeds no consent, no field, no
+  // node, no token and no account, and carries no script of its own — see
+  // ConsentHostPage.ts, and the pair of tests in targeting-routes.test.ts that
+  // hold it that way. The consent itself is still fetched AUTHENTICATED by the
+  // content script from GET /inspector/consent, which is not exempted here.
+  // If this page ever starts rendering prompt data, this exemption must go.
+  if (sub === '/consent-host') return next();
+
   // ── 1. The pairing route: no credential required, by design ───────────────
   //
   // The route itself still validates the code and still refuses a bad one — see

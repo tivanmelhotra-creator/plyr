@@ -25,7 +25,7 @@
  * So the socket pushes what these routes also serve, and neither is the only way.
  */
 
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 
 import { config } from '../config';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
@@ -45,6 +45,7 @@ import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
 import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
 import { inspectorAuth } from '../core/InspectorAuthorization';
 import { remoteTargetConsent } from '../core/RemoteTargetConsent';
+import { consentHostPage } from '../core/ConsentHostPage';
 import { resolveBaseUrl, requestHints } from '../core/PublicBaseUrl';
 import {
   planTargeting,
@@ -1432,6 +1433,44 @@ export const createModeRoutes = (): Router => {
   // outcome (GET status). The extension never names a destination in any of the
   // three — it names a `consentId` it was handed, and the server maps that to
   // the field it decided on before the prompt existed.
+
+  /**
+   * The page the server's own browser lands on so the Alert has somewhere to live.
+   *
+   * WHY THIS ROUTE EXISTS AT ALL
+   * ---------------------------
+   * The consent Alert is drawn by `extension/content/consent.js`, a CONTENT
+   * SCRIPT, and `extension/manifest.json` matches http and https URLs only.
+   * Chrome injects no content script into `about:blank`. The server's browser
+   * was being left parked exactly there, so — MEASURED live — `GET
+   * /browser/tabs` reported `count = 1, url = 'about:blank'` while `GET
+   * /inspector/consent?environment=local` reported two prompts pending. The
+   * prompts were real; nothing in that window was running that could draw them.
+   *
+   * Both live reports follow from that one fact: the operator had to navigate
+   * somewhere themselves to get an injectable page (so the Alert appeared in a
+   * SECOND tab beside the blank default), and for a second node no new tab is
+   * opened at all (so no Alert ever appeared and the old field stayed Set).
+   *
+   * This gives the window a real http destination on this server's own loopback,
+   * which the manifest matches, so the script loads and polls. It is served here
+   * beside `/inspector/consent` deliberately: the page and the prompt it hosts
+   * are one mechanism, and splitting them across files is how the connection
+   * gets lost during the next change.
+   *
+   * WHY IT CARRIES NO API KEY
+   * ------------------------
+   * It is a static blank canvas. It embeds no consent, no field, no token, no
+   * account — see ConsentHostPage.ts, which has no script of its own. Its only
+   * purpose is to be a LEGAL INJECTION TARGET so that the extension's content
+   * script can run. The consent itself is still fetched authenticated, by that
+   * script, from `GET /inspector/consent` below. Requiring a key here would
+   * gate nothing and would instead break the one thing the page is for: being
+   * loadable by a browser window that has not authenticated yet.
+   */
+  router.get('/inspector/consent-host', (_req: Request, res: Response) => {
+    res.type('html').send(consentHostPage());
+  });
 
   /**
    * What is this browser being asked to connect to?

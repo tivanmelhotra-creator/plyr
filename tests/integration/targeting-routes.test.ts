@@ -605,9 +605,33 @@ describe('POST /inspector/targeting/unpair', () => {
     const gone = await request(app).post('/inspector/targeting/unpair')
       .set('x-api-key', KEY_A)
       .send({ nodeId: 'node-7', fieldKey: 'selector', workflowId: 'wf1' });
-    expect(gone.body.unpaired).toBe(1);
+
+    // WHY THIS IS NOT `toBe(1)`.
+    //
+    // `unpaired` is a count of CLIENT ROWS the removal touched, not of users or
+    // of fields. LOCAL `begin` deliberately grants twice whenever the dashboard's
+    // own key differs from the seeded `config.API_TOKEN` (mode.routes.ts: «The
+    // dashboard's own key may differ from the seeded one in a multi-key setup;
+    // bind it too so a pick made through it is not refused») — and in this suite
+    // they DO differ: `API_KEYS='test_key_123'` while `API_TOKEN` falls back to
+    // its built-in default. So two rows exist, two rows are dropped, and 2 is the
+    // honest answer. A literal `1` here encoded a single-key world this suite has
+    // not lived in since the dual grant landed.
+    //
+    // Asserting `>= 1` rather than an exact number is deliberate: the exact row
+    // count is an artifact of how many keys happen to be configured, which is
+    // setup trivia, whereas "the removal actually reached the store" is the
+    // contract. The real guarantee is the read-back below, which no route could
+    // fake by reporting a number without touching anything.
+    expect(gone.body.success).toBe(true);
+    expect(gone.body.unpaired).toBeGreaterThanOrEqual(1);
+    expect(gone.body.pairingKey).toBe(pairingKey);
 
     expect(inspectorAuth.isPairedForUser('local', pairingKey)).toBe(false);
+    // Stronger than the count ever was: NOTHING is left paired to this field for
+    // this key, whichever rows the grant happened to create.
+    expect(inspectorAuth.pairingsFor(KEY_A).map((p) => p.pairingKey))
+      .not.toContain(pairingKey);
   });
 
   it('re-targeting after an unpair attaches again with no ceremony', async () => {
@@ -710,3 +734,123 @@ describe('the scenario from the requirement, start to finish', () => {
     expect(local.body.target.pairingKey).toBe(remote.body.target.pairingKey);
   });
 });
+
+// ════════════════════════════════════════════════════════════════
+// THE PAGE THE SERVER'S BROWSER LANDS ON
+//
+// WHY A ROUTE SERVING STATIC HTML DESERVES TESTS
+// ----------------------------------------------
+// Because it is not decoration — it is the injection target that makes the
+// consent Alert possible at all, and every property asserted below is one that,
+// if lost, silently restores a reported defect.
+//
+// The Alert is drawn by `extension/content/consent.js`, a CONTENT SCRIPT, and
+// `extension/manifest.json` matches http and https URLs only. Chrome injects no
+// content script into `about:blank`. The server's browser was being left parked
+// exactly there, and the measurement was unambiguous:
+//
+//     GET /browser/tabs                        -> count = 1, url = 'about:blank'
+//     GET /inspector/consent?environment=local -> count = 2, both pending
+//
+// Two real prompts, and nothing running anywhere that could draw them. Both live
+// reports follow from that one fact:
+//
+//   «توقع داشتم که … فقط یه دونه تب باشه … ولی … دو تا تب داشتیم» — the operator
+//   navigated somewhere themselves to get an injectable page, so the Alert
+//   appeared in a SECOND tab beside the blank default.
+//
+//   «هیچ Alert یا تب جدیدی باز نشد … اون Node قبلیه هنوز Set باقیمونده روش» —
+//   for a second node no new tab is opened at all, so the only page in the
+//   window was still one no content script could run on.
+// ════════════════════════════════════════════════════════════════
+
+describe('the consent host page', () => {
+  function host(key?: string) {
+    const r = request(app).get('/inspector/consent-host');
+    return key ? r.set('x-api-key', key) : r;
+  }
+
+  it('serves HTML', async () => {
+    const res = await host(KEY_A);
+    expect(res.status).toBe(200);
+    expect(String(res.headers['content-type'])).toContain('text/html');
+    expect(res.text.toLowerCase()).toContain('<!doctype html');
+  });
+
+  it('is reachable WITHOUT an API key', async () => {
+    // Load-bearing, and counter-intuitive enough to be worth pinning. The window
+    // that must load this page has not authenticated — it is a browser Chromium
+    // just launched, navigating to a URL. Gate this and the page fails to load,
+    // the content script never runs, and the Alert is back to having nowhere to
+    // live: the whole defect, reintroduced by a well-meant hardening pass.
+    const res = await host();
+    expect(res.status).toBe(200);
+  });
+
+  it('leaks nothing — it is a blank canvas, not a consent renderer', async () => {
+    // Which is WHY it can be public. It embeds no consent, no field, no node, no
+    // token, no account. The consent itself is still fetched authenticated by
+    // the content script from GET /inspector/consent. If a future change starts
+    // rendering prompt data here, the no-API-key property above stops being
+    // safe — so these two tests are deliberately a matched pair.
+    const before = await begin({ environment: 'local' });
+    expect(before.status).toBe(200);
+    const targetFieldId = String(before.body.target.targetFieldId);
+
+    const res = await host();
+    expect(res.text).not.toContain(targetFieldId);
+    expect(res.text).not.toContain('node-7');
+    expect(res.text).not.toContain(KEY_A);
+    expect(res.text).not.toContain('cns_');
+  });
+
+  it('carries no script of its own', async () => {
+    // The Alert has exactly ONE implementation — the extension's content script.
+    // A script here would be a second one: it would render prompts in the
+    // server's browser while the operator's own Chrome used the extension, and
+    // the two would drift. The page's only job is to be loadable.
+    expect(res_noScript(await host())).toBe(true);
+  });
+
+  it('survives as a DIAGNOSTIC, with nothing in the server navigating to it', async () => {
+    // ── WHAT THIS TEST USED TO ASSERT, AND WHY IT HAD TO CHANGE ────────────
+    // It was called "answers on the loopback URL the launcher actually
+    // navigates to", and it imported `consentHostUrl()` from browser.routes.ts
+    // to prove the two files agreed on a path. That helper is gone, because the
+    // launcher no longer navigates anywhere for the Alert:
+    //
+    //   «دیگر Priority 2 / fallback برای ساختن consent-host به عنوان Alert Tab
+    //    نمی‌خواهیم … Alert نباید page جدید داشته باشد.»
+    //
+    // Deleting the test with the helper would have been wrong, and deleting the
+    // ROUTE would have been worse. The page is still the only way to answer
+    // "do content scripts inject in this browser AT ALL?" — the question behind
+    // the original "no Alert appeared" report — by giving an operator a
+    // scriptless http page to load by hand. It is kept deliberately.
+    //
+    // So the assertion is inverted into the pair that now matters: the route
+    // still answers, and NOTHING on the server sends a browser to it.
+    const res = await request(app).get('/inspector/consent-host');
+    expect(res.status).toBe(200);
+
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const routes = readFileSync(
+      join(__dirname, '..', '..', 'src/Routes/browser.routes.ts'),
+      'utf8',
+    );
+    // Comments quote the withdrawn design by name, so they must be stripped
+    // before the check — otherwise the explanation would read as the defect.
+    const code = routes
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+    expect(code).not.toContain('consent-host');
+    expect(code).not.toContain('consentHostUrl');
+  });
+});
+
+/** True when the served page contains no <script> of any kind. */
+function res_noScript(res: { text: string }): boolean {
+  return !/<script[\s>]/i.test(res.text);
+}

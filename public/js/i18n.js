@@ -1306,6 +1306,18 @@
       'pick.needExtension': 'افزونهٔ بازرس المان را نصب کنید، سپس در صفحه Ctrl+Shift+C را بزنید.',
       'pick.needNode': 'ابتدا یک نود را در ویرایشگر باز کنید، سپس در صفحه Ctrl+Shift+C را بزنید.',
       'pick.armed': 'برای انتخاب المان برای «{node}» در صفحه Ctrl+Shift+C را بزنید.',
+      // Shown when the browser chooser cannot run yet (InspectorClient still
+      // resolving). Deliberately NOT silent: the old behaviour was to fall
+      // through and open the LOCAL browser without asking — «مستقیماً Local
+      // Browser رو واسم باز می‌کنه که این افتضاحه».
+      'pick.chooserUnavailable': 'انتخاب مرورگر هنوز آماده نیست. یک لحظه بعد دوباره روی آیکون هدف‌گیری بزنید.',
+      // The Retry button beside the crosshair. Its tooltip names the FIELD it
+      // will re-run, because a Retry whose target is invisible is a Retry the
+      // operator has to guess at — and the whole rule is that it re-runs the
+      // last picker's field and nothing else.
+      'pick.retry': 'نمایش دوباره‌ی همان پیام انتخاب، بدون باز کردن تب جدید',
+      'pick.retryFor': 'تلاش دوباره برای «{field}» — بدون باز کردن تب جدید',
+      'pick.retryNone': 'هنوز هیچ فیلدی هدف‌گیری نشده. اول روی آیکون هدف‌گیری بزنید.',
       'inspector.applied': 'المان به نود اضافه شد',
       'inspector.applyFailed': 'آن نود دیگر باز نیست — دوباره انتخاب کنید.',
       'inspector.nothingToApply': 'ویژگی‌های انتخاب‌شده با این نود سازگار نیستند.',
@@ -1401,6 +1413,7 @@
       'tgt.consentAsked': 'مرورگر سرور آماده است — در همان تب اجازهٔ اتصال به این فیلد را بدهید.',
       'tgt.consentWaiting': 'هنوز منتظر اجازهٔ شما در تب مرورگر سرور هستیم.',
       'tgt.failed': 'شروع هدف‌گیری ممکن نشد. دوباره تلاش کنید.',
+      'tgt.optionsDegraded': 'وضعیت مرورگرها از سرور خوانده نشد. هر دو گزینه در دسترس است؛ بررسی نهایی هنگام انتخاب انجام می‌شود.',
       'tgt.unpair': 'قطع اتصال این فیلد',
       'tgt.unpaired': 'اتصال این فیلد قطع شد. دفعهٔ بعد کد تازه لازم است.',
       // ── فقط برای «مرورگر ریموت» ────────────────────────────────────────
@@ -1424,6 +1437,12 @@
       'tgt.copy': 'کپی',
       'tgt.copied': 'کپی شد',
       'tgt.copyManual': 'دستی کپی کنید',
+      // یک بار کپی، هر دو مقدار، به شکل JSON — و افزونه آن را در هر کدام از دو
+      // فیلدش می‌پذیرد. این یک راحتی جانبی نیست: پنجرهٔ پاپ‌آپ کروم با از دست
+      // دادن فوکوس از بین می‌رود، پس بردن دو مقدار در دو رفت‌وبرگشت باعث می‌شد
+      // مقدار اول با مقدار دوم پاک شود. یک رفت‌وبرگشت، مسئله را حذف می‌کند.
+      'tgt.copyAll': 'کپی همه (JSON)',
+      'tgt.copyAllHint': 'هر دو مقدار با هم — در هر کدام از دو فیلد افزونه پیست کنید',
       'tgt.waiting': 'در انتظار اتصال مرورگر ریموت…',
       'tgt.pairedNow': 'مرورگر ریموت وصل شد. المان را همان‌جا انتخاب کنید.',
 
@@ -2683,6 +2702,18 @@
       'pick.needExtension': 'Install the Element Inspector extension, then press Ctrl+Shift+C on the page.',
       'pick.needNode': 'Open a node in the editor first, then press Ctrl+Shift+C on the page.',
       'pick.armed': 'Press Ctrl+Shift+C on the page to pick an element for "{node}".',
+      // Shown when the browser chooser cannot run yet (InspectorClient still
+      // resolving). Deliberately NOT silent: the old behaviour was to fall
+      // through and open the LOCAL browser without asking, which read to the
+      // operator as a remembered preference that could not be changed.
+      'pick.chooserUnavailable': 'The browser chooser is not ready yet. Press the target icon again in a moment.',
+      // The Retry button beside the crosshair. Its tooltip names the FIELD it
+      // will re-run, because a Retry whose target is invisible is a Retry the
+      // operator has to guess at — and the whole rule is that it re-runs the
+      // last picker's field and nothing else.
+      'pick.retry': 'Show that same pick prompt again, without opening a new tab',
+      'pick.retryFor': 'Retry "{field}" — without opening a new tab',
+      'pick.retryNone': 'No field has been targeted yet. Press the target icon first.',
       'inspector.applied': 'Element added to the node',
       'inspector.applyFailed': 'That node is no longer open — pick again.',
       'inspector.nothingToApply': 'The picked attributes do not fit this node.',
@@ -2784,6 +2815,7 @@
       'tgt.consentAsked': 'The server browser is ready — allow the connection to this field in that tab.',
       'tgt.consentWaiting': 'Still waiting for you to allow the connection in the server browser tab.',
       'tgt.failed': 'Targeting could not be started. Try again.',
+      'tgt.optionsDegraded': 'The browser states could not be read from the server. Both options are offered; the final check happens when you choose.',
       'tgt.unpair': 'Unpair this field',
       'tgt.unpaired': 'This field was unpaired. Next time a new code will be needed.',
       // ── REMOTE BROWSER ONLY ────────────────────────────────────────────
@@ -2815,6 +2847,12 @@
       'tgt.copy': 'Copy',
       'tgt.copied': 'Copied',
       'tgt.copyManual': 'Copy manually',
+      // One press, both values, as JSON — and the extension accepts it in
+      // EITHER of its two inputs. Not a convenience: a Chrome popup is destroyed
+      // every time it loses focus, so carrying two values in two trips meant the
+      // first one was wiped by the second. One trip removes the problem.
+      'tgt.copyAll': 'Copy All (JSON)',
+      'tgt.copyAllHint': 'Both values at once — paste into either field in the extension',
       'tgt.waiting': 'Waiting for the Remote Browser to connect…',
       'tgt.pairedNow': 'Remote Browser connected. Pick the element there.',
 

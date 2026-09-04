@@ -1096,11 +1096,59 @@ describe('§7 — the dialog behaves like a dialog', () => {
     expect(h.panel()!.find('tgt-sub')[0].text()).toContain('Click → product_selector');
   });
 
-  it('reports a failed options lookup instead of rendering an empty dialog', async () => {
+  /* ==========================================================================
+     THIS TEST USED TO ASSERT THE OPPOSITE, AND IT WAS WRONG.
+
+     It read:
+
+         const h = boot({ options: null });
+         await openChooser(h);
+         expect(h.flow.isOpen()).toBe(false);      // ← encoded the defect
+
+     i.e. it PINNED "a failed options read leaves no dialog" as correct
+     behaviour. That is precisely what the operator's standing rule forbids:
+
+         «هر موقع که من اونو زدم، باید اون باکس بالا بیاد»
+
+     — every press of a picker icon must raise the box, with no exception
+     carved out for a read that happened to fail. `targetingOptions()` folds
+     every failure into `null` (non-200, network drop, bad body), so under this
+     old expectation an offline moment produced a pressed crosshair, a toast,
+     and nothing to choose from: indistinguishable, from the operator's chair,
+     from the bug they reported.
+
+     A test that asserts the defect is worse than no test, because it converts
+     fixing the defect into "breaking the suite". Replaced with the rule.
+     ========================================================================== */
+  it('still opens the chooser when the options read fails', async () => {
     const h = boot({ options: null });
     await openChooser(h);
-    expect(h.flow.isOpen()).toBe(false);
-    expect(h.toasts).toContain('tgt.failed');
+    expect(h.flow.isOpen()).toBe(true);
+    // Both environments, and both usable — two disabled cards would obey the
+    // letter of the rule while leaving the operator unable to act.
+    expect(card(h, 'local').getAttribute('disabled')).toBeFalsy();
+    expect(card(h, 'remote').getAttribute('disabled')).toBeFalsy();
+  });
+
+  it('admits that the environment states are unverified', async () => {
+    const h = boot({ options: null });
+    await openChooser(h);
+    // The cards' badges came from a fallback, not from the server, so the
+    // dialog says so rather than presenting a guess as a confirmed fact.
+    const notes = h.panel()!.find('tgt-note');
+    expect(notes.length).toBe(1);
+    expect(notes[0].text()).toContain('tgt.optionsDegraded');
+  });
+
+  it('a fallback choice is still refused by the server, with its reason', async () => {
+    // The fallback offers LOCAL unconditionally; the authority over whether
+    // LOCAL may actually be used stays with /inspector/targeting/begin. This
+    // is what makes offering it safe rather than misleading.
+    const h = boot({ options: null, begin: { success: false, reason: 'local_disabled' } });
+    await openChooser(h);
+    card(h, 'local').fire('click');
+    await settle();
+    expect(h.toasts).toContain('tgt.localDisabled');
   });
 });
 
@@ -1180,11 +1228,80 @@ describe('§11 — a live server browser is reused, not relaunched', () => {
     const h = bootLocal({ serverLive: true });
     await pickLocal(h);
 
-    // THE FIX: «مرورگر مجدد بالا نمیاد».
-    expect(h.realBrowser.length).toBe(0);
+    // THE FIX: «مرورگر مجدد بالا نمیاد» — no COLD START. Chromium is not
+    // restarted and the page being worked on is not thrown away.
+    //
+    // WHAT THIS NO LONGER ASSERTS, AND WHY. It used to require that
+    // openRealBrowser was not called AT ALL, and that over-tightened «مرورگر
+    // مجدد بالا نمیاد» from "do not relaunch" into "do not even bring the window
+    // forward". The consequence was the second live report: with the browser
+    // already running and a DIFFERENT node targeted, the flow closed the claimed
+    // tab and only toasted, so nothing came to the front —
+    //
+    //   «هیچ Alert یا تب جدیدی باز نشد … اون Node قبلیه هنوز Set باقیمونده روش»
+    //
+    // openRealBrowser is idempotent against a running browser (MEASURED: the
+    // second POST /browser/real/open answers 200 and GET /browser/tabs still
+    // reports ONE tab), so calling it surfaces the view WITHOUT relaunching.
+    // \"Did it relaunch?\" is therefore asked of the probe, which is the thing
+    // that actually decides, and asserted below by the launch-path tests.
+    expect(h.calls.filter((c) => c.fn === 'serverBrowserLive').length).toBe(1);
+    expect(h.toasts).not.toContain('tgt.readyLocal');
+
     // And the field is still armed — skipping the launch must not skip the arming.
     expect(h.armed.length).toBe(1);
     expect(h.armed[0].environment).toBe('local');
+  });
+
+  it('brings the running browser back in front instead of just toasting', async () => {
+    // REPORTED, browser left running from an earlier pick, a DIFFERENT node
+    // targeted, LOCAL chosen again:
+    //
+    //   «هیچ Alert یا تب جدیدی باز نشد که اون Alert رو واسم نشون بده که … اون
+    //    Node و فیلدش توی Extension مجدد Set بشن … اون Node قبلیه هنوز Set
+    //    باقیمونده روش»
+    //
+    // The server was blameless: MEASURED, a fresh consent per node with a
+    // distinct `cns_…` and `reused: false`. The prompt existed. It simply had
+    // nowhere visible to be — this branch discarded the tab it had claimed and
+    // said, in a toast on a DIFFERENT page, that a prompt was waiting elsewhere.
+    //
+    // So the claimed tab must be USED. Asserting `gotTab` is the whole point:
+    // it proves the speculative tab was handed onward rather than thrown away,
+    // which is what puts the browser view — and the Alert inside it — on screen.
+    const h = bootLocal({ serverLive: true });
+    await pickLocal(h);
+
+    expect(h.realBrowser.length).toBe(1);
+    expect(h.realBrowser[0].gotTab).toBe(true);
+    expect(h.tabs.length).toBe(1);
+    expect(h.tabs[0].closed).toBe(false);
+  });
+
+  it('surfaces the browser for a SECOND, different node too', async () => {
+    // The reported scenario end to end: pick once, then pick again for another
+    // field with the browser still up. The second pick is the one that showed
+    // nothing, so it is the one worth driving explicitly rather than trusting
+    // the single-pick case to cover.
+    const h = bootLocal({ serverLive: true });
+    await pickLocal(h);
+    expect(h.realBrowser.length).toBe(1);
+
+    h.flow.start({
+      nodeId: 'other', fieldKey: 'other_selector', action: 'click',
+      workflowId: 'wf1', label: 'Click → other_selector', url: '',
+      onArmed: () => {},
+    });
+    await settle();
+    card(h, 'local').fire('click');
+    await settle();
+    await settle();
+
+    // A second surfacing for the second field — not silence.
+    expect(h.realBrowser.length).toBe(2);
+    expect(h.realBrowser[1].gotTab).toBe(true);
+    // Still no relaunch: the probe decided both times.
+    expect(h.calls.filter((c) => c.fn === 'serverBrowserLive').length).toBe(2);
   });
 
   it('DOES launch when the browser is not up', async () => {
@@ -1195,15 +1312,21 @@ describe('§11 — a live server browser is reused, not relaunched', () => {
     expect(h.armed.length).toBe(1);
   });
 
-  it('closes the speculatively-claimed tab when it turns out not to be needed', async () => {
-    // The tab is claimed synchronously to beat the popup blocker. If the browser
-    // is already up that tab is surplus, and leaving it would park a blank window
-    // on screen — indistinguishable, to the operator, from the broken relaunch
-    // this whole branch exists to prevent.
+  it('never strands the speculatively-claimed tab as a blank window', async () => {
+    // The tab is claimed synchronously to beat the popup blocker, so by the time
+    // the probe answers there is always a tab in hand. It has exactly two honest
+    // fates: navigated to the browser view, or closed. What it must never be is
+    // LEFT BLANK — an empty window parked on screen reads as a broken launch.
+    //
+    // WAS ASSERTED AS `closed === true`, which pinned the wrong one of the two.
+    // Closing it is what hid the Alert for the second node. The invariant that
+    // actually protects the operator is \"not stranded\", so that is what is
+    // measured, and either resolution satisfies it.
     const h = bootLocal({ serverLive: true });
     await pickLocal(h);
     expect(h.tabs.length).toBe(1);
-    expect(h.tabs[0].closed).toBe(true);
+    const used = h.realBrowser.some((r) => r.gotTab);
+    expect(used || h.tabs[0].closed).toBe(true);
   });
 
   it('still claims the tab synchronously — the popup-blocker rule is untouched', async () => {
