@@ -97,6 +97,104 @@
     local_unavailable: 'tgt.localUnavailable',
   };
 
+  /* ============================================================================
+     THE LAST PICKER TARGET — what Retry re-runs, and nothing else.
+
+     WHY ONE SLOT AND NOT A NODE-LEVEL RECORD
+     ----------------------------------------
+     A node has several fields, each with its own crosshair:
+
+         Node A
+          ├── Field 1 → Picker
+          ├── Field 2 → Picker
+          └── Field 3 → Picker
+
+     and the requirement names the granularity precisely:
+
+       «اگر کاربر آخرین بار روی Picker مربوط به Field 2 کلیک کرده باشد، Retry
+        باید فقط همان Field 2 را هدف قرار دهد»
+       «نباید Retry برای تمام Fieldهای Node اجرا شود و نباید از کاربر بخواهد
+        دوباره Field را انتخاب کند»
+
+     So the unit is a FIELD, not a node: one slot holding the whole pick context
+     of the most recent crosshair press, overwritten by the next one. Keying by
+     node would make Retry ambiguous between three fields, and asking the
+     operator which one is the thing they must not be asked.
+
+     THE WHOLE CONTEXT IS KEPT, not just the ids. A pick needs `action`,
+     `workflowId`, `label`, `url` and `rowPath` to be registered and routed the
+     same way twice — a Retry that re-ran with the ids alone would lose the row
+     address and deliver into the action's top-level `selector`, which is the
+     row-routing defect fixed earlier arriving through a new door.
+     ========================================================================= */
+  var lastPickerTarget = null;
+
+  /** Record this crosshair as the one Retry will re-run. */
+  function rememberTarget(c) {
+    lastPickerTarget = {
+      nodeId: c.nodeId,
+      fieldKey: c.fieldKey,
+      action: c.action,
+      workflowId: c.workflowId,
+      label: c.label,
+      url: c.url || '',
+      rowPath: c.rowPath || '',
+      // `onArmed` belongs to the NDV render that created it. Kept so a Retry
+      // arms the field exactly as its Picker did; it is already called inside
+      // a try/catch (see armed()), so a stale closure cannot break the retry.
+      onArmed: c.onArmed,
+    };
+  }
+
+  /* ============================================================================
+     THE CHOOSER MUST APPEAR. THAT IS THE RULE, NOT A BEST EFFORT.
+
+       «هر موقع که من اونو زدم، باید اون باکس بالا بیاد»
+
+     The primary defect behind that rule was the condition-row picker skipping
+     the chooser entirely (fixed in ndv-nodes.js by supplying the field
+     identity). But there is a SECOND, independent way to violate it, and it
+     lives on this side: the chooser is only drawn if
+     `client.targetingOptions()` resolves to something. That function swallows
+     EVERY failure — a non-200, a network drop, an unparseable body — into
+     `null`:
+
+         .then(function (res) { return (res && res.success) ? res : null; })
+         .catch(function () { return null; })
+
+     so an offline moment, a restarted server or an expired key used to produce
+     a toast and NO box. From the operator's chair that is indistinguishable
+     from the bug they reported, and it would be reported again.
+
+     WHY A FALLBACK LIST RATHER THAN A RETRY OR A LOUDER ERROR
+     ---------------------------------------------------------
+     The two environments are not discovered at runtime — they are a fixed pair,
+     LOCAL and REMOTE, and the server's own environmentOptions() always returns
+     both (it varies only their `available` / `needsAuthorization` flags). So
+     when the read fails there is nothing to guess about WHICH options exist;
+     what is unknown is only their current state. Offering both, unannotated, is
+     therefore honest: the operator still gets to express the choice, and the
+     authoritative check happens where it always did — in
+     /inspector/targeting/begin, which refuses loudly with a reason key that
+     `choose()` already renders. A chooser built from this fallback cannot
+     approve anything the server would not have approved.
+
+     `available: true` is deliberate. Marking them unavailable would draw two
+     disabled cards, which is a box the operator cannot act on — obeying the
+     letter of the rule and not its point. `degraded` is what renderChooser uses
+     to say so on screen, so nothing here pretends the state is known.
+     ========================================================================== */
+  function fallbackOptions() {
+    return {
+      success: true,
+      degraded: true,
+      options: [
+        { id: 'local', available: true, needsInPageApproval: true },
+        { id: 'remote', available: true, needsAuthorization: true },
+      ],
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Dialog shell
   // ---------------------------------------------------------------------------
@@ -300,6 +398,70 @@
     return wrap;
   }
 
+  /* ==========================================================================
+     COPY ALL — both values, as one JSON object, in one press.
+
+     REQUESTED:
+
+       «باید یه کاری کنیم یه حالت JSON اینجا چیز کنیم خب، کپی رو یه حالت JSON
+        داشته باشیم که یه Copy All بذاریم خب، وقتی اونو کپی کنیم خب، روی هر
+        کدام که پیست کنیم خب، به جای اینکه فقط یک فیلد پر بشه باید هر دو تا
+        فیلد پر بشه.»
+
+     WHY ONE PRESS IS A CORRECTNESS FIX AND NOT A CONVENIENCE. Two separate Copy
+     buttons force two separate trips to the extension, and a Chrome popup is
+     destroyed every time it loses focus. So the second trip used to erase the
+     result of the first:
+
+       «برمی‌گردم که اکستنشن دوباره می‌بینم که فیلد Base URL دوباره پاک شده»
+
+     The extension now persists that field (see AUTH_BASE_KEY in popup.js), so
+     the two-trip route works. This removes the need for it altogether: one
+     clipboard payload, one paste, both fields.
+
+     THE SHAPE IS A CONTRACT WITH parseAuthBundle() IN popup.js. Keys are
+     `baseUrl` and `code` — the same names the API uses — and the object is
+     emitted with 2-space indentation so that what lands in the clipboard is
+     legible if the operator pastes it into a text editor to check it. The parser
+     on the other side accepts aliases and either key alone, so this side is free
+     to stay minimal and exact.
+     ========================================================================== */
+  function authBundleJson(auth) {
+    var a = auth || {};
+    // Only the keys that have values. A `"baseUrl": ""` would be pasted as an
+    // empty address and would blank a field the operator had already filled in
+    // correctly by hand — silently replacing good data with nothing.
+    var out = {};
+    if (a.baseUrl) out.baseUrl = String(a.baseUrl);
+    if (a.code) out.code = String(a.code);
+    return JSON.stringify(out, null, 2);
+  }
+
+  /**
+   * The Copy All row: one wide button, labelled for what it carries.
+   *
+   * Rendered as its own row ABOVE the two individual values rather than beside
+   * one of them, because it acts on both and a button sitting next to the code
+   * would read as another way to copy the code. The individual Copy buttons stay
+   * exactly where they were — an operator who wants one value, or who is fixing
+   * a single mistyped field, should not be forced through a JSON round-trip.
+   */
+  function copyAllRow(auth) {
+    var wrap = el('div', 'tgt-base tgt-copyall');
+
+    var head = el('div', 'tgt-base-head');
+    head.appendChild(el('span', 'tgt-base-label', t('tgt.copyAll')));
+    wrap.appendChild(head);
+
+    var line = el('div', 'tgt-base-line');
+    line.appendChild(el('div', 'tgt-base-url tgt-copyall-hint', t('tgt.copyAllHint')));
+    // Resolved at PRESS time, not at render time, for the same reason valueRow
+    // takes a getter: this dialog can outlive the values it was built with.
+    line.appendChild(copyButton(function () { return authBundleJson(auth); }, 'tgt-copyall-copy'));
+    wrap.appendChild(line);
+    return wrap;
+  }
+
   // ---------------------------------------------------------------------------
   // Step 1 — the chooser
   // ---------------------------------------------------------------------------
@@ -361,17 +523,29 @@
     return card;
   }
 
-  function renderChooser(panel, res, ctx) {
+  function renderChooser(panel, res, ctx, flowOpts) {
     // The field being targeted is named in the subtitle. "Target with which
     // browser?" on its own is ambiguous the moment a node has two pickable
     // fields, and this dialog's entire purpose is per-FIELD choice.
     var sub = ctx.label ? (t('tgt.subtitle') + ' — ' + ctx.label) : t('tgt.subtitle');
     header(panel, 'tgt.title', sub);
 
+    // The chooser was built without a successful read of the environments, so
+    // the per-card badges are not trustworthy and must not be presented as if
+    // they were. The box still appears — that is the rule — but it says so.
+    if (res && res.degraded) {
+      panel.appendChild(el('div', 'tgt-note is-warn', t('tgt.optionsDegraded')));
+    }
+
     var grid = el('div', 'tgt-grid');
     var options = (res && res.options) || [];
     for (var i = 0; i < options.length; i++) {
-      grid.appendChild(optionCard(options[i], function (env) { choose(env, ctx); }));
+      // `flowOpts` carries the ONE difference between Picker and Retry (may a
+      // tab be opened in the operator's own browser?) down to `choose()`. The
+      // chooser itself is identical for both — same cards, same wording, same
+      // server call — which is the point: «هدف این است که showPickerAlert()
+      // برای هر دو یکی باشد».
+      grid.appendChild(optionCard(options[i], function (env) { choose(env, ctx, flowOpts); }));
     }
     panel.appendChild(grid);
 
@@ -447,9 +621,22 @@
 
     header(panel, 'tgt.authTitle', label ? (t('tgt.authHint') + ' — ' + label) : t('tgt.authHint'));
 
+    // ── COPY ALL FIRST, because it is the route that cannot go wrong ──────
+    //
+    // Offered only when there is genuinely more than one value to carry;
+    // otherwise it is a second button that does what the button below it does,
+    // and it would be shown at the exact moment its label is a lie.
+    if (auth.code && auth.baseUrl) {
+      panel.appendChild(copyAllRow(auth));
+    }
+
     // The code first and largest: it is the thing that expires, and the thing
     // being transcribed right now. The address is needed too but rarely changes,
     // so the two must not compete for the same attention.
+    //
+    // BOTH individual rows are kept. Copy All is the fast path, not a
+    // replacement: an operator fixing one mistyped field, or one whose clipboard
+    // manager mangles JSON, still needs to be able to take a single value.
     panel.appendChild(valueRow('tgt.authCode', auth.code || '', {
       wrapCls: 'tgt-code-wrap',
       valueCls: 'tgt-code',
@@ -672,9 +859,27 @@
   // The choice
   // ---------------------------------------------------------------------------
 
-  function choose(environment, ctx) {
+  function choose(environment, ctx, opts) {
     var client = ic();
     if (!client) { toast(t('tgt.failed'), 'error'); return; }
+
+    // MAY THIS PRESS OPEN A TAB IN THE OPERATOR'S OWN BROWSER?
+    //
+    // The one difference between Picker and Retry, and the only one. Both end
+    // at the same Alert through the same code below; they disagree solely about
+    // whether opening the viewer tab is part of what the operator just asked
+    // for.
+    //
+    //   Picker — yes. Pressing the crosshair is a request to go and point at
+    //            something, so putting the Local Browser on screen is part of
+    //            honouring it: «باز شدن Tab جدید در Browser اصلی فقط بخشی از
+    //            Flow خود Picker است».
+    //   Retry  — no. It means "ask me that again", not "show me another tab":
+    //            «Retry هیچ Tab جدیدی در Browser اصلی ایجاد نمی‌کند».
+    //
+    // Defaults to true so the existing chooser call sites are unchanged.
+    var o = opts || {};
+    var mayOpenTab = o.mayOpenTab !== false;
 
     // POPUP BLOCKER: window.open() only survives while the call stack is still
     // inside the user gesture. `begin` is awaited, so a tab opened after it
@@ -690,7 +895,7 @@
     // «وقتی لوکال می‌زنم باید مرورگر لوکال سرور بالا بیاد ولی برعکسه». The only
     // browser this page can put on screen belongs to the server, and that is
     // LOCAL.
-    var tab = (environment === 'local') ? window.open('', '_blank') : null;
+    var tab = (environment === 'local' && mayOpenTab) ? window.open('', '_blank') : null;
 
     client.targetingBegin(ctx.nodeId, ctx.fieldKey, environment, {
       action: ctx.action,
@@ -738,7 +943,7 @@
         // prompt / pick an element) instead of two that contradict each other.
         var sdlg = buildShell();
         renderLocalProgress(sdlg.panel, res, ctx, { defer: true });
-        openOrReuseServerBrowser(res, ctx, environment, tab);
+        openOrReuseServerBrowser(res, ctx, environment, tab, { mayOpenTab: mayOpenTab });
         return;
       }
 
@@ -800,10 +1005,15 @@
    * browser, because a needless relaunch is an annoyance while a skipped one is a
    * dead end.
    */
-  function openOrReuseServerBrowser(res, ctx, environment, tab) {
+  function openOrReuseServerBrowser(res, ctx, environment, tab, opts) {
     var client = ic();
     var bv = window.BrowserView;
     var env = res.environment || environment;
+    // Retry passes `mayOpenTab:false`, so no tab was claimed above and none may
+    // be opened downstream either — `openRealBrowser` would otherwise open its
+    // own when handed nothing. See the `noTab` note in browser-view.js.
+    var o = opts || {};
+    var noTab = o.mayOpenTab === false;
 
     // No way to open one at all: nothing to reuse, nothing to launch.
     if (!bv || typeof bv.openRealBrowser !== 'function') {
@@ -817,7 +1027,13 @@
       // openRealBrowser reports its own failure inside the tab they are
       // actually looking at. It rethrows for callers that do await, so the
       // rejection is swallowed here to avoid a duplicate unhandled report.
-      bv.openRealBrowser(ctx.url || '', tab).catch(function () {});
+      //
+      // STILL CALLED ON THE RETRY PATH, with `noTab`. A Retry after the browser
+      // was closed by hand would otherwise have nothing to render its Alert in
+      // and would fail silently — «بستن یا از دست دادن Alert قبلی باعث از بین
+      // رفتن امکان Retry نمی‌شود» covers that case too. It just does not put a
+      // viewer tab on screen.
+      bv.openRealBrowser(ctx.url || '', tab, { noTab: noTab }).catch(function () {});
       armed(res.target, env, ctx);
     }
 
@@ -826,16 +1042,56 @@
     client.serverBrowserLive().then(function (live) {
       if (!live) { launch(); return; }
 
-      // Already up. Release the tab we speculatively claimed for the popup
-      // blocker — leaving it would strand a blank window on screen, which looks
-      // exactly like the broken relaunch this branch exists to avoid.
-      if (tab) { try { tab.close(); } catch (e) {} }
-
+      // ─────────────────────────────────────────────────────────────────────
+      // ALREADY UP — WHICH IS EXACTLY THE CASE THAT SHOWED NOTHING
+      // ─────────────────────────────────────────────────────────────────────
+      //
+      // REPORTED, browser left running from a previous pick, a DIFFERENT node
+      // targeted, LOCAL chosen again:
+      //
+      //   «هیچ Alert یا تب جدیدی باز نشد که اون Alert رو واسم نشون بده که …
+      //    اون Node و فیلدش توی Extension مجدد Set بشن … اون Node قبلیه هنوز
+      //    Set باقیمونده روش»
+      //
+      // The server was never at fault here. MEASURED: a fresh consent per node,
+      // distinct `cns_…`, `reused: false`. The prompt existed. Two things kept
+      // it off screen, and this branch was one of them.
+      //
+      // First half (fixed server-side, see browser.routes.ts): the window was
+      // parked on `about:blank`, and the manifest matches http and https URLs
+      // only, so `content/consent.js` — the sole author of the Alert and the
+      // sole poller of `GET /inspector/consent` — was never injected. It now
+      // lands on the consent host page instead.
+      //
+      // Second half, HERE: this branch used to close the speculatively-claimed
+      // tab and merely toast. So on the second node NOTHING came to the front.
+      // The Alert may well have been rendering in a browser the operator could
+      // not see, on another desktop or behind the editor, while the toast said
+      // a prompt was waiting somewhere. Indistinguishable from no prompt at all.
+      //
+      // So reuse the claimed tab to bring the browser VIEW forward, rather than
+      // discarding it. `openRealBrowser` is idempotent against a running
+      // browser — MEASURED: the second POST returns 200 and `GET /browser/tabs`
+      // still reports ONE tab — which is what makes this safe, and is also why
+      // it does not reintroduce the two-tab report. Nothing relaunches; the
+      // operator is simply shown the window holding the question.
+      //
       // `reused` means the server refreshed an EXISTING question about this same
       // field rather than asking a new one — the picker was pressed twice.
       // Saying "still waiting" is honest; repeating "a new prompt is waiting"
       // would imply a second thing to answer that does not exist.
       var reused = !!(res.consent && res.consent.reused);
+      if (tab) {
+        // Not awaited, and the rejection is swallowed: openRealBrowser already
+        // reports failure inside the tab the operator is looking at, and it
+        // rethrows for callers that do await.
+        bv.openRealBrowser(ctx.url || '', tab, { noTab: noTab }).catch(function () {});
+      }
+      // No `else` branch, and that absence IS the Retry contract. The browser is
+      // already live and the Alert this `begin` raised renders as an overlay
+      // inside it (content/consent.js polls and draws it), so there is genuinely
+      // nothing left to open — and opening a viewer "to be helpful" would be
+      // precisely the tab Retry promises never to create.
       armed(res.target, env, ctx, reused ? 'tgt.consentWaiting' : 'tgt.consentAsked');
     });
   }
@@ -845,7 +1101,30 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Open the chooser for one field.
+   * THE ONE PICKER ALERT FLOW. Picker and Retry are the same thing from here.
+   *
+   * WHY THIS FUNCTION EXISTS RATHER THAN TWO PARALLEL ONES
+   * -----------------------------------------------------
+   * The requirement forbids the obvious implementation outright:
+   *
+   *   «Picker و Retry نباید دو سیستم مستقل باشند»
+   *
+   * and names the shape they must share instead:
+   *
+   *   Picker → ensureLocalBrowserTab() → showPickerAlert()
+   *   Retry  → reuseExistingLocalBrowser() → showPickerAlert()
+   *
+   * So everything downstream of the crosshair lives HERE, once: recording the
+   * row route, reading the environment options, drawing the chooser, calling
+   * `begin`, opening-or-reusing the server browser, arming the field. Two
+   * copies would drift — and they would drift in the direction the operator
+   * already reported once, with Retry quietly ending at a different Alert than
+   * the Picker did.
+   *
+   * The ONLY parameter that differs is `mayOpenTab`, and it decides exactly one
+   * thing: whether this press is allowed to open the Local Browser's viewer tab
+   * in the operator's OWN browser. It is not a second flow; it is the one flow
+   * told whether the viewer is part of what was asked for.
    *
    * ctx = {
    *   nodeId, fieldKey,          // required — the destination's identity
@@ -857,7 +1136,7 @@
    *   onArmed(target, env),      // called once the field is a live destination
    * }
    */
-  function start(ctx) {
+  function showPickerAlert(ctx, flowOpts) {
     var c = ctx || {};
     if (!c.nodeId || !c.fieldKey) return false;
 
@@ -873,17 +1152,106 @@
       return false;
     }
 
+    // WHERE A DELIVERY FOR THIS FIELD MUST LAND.
+    //
+    // The Inspector delivers asynchronously and reports only nodeId+fieldKey,
+    // which is not enough to distinguish the action's top-level `selector` from
+    // the `selector` of one row inside a condition group — both are the same
+    // pair. So the row address travels with the PICK, recorded here at the
+    // moment the operator starts it and read by FlowEditor when the value comes
+    // back. Recorded even when empty, because an ordinary field must CLEAR a
+    // stale row address left by a previous pick on the same field.
+    if (window.FlowEditor && typeof window.FlowEditor.setPickRoute === 'function') {
+      try {
+        window.FlowEditor.setPickRoute(c.nodeId, c.fieldKey, c.rowPath || '');
+      } catch (e) { /* routing is an enhancement; never block the pick */ }
+    }
+
     client.targetingOptions(c.nodeId, c.fieldKey, { workflowId: c.workflowId })
       .then(function (res) {
-        if (!res) { toast(t('tgt.failed'), 'error'); return; }
+        // A failed READ must not cost the operator the choice. Previously this
+        // returned after a toast, leaving no box at all — the same symptom as
+        // the defect this rule was written for, from a different cause. The
+        // fallback offers both environments and says the state is unverified;
+        // /inspector/targeting/begin remains the authority and still refuses
+        // with a reason. See fallbackOptions().
+        var opts = res || fallbackOptions();
         var dlg = buildShell();
-        renderChooser(dlg.panel, res, c);
+        renderChooser(dlg.panel, opts, c, flowOpts);
+      })
+      .catch(function () {
+        // Even a throw inside buildShell/renderChooser must not end with a
+        // pressed picker and nothing on screen.
+        toast(t('tgt.failed'), 'error');
       });
     return true;
   }
 
+  /**
+   * THE CROSSHAIR. Records this field as the Retry target, then runs the flow.
+   *
+   * `ensureLocalBrowserTab` in the required design is `mayOpenTab: true` here:
+   * pressing the crosshair is a request to go and point at something, so
+   * putting the Local Browser on screen is part of honouring it, and the spec
+   * says so in as many words — «باز شدن Tab جدید در Browser اصلی فقط بخشی از
+   * Flow خود Picker است و اشکالی ندارد».
+   *
+   * The target is recorded BEFORE the flow runs and regardless of how the flow
+   * ends. That ordering is deliberate: the whole reason Retry exists is that the
+   * operator closed the Alert or picked the wrong element, so recording only on
+   * success would disarm Retry in exactly the cases it is for.
+   */
+  function start(ctx) {
+    var c = ctx || {};
+    // Guarded before recording so a malformed call cannot overwrite a good
+    // target with one Retry could never re-run.
+    if (!c.nodeId || !c.fieldKey) return false;
+    rememberTarget(c);
+    return showPickerAlert(c, { mayOpenTab: true });
+  }
+
+  /**
+   * RETRY. The same Alert, for the field the last crosshair named.
+   *
+   *   «Retry باید دقیقاً همان کاری را انجام دهد که Picker انجام می‌دهد، با این
+   *    تفاوت که Tab جدیدی در Browser اصلی باز نمی‌کند»
+   *
+   * WHAT IT DOES NOT DO, AND WHY EACH ABSENCE IS THE POINT
+   *   · It does not ask which field. The answer is already known — that is what
+   *     `lastPickerTarget` is for: «نباید از کاربر بخواهد دوباره Field را
+   *     انتخاب کند».
+   *   · It does not re-run the node's other fields. The slot holds ONE field,
+   *     so Field 3's Retry cannot touch Fields 1 and 2.
+   *   · It does not open a tab in the operator's browser — `mayOpenTab: false`,
+   *     threaded through `choose()` and `openRealBrowser({noTab})`, which is the
+   *     only behavioural difference between the two entry points.
+   *
+   * The recorded context is passed through unchanged rather than rebuilt, so the
+   * retried pick registers and routes identically to the original — including
+   * its `rowPath`, without which a retried condition-row pick would deliver into
+   * the action's top-level selector instead of the row.
+   *
+   * Returns false when there is nothing to retry, so the caller can say so
+   * instead of appearing to do something.
+   */
+  function retry() {
+    if (!lastPickerTarget) return false;
+    return showPickerAlert(lastPickerTarget, { mayOpenTab: false });
+  }
+
   window.TargetingFlow = {
     start: start,
+    retry: retry,
+    /** Is there a field for Retry to re-run? Lets the button disable itself. */
+    canRetry: function () { return !!lastPickerTarget; },
+    /** The field Retry would re-run — read by the button's tooltip and by tests. */
+    lastTarget: function () {
+      if (!lastPickerTarget) return null;
+      // A COPY. Handing out the live object would let a caller mutate the
+      // retry target by accident, which is the kind of action-at-a-distance
+      // that makes "Retry went to the wrong field" impossible to trace.
+      return { nodeId: lastPickerTarget.nodeId, fieldKey: lastPickerTarget.fieldKey };
+    },
     close: closeDialog,
     isOpen: function () { return !!openDialog; },
   };

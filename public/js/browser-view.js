@@ -545,13 +545,113 @@
       + encodeURIComponent(API.getKey ? (API.getKey() || '') : '');
   }
 
-  function openRealBrowser(url, target) {
-    var tab = target || window.open('', '_blank');
+  /**
+   * Is this answer "still working on it" rather than "it failed"?
+   *
+   * ── THE BUG THIS PREDICATE FIXES ────────────────────────────────────────
+   * REPORTED: «وقتی می‌زنم که Local رو انتخاب کنم … باید روی یک تب جدیدی مرورگر
+   * Local سرور بالا بیاد … ولی هیچ مرورگری بالا نمیاد».
+   *
+   * MEASURED on this box, on a first-ever start:
+   *
+   *   POST /browser/real/open -> 503
+   *   {"success":false,"error":"remote_browser_starting","retryable":true,
+   *    "startedMs":25001,"desktop":{"enabled":false,"xvfb":{"missing":true}}}
+   *   … ~30s later, unchanged request -> {"success":true,"viewPath":"/desktop/chrome"}
+   *
+   * So the browser starts perfectly well; the FIRST call simply loses a race
+   * against the desktop stack provisioning itself (Xvfb, x11vnc, websockify,
+   * then a headed Chromium). The server is explicit about this — it answers
+   * inside a time budget precisely so a slow cold start comes back as a
+   * controlled 503 instead of a gateway 502, sets `retryable: true`, and keeps
+   * the start running in the background so a retry finds a warm browser
+   * (see withStartBudget in src/core/RemoteBrowserStart.ts and the route in
+   * src/Routes/browser.routes.ts).
+   *
+   * This function treated that answer as terminal, threw, and painted the
+   * failure page. `openOrReuseServerBrowser().launch()` then swallowed the
+   * rejection — so the operator's only evidence was a tab that never became a
+   * browser: exactly «هیچ مرورگری بالا نمیاد».
+   *
+   * `/desktop/chrome` — the view this function navigates to — has always retried
+   * correctly on load (ChromeView.startThenConnect, 6 attempts with a capped
+   * backoff). The defect was that we never got as far as opening it.
+   *
+   * Both signals are honoured, `retryable` and the specific error token, because
+   * the route sets `retryable: true` on the runtime-repair path too and either
+   * one alone would miss a real case.
+   */
+  function stillStarting(r, err) {
+    var body = (r && typeof r === 'object') ? r : ((err && err.body) || null);
+    if (body && (body.retryable === true || body.error === 'remote_browser_starting')) return true;
+    // A gateway that stopped waiting says nothing about the start having failed.
+    var status = (err && err.status) || 0;
+    return status === 502 || status === 504;
+  }
+
+  /** How long to keep waiting for a cold start, and how often to ask. */
+  var REAL_OPEN_ATTEMPTS = 8;
+  var REAL_OPEN_BACKOFF_MS = 2500;
+
+  function openRealBrowser(url, target, opts) {
+    // `noTab` — ENSURE THE BROWSER IS UP, BUT DO NOT PUT A VIEWER ON SCREEN.
+    //
+    // Without this flag the `target || window.open(...)` below means every
+    // caller gets a tab whether it wanted one or not, and a caller that passes
+    // nothing gets one it never asked for. That is fine for the crosshair and
+    // wrong for Retry, whose contract is the opposite:
+    //
+    //   «Retry هیچ Tab جدیدی در Browser اصلی ایجاد نمی‌کند»
+    //
+    // Retry still needs this function, though, because the launch it performs
+    // is not just one POST: it is the idempotent cold-start retry loop below,
+    // and duplicating that elsewhere would give Retry a second, subtly
+    // different launcher to keep in step. So the loop stays shared and only the
+    // viewer is optional.
+    var o = opts || {};
+    var tab = o.noTab ? null : (target || window.open('', '_blank'));
     // Write to it NOW, in the same gesture, so the operator is never looking at
     // an unexplained about:blank while Chrome boots.
     tabPlaceholder(tab, 'starting');
     toast(t('bvp.realOpening'), 'info');
-    return API.post('/browser/real/open', { url: url || '' })
+
+    /**
+     * One attempt, which may schedule the next.
+     *
+     * Every attempt is idempotent server-side — the start already in flight is
+     * reused rather than duplicated — which is what makes a plain retry loop the
+     * right shape here instead of a progress subscription.
+     */
+    function attempt(n) {
+      return API.post('/browser/real/open', { url: url || '' })
+        .then(function (r) {
+          if (r && r.success) return r;
+
+          // Still provisioning: wait and ask again. The tab keeps its
+          // 'starting' page, which already tells the operator the first launch
+          // is the slow one and that the tab will move on by itself — a promise
+          // this loop is what makes true.
+          if (stillStarting(r, null) && n < REAL_OPEN_ATTEMPTS) {
+            return new Promise(function (resolve) {
+              setTimeout(function () { resolve(attempt(n + 1)); }, REAL_OPEN_BACKOFF_MS);
+            });
+          }
+          throw new Error((r && r.error) || 'failed');
+        }, function (err) {
+          // A 503 arrives here as a REJECTION, not as a resolved body: API.post
+          // throws on any non-2xx (see request() in api.js), and the "still
+          // starting" answer is a 503. So this branch is the one that actually
+          // fires on a cold start, and treating it as terminal was the defect.
+          if (stillStarting(null, err) && n < REAL_OPEN_ATTEMPTS) {
+            return new Promise(function (resolve) {
+              setTimeout(function () { resolve(attempt(n + 1)); }, REAL_OPEN_BACKOFF_MS);
+            });
+          }
+          throw err;
+        });
+    }
+
+    return attempt(1)
       .then(function (r) {
         if (!r || !r.success) throw new Error((r && r.error) || 'failed');
         // The server returns a RELATIVE path so this works on localhost, behind
@@ -564,7 +664,14 @@
         var href = r.viewPath + sep + 'api_key=' +
           encodeURIComponent(API.getKey ? API.getKey() : '');
         if (tab) tab.location = href;
-        else window.open(href, '_blank', 'noopener');
+        // `noTab` STOPS HERE, and this line is the reason the flag exists at
+        // all. The old `else` opened a viewer via window.open() whenever no tab
+        // had been claimed — so passing `null` did not mean "no tab", it meant
+        // "open one later", and a Retry routed through here would have opened
+        // exactly the tab it promises never to open. The browser is up (that is
+        // what the POST above did) and its Alert is an overlay inside it, so
+        // there is nothing left to show.
+        else if (!o.noTab) window.open(href, '_blank', 'noopener');
         return r;
       })
       .catch(function (e) {
@@ -662,6 +769,45 @@
         url: typeof o.url === 'string' ? o.url : '',
         onArmed: function () {},
       })) return;
+
+      // THE CHOOSER REFUSED, SO THIS PICK STOPS HERE.
+      //
+      // REPORTED, and worth quoting because the diagnosis is counter-intuitive:
+      //
+      //   «بعد از اینکه من Local Browser رو انتخاب می‌کنم، دیگه مجبورم می‌کنه
+      //    همیشه وقتی روی اون آیکون Picker که میزنم، اون باکس بالا نمیاد که من
+      //    Remote Browser رو این بار انتخاب کنم. وقتی روی اون آیکون Picker
+      //    می‌زنم مستقیماً Local Browser رو واسم باز می‌کنه که این افتضاحه»
+      //
+      // It reads exactly like a remembered preference, and it is NOT one. There
+      // is no stored environment anywhere in this codebase — grepped for every
+      // plausible key and found nothing, and renderChooser() in targeting-flow.js
+      // is unconditional. What actually happened is this fall-through.
+      //
+      // `flow.start()` returns false whenever InspectorClient is not resolvable
+      // yet (targeting-flow.js, the `ic()` guard), which is the normal state for
+      // the first clicks after a reload. Execution then dropped into the tail of
+      // this function, which opens the server's browser DIRECTLY and with no
+      // dialog. From the operator's chair that is indistinguishable from "it
+      // remembered LOCAL" — the picker icon opens LOCAL, every time, silently.
+      //
+      // MEASURED with the real requestPick driven in jsdom across four states:
+      //
+      //     field identity + flow accepts   ->  chooser shown              ✔
+      //     field identity + flow REFUSES   ->  LOCAL OPENED, NO CHOOSER   ✘
+      //     no field identity               ->  LOCAL OPENED, NO CHOOSER
+      //     targeting-flow.js not loaded    ->  LOCAL OPENED, NO CHOOSER   ✘
+      //
+      // So: a pick that HAS a field identity is a pick the chooser owns, and a
+      // chooser that cannot run must fail loudly rather than pick for the
+      // operator. Choosing an environment on their behalf is the whole defect.
+      // The toast says "try again in a moment" because that is the truth — the
+      // refusal is a not-ready-yet, and the next click typically succeeds.
+      //
+      // The tail below is deliberately NOT deleted; it stays reachable for
+      // callers that have no field identity at all (see the note there).
+      toast(t('pick.chooserUnavailable'), 'error');
+      return;
     }
 
     // No field identity (the canvas-level picker, and older call sites): there

@@ -104,11 +104,31 @@
 
   var state = {
     shadow: null,
-    list: null,
-    // consentId -> true, for prompts already on screen. Keyed on the id so the
-    // server refreshing a prompt (same field, new address) replaces rather than
-    // duplicates — see `reused` in RemoteTargetConsent.request().
-    shown: {},
+    host: null,
+    // THE ONE DIALOG. Not a list, and that is the whole change.
+    //
+    // This used to be `list` (a `.wrap` div) plus `shown` (a consentId -> true
+    // map). Every unseen consentId appended ANOTHER card into `list`, so
+    // pressing the picker four times without answering produced four prompts
+    // stacked down the screen:
+    //
+    //   «اگر کاربر Alert را dismiss نکند و دوباره Picker را اجرا کند، Alert
+    //    جدید روی قبلی اضافه می‌شود … این کاملاً غلط است.»
+    //
+    // `shown` could not prevent it: it deduplicated by ID, and a new pick is a
+    // NEW id, so it correctly let each one through. The bug was never the
+    // dedupe — it was that the container could hold more than one thing.
+    //
+    // So there is one <dialog>, created once, and a new request REPLACES its
+    // contents. The requirement is a singleton, so the state is a singleton:
+    //
+    //   «only one active picker dialog at a time / new picker request replaces
+    //    previous dialog state / no stacking»
+    dialog: null,
+    // Which consentId the dialog is currently showing, so an unchanged repeat
+    // of the SAME request does not restart the prompt under the operator's
+    // cursor while they are reading it.
+    current: '',
     timer: null,
     stopped: false,
     // Has the environment gate at the bottom of this file confirmed that this is
@@ -144,16 +164,33 @@
     var style = document.createElement('style');
     style.textContent = [
       ':host{all:initial}',
-      // Top-centre, not a corner. The operator's eyes are on the page they were
-      // sent to inspect, and a corner toast is the classic thing people miss —
-      // then report as "it did nothing".
-      '.wrap{position:fixed;top:16px;left:50%;transform:translateX(-50%);',
-      'z-index:2147483647;display:flex;flex-direction:column;gap:8px;',
+      // A REAL <dialog>, SO CHROME OWNS THE MODALITY.
+      //
+      // `showModal()` puts the element in the browser's TOP LAYER — above every
+      // z-index on the page, with Chrome's own focus trap, its own Esc
+      // handling, and its own ::backdrop. That is as close to native as an
+      // extension can get for a prompt with custom buttons, and it is why this
+      // is a <dialog> and not the positioned <div> it used to be:
+      //
+      //   «اگر امکان استفاده از browser-native dialog واقعی وجود دارد، آن را
+      //    بررسی و ترجیح بده.»
+      //
+      // The honest limitation, stated because the operator asked for it to be:
+      // window.confirm() is MORE native still, but its buttons are hard-coded
+      // OK/Cancel — 'Allow' and 'Not now' are impossible there — and it blocks
+      // the page's thread, which would stall the poll loop that delivers these
+      // prompts in the first place. <dialog showModal()> keeps the labels and
+      // the top layer; that is the trade the operator chose (option B).
+      'dialog{all:initial;position:fixed;margin:auto;inset:0;',
       'font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;',
-      'max-width:min(520px,calc(100vw - 32px))}',
-      '.card{background:#1e1e22;color:#f4f4f5;border:1px solid #3a3a40;',
-      'border-left:3px solid #ff6600;border-radius:8px;padding:12px 14px;',
-      'box-shadow:0 8px 28px rgba(0,0,0,.45);box-sizing:border-box}',
+      'background:#1e1e22;color:#f4f4f5;border:1px solid #3a3a40;',
+      'border-left:3px solid #ff6600;border-radius:8px;padding:14px 16px;',
+      'box-shadow:0 8px 28px rgba(0,0,0,.45);box-sizing:border-box;',
+      'max-width:min(520px,calc(100vw - 32px));width:max-content;display:none}',
+      // `display:block` only while open, so a closed dialog occupies nothing
+      // and cannot intercept a click meant for the page.
+      'dialog[open]{display:block}',
+      'dialog::backdrop{background:rgba(0,0,0,.45)}',
       '.q{font-size:13px;line-height:1.45;margin:0 0 4px}',
       // The node and field are the whole reason the prompt exists, so they are
       // the most legible thing in it.
@@ -172,16 +209,43 @@
       '.msg.err{color:#f87171}',
     ].join('');
 
-    var list = document.createElement('div');
-    list.className = 'wrap';
+    var dialog = document.createElement('dialog');
+
+    // Esc closes a modal <dialog> for free, which is correct and also silent —
+    // and a silently-closed prompt would leave `current` pointing at a request
+    // that is no longer on screen, so the NEXT poll tick would see the same id
+    // and decline to redraw it. Clearing the marker on close is what keeps
+    // «اگر Alert dismiss شد، Retry همچنان باید قابل استفاده باشد» true.
+    dialog.addEventListener('close', function () {
+      state.current = '';
+      mark();
+    });
 
     shadow.appendChild(style);
-    shadow.appendChild(list);
+    shadow.appendChild(dialog);
     document.documentElement.appendChild(host);
 
     state.shadow = shadow;
-    state.list = list;
+    state.host = host;
+    state.dialog = dialog;
     return shadow;
+  }
+
+  /**
+   * Mirror the dialog's state onto the HOST element as data attributes.
+   *
+   * PURELY A MEASUREMENT HOOK, AND DELIBERATELY NOT BEHAVIOUR. The shadow root
+   * is `mode:'closed'`, so nothing outside can count what is inside it — which
+   * is right for isolation and useless for proving "there is exactly one
+   * dialog, and it replaced the last one" to a probe. Stacking was a REPORTED
+   * bug, so it has to be measurable from outside, and these two attributes are
+   * how tools/probe-page-lifecycle.mjs measures it.
+   */
+  function mark() {
+    if (!state.host) return;
+    var d = state.dialog;
+    state.host.setAttribute('data-ab-dialogs', d ? '1' : '0');
+    state.host.setAttribute('data-ab-open', d && d.open ? '1' : '0');
   }
 
   /** A human sentence for "Click → Selector on node search-box". */
@@ -192,13 +256,31 @@
     return node + action + '  →  ' + field;
   }
 
+  /**
+   * SHOW THIS REQUEST IN THE ONE DIALOG, REPLACING WHATEVER WAS THERE.
+   *
+   * The old version of this function ended `state.list.appendChild(card)`, and
+   * that single line was the stacking bug: four unanswered picks meant four
+   * cards. It is now a REPLACE, and the replacement is unconditional — the
+   * dialog's children are cleared before the new prompt is built, so there is
+   * no path on which two prompts can coexist:
+   *
+   *   «Alert 1 → Picker دوباره اجرا شد → Alert 1 removed/replaced → Alert 2»
+   */
   function render(req) {
     if (!ensurePanel()) return;
-    if (state.shown[req.consentId]) return;
-    state.shown[req.consentId] = true;
+    var dialog = state.dialog;
+    if (!dialog) return;
 
-    var card = document.createElement('div');
-    card.className = 'card';
+    // The SAME request arriving again is the normal case, not an event: the
+    // poll runs every 4s and the server keeps returning a pending consent until
+    // it is answered. Redrawing on every tick would wipe out the "Connecting…"
+    // message and steal focus back mid-read, so an unchanged id is left alone.
+    if (state.current === req.consentId && dialog.open) return;
+
+    // REPLACE. Not append — see the note on `state.dialog`.
+    while (dialog.firstChild) dialog.removeChild(dialog.firstChild);
+    state.current = req.consentId;
 
     var q = document.createElement('p');
     q.className = 'q';
@@ -254,11 +336,11 @@
             // Names the field again in the confirmation, on purpose:
             // «تا کاربر با این اعلان مطمعن بشه که سیستم درست کار میکنه».
             msg.textContent = 'Connected \u2014 picks now go to ' + describe(req);
-            dismiss(card, 2600);
+            dismiss(req.consentId, 2600);
           } else {
             msg.className = 'msg';
             msg.textContent = 'Declined. Nothing was connected.';
-            dismiss(card, 1800);
+            dismiss(req.consentId, 1800);
           }
         }
       );
@@ -269,17 +351,52 @@
 
     row.appendChild(allow);
     row.appendChild(deny);
-    card.appendChild(q);
-    card.appendChild(what);
-    card.appendChild(meta);
-    card.appendChild(row);
-    card.appendChild(msg);
-    state.list.appendChild(card);
+    dialog.appendChild(q);
+    dialog.appendChild(what);
+    dialog.appendChild(meta);
+    dialog.appendChild(row);
+    dialog.appendChild(msg);
+
+    // TOP LAYER, VIA CHROME'S OWN MODAL MACHINERY.
+    //
+    // Guarded because showModal() throws if the dialog is already open, and
+    // that is a reachable state: an unanswered prompt being replaced by a newer
+    // one arrives here with `open === true`. Replacing the CONTENTS of an
+    // already-open dialog is exactly the wanted behaviour — one dialog, new
+    // question — so the open call is simply skipped rather than the dialog
+    // being closed and reopened, which would flash the backdrop.
+    if (!dialog.open) {
+      try {
+        dialog.showModal();
+      } catch (e) {
+        // showModal() is unavailable in a handful of contexts (and in the
+        // fake DOM the unit tests drive this file with). A non-modal open still
+        // renders the prompt, still replaces rather than stacks, and still
+        // needs no page of its own — losing only the backdrop and the focus
+        // trap. Degrading beats not prompting at all.
+        try { dialog.open = true; } catch (e2) { /* nothing more to try */ }
+      }
+    }
+    mark();
   }
 
-  function dismiss(card, delay) {
+  /**
+   * Close the dialog after the operator has had time to read the outcome.
+   *
+   * Takes a consentId rather than an element: by the time the timer fires the
+   * dialog may already be showing a DIFFERENT, newer request, and closing it
+   * then would dismiss a prompt nobody has answered. The id is the guard.
+   */
+  function dismiss(consentId, delay) {
     setTimeout(function () {
-      if (card && card.parentNode) card.parentNode.removeChild(card);
+      var d = state.dialog;
+      if (!d) return;
+      if (state.current !== consentId) return;   // superseded; leave it alone
+      while (d.firstChild) d.removeChild(d.firstChild);
+      state.current = '';
+      try { if (d.open) d.close(); } catch (e) { /* fake DOM, or already shut */ }
+      try { d.open = false; } catch (e2) { /* read-only in some fakes */ }
+      mark();
     }, delay);
   }
 

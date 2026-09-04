@@ -75,6 +75,60 @@ export interface RealChromeTab {
   active: boolean;
 }
 
+/**
+ * Where the picker's consent Alert is going to appear.
+ *
+ * ONE SHAPE, BECAUSE THERE IS ONLY ONE ANSWER: NOWHERE NEW.
+ *
+ * This type used to have a second member — `{ kind: 'tab'; page: Page }` — a
+ * "PRIORITY 2 fallback" that claimed a page and navigated it to this server's
+ * `/inspector/consent-host` whenever no injectable page existed. The operator
+ * has withdrawn that requirement, having measured what it actually produced:
+ *
+ *   «در اجرای فعلی Local Browser، حتی قبل از استفاده از Picker، چندین
+ *    about:blank ساخته می‌شود؛ مثلاً ۵ یا بیشتر about:blank به‌علاوه یک
+ *    consent-host. این رفتار قابل قبول نیست.»
+ *
+ * MEASURED, before this change, by tools/probe-page-lifecycle.mjs:
+ *
+ *   stage      total  new  about:blank  consent-host
+ *   launch         3    3            1             2   ← two, before ANY picker
+ *
+ * The fallback claimed one page per browser lifetime, which sounded bounded —
+ * but the profile has session restore on (see `enableSessionRestore`), so every
+ * claimed page came BACK on the next launch and the next claim added to it. A
+ * per-lifetime leak plus session restore is a per-launch accumulation, which is
+ * exactly the pile the operator reported. The ruling is now unconditional:
+ *
+ *   «ما نباید برای Alert یک Tab اختصاصی داشته باشیم.»
+ *   «Alert نباید page جدید داشته باشد.»
+ *
+ * So this type carries NO page, in any case, ever. That is not an oversight to
+ * be worked around by the caller — it is the guarantee. A caller that cannot
+ * reach a page cannot navigate one, cannot claim one, and cannot close one.
+ *
+ * `pages` is the count of injectable pages found, for logging and for tests.
+ * When it is 0 the Alert genuinely has nowhere to draw yet, and the honest
+ * thing to do is say so rather than manufacture a destination — see
+ * `alertSurface()` for what happens then.
+ */
+export type AlertSurface = { kind: 'overlay'; pages: number };
+
+/**
+ * Can `content/consent.js` run here?
+ *
+ * `extension/manifest.json` declares its content scripts for http and https
+ * URLs only, so every other scheme — `about:blank`, `chrome://`,
+ * `chrome-extension://`, `devtools://`, `file://` — gets NO injection at all.
+ * That is not a policy this function chose; it is the manifest's match list,
+ * and it is the original reason an Alert could be raised server-side and never
+ * appear: the window was parked on `about:blank`, where no script of ours
+ * exists to draw it.
+ */
+function isInjectable(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
 export interface RealChromeStatus {
   enabled: boolean;
   running: boolean;
@@ -208,6 +262,90 @@ export function windowArgs(screen: { width: number; height: number } | null): st
     // bottom-right corner by however far it was offset (it was at +10+10).
     '--window-position=0,0',
   ];
+}
+
+/**
+ * A URL this server only ever opened to host an Alert, and must never reopen.
+ *
+ * Kept as a PREFIX-free path match rather than a full URL because `config.PORT`
+ * can differ between the run that leaked the page and the run that cleans it
+ * up — matching on the path is what makes the cleanup survive a port change.
+ */
+function isStaleAlertPage(url: string): boolean {
+  return url.includes('/inspector/consent-host');
+}
+
+/**
+ * CLOSE THE ALERT PAGES A PREVIOUS RELEASE LEFT IN THIS PROFILE.
+ *
+ * WHY THIS EXISTS AT ALL — IT IS NOT DEFENSIVE, IT IS A MIGRATION
+ * ---------------------------------------------------------------
+ * An earlier version of this file claimed a page per browser lifetime and sent
+ * it to `/inspector/consent-host` so the Alert would have somewhere to render.
+ * Removing that code stops NEW pages appearing, but it cannot remove the ones
+ * already written into the profile's session — and this profile runs with
+ * session restore ON (`enableSessionRestore`, `--restore-last-session`), which
+ * is a deliberate feature: it is how the operator's real tabs survive a crash
+ * or a recycle.
+ *
+ * So the leak outlives the code that caused it. MEASURED on a profile that had
+ * run the old build, at launch, before any picker ran:
+ *
+ *   total pages 3 — about:blank ×1, consent-host ×2
+ *
+ * and the operator reported worse:
+ *
+ *   «چندین about:blank ساخته می‌شود؛ مثلاً ۵ یا بیشتر به‌علاوه یک consent-host»
+ *   «Also clear any existing persisted Chrome session data that contains old
+ *    consent-host pages, otherwise old state will keep confusing testing.»
+ *
+ * WHY IT CLOSES PAGES RATHER THAN EDITING THE SESSION FILE
+ * -------------------------------------------------------
+ * The obvious alternative is to delete `Default/Sessions/*` before launch. That
+ * would work, and it would also throw away every OTHER tab the operator had
+ * open — the exact data loss session restore exists to prevent, and which they
+ * already reported once («تب‌هام از دست رفت»). Deleting a haystack to remove a
+ * needle is not a fix.
+ *
+ * Closing the specific restored pages is narrower and self-correcting: Chrome
+ * rewrites the session from the live window, so one launch after this sweep the
+ * stale entries are gone from the persisted file too, without anything having
+ * been guessed about the rest of it.
+ *
+ * NEVER CLOSES THE LAST PAGE. A context with zero pages is a window Chrome may
+ * treat as finished, and the operator asked for the opposite:
+ *
+ *   «Local Browser باید یک page/tab اولیه قابل reuse داشته باشد.»
+ *
+ * If every restored page is a stale Alert page, the first one is navigated to
+ * `about:blank` instead of being closed — leaving exactly the one reusable tab
+ * the spec calls for, carrying no Alert URL. Returns how many it dealt with.
+ */
+export async function sweepRestoredAlertPages(context: BrowserContext): Promise<number> {
+  const pages = context.pages();
+  const stale = pages.filter((p) => isStaleAlertPage(p.url()));
+  if (stale.length === 0) return 0;
+
+  const keepOne = stale.length === pages.length;
+  let handled = 0;
+
+  for (let i = 0; i < stale.length; i++) {
+    const page = stale[i]!;
+    // The one exception: nothing else would be left, so blank it and keep it.
+    if (keepOne && i === 0) {
+      await page.goto('about:blank').catch(() => { /* a dead page needs no reset */ });
+      handled++;
+      continue;
+    }
+    await page.close().catch(() => { /* already gone is the desired state */ });
+    handled++;
+  }
+
+  console.log(
+    `[RealChrome] swept ${handled} stale consent-host page(s) restored from the profile`
+    + (keepOne ? ' (kept one, blanked, so the window still has a reusable tab)' : ''),
+  );
+  return handled;
 }
 
 /**
@@ -414,6 +552,31 @@ export class RealChrome {
    * achievable. See core/RemoteFileChooser.
    */
   private static chooser: RemoteFileChooser | null = null;
+
+  /**
+   * THE ALERT HAS NO PAGE OF ITS OWN, AND THAT IS NOW STRUCTURAL.
+   *
+   * A `private static alertPage: Page | null` used to live here: the claimed
+   * "Alert Tab", held as an object handle so that no re-finding scheme (last
+   * tab / active tab / index / URL / position in pages[]) could mistake one of
+   * the operator's pages for it. The handle solved the mis-identification, and
+   * the earlier probes proved it: the Google tab survived every run.
+   *
+   * But it could not solve the thing the operator actually objected to, because
+   * that thing was the tab EXISTING at all:
+   *
+   *   «ما نباید برای Alert یک Tab اختصاصی داشته باشیم.»
+   *   «دیگر Priority 2 / fallback برای ساختن consent-host به عنوان Alert Tab
+   *    نمی‌خواهیم … این concept باید از معماری حذف شود.»
+   *
+   * So the field is GONE rather than improved. There is no claim to keep, no
+   * handle to invalidate on close, and no teardown to remember — the three
+   * places that used to null this field (the context 'close' handler, `stop()`,
+   * and the page's own 'close' listener) no longer have anything to do. The
+   * Alert is drawn by `extension/content/consent.js` into a closed shadow root
+   * on a page that already exists, and a page that already exists needs no
+   * bookkeeping here.
+   */
 
   static isEnabled(): boolean {
     return config.REAL_CHROME_ENABLED === true;
@@ -855,6 +1018,11 @@ export class RealChrome {
         // that asked is gone, so keeping the row would have the view prompting
         // for a file with nowhere to put it.
         this.chooser = null;
+        // There used to be a third line here, dropping the claimed Alert Tab.
+        // It is gone with the claim itself: `alertSurface()` now reads
+        // `ctx.pages()` fresh on every call and holds nothing between them, so
+        // a closed context leaves no stale handle to invalidate. Fewer things
+        // to remember at teardown is the point, not a side effect.
       });
 
       if (config.REAL_CHROME_DEBUG_PORT > 0) {
@@ -868,9 +1036,13 @@ export class RealChrome {
         };
       }
 
+      // SWEEP THE PAGES A PREVIOUS RELEASE LEAKED INTO THIS PROFILE.
+      const swept = await sweepRestoredAlertPages(context);
+
       console.log(
         `[RealChrome] ✓ persistent Chrome up — ${extensions.length} extension(s), ` +
         `profile=${userDataDir}, tab-restore=${restoreSaid}, installs=${installsSaid}` +
+        (swept > 0 ? `, swept=${swept} stale alert page(s)` : '') +
         (config.REAL_CHROME_DEBUG_PORT > 0
           ? `, devtools=${config.REAL_CHROME_DEBUG_BIND}:${config.REAL_CHROME_DEBUG_PORT}`
           : ''),
@@ -913,6 +1085,67 @@ export class RealChrome {
     });
     if (blank) return blank;
     return ctx.newPage();
+  }
+
+  /**
+   * WHERE THE PICKER ALERT GOES: ONTO A PAGE THAT ALREADY EXISTS, OR NOWHERE.
+   *
+   * THE TWO DEFECTS THIS HAS NOW SURVIVED, BOTH OF THEM MINE
+   * -------------------------------------------------------
+   * FIRST it was `landingPage()`, which ended:
+   *
+   *     const last = existing[existing.length - 1];
+   *     if (last) return last;
+   *
+   * — hand back the LAST page and let the caller `goto()` it. The operator
+   * measured what that did:
+   *
+   *   Tab 1 → Process A   Tab 2 → Process B   Tab 3 → Google
+   *   «اجرای Picker … باعث میشه Google ناپدید بشه و به Alert تبدیل بشه»
+   *
+   * SECOND it was a claimed "Alert Tab": a `Page` handle, so no tab of the
+   * operator's could ever be mistaken for it. That did fix the hijack — the
+   * probe showed Google surviving every run — but it answered the wrong
+   * complaint, because the tab itself was the complaint:
+   *
+   *   «چندین about:blank ساخته می‌شود؛ مثلاً ۵ یا بیشتر … به‌علاوه یک
+   *    consent-host. این رفتار قابل قبول نیست.»
+   *
+   * And it was worse than a fixed cost. The profile runs with session restore
+   * on (`enableSessionRestore`, `--restore-last-session`), so each claimed page
+   * was reopened by Chrome on the next launch and the next claim piled on top.
+   * MEASURED at launch, before any picker ran at all: 1 about:blank + 2
+   * consent-host. A bounded-per-lifetime leak had become an unbounded
+   * per-launch one.
+   *
+   * SO THERE IS NO DESTINATION ANY MORE, AND NOTHING TO IDENTIFY
+   * -----------------------------------------------------------
+   * The Alert was never a page. `extension/content/consent.js` is injected into
+   * every http(s) page, polls `GET /inspector/consent` on its own, and draws
+   * into a closed shadow root on whichever page it is running in — pausing
+   * while `document.hidden`, so it surfaces on the tab the operator is actually
+   * looking at, chosen by them rather than by this server.
+   *
+   * This method therefore asks one question — "is there anywhere the extension
+   * can already draw?" — and returns the COUNT. It has no page to give and no
+   * page to make. Every prohibition the operator listed is discharged by the
+   * shape of the return type rather than by care at the call site:
+   *
+   *   «❌ Dedicated Alert Tab / ❌ consent-host به عنوان Alert destination
+   *     ❌ ساخت newPage() برای Alert / ❌ Alert Tab بر اساس last|active|index|URL»
+   *
+   * WHEN `pages` IS 0, THIS REPORTS 0 AND STOPS. A cold browser sitting on
+   * `about:blank` has nowhere to draw an overlay, and the honest answer is to
+   * say so. Manufacturing a destination is precisely what was removed. The
+   * operator navigates somewhere themselves (or the picker's own flow does, on
+   * a page it legitimately opened), the poll loop starts, and the pending
+   * consent request — which is already queued server-side, and stays queued —
+   * is drawn then. Nothing is lost by waiting; a page was lost by not waiting.
+   */
+  static async alertSurface(): Promise<AlertSurface> {
+    const ctx = await this.getContext();
+    const injectable = ctx.pages().filter((p) => isInjectable(p.url()));
+    return { kind: 'overlay', pages: injectable.length };
   }
 
   /** Extensions Chrome is currently running with, plus their chrome-extension URLs. */
@@ -1066,6 +1299,10 @@ export class RealChrome {
     this.context = null;
     this.loaded = [];
     this.debugInfo = { version: '', ws: '' };
+    // No Alert Tab claim to drop here any more. `stop()` is time-bounded, so a
+    // WEDGED browser is abandoned without its 'close' event ever firing — which
+    // used to make this line load-bearing rather than merely symmetrical. State
+    // that is never held cannot be inherited by the browser that replaces it.
     if (!ctx) return;
     await Promise.race([
       ctx.close().catch(() => { /* already gone */ }),

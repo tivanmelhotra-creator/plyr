@@ -98,6 +98,53 @@
   // popup is CLOSED at the moment of the pick, so there is nobody to message.
   var PICK_KEY = 'ab_lastPick';
 
+  /* ============================================================
+     THE REMEMBERED BASE URL — and why it is NOT `ab_baseUrl`.
+
+     REPORTED, and reproducible on every install:
+
+       «وقتی که من کد Base URL رو کپی می‌کنم و میرم پیستش کنم، اون موقع که
+        برمی‌گردم کد Authorize رو کپی کنم، برمی‌گردم که اکستنشن دوباره می‌بینم
+        که فیلد Base URL دوباره پاک شده... اولاً که باید خالی نشه»
+
+     ROOT CAUSE, and it is structural rather than a missing line: a Chrome popup
+     is a DOCUMENT, and Chrome destroys that document the instant it loses focus.
+     Copying the second value means going to the dashboard, which means the popup
+     closes, which means every input is rebuilt empty. Nothing in this file wrote
+     the typed address anywhere, and the only writer of `ab_baseUrl` lives in
+     background.js and runs AFTER a successful redeem — i.e. only once the value
+     has already been needed. So the address could not survive the very trip the
+     operator has to make to collect the code that goes with it.
+
+     WHY A SEPARATE KEY, rather than writing `ab_baseUrl` on each keystroke:
+     `ab_baseUrl` is read by getSettings() and therefore by inspectorContext(),
+     which resolves the address for EVERY call this extension makes, in BOTH
+     environments. Persisting each keystroke there would publish `https://ex`
+     as the confirmed backend address of the whole extension, and LOCAL — which
+     is supposed to resolve to the server's own loopback — would start pointing
+     at a half-typed remote host. Two different facts:
+
+       ab_baseUrl    the address that HAS WORKED. Written by background.js on a
+                     successful pair. Authoritative for every request.
+       ab_authBase   what the operator has TYPED into the REMOTE card. A draft.
+                     Read and written only here, only to refill this one input.
+
+     Keeping them apart is what makes "never lose my typing" safe to implement.
+     ============================================================ */
+  var AUTH_BASE_KEY = 'ab_authBase';
+
+  /**
+   * The draft, mirrored in memory so paintAuthorization() can stay synchronous.
+   *
+   * It is loaded in the SAME storage read that loads the last pick (see INIT at
+   * the bottom), which preserves the property that comment already claims: a
+   * popup is opened by a click and judged on whether it appears filled in or
+   * appears blank and then fills in. A second async read here would reintroduce
+   * exactly the blank-then-fill flicker in the field this whole change exists to
+   * keep populated.
+   */
+  var authBaseDraft = '';
+
   var $ = function (id) { return document.getElementById(id); };
   // Resolved eagerly, once, with no null guards — which is exactly why
   // popup-tabs.test.ts asserts every one of these ids exists in the document.
@@ -976,11 +1023,28 @@
     els.authCard.hidden = !showing;
     if (!showing) return;
 
+    // ── FILLING THIS BOX: THREE SOURCES, IN A DELIBERATE ORDER ────────
+    //
     // Pre-fill rather than demand. The server resolved its own public address
     // (see PublicBaseUrl); asking the operator to retype it would invite a typo
     // in the one field that cannot be validated locally.
-    // Null-safe now, because this runs before any code exists.
-    if (auth && auth.baseUrl && !els.authBase.value) els.authBase.value = auth.baseUrl;
+    // Null-safe throughout, because this runs before any code exists.
+    //
+    //   1. What is already on screen. An in-progress edit is never overwritten;
+    //      that would be the same data loss as the reported bug, just faster.
+    //   2. WHAT THE OPERATOR TYPED LAST TIME (`authBaseDraft`). This is the fix
+    //      for «فیلد Base URL دوباره پاک شده» — the popup was destroyed while
+    //      they went to copy the code, and this is where their typing comes back
+    //      from.
+    //   3. The server's own suggestion, last. It is a good default and a poor
+    //      override: on a REMOTE install the operator's address is frequently the
+    //      one the server cannot resolve, which is the entire reason this input
+    //      exists. Letting it outrank a hand-typed value would silently replace
+    //      the address that works with the one that does not.
+    if (!els.authBase.value) {
+      if (authBaseDraft) els.authBase.value = authBaseDraft;
+      else if (auth && auth.baseUrl) els.authBase.value = auth.baseUrl;
+    }
 
     var which = (auth && (auth.label || auth.fieldKey)) || '';
     write(els.authHint, which
@@ -1027,6 +1091,123 @@
   }
 
   /**
+   * Remember what is currently typed in the Base URL box.
+   *
+   * Called on every `input`, and that is affordable precisely BECAUSE it writes
+   * to `ab_authBase` and not to `ab_baseUrl`: nothing reads this key except the
+   * paint above, so a half-typed value has no consequence anywhere. See the
+   * AUTH_BASE_KEY header for why the two keys must not be merged.
+   *
+   * NOT debounced, deliberately. A debounce is a window during which the popup
+   * can be destroyed with the newest characters still unsaved — and the popup is
+   * destroyed by exactly the action this feature exists to survive (clicking away
+   * to the dashboard). chrome.storage.local is asynchronous and cheap, the
+   * payload is a short string, and losing the last three characters typed is
+   * indistinguishable to the operator from the bug being unfixed.
+   */
+  function rememberAuthBase() {
+    authBaseDraft = String((els.authBase && els.authBase.value) || '');
+    var payload = {};
+    payload[AUTH_BASE_KEY] = authBaseDraft;
+    // Fire-and-forget: the caller is a keystroke handler and has nothing to do
+    // with the result. Errors here cannot be surfaced usefully and must not
+    // interfere with typing.
+    try { chrome.storage.local.set(payload, function () { void chrome.runtime.lastError; }); }
+    catch (e) { /* storage unavailable — the in-memory draft still helps this session */ }
+  }
+
+  /* ============================================================
+     ONE PASTE THAT FILLS BOTH BOXES — the "Copy All" contract.
+
+     REQUESTED:
+
+       «باید یه کاری کنیم یه حالت JSON اینجا چیز کنیم خب، کپی رو یه حالت JSON
+        داشته باشیم که یه Copy All بذاریم خب، وقتی اونو کپی کنیم خب، روی هر
+        کدام که پیست کنیم خب، به جای اینکه فقط یک فیلد پر بشه باید هر دو تا
+        فیلد پر بشه.»
+
+     Two values had to be carried across a machine boundary one at a time, and
+     each trip destroyed the popup. Copy All removes the second trip entirely:
+     the dashboard puts BOTH values in the clipboard as one JSON object, and this
+     parser accepts it in EITHER box — «روی هر کدام که پیست کنیم» — because an
+     operator holding one clipboard value should not also have to remember which
+     input it belongs in.
+
+     WHAT IS ACCEPTED. The dashboard's Copy All emits exactly:
+
+         {"baseUrl":"https://host","code":"ABCD-EFGH"}
+
+     and that is the case this is FOR. But the parser is deliberately tolerant of
+     shapes the operator can plausibly end up holding, because the alternative is
+     an error message about JSON syntax addressed to someone who did not know
+     they were pasting JSON:
+
+       · either key missing — fill only what is present.
+       · `authorizationCode` / `authCode` / `authorization` as aliases for
+         `code`, and `base` / `base_url` for `baseUrl`. These are the names used
+         on screen and in the docs; refusing them would be pedantry.
+       · surrounding whitespace, and a trailing comma-free newline, from any
+         copy affordance.
+
+     WHAT IS REFUSED. Anything that is not an object with at least one of those
+     keys returns null, and the caller then treats the text as a plain
+     single-value paste exactly as before. That fallback is what keeps the old,
+     working behaviour intact: pasting a bare code still fills the code box.
+     ============================================================ */
+  function parseAuthBundle(text) {
+    var s = String(text == null ? '' : text).trim();
+    // Cheap pre-check before JSON.parse, so a bare code never enters a try/catch
+    // on the common path. A bundle is an object literal, so it starts with `{`.
+    if (s.charAt(0) !== '{') return null;
+
+    var obj;
+    try { obj = JSON.parse(s); } catch (e) { return null; }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+
+    function pick(names) {
+      for (var i = 0; i < names.length; i++) {
+        var v = obj[names[i]];
+        if (typeof v === 'string' && v.trim()) return v.trim();
+      }
+      return '';
+    }
+
+    var base = pick(['baseUrl', 'base_url', 'base', 'url']);
+    var code = pick(['code', 'authCode', 'authorizationCode', 'authorization']);
+    // Normalized here rather than at the call site, so both the clipboard path
+    // and the manual path put the SAME string in the box — the property
+    // normalizeAuthCode's own header relies on.
+    code = normalizeAuthCode(code);
+
+    if (!base && !code) return null;
+    return { baseUrl: base, code: code };
+  }
+
+  /**
+   * Apply a parsed bundle to the two inputs and report what changed.
+   *
+   * Returns a short description used in the status line, because "pasted" is not
+   * a useful confirmation when the operator's expectation is specifically that
+   * BOTH fields filled: they need to be told that the second one did, or they
+   * will check it by hand and find the feature untrustworthy.
+   */
+  function applyAuthBundle(bundle) {
+    var filled = [];
+    if (bundle.baseUrl) {
+      els.authBase.value = bundle.baseUrl;
+      // Persisted immediately, for the same reason the input listener does it:
+      // the next thing the operator does may well be to close this popup.
+      rememberAuthBase();
+      filled.push('Base URL');
+    }
+    if (bundle.code) {
+      els.authCode.value = bundle.code;
+      filled.push('authorization code');
+    }
+    return filled;
+  }
+
+  /**
    * Read the clipboard, with a REAL fallback rather than an instruction.
    *
    * ── WHY THIS WAS BROKEN ──────────────────────────────────────────────────
@@ -1059,6 +1240,32 @@
     // Path 1 — the documented API, now that the permission is declared.
     try {
       var text = await navigator.clipboard.readText();
+
+      // ── THE BUNDLE IS CHECKED FIRST ─────────────────────────────────
+      // It has to be. normalizeAuthCode() strips every non-alphanumeric, so a
+      // JSON object fed to it does not fail — it SUCCEEDS, producing a 16-char
+      // slice of the JSON's own letters ("BASEURLHTTPSPANE") and putting that
+      // nonsense in the code box as though it were a code. Checking the bundle
+      // afterwards would therefore never be reached, and the failure would look
+      // like the server rejecting a plausible-looking code.
+      var bundle = parseAuthBundle(text);
+      if (bundle) {
+        var filled = applyAuthBundle(bundle);
+        // Focus follows what is still MISSING rather than always landing on the
+        // code: after a complete Copy All there is nothing to type, and the
+        // useful next target is Connect.
+        if (!els.authCode.value) { els.authCode.focus(); els.authCode.select(); }
+        else if (!els.authBase.value) { els.authBase.focus(); els.authBase.select(); }
+        write(
+          els.authStatus,
+          filled.length === 2
+            ? '\u2713 Both fields filled from the copied JSON \u2014 press Connect.'
+            : '\u2713 Filled ' + filled[0] + '. The other value is missing from the copied JSON.',
+          filled.length === 2 ? 'ok' : 'warn'
+        );
+        return;
+      }
+
       var code = normalizeAuthCode(text);
       if (code) {
         els.authCode.value = code;
@@ -1088,6 +1295,28 @@
       var ok = document.execCommand && document.execCommand('paste');
       var now = String(els.authCode.value || '');
       if (ok && now && now !== before) {
+        // Same precedence as Path 1, and for the same reason: the browser has
+        // just written the RAW clipboard into this input, so if Copy All was
+        // used the box now literally contains `{"baseUrl":…}`. Normalizing that
+        // as a code would mangle it beyond recognition, so the bundle gets
+        // first refusal here too.
+        var cmdBundle = parseAuthBundle(now);
+        if (cmdBundle) {
+          // Cleared first: the raw JSON is sitting in the code box, and
+          // applyAuthBundle only writes the keys it found. Without this, a
+          // bundle carrying only a baseUrl would leave the JSON text behind in
+          // the code field.
+          els.authCode.value = '';
+          var cmdFilled = applyAuthBundle(cmdBundle);
+          write(
+            els.authStatus,
+            cmdFilled.length === 2
+              ? '\u2713 Both fields filled from the copied JSON \u2014 press Connect.'
+              : '\u2713 Filled ' + cmdFilled[0] + '. The other value is missing from the copied JSON.',
+            cmdFilled.length === 2 ? 'ok' : 'warn'
+          );
+          return;
+        }
         els.authCode.value = normalizeAuthCode(now);
         els.authCode.select();
         write(els.authStatus, '', '');
@@ -1111,11 +1340,46 @@
     var base = String(els.authBase.value || '').trim();
     if (!code) { write(els.authStatus, 'Enter the authorization code.', 'warn'); return; }
 
+    // ── THE ADDRESS IS NOW REQUIRED ON THIS PATH ──────────────────────
+    //
+    // REPORTED: «هم خود Authorize ام و هم Base URL ام درسته خب بازم همون خطا را
+    // بهم برمی‌گردونه خب یعنی وصل نمیشه.»
+    //
+    // The half of that report this line addresses is the case where the box is
+    // empty WITHOUT the operator realising — which was the normal state, because
+    // the field was being wiped every time they left to copy the code (Issue 3a
+    // above). An empty box then reached inspectorPair(), which fell back to the
+    // extension's resolved context, and in a hand-installed REMOTE copy that
+    // resolves to `http://127.0.0.1:3000` — a server on the OPERATOR'S OWN
+    // machine, which does not exist. The POST failed at the network layer and
+    // the popup printed "That code was not accepted", blaming the one input that
+    // was actually correct.
+    //
+    // Refusing here is the honest version, and it names the field that is empty.
+    // The REMOTE card is the only caller, and REMOTE by definition means the
+    // server is somewhere else, so there is no legitimate REMOTE connect with no
+    // address — the fallback could only ever have been wrong on this path.
+    if (!base) {
+      write(els.authStatus,
+        'Enter the Base URL of your server first \u2014 the address this browser can reach it at.',
+        'warn');
+      els.authBase.focus();
+      return;
+    }
+
     write(els.authStatus, 'Connecting\u2026', '');
     var res = await bg({ type: 'AB_INSPECTOR_PAIR', payload: { code: code, baseUrl: base } });
 
     if (!res || !res.ok) {
+      // The worker now distinguishes "could not reach that address" from "the
+      // server refused this code" and says which. Printed verbatim: a generic
+      // sentence about the code is what sent the operator to re-copy a code that
+      // was never the problem.
       write(els.authStatus, (res && res.error) || 'That code was not accepted.', 'bad');
+      // A code is single-use, but a code that never reached a server was never
+      // spent. Clearing it on a NETWORK failure would force the operator back to
+      // the dashboard for a replacement they do not need — so it is kept, and
+      // only a real refusal clears it (below).
       return;
     }
 
@@ -1752,11 +2016,69 @@
   // they confirm it took effect. Without this the address they typed had no
   // visible consequence anywhere on the panel until a connect attempt succeeded,
   // which made a typo indistinguishable from a refused code.
+  //
+  // It now ALSO persists what was typed. That is the whole of the reported
+  // «فیلد Base URL دوباره پاک شده» fix: the value is written to storage as it is
+  // typed, so the popup being torn down on the next click — which is guaranteed,
+  // because the operator has to leave to fetch the code — no longer discards it.
   els.authBase.addEventListener('input', function () {
+    rememberAuthBase();
     paintConnection(undefined, current.paired, current.live, null);
   });
+  // `change` as well as `input`, because they fail differently: `input` misses
+  // nothing a human types but IS missed by some autofill implementations, which
+  // fire only `change`. Both call the same idempotent writer, so the overlap
+  // costs one redundant storage write and closes the gap.
+  els.authBase.addEventListener('change', function () { rememberAuthBase(); });
   els.authBase.addEventListener('keydown', authSubmitOnEnter);
   els.authCode.addEventListener('keydown', authSubmitOnEnter);
+
+  /* ----------------------------------------------------------
+     Ctrl+V DIRECTLY INTO EITHER BOX — the other half of Copy All.
+
+     «روی هر کدام که پیست کنیم … باید هر دو تا فیلد پر بشه»
+
+     The Paste BUTTON already understands the bundle, but the button is not how
+     most people paste, and it only exists next to the code box. An operator who
+     presses Ctrl+V in the Base URL field — the natural move when the value they
+     copied is an address — would otherwise get the whole JSON object deposited
+     as literal text in that one input, which is the failure mode this feature
+     was asked for in order to avoid.
+
+     Handled at the `paste` EVENT so it works in both inputs regardless of how
+     the clipboard is reached. preventDefault() is called only when a bundle is
+     recognised; every other paste is left completely alone, so pasting an
+     address into the address box, or a bare code into the code box, behaves
+     exactly as it always has.
+     ---------------------------------------------------------- */
+  function onAuthPaste(e) {
+    var dt = e && e.clipboardData;
+    if (!dt || typeof dt.getData !== 'function') return;
+    var raw;
+    try { raw = dt.getData('text/plain') || dt.getData('text') || ''; } catch (x) { return; }
+
+    var bundle = parseAuthBundle(raw);
+    // Not a bundle: this is an ordinary paste and must stay ordinary. Returning
+    // without preventDefault() lets the browser insert the text itself, which
+    // preserves partial selections and undo history that a manual assignment
+    // would destroy.
+    if (!bundle) return;
+
+    e.preventDefault();
+    var filled = applyAuthBundle(bundle);
+    write(
+      els.authStatus,
+      filled.length === 2
+        ? '\u2713 Both fields filled from the copied JSON \u2014 press Connect.'
+        : '\u2713 Filled ' + filled[0] + '. The other value is missing from the copied JSON.',
+      filled.length === 2 ? 'ok' : 'warn'
+    );
+    // The BACKEND row reads from this input, so it has to be told: a bundle
+    // paste sets the address without ever firing `input`.
+    paintConnection(undefined, current.paired, current.live, null);
+  }
+  els.authBase.addEventListener('paste', onAuthPaste);
+  els.authCode.addEventListener('paste', onAuthPaste);
 
   els.inspUnpair.addEventListener('click', unpairInspector);
   els.inspect.addEventListener('click', startInspector);
@@ -1785,9 +2107,24 @@
      Still ONE storage call, for the reason it always was: a popup is opened by a
      click and judged on whether it appears filled in or appears blank and then
      fills in.
+
+     TWO keys are read now, in that same single call. `ab_authBase` is the Base
+     URL the operator typed last time, and it is emphatically NOT the credential
+     the note above argues against holding here: it is a value this popup itself
+     wrote, it is the address of a server rather than a token, and it is read for
+     the one purpose of putting it back in the box it was typed into. Reading it
+     in the SAME call is what keeps that box populated on the first frame — a
+     second, later read would repaint the field after the popup was already on
+     screen, which is the blank-then-fill flicker this comment warns about, in
+     precisely the field the operator reported losing.
      ---------------------------------------------------------- */
-  get([PICK_KEY]).then(function (s) {
+  get([PICK_KEY, AUTH_BASE_KEY]).then(function (s) {
     applyPick(s);
+    // Assigned BEFORE refreshInspector(), because that is what eventually calls
+    // paintAuthorization(), and the draft has to exist by then or the first
+    // paint falls through to the server's suggestion and the operator's own
+    // address is lost exactly as before.
+    authBaseDraft = (s && typeof s[AUTH_BASE_KEY] === 'string') ? s[AUTH_BASE_KEY] : '';
     renderAttrs();
     renderSelected();
     return refreshInspector(true);

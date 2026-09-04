@@ -118,6 +118,54 @@ vi.mock('../../src/core/RealChrome', () => {
       recycleIfWedged: async () => guard({ action: 'healthy' as const, reason: 'ok' }),
       getContext: async () => guard({} as unknown),
       newPage: async () => guard({ goto: async () => undefined } as unknown),
+      // MUST be stubbed alongside newPage, and the reason is worth recording.
+      //
+      // The launcher used to navigate only when the request carried a `url`.
+      // Every test in this file posts `{}` — which is exactly what the dashboard
+      // sends, since ctx.url is '' until a goto node supplies a literal address
+      // — so the page-allocating call was NEVER reached here, and a mock missing
+      // it stayed green.
+      //
+      // It is reached unconditionally now: the window must land somewhere the
+      // extension's content script is actually injected, or the consent Alert
+      // has nowhere to render. Omitting this stub therefore turned every launch
+      // into a TypeError surfacing as a 503 — and it was the DOUBLE that was
+      // incomplete, not the route.
+      //
+      // ── RENAMED, BECAUSE THE ROUTE NO LONGER ASKS FOR A PAGE ───────────────
+      // This was `landingPage()`, which always handed back a page for the route
+      // to navigate — and when no page was blank it handed back the LAST one,
+      // which is how an unrelated Google tab got overwritten by the Alert. That
+      // function is gone; the route now asks WHERE the Alert should appear.
+      //
+      // The default answer here is `overlay`, and it deliberately carries NO
+      // page: the browser already holds an injectable page, so content/consent.js
+      // draws the Alert itself and the route must navigate nothing. That is the
+      // wanted path, so it is the one the resilience tests exercise — a double
+      // returning `tab` would quietly test the fallback instead.
+      //
+      // Routed through the same `guard` as its neighbours for consistency, not
+      // because this file needs it: MEASURED by removing the guard, all 9 tests
+      // stayed green, because every injected fault is raised earlier in the
+      // chain (getContext / recycleIfWedged) and the route never gets this far.
+      // Recorded so the next reader does not mistake the guard for load-bearing
+      // coverage.
+      alertSurface: async () => guard({ kind: 'overlay' as const, pages: 1 } as unknown),
+      // `alertTab` USED TO BE DOUBLED HERE, and its removal is deliberate.
+      //
+      // It was justified as "present so a test that forces the fallback has
+      // something to reach", but there is no fallback left to force — the
+      // method is gone from RealChrome along with the dedicated Alert page:
+      //
+      //   «این concept باید از معماری حذف شود: alertTab(), consent-host,
+      //    dedicated alert page»
+      //
+      // Leaving the double in place would be actively harmful in a file whose
+      // whole purpose is fault injection: a double for a method the real class
+      // no longer has means the route could start calling it again and these
+      // tests would keep passing, because the DOUBLE would answer. Removing it
+      // makes any such call a TypeError here, which is what it would be in
+      // production.
       tabs: async () => guard([] as unknown[]),
       status: async () => guard({ running: true, extensions: 1 }),
       stop: async () => undefined,

@@ -88,8 +88,62 @@ class FakeNode {
    */
   shadowInit: Record<string, unknown> | null = null;
 
+  /**
+   * ── THE <dialog> SEAM ───────────────────────────────────────────────────
+   * `open`, `showModal()` and `close()` are modelled because the prompt is now
+   * a single `<dialog>` opened with `showModal()`, and the source's own control
+   * flow READS `dialog.open`:
+   *
+   *   - `render()` skips a redraw only when `state.current === id && dialog.open`
+   *   - the open call is guarded by `if (!dialog.open)`
+   *   - `dismiss()` closes only `if (d.open)`
+   *
+   * A fake that left `open` permanently false would send every one of those
+   * branches down its other side, so the tests would be exercising a control
+   * flow the browser never takes. Worse, the source carries a `catch` that
+   * falls back to `dialog.open = true` for contexts without `showModal()` — a
+   * fake without the method would silently test the FALLBACK forever and let a
+   * broken modal path ship.
+   */
+  open = false;
+  modal = false;
+  showModalCalls = 0;
+
+  /**
+   * Per the HTML spec: a no-op when already modal, and a throw when the dialog
+   * was opened non-modally. Both matter — an unanswered prompt being replaced
+   * by a newer one reaches the source with `open === true`, and the source is
+   * only correct because it skips the call rather than re-opening.
+   */
+  showModal() {
+    this.showModalCalls++;
+    if (this.open && this.modal) return;
+    if (this.open) throw new Error('showModal on a non-modal open dialog');
+    this.open = true;
+    this.modal = true;
+  }
+
+  /** Real `close()` fires a `close` event, which the source listens for. */
+  close() {
+    this.open = false;
+    this.modal = false;
+    this.fire('close');
+  }
+
   private _text = '';
   constructor(tag = 'div') { this.tagName = tag.toUpperCase(); }
+
+  /**
+   * `firstChild`, because the REPLACE is written as
+   * `while (dialog.firstChild) dialog.removeChild(dialog.firstChild)`.
+   *
+   * Without this getter the loop condition is `undefined` on the first test, the
+   * clear never runs, and the fake would accumulate every prompt's paragraphs in
+   * one dialog — i.e. it would report the STACKING BUG as present no matter what
+   * the source did. The measurement is only meaningful once the fake can perform
+   * the removal.
+   */
+  get firstChild(): FakeNode | null { return this.childNodes[0] || null; }
 
   /** Concatenated like the real thing, so a card's whole text can be read. */
   get textContent(): string {
@@ -185,8 +239,28 @@ interface Harness {
   decideReply: { value: unknown };
   /** Run every pending timer once (the poll loop re-arms itself). */
   tick(): Promise<void>;
-  /** The cards currently rendered in the closed shadow root. */
-  cards(): FakeNode[];
+  /** Run only the POLL timer, leaving an armed dismiss still pending. */
+  tickPolls(): Promise<void>;
+  /** Run only the DISMISS timers, as the clock passing 2600ms would. */
+  tickDismiss(): Promise<void>;
+  /**
+   * The prompts currently on screen inside the closed shadow root.
+   *
+   * ── WHY THIS IS NOT `cards()` ANY MORE ──────────────────────────────────
+   * It used to be `shadow().byClass('card')`, one element per pending request,
+   * appended into a scrolling list. That structure WAS the reported bug —
+   *
+   *   «Alert 1 → Picker دوباره اجرا شد → Alert 1 removed/replaced → Alert 2»
+   *
+   * — because a container that can hold two things will eventually hold two
+   * things. The prompt is now a single `<dialog>` whose children are cleared
+   * before each render, so this returns the dialog itself when it is showing a
+   * prompt and an empty array when it is not: length is 0 or 1 BY CONSTRUCTION,
+   * and any test asserting 2 is asserting the defect.
+   */
+  prompts(): FakeNode[];
+  /** The one `<dialog>` element, once the panel has been built. */
+  dialog(): FakeNode | null;
   shadow(): FakeNode | null;
   /** The host element the prompt grafts onto documentElement, if any. */
   host(): FakeNode | null;
@@ -256,7 +330,7 @@ function boot(env: EnvReply = 'local'): Harness {
   const hidden: { value: boolean } = { value: false };
   const docListeners: Record<string, Array<(e: unknown) => void>> = {};
 
-  let timers: Array<{ fn: () => void; id: number }> = [];
+  let timers: Array<{ fn: () => void; id: number; delay: number }> = [];
   let timerId = 1;
 
   const documentFake = {
@@ -305,7 +379,23 @@ function boot(env: EnvReply = 'local'): Harness {
   const sandbox: Record<string, unknown> = {
     document: documentFake,
     chrome,
-    setTimeout: (fn: () => void) => { const id = timerId++; timers.push({ fn, id }); return id; },
+    // The DELAY is recorded, not just the callback, because this file arms two
+    // kinds of timer with very different meanings and a test that fires both at
+    // once cannot express the order they really occur in:
+    //
+    //   POLL      4000ms / 20000ms  — asks the worker for pending requests
+    //   DISMISS   1800ms / 2600ms   — clears an ANSWERED prompt off the screen
+    //
+    // The stale-dismiss hazard only exists in the window between them: an answer
+    // arms a dismiss, a NEW pick arrives before it fires, and the timer must not
+    // then close a question nobody has answered. A `tick()` that fires every
+    // timer collapses that window to nothing and silently passes whether the
+    // guard is present or not — which is exactly what a mutation run showed.
+    setTimeout: (fn: () => void, delay?: number) => {
+      const id = timerId++;
+      timers.push({ fn, id, delay: Number(delay) || 0 });
+      return id;
+    },
     clearTimeout: (id: number) => { timers = timers.filter((x) => x.id !== id); },
     Promise,
     console: { log: () => {}, warn: () => {}, error: () => {} },
@@ -327,6 +417,27 @@ function boot(env: EnvReply = 'local'): Harness {
       due.forEach((x) => x.fn());
       await settle();
     },
+    /**
+     * Fire ONLY the poll timer, leaving any armed dismiss pending.
+     *
+     * A dismiss is armed at 1800ms/2600ms and the poll re-arms at 4000ms, so in
+     * real time a dismiss ALWAYS falls due before the next poll. This models the
+     * one ordering that matters for the guard: a new pick is delivered while the
+     * previous answer's dismiss is still on the clock.
+     */
+    async tickPolls() {
+      const due = timers.filter((x) => x.delay >= 4000);
+      timers = timers.filter((x) => x.delay < 4000);
+      due.forEach((x) => x.fn());
+      await settle();
+    },
+    /** Fire only the dismiss timers, as the clock reaching 2600ms would. */
+    async tickDismiss() {
+      const due = timers.filter((x) => x.delay > 0 && x.delay < 4000);
+      timers = timers.filter((x) => !(x.delay > 0 && x.delay < 4000));
+      due.forEach((x) => x.fn());
+      await settle();
+    },
     documentElement: () => documentEl,
     host() {
       return documentEl.childNodes.filter((n) => n.id === 'ab-consent-host')[0] || null;
@@ -335,9 +446,19 @@ function boot(env: EnvReply = 'local'): Harness {
       const host = h.host();
       return host ? host.shadowRootFake : null;
     },
-    cards() {
+    dialog() {
       const s = h.shadow();
-      return s ? s.byClass('card') : [];
+      if (!s) return null;
+      return s.byTag('dialog')[0] || null;
+    },
+    prompts() {
+      const d = h.dialog();
+      // An EMPTY dialog is not a prompt. `dismiss()` clears the children and
+      // closes it, and the element itself is deliberately kept for reuse — so
+      // presence of the <dialog> must not be mistaken for a visible question,
+      // or "the prompt went away after the grant" could never be asserted.
+      if (!d || d.childNodes.length === 0) return [];
+      return [d];
     },
     async visibility() {
       (docListeners.visibilitychange || []).slice().forEach((fn) => fn({}));
@@ -359,7 +480,7 @@ async function withPrompt(over: Record<string, unknown> = {}) {
 
 /** The Allow / "Not now" buttons of the Nth card. */
 function buttons(h: Harness, i = 0) {
-  const btns = h.cards()[i].byTag('button');
+  const btns = h.prompts()[i].byTag('button');
   return { allow: btns[0], deny: btns[1], all: btns };
 }
 
@@ -380,7 +501,7 @@ describe('the in-page consent prompt', () => {
     const h = boot();
     await h.tick();
     expect(h.host()).toBeNull();
-    expect(h.cards().length).toBe(0);
+    expect(h.prompts().length).toBe(0);
   });
 
   it('NAMES the node and the field being connected', async () => {
@@ -388,8 +509,8 @@ describe('the in-page consent prompt', () => {
     // A generic "allow this connection?" would leave the two-node case exactly as
     // ambiguous as the bug being fixed.
     const h = await withPrompt({ label: 'Search box', fieldKey: 'selector', action: 'click' });
-    expect(h.cards().length).toBe(1);
-    const text = h.cards()[0].textContent;
+    expect(h.prompts().length).toBe(1);
+    const text = h.prompts()[0].textContent;
     expect(text).toContain('Search box');
     expect(text).toContain('selector');
     expect(text).toContain('click');
@@ -399,7 +520,7 @@ describe('the in-page consent prompt', () => {
     // Unlabelled nodes are ordinary. "a node → selector" would tell the operator
     // nothing about WHICH of two open nodes is asking.
     const h = await withPrompt({ label: '', nodeId: 'node_42' });
-    expect(h.cards()[0].textContent).toContain('node_42');
+    expect(h.prompts()[0].textContent).toContain('node_42');
   });
 
   it('offers exactly two answers, and connects nothing before one is given', async () => {
@@ -439,7 +560,7 @@ describe('the in-page consent prompt', () => {
     const payload = h.sent.filter((m) => m.type === 'AB_CONSENT_DECIDE')[0]
       .payload as Record<string, unknown>;
     expect(payload.approve).toBe(false);
-    expect(h.cards()[0].textContent).toContain('Declined');
+    expect(h.prompts()[0].textContent).toContain('Declined');
   });
 
   it('confirms by naming the field again, so the operator can verify the aim', async () => {
@@ -449,7 +570,7 @@ describe('the in-page consent prompt', () => {
     buttons(h).allow.fire('click');
     await h.tick();
 
-    const text = h.cards()[0].textContent;
+    const text = h.prompts()[0].textContent;
     expect(text).toContain('Connected');
     expect(text).toContain('Login button');
     expect(text).toContain('waitForSelector');
@@ -479,7 +600,7 @@ describe('the in-page consent prompt', () => {
 
     expect(b.allow.disabled).toBe(false);
     expect(b.deny.disabled).toBe(false);
-    expect(h.cards()[0].textContent).toContain('Connection failed');
+    expect(h.prompts()[0].textContent).toContain('Connection failed');
   });
 
   it("surfaces the worker's own reason rather than a generic failure", async () => {
@@ -489,7 +610,7 @@ describe('the in-page consent prompt', () => {
     h.decideReply.value = { ok: false, reason: 'expired', error: 'That request has expired.' };
     buttons(h).allow.fire('click');
     await h.tick();
-    expect(h.cards()[0].textContent).toContain('expired');
+    expect(h.prompts()[0].textContent).toContain('expired');
   });
 
   it('does not duplicate a prompt that is still on screen', async () => {
@@ -498,13 +619,13 @@ describe('the in-page consent prompt', () => {
     const h = boot();
     h.queueList({ ok: true, count: 1, requests: [prompt()] });
     await h.tick();
-    expect(h.cards().length).toBe(1);
+    expect(h.prompts().length).toBe(1);
 
     h.queueList({ ok: true, count: 1, requests: [prompt()] });
     await h.tick();
     h.queueList({ ok: true, count: 1, requests: [prompt()] });
     await h.tick();
-    expect(h.cards().length).toBe(1);
+    expect(h.prompts().length).toBe(1);
   });
 
   it('raises a SECOND question for a second field, with no relaunch', async () => {
@@ -525,11 +646,31 @@ describe('the in-page consent prompt', () => {
     });
     await h.tick();
 
-    expect(h.cards().length).toBe(2);
-    expect(h.cards()[1].textContent).toContain('Node B');
-    expect(h.cards()[1].textContent).toContain('waitForSelector');
-    // One host, one panel — the browser was never re-created.
+    // ── THIS ASSERTION WAS INVERTED, AND THE OLD ONE WAS THE BUG ───────────
+    // It used to read `expect(h.cards().length).toBe(2)` and reach into
+    // `cards()[1]` — i.e. it REQUIRED the second question to be appended
+    // alongside the first. That is precisely the behaviour that was then
+    // reported as broken:
+    //
+    //   «Alert 1 → Picker دوباره اجرا شد → Alert 1 removed/replaced → Alert 2»
+    //   «در هر لحظه فقط یک picker confirmation فعال باشد»
+    //
+    // The requirement kept from the original report is unchanged — a new field
+    // raises a new question in the SAME page with no relaunch — but the new
+    // question must REPLACE the old one rather than pile onto it.
+    expect(h.prompts().length).toBe(1);
+    const text = h.prompts()[0].textContent;
+    expect(text).toContain('Node B');
+    expect(text).toContain('waitForSelector');
+
+    // And the superseded question is genuinely GONE, not merely outnumbered.
+    expect(text).not.toContain('Node A');
+    expect(text).not.toContain('selector\n');
+
+    // One host, one panel, one dialog — the browser was never re-created and
+    // the prompt did not acquire a second surface to draw on.
     expect(h.documentElement().childNodes.filter((n) => n.id === 'ab-consent-host').length).toBe(1);
+    expect((h.shadow() as FakeNode).byTag('dialog').length).toBe(1);
   });
 
   it('keeps polling after an answer, ready for the next field', async () => {
@@ -548,7 +689,7 @@ describe('the in-page consent prompt', () => {
     const h = boot();
     h.queueList({ ok: false, reason: 'no_base_url', requests: [] });
     await h.tick();
-    expect(h.cards().length).toBe(0);
+    expect(h.prompts().length).toBe(0);
     expect(h.timerCount()).toBeGreaterThan(0);
   });
 
@@ -562,13 +703,13 @@ describe('the in-page consent prompt', () => {
     await h.ready();
     h.lastError.value = { message: 'Could not establish connection.' };
     await h.tick();
-    expect(h.cards().length).toBe(0);
+    expect(h.prompts().length).toBe(0);
     expect(h.timerCount()).toBeGreaterThan(0);
 
     h.lastError.value = undefined;
     h.queueList({ ok: true, count: 1, requests: [prompt()] });
     await h.tick();
-    expect(h.cards().length).toBe(1);
+    expect(h.prompts().length).toBe(1);
   });
 
   it('pauses polling while the tab is hidden and resumes when shown', async () => {
@@ -602,9 +743,11 @@ describe('the in-page consent prompt', () => {
     expect((host as FakeNode).shadowInit).toEqual({ mode: 'closed' });
     expect((host as FakeNode).getAttribute('style')).toContain('all:initial');
 
-    // And the card genuinely lives inside that root, not loose in the page.
-    expect(h.cards().length).toBe(1);
-    expect(h.documentElement().byClass('card').length).toBe(0);
+    // And the prompt genuinely lives inside that root, not loose in the page:
+    // the <dialog> is reachable through the shadow root and NOWHERE in the
+    // page's own tree. Searched by tag now that there is no `.card` wrapper.
+    expect(h.prompts().length).toBe(1);
+    expect(h.documentElement().byTag('dialog').length).toBe(0);
   });
 
   it('writes text through textContent, never as markup', async () => {
@@ -612,7 +755,7 @@ describe('the in-page consent prompt', () => {
     // The fake has no innerHTML at all, so a card that rendered markup would
     // throw; asserting the label survives verbatim AS TEXT proves the path.
     const h = await withPrompt({ label: '<img src=x onerror=alert(1)>' });
-    expect(h.cards()[0].textContent).toContain('<img src=x onerror=alert(1)>');
+    expect(h.prompts()[0].textContent).toContain('<img src=x onerror=alert(1)>');
   });
 
   it('ignores a malformed entry instead of rendering a blank card', async () => {
@@ -621,7 +764,220 @@ describe('the in-page consent prompt', () => {
     const h = boot();
     h.queueList({ ok: true, count: 2, requests: [null, prompt()] });
     await h.tick();
-    expect(h.cards().length).toBe(1);
+    expect(h.prompts().length).toBe(1);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ONE PROMPT, AND ONLY EVER ONE.
+
+   These cover the acceptance criteria that came with the withdrawal of the
+   Alert-Tab design:
+
+     7.  «تکرار Picker نباید چند Alert همزمان بسازد»
+     8.  «Alert جدید باید Alert قبلی را replace کند»
+     15. «اگر Alert dismiss شد، Retry همچنان باید قابل استفاده باشد»
+
+   They are behavioural: every one drives the real consent.js through the fake
+   page and MEASURES the shadow tree afterwards. None of them greps the source.
+   ═══════════════════════════════════════════════════════════════════════════ */
+describe('the prompt is a singleton, so repeated picks cannot pile up', () => {
+  /** Deliver a distinct pending request, as a fresh pick would. */
+  async function pick(h: Harness, n: number, over: Record<string, unknown> = {}) {
+    h.queueList({
+      ok: true,
+      count: 1,
+      requests: [prompt({
+        // 24 hex chars, the shape the server issues, distinct per pick.
+        consentId: 'cns_' + String(n).padStart(24, 'abcdef01234567890abcdef0'.slice(0, 0) + '0'),
+        label: 'Node ' + n,
+        fieldKey: 'field' + n,
+        ...over,
+      })],
+    });
+    await h.tick();
+  }
+
+  it('holds exactly ONE dialog after ten different picks', async () => {
+    // AC7. Ten picks is the shape of the report: the operator ran the picker
+    // repeatedly while nothing had been answered yet. The old list-and-append
+    // panel would be holding ten questions at this point.
+    const h = boot();
+    for (let n = 1; n <= 10; n++) await pick(h, n);
+
+    const shadow = h.shadow() as FakeNode;
+    expect(shadow.byTag('dialog').length).toBe(1);
+    expect(h.prompts().length).toBe(1);
+  });
+
+  it('shows the NEWEST pick and none of the ones it superseded', async () => {
+    // AC8. Counting one dialog is not enough on its own — a single dialog that
+    // appended into itself would also count one. The content has to have been
+    // swapped, so the previous questions must be unreadable afterwards.
+    const h = boot();
+    await pick(h, 1);
+    expect(h.prompts()[0].textContent).toContain('Node 1');
+
+    await pick(h, 2);
+    await pick(h, 3);
+
+    const text = h.prompts()[0].textContent;
+    expect(text).toContain('Node 3');
+    expect(text).toContain('field3');
+    expect(text).not.toContain('Node 1');
+    expect(text).not.toContain('Node 2');
+    expect(text).not.toContain('field1');
+  });
+
+  it('offers exactly two buttons after a replacement, not two sets of two', async () => {
+    // The precise failure mode of an append: the operator sees an Allow button,
+    // clicks it, and answers a request they are no longer looking at. Counting
+    // buttons catches it whether the stacking is a card or a bare paragraph run.
+    const h = boot();
+    await pick(h, 1);
+    await pick(h, 2);
+    await pick(h, 3);
+
+    const btns = (h.shadow() as FakeNode).byTag('button');
+    expect(btns.length).toBe(2);
+    expect(btns[0].textContent).toBe('Allow');
+    expect(btns[1].textContent).toBe('Not now');
+  });
+
+  it('never grafts a second host onto the page, however many picks arrive', async () => {
+    // The host is the only thing this file adds to someone else's document. A
+    // second one would be a second surface, which is the DOM-level equivalent
+    // of the Alert Tab that was just removed from the architecture.
+    const h = boot();
+    for (let n = 1; n <= 5; n++) await pick(h, n);
+    expect(h.documentElement().childNodes.filter((n) => n.id === 'ab-consent-host').length).toBe(1);
+  });
+
+  it('opens the dialog MODALLY, and does not re-open one already showing', async () => {
+    // showModal() is the Option-B mechanism: it is what puts the prompt in
+    // Chrome's top layer with its own backdrop and focus trap, instead of a
+    // z-index guess that any page can outbid. Re-opening on each replacement
+    // would flash the backdrop and throw, so the second pick must NOT call it.
+    const h = boot();
+    await pick(h, 1);
+    const d = h.dialog() as FakeNode;
+    expect(d.open).toBe(true);
+    expect(d.modal).toBe(true);
+    expect(d.showModalCalls).toBe(1);
+
+    await pick(h, 2);
+    expect(d.showModalCalls).toBe(1);
+    expect(d.open).toBe(true);
+  });
+
+  it('mirrors the dialog census onto the host so a probe can count it', async () => {
+    // The root is mode:'closed', so NOTHING outside can enumerate its contents
+    // — including tools/probe-page-lifecycle.mjs, which has to prove in a real
+    // Chrome that repeated pickers left one dialog. These attributes are the
+    // only channel through which "one dialog, and it is open" is observable.
+    const h = boot();
+    await pick(h, 1);
+    const host = h.host() as FakeNode;
+    expect(host.getAttribute('data-ab-dialogs')).toBe('1');
+    expect(host.getAttribute('data-ab-open')).toBe('1');
+
+    await pick(h, 2);
+    expect(host.getAttribute('data-ab-dialogs')).toBe('1');
+  });
+
+  /*
+   * ── A NOTE FROM THE MUTATION RUN, SO IT IS NOT REDISCOVERED ──────────────
+   * AC15 is protected TWICE over, and deliberately:
+   *
+   *   1. the `close` listener clears `state.current`, so a dismissed request is
+   *      no longer the "current" one and the next poll redraws it;
+   *   2. the redraw guard is `state.current === id && dialog.open`, so even with
+   *      a stale `current` a CLOSED dialog is still redrawn.
+   *
+   * Removing either one alone leaves the test below passing, because the other
+   * still delivers the behaviour — they are equivalent mutants, not a gap in
+   * coverage. Removing BOTH fails it. That is the correct outcome for redundant
+   * defences: the test pins the BEHAVIOUR, not one particular line, and it would
+   * be wrong to weaken it into asserting a specific mechanism.
+   */
+  it('re-shows a prompt after the operator dismissed the dialog with Esc', async () => {
+    // AC15: «اگر Alert dismiss شد، Retry همچنان باید قابل استفاده باشد».
+    // Esc closes a modal <dialog> for free, and silently. If `current` kept
+    // pointing at the closed request, the next poll would see an unchanged id
+    // and skip the redraw — the prompt would be gone for good and Retry would
+    // appear to do nothing, with no page to reload because it has no page.
+    const h = boot();
+    await pick(h, 1);
+    const d = h.dialog() as FakeNode;
+
+    d.close();                    // exactly what Esc does
+    expect(d.open).toBe(false);
+    // The census must follow the dialog down, or a probe would report an open
+    // prompt on a screen that has none.
+    expect((h.host() as FakeNode).getAttribute('data-ab-open')).toBe('0');
+
+    // The server keeps returning the SAME pending request; that must redraw.
+    await pick(h, 1);
+    expect(d.open).toBe(true);
+    expect(h.prompts().length).toBe(1);
+    expect(h.prompts()[0].textContent).toContain('Node 1');
+  });
+
+  it('leaves the dialog reusable — and empty — after an answer', async () => {
+    // The element is deliberately kept for the next pick (nothing is created
+    // per prompt), but it must not be left holding a stale, answered question:
+    // the operator would come back to a dead Allow button.
+    const h = boot();
+    await pick(h, 1);
+    buttons(h).allow.fire('click');
+    await h.tick();
+
+    // The grant confirmation is still readable for a moment...
+    expect(h.prompts()[0].textContent).toContain('Connected');
+
+    // ...then the dismiss timer fires and empties it, without removing it.
+    await h.tick();
+    await h.tick();
+    const d = h.dialog() as FakeNode;
+    expect(d).toBeTruthy();
+    expect(d.childNodes.length).toBe(0);
+    expect(h.prompts().length).toBe(0);
+
+    // And a later pick still lands in that same element.
+    await pick(h, 2);
+    expect((h.shadow() as FakeNode).byTag('dialog').length).toBe(1);
+    expect(h.prompts()[0].textContent).toContain('Node 2');
+  });
+
+  it('will not let a stale dismiss timer close a NEWER question', async () => {
+    // The timer is armed when an answer lands and fires seconds later. If the
+    // operator picked again in between, an unguarded timer would close a prompt
+    // that had never been answered — a disappearing Alert, which is how this
+    // whole class of bug gets reported.
+    const h = boot();
+    await pick(h, 1);
+    buttons(h).allow.fire('click');
+    await h.tick();
+
+    // A new pick supersedes it BEFORE the dismiss timer runs. Delivered with
+    // tickPolls(), which fires ONLY the poll — the dismiss armed above is still
+    // sitting on the clock, which is the entire point of this test. Using the
+    // ordinary tick() here would fire both at once and pass either way.
+    h.queueList({
+      ok: true,
+      count: 1,
+      requests: [prompt({ consentId: 'cns_ffffffffffffffffffffffff', label: 'Node 2', fieldKey: 'field2' })],
+    });
+    await h.tickPolls();
+    expect(h.prompts()[0].textContent).toContain('Node 2');
+
+    // NOW the stale dismiss falls due. It was armed for Node 1's consentId, so
+    // it must recognise that the dialog has moved on and leave it alone.
+    await h.tickDismiss();
+
+    expect(h.prompts().length).toBe(1);
+    expect(h.prompts()[0].textContent).toContain('Node 2');
+    expect((h.dialog() as FakeNode).open).toBe(true);
   });
 });
 
@@ -723,7 +1079,7 @@ describe('the consent prompt is scoped to the LOCAL (server-launched) browser', 
     await h.tick();
 
     expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST')).toEqual([]);
-    expect(h.cards().length).toBe(0);
+    expect(h.prompts().length).toBe(0);
     // No host element grafted onto the page at all: on the operator's own
     // machine this file must leave their pages exactly as it found them.
     expect(h.host()).toBeNull();
@@ -742,8 +1098,8 @@ describe('the consent prompt is scoped to the LOCAL (server-launched) browser', 
     await h.tick();
 
     expect(h.sent.map((m) => m.type)).toContain('AB_CONSENT_LIST');
-    expect(h.cards().length).toBe(1);
-    expect(h.cards()[0].textContent).toContain('Search box');
+    expect(h.prompts().length).toBe(1);
+    expect(h.prompts()[0].textContent).toContain('Search box');
   });
 
   it('stays silent when the worker cannot say which browser this is', async () => {
@@ -756,7 +1112,7 @@ describe('the consent prompt is scoped to the LOCAL (server-launched) browser', 
       await h.tick();
       await h.tick();
       expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST')).toEqual([]);
-      expect(h.cards().length).toBe(0);
+      expect(h.prompts().length).toBe(0);
     }
   });
 
@@ -774,7 +1130,7 @@ describe('the consent prompt is scoped to the LOCAL (server-launched) browser', 
     await h.tick();
 
     expect(h.sent.filter((m) => m.type === 'AB_CONSENT_LIST')).toEqual([]);
-    expect(h.cards().length).toBe(0);
+    expect(h.prompts().length).toBe(0);
   });
 
   it('gates on the exact string the worker and the server both use', async () => {

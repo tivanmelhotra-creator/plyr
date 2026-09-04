@@ -2008,10 +2008,97 @@
    * the single most confusing failure this could have. Unknown keys are skipped
    * here instead, and the return value reports whether anything actually landed.
    */
+  /**
+   * Where the NEXT delivery for a given node+field must be written.
+   *
+   * The Inspector reports a delivery as nodeId+fieldKey only, and that pair is
+   * ambiguous for condition nodes: the action's top-level `selector` and the
+   * `selector` of a row inside `params.groups` are the same pair. TargetingFlow
+   * records the row address when the pick STARTS (it is the only moment anyone
+   * knows which crosshair was pressed), and applyInspectorFields consumes it.
+   *
+   * Keyed by node+field and overwritten on every pick — including with '' — so
+   * a later pick on the top-level field cannot inherit an earlier row's route.
+   */
+  var pickRoutes = {};
+
+  function routeKey(nodeId, fieldKey) {
+    return String(nodeId || '') + '\u0000' + String(fieldKey || '');
+  }
+
+  function setPickRoute(nodeId, fieldKey, rowPath) {
+    if (!nodeId || !fieldKey) return false;
+    pickRoutes[routeKey(nodeId, fieldKey)] = String(rowPath || '');
+    return true;
+  }
+
+  /**
+   * Write a picked selector into ONE row inside a condition node.
+   *
+   * `rowPath` is `<pathId>/<groupIndex>/<rowIndex>`. Returns false — rather
+   * than writing anywhere else — when the addressed row no longer exists,
+   * because the rows can be reordered, cloned or deleted while the operator is
+   * off in the browser picking. Landing the value on the wrong row would be
+   * worse than reporting that it could not be delivered.
+   */
+  function applyToConditionRow(node, rowPath, selector) {
+    var m = window.NdvModel;
+    if (!m || !selector) return false;
+    var parts = String(rowPath).split('/');
+    if (parts.length !== 3) return false;
+    var pathId = parts[0];
+    var gi = parseInt(parts[1], 10);
+    var ri = parseInt(parts[2], 10);
+    if (isNaN(gi) || isNaN(ri)) return false;
+
+    node.params = node.params || {};
+    var multi = node.action === 'if';
+    var paths = multi ? m.readPaths(node.params) : null;
+    var groups;
+    var pIdx = -1;
+
+    if (multi && paths) {
+      for (var i = 0; i < paths.length; i++) {
+        if (String(paths[i].id) === pathId) { pIdx = i; break; }
+      }
+      if (pIdx < 0) return false;
+      groups = paths[pIdx].groups;
+    } else {
+      groups = m.readGroups(node.params);
+    }
+
+    if (!groups || !groups[gi] || !groups[gi][ri]) return false;
+
+    pushHistory();
+    groups[gi][ri].selector = String(selector);
+    if (multi && paths) m.writePaths(node.params, paths);
+    else m.writeGroups(node.params, groups);
+
+    renderNodes();
+    if (ndvOpen === node.id) renderInspector();
+    emitChange();
+    saveLocal();
+    return true;
+  }
+
   function applyInspectorFields(nodeId, fields) {
     if (!state || !nodeId || !fields) return false;
     var node = state.nodes[nodeId];
     if (!node || node.action === '__start__') return false;
+
+    // A pick that was started from a condition ROW is routed there, and NOT to
+    // the action's top-level param of the same name. Consumed (deleted) on use
+    // so a later delivery cannot be misrouted by a stale address.
+    var rk = routeKey(nodeId, 'selector');
+    var rowPath = pickRoutes[rk];
+    if (rowPath) {
+      delete pickRoutes[rk];
+      var picked = fields.selector || fields.xpath || '';
+      if (applyToConditionRow(node, rowPath, picked)) return true;
+      // Fall through only if the row vanished: better to report failure than to
+      // write the value onto the top-level param the operator never pointed at.
+      return false;
+    }
 
     var act = actionById(node.action);
     var declared = {};
@@ -4740,6 +4827,14 @@
      * lets the client tell the user "added" instead of guessing.
      */
     applyInspectorFields: applyInspectorFields,
+    /**
+     * Record where the next delivery for node+field must land.
+     *
+     * Called by TargetingFlow.start() at the moment a pick begins, which is the
+     * only point at which WHICH crosshair was pressed is still known. Pass ''
+     * to clear a previous row address.
+     */
+    setPickRoute: setPickRoute,
     /** Select a node AND bring it into view — the outline is a navigator (§ 6). */
     revealNode: function (nodeId) {
       if (!state || !state.nodes[nodeId]) return false;

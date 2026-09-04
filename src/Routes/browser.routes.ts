@@ -101,6 +101,30 @@ export function setLiveSessionRebuilder(fn: () => Promise<void>): void {
   rebuildLiveSessions = fn;
 }
 
+/*
+ * `consentHostUrl()` USED TO LIVE HERE, AND ITS REMOVAL IS THE POINT.
+ *
+ * It returned this server's own `/inspector/consent-host` — a real http page on
+ * loopback, built so the Alert would have somewhere to render when the window
+ * was parked on `about:blank` (where the manifest matches nothing and Chrome
+ * injects no content script). That reasoning was sound and the page worked.
+ *
+ * What it could not survive was the cost. Reaching that destination meant
+ * claiming a page, and with session restore on the profile every claimed page
+ * came back at the next launch — MEASURED at 1 about:blank + 2 consent-host
+ * before a single picker had run. The operator's ruling:
+ *
+ *   «دیگر Priority 2 / fallback برای ساختن consent-host به عنوان Alert Tab
+ *    نمی‌خواهیم … Alert نباید page جدید داشته باشد.»
+ *
+ * The Alert now draws only where the extension is already running, and reports
+ * `pages: 0` rather than inventing a page when that is nowhere. So nothing
+ * navigates to the consent host any more and this helper had no callers left.
+ * The ROUTE in mode.routes.ts is deliberately kept: it is a scriptless static
+ * page, it costs nothing, and it remains a useful place to point a browser by
+ * hand when diagnosing whether content scripts inject at all.
+ */
+
 /**
  * The `onSwap` every relaunch passes. Never throws: a session that cannot come
  * back reports its own state over its own socket, and letting that failure
@@ -1346,13 +1370,112 @@ export const createBrowserRoutes = (): Router => {
     // HEADED browser, and a headed browser needs an X display.
     const ctx = await RealChrome.getContext();
 
+    // ─────────────────────────────────────────────────────────────────────
+    // THE WINDOW MUST LAND ON A PAGE THAT CAN HOST THE CONSENT ALERT
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // REPORTED, from live LOCAL-mode testing:
+    //
+    //   «توقع داشتم که بعد اینکه مرورگر بالا اومد فقط یه دونه تب باشه … ولی
+    //    چیزی که من متوجه شدم دو تا تب داشتیم. و یکیش حالت defaultای که وقتی
+    //    مرورگر بالا میاد هست و یکی هم … یک تبی بود که وقتی می‌رفتم روش اون
+    //    آلرتی که من انتظار داشتم … توی اون تب بالا اومده بود»
+    //
+    //   «هیچ Alert یا تب جدیدی باز نشد که اون Alert رو واسم نشون بده … اون Node
+    //    قبلیه هنوز Set باقیمونده روش»
+    //
+    // ROOT CAUSE, MEASURED. With no `url` in the body — which is exactly what
+    // the dashboard sends, because `ctx.url` is '' until a `goto` node carries a
+    // literal address — this function opened the window and navigated NOTHING.
+    // `GET /browser/tabs` then reported, verbatim:
+    //
+    //     count = 1   url = 'about:blank'   title = ''
+    //
+    // `extension/manifest.json` matches http and https URLs only, and Chrome
+    // injects no content script into `about:blank`. So `content/consent.js` —
+    // the ONLY thing that draws the Alert, and the only thing that polls
+    // `GET /inspector/consent` — never ran in that window at all. The consents
+    // existed server-side the whole time (measured: a fresh `cns_…` per node,
+    // `reused: false`), with nothing anywhere able to render them.
+    //
+    // That single fact explains BOTH reports:
+    //   · TWO TABS — the operator navigated somewhere themselves to get an http
+    //     page, the script finally loaded there, and the Alert appeared in that
+    //     second tab while `about:blank` sat beside it as the "default" one.
+    //   · NO ALERT FOR THE SECOND NODE — with the browser already up, nothing
+    //     opens a new tab, so the only page in the window was still one no
+    //     content script could run on. The old node stayed Set, and the error
+    //     the operator predicted followed.
+    //
+    // THE FIX IS A DESTINATION, NOT A RETRY. Every earlier attempt treated this
+    // as timing (poll intervals, backoff, retries); none could work, because the
+    // poll loop lives in a script that was not running. The window now lands on
+    // this server's own consent host page — an ordinary http page on 127.0.0.1,
+    // so the content script matches, the script loads, and the Alert it draws
+    // has somewhere to be drawn.
+    //
+    // AND THEN THAT FIX BROKE SOMETHING WORSE, WHICH THIS BLOCK NOW REPAIRS.
+    //
+    // The landing was routed through a `RealChrome.landingPage()` that returned
+    // `pages[pages.length - 1]` — the last tab — and this line navigated it
+    // unconditionally. So on the second pick onwards it did not land on a blank
+    // page at all; it took over whatever the operator had open:
+    //
+    //   Tab 1 → Process A     Tab 2 → Process B     Tab 3 → Google
+    //
+    //   «اجرای Picker … باعث میشه Google ناپدید بشه و به Alert تبدیل بشه»
+    //
+    // A prompt is not worth a page. The rule now:
+    //
+    //   «صفر Tab جدید برای Alert / صفر navigation برای Alert /
+    //    صفر close برای Tabهای دیگر / صفر overwrite کردن Tabهای دیگر»
+    //
+    // WHICH IS ACHIEVABLE, BECAUSE THE ALERT WAS NEVER A PAGE. It is an overlay:
+    // `content/consent.js` is injected into every http(s) page, polls
+    // `GET /inspector/consent` itself, and draws into a closed shadow root on
+    // whichever page it is running in — pausing while `document.hidden`, so it
+    // surfaces on the tab the operator is actually looking at. If the window
+    // holds ANY injectable page, this route's correct action is to navigate
+    // nothing whatsoever and let the extension do its job.
+    //
+    // So the destination is now a QUESTION asked of RealChrome
+    // (`alertSurface()`) rather than an assumption made here, and the answer is
+    // usually "you have nothing to do". A page is navigated only in the
+    // `kind: 'tab'` case — no injectable page exists, typically a cold browser
+    // still on `about:blank` — and that page is a tab claimed by identity for
+    // this purpose alone, never one of the operator's.
+    //
+    // AN EXPLICIT `url` IS A DIFFERENT REQUEST, AND STILL THE ONLY NAVIGATION.
+    // An operator who asked to be taken somewhere gets taken there. That is a
+    // navigation they initiated, on a page they will be looking at, and it is
+    // NOT the Alert — so it reuses the window's existing page rather than
+    // claiming one. `newPage()` adopts the profile's blank tab when there is
+    // one, which is the "one initial/reusable page" the operator specified:
+    //
+    //   «اگر همان about:blank موجود است، همان را reuse کن.»
     const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
     if (url) {
-      const page = await RealChrome.newPage();
+      const target = await RealChrome.newPage();
       // Do not await the load: a slow site must not stall the button, and
       // the operator can watch it load on the desktop they are about to see.
-      void page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => { /* visible on screen */ });
+      void target.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => { /* visible on screen */ });
     }
+
+    // AND FOR THE ALERT ITSELF: NOTHING. NOT A NAVIGATION, NOT A PAGE.
+    //
+    // There used to be an `else` here that claimed a tab and sent it to
+    // `/inspector/consent-host`. It is gone, with the concept:
+    //
+    //   «دیگر Priority 2 / fallback برای ساختن consent-host به عنوان Alert Tab
+    //    نمی‌خواهیم … Alert نباید page جدید داشته باشد.»
+    //
+    // `alertSurface()` is still called, and still only asks a question — it is
+    // now incapable of answering with a page. The count it returns goes into
+    // the response so the client and the tests can see what the server saw:
+    // `pages: 0` means a cold window with nowhere to draw yet, and the pending
+    // consent stays queued server-side until there is somewhere. That wait is
+    // the honest behaviour; manufacturing a destination is what was removed.
+    const surface = await RealChrome.alertSurface();
 
     return {
       success: true,
@@ -1372,6 +1495,15 @@ export const createBrowserRoutes = (): Router => {
       // tabs are gone" became a mystery in the first place.
       recovered: recovery.action === 'recycled',
       recovery,
+      // WHERE THE ALERT CAN DRAW, REPORTED RATHER THAN ARRANGED.
+      //
+      // `pages` is how many injectable (http/https) pages the window holds. The
+      // extension draws the Alert into one of them by itself; this server does
+      // not choose which, and no longer creates one when the answer is 0. The
+      // number is here because a silent 0 is how «هیچ Alert باز نشد» became a
+      // mystery: with it, the client can say "the browser has no page I can
+      // draw on yet" instead of appearing to do nothing.
+      alertSurface: surface,
     };
   }
 

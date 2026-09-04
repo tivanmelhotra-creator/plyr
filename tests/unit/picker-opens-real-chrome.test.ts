@@ -77,6 +77,13 @@ function extractClickHandlerBody(src: string, id: string): string {
   throw new Error(`unbalanced braces in the ${id} click handler`);
 }
 
+/** Cut one top-level `var name = <literal>;` out of the file. */
+function extractVar(src: string, name: string): string {
+  const m = new RegExp(`var ${name} = [^;]+;`).exec(src);
+  if (!m) throw new Error(`var ${name} not found`);
+  return m[0];
+}
+
 /**
  * The functions `openRealBrowser` depends on, in the order they must be defined.
  *
@@ -86,11 +93,27 @@ function extractClickHandlerBody(src: string, id: string): string {
  * missing fake rather than on the behaviour they describe. A single list keeps
  * the harness honest: add a dependency to the source and it is declared here,
  * not discovered by a confusing failure.
+ *
+ * `stillStarting` joined the list when openRealBrowser learned to retry a cold
+ * start, and it proved the note above: four tests began failing with
+ * `ReferenceError: stillStarting is not defined`, pointing at the harness rather
+ * than at any behaviour.
  */
-const OPEN_REAL_BROWSER_DEPS = ['tabPlaceholder', 'directViewHref'] as const;
+const OPEN_REAL_BROWSER_DEPS = ['tabPlaceholder', 'directViewHref', 'stillStarting'] as const;
+
+/**
+ * The retry budget, EXTRACTED rather than restated.
+ *
+ * Taking these from the source keeps the harness from asserting against numbers
+ * the shipped file no longer uses. Tests that exercise the retry path reassign
+ * the backoff (they are plain `var`s in the injected scope) so a wait measured
+ * in seconds in production is measured in a millisecond here.
+ */
+const OPEN_REAL_BROWSER_VARS = ['REAL_OPEN_ATTEMPTS', 'REAL_OPEN_BACKOFF_MS'] as const;
 
 function openRealBrowserSource(): string {
   return [
+    ...OPEN_REAL_BROWSER_VARS.map((n) => extractVar(SRC, n)),
     ...OPEN_REAL_BROWSER_DEPS.map((n) => extractFunction(SRC, n)),
     extractFunction(SRC, 'openRealBrowser'),
   ].join('\n');
@@ -524,12 +547,131 @@ describe('requestPick defers to the LOCAL / REMOTE chooser', () => {
     expect(rec.posted[0].path).toBe('/browser/real/open');
   });
 
-  it('falls back to the remote browser if the chooser declines to open', async () => {
-    // `start()` returns false when it cannot run at all. Leaving the crosshair
-    // dead in that case would be a worse failure than the old behaviour.
+  it('opens NOTHING when the chooser declines — it must not choose for the user', async () => {
+    // ══════════════════════════════════════════════════════════════════════
+    // THIS TEST PREVIOUSLY ASSERTED THE DEFECT, VERBATIM: it required that a
+    // declining chooser fall back to opening the server's browser. That
+    // fallback IS the reported bug:
+    //
+    //   «بعد از اینکه من Local Browser رو انتخاب می‌کنم، دیگه مجبورم می‌کنه
+    //    همیشه وقتی روی اون آیکون Picker که میزنم، اون باکس بالا نمیاد که من
+    //    Remote Browser رو این بار انتخاب کنم. وقتی روی اون آیکون Picker
+    //    می‌زنم مستقیماً Local Browser رو واسم باز می‌کنه که این افتضاحه»
+    //
+    // It reads as a remembered preference and is not one — nothing in this
+    // codebase stores an environment, and the chooser renders unconditionally.
+    // What happens is this: `flow.start()` returns false while InspectorClient
+    // is still resolving (the ordinary state for the first clicks after a
+    // reload), control fell through to the tail of requestPick, and the server's
+    // browser opened with no dialog at all. Silent LOCAL, every time.
+    //
+    // The old test's reasoning — \"leaving the crosshair dead would be worse\" —
+    // had the right instinct and the wrong remedy. The crosshair is not left
+    // dead: it REPORTS, via pick.chooserUnavailable, and the operator's next
+    // click typically succeeds. Choosing an environment silently on their behalf
+    // is strictly worse than saying \"not yet\", because it is unfalsifiable from
+    // the outside — which is exactly why this shipped.
+    // ══════════════════════════════════════════════════════════════════════
     const { rec, started } = await runWithFlow(FIELD, false);
     expect(started.length).toBe(1);
+    // No browser, and no server call to open one.
+    expect(rec.opened).toEqual([]);
+    expect(rec.posted).toEqual([]);
+  });
+
+  it('tells the operator WHY, instead of failing silently', async () => {
+    // A refusal nobody can see is a dead crosshair, which is the failure mode
+    // the old fallback was (rightly) afraid of. The toast is what makes the
+    // refusal honest rather than mute, so it is part of the contract.
+    const { rec } = await runWithFlow(FIELD, false);
+    expect(rec.toasts).toContain('pick.chooserUnavailable');
+  });
+
+  it('does not report a chooser problem when the chooser worked', async () => {
+    // The complement, so the message cannot decay into an always-on warning.
+    const { rec } = await runWithFlow(FIELD, true);
+    expect(rec.toasts).not.toContain('pick.chooserUnavailable');
+  });
+
+  it('still opens the browser directly when TargetingFlow is absent entirely', async () => {
+    // A host page that never loaded targeting-flow.js has no chooser to wait
+    // for, so refusing would leave it with no way to reach a browser at all.
+    // \"No chooser exists\" and \"the chooser is not ready\" are different states
+    // and must not collapse into one another.
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, { ok: true, viewPath: '/desktop/chrome' });
+    const body = `
+      ${openRealBrowserSource()}
+      ${requestPickSource()}
+      return requestPick(function () {}, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'OPTS', body);
+    try {
+      await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, FIELD);
+    } catch { /* the recorder is what matters */ }
+    await new Promise((r) => setTimeout(r, 0));
+
     expect(rec.opened.length).toBe(1);
+    expect(rec.toasts).not.toContain('pick.chooserUnavailable');
+  });
+});
+
+/**
+ * THE CROSSHAIR IN ndv-nodes.js MUST REFUSE THE SAME WAY.
+ *
+ * requestPick is the second line of defence; `pickerBtn` is the button the
+ * operator actually presses, and it consults TargetingFlow itself before ever
+ * reaching BrowserView. Fixing only requestPick would leave the reported path
+ * intact, because pickerBtn's own fall-through called requestPick WITHOUT a
+ * field identity's protection — it passed the full opts, so requestPick would
+ * have re-entered the flow branch, but on a host where `start()` keeps declining
+ * the net effect was still a silent LOCAL open.
+ *
+ * Driven as source rather than executed: pickerBtn is bound to UI().iconBtn and
+ * a live NDV column, and standing that up would test the harness rather than the
+ * decision. The decision is a control-flow property — does the declining branch
+ * reach requestPick? — and that is what is asserted, on the extracted handler
+ * only, never on the file as a whole.
+ */
+describe('the NDV picker button refuses rather than choosing an environment', () => {
+  const ndv = readFileSync(join(ROOT, 'public/js/ndv-nodes.js'), 'utf8');
+
+  /** The body of `pickerBtn`, by brace depth — length- and comment-proof. */
+  const pickerBtnSrc = (() => {
+    const start = ndv.indexOf('function pickerBtn(');
+    if (start < 0) throw new Error('pickerBtn not found');
+    const open = ndv.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < ndv.length; i++) {
+      if (ndv[i] === '{') depth++;
+      else if (ndv[i] === '}') { depth--; if (depth === 0) return ndv.slice(start, i + 1); }
+    }
+    throw new Error('unbalanced braces in pickerBtn');
+  })();
+
+  it('reports the unavailable chooser from the button itself', () => {
+    expect(pickerBtnSrc).toContain('pick.chooserUnavailable');
+  });
+
+  it('returns on a declining chooser instead of continuing to requestPick', () => {
+    // The control-flow property that matters: between `if (started) return;`
+    // and the BrowserView fallback there must be an unconditional `return`, or
+    // a declining chooser still ends in a silent browser launch.
+    const afterStarted = pickerBtnSrc.slice(pickerBtnSrc.indexOf('if (started) return;'));
+    const guard = afterStarted.indexOf('return;', 'if (started) return;'.length);
+    const fallback = afterStarted.indexOf('BrowserView.requestPick');
+    expect(guard).toBeGreaterThan(-1);
+    expect(fallback).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(fallback);
+  });
+
+  it('keeps the BrowserView fallback for callers with no field identity', () => {
+    // The condition-row picker genuinely has no nodeId/fieldKey to pair
+    // against, so it must still be able to reach a browser. Deleting the
+    // fallback would break it — the fix is a guard INSIDE the flow branch, not
+    // the removal of the branch after it.
+    expect(pickerBtnSrc).toContain('BrowserView.requestPick');
   });
 });
 
@@ -638,5 +780,437 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
     const sandbox = sandboxFor(rec, { ok: false, error: 'desktop_not_running' });
     const p = fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast);
     await expect(p).rejects.toThrow('desktop_not_running');
+  });
+});
+
+/* ===========================================================================
+   A COLD START IS NOT A FAILURE — «هیچ مرورگری بالا نمیاد»
+
+   REPORTED: «وقتی می‌زنم که Local رو انتخاب کنم خب اولش باید اینجوری باشه که
+   روی یک تب جدیدی مرورگر Local سرور بالا بیاد … ولی هیچ مرورگری بالا نمیاد».
+
+   MEASURED against the running server, first-ever start:
+
+     POST /browser/real/open -> 503
+       {"success":false,"error":"remote_browser_starting","retryable":true,
+        "startedMs":25001,"desktop":{"enabled":false,"xvfb":{"missing":true}}}
+     … ~30s later, identical request -> 200 {"success":true,
+        "viewPath":"/desktop/chrome"}
+
+   The browser starts fine. The FIRST call loses a race against the desktop
+   stack provisioning itself, and the server says so in the most explicit way
+   available to it: `retryable: true`, plus a dedicated error token. This client
+   treated that as terminal, so the tab never left the placeholder and the
+   operator's only evidence was a window that never became a browser.
+
+   These tests measure the LOOP, not the wording: how many times the endpoint was
+   asked, and whether the tab was eventually navigated. A comment claiming a
+   retry cannot satisfy them.
+   =========================================================================== */
+describe('a cold start is retried instead of reported as a failure', () => {
+  /**
+   * A sandbox whose POST answers from a SCRIPT — one entry per attempt.
+   *
+   * The script is what makes "the second attempt succeeds" expressible at all.
+   * `sandboxFor` returns one fixed answer forever, which can only describe a
+   * server that is permanently up or permanently down — neither of which is the
+   * cold start being fixed here.
+   */
+  function scriptedSandbox(
+    rec: Recorder,
+    script: Array<
+      | { kind: 'ok'; viewPath: string }
+      | { kind: 'starting' }        // 503 + retryable, as a REJECTION (api.js throws)
+      | { kind: 'gateway'; status: number }
+      | { kind: 'fatal'; error: string }
+    >,
+  ) {
+    const fakeTab = {
+      document: fakeTabDocument(rec),
+      set location(href: string) { rec.navigated.push(href); rec.order.push('navigate'); },
+      close() { rec.closed++; rec.order.push('close'); },
+    };
+    let n = 0;
+    return {
+      window: {
+        open(url: string, target: string) {
+          rec.opened.push({ url, target });
+          rec.order.push('open');
+          return fakeTab;
+        },
+      },
+      API: {
+        getKey: () => 'THE-KEY',
+        post: (path: string, body: unknown) => {
+          rec.posted.push({ path, body });
+          rec.order.push('post');
+          // The last entry repeats, so a script does not have to be as long as
+          // the retry budget to describe "it never comes up".
+          const step = script[Math.min(n, script.length - 1)];
+          n++;
+          if (step.kind === 'ok') {
+            return Promise.resolve({ success: true, viewPath: step.viewPath });
+          }
+          if (step.kind === 'starting') {
+            // EXACTLY what the server sends, and exactly how api.js surfaces
+            // it: request() throws on any non-2xx, attaching the parsed body.
+            // This fidelity is the point — the old code's bug was in the
+            // REJECTION branch, so a fake that resolved would have missed it.
+            const err = Object.assign(new Error('remote_browser_starting'), {
+              status: 503,
+              body: {
+                success: false,
+                error: 'remote_browser_starting',
+                retryable: true,
+                startedMs: 25001,
+              },
+            });
+            return Promise.reject(err);
+          }
+          if (step.kind === 'gateway') {
+            const err = Object.assign(new Error('HTTP ' + step.status), {
+              status: step.status,
+              // A gateway page is not our JSON: there is no body to read a
+              // `retryable` flag out of. The status alone has to carry it.
+              body: undefined,
+            });
+            return Promise.reject(err);
+          }
+          const err = Object.assign(new Error(step.error), {
+            status: 503,
+            body: { success: false, error: step.error, retryable: false },
+          });
+          return Promise.reject(err);
+        },
+      },
+      t: (k: string) => k,
+      toast: (m: string) => { rec.toasts.push(m); },
+    };
+  }
+
+  /**
+   * Run openRealBrowser against a script, with the backoff collapsed to ~0.
+   *
+   * The reassignment is why OPEN_REAL_BROWSER_VARS extracts these as `var`s
+   * rather than inlining them: the production wait is 2.5s per attempt, and a
+   * test that honoured it would take 20 seconds to prove one loop.
+   */
+  async function runScripted(
+    script: Parameters<typeof scriptedSandbox>[1],
+    overrides = 'REAL_OPEN_BACKOFF_MS = 1;',
+  ): Promise<{ rec: Recorder; error: Error | null }> {
+    const rec = newRecorder();
+    const sandbox = scriptedSandbox(rec, script);
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', `
+      ${openRealBrowserSource()}
+      ${overrides}
+      return openRealBrowser('https://example.com');
+    `);
+    let error: Error | null = null;
+    try {
+      await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast);
+    } catch (e) {
+      error = e as Error;
+    }
+    return { rec, error };
+  }
+
+  it('THE REPORTED CASE: a 503 remote_browser_starting is retried, and the tab opens', async () => {
+    // This is the exact sequence measured on the box: one refusal while the
+    // desktop stack provisions, then success.
+    const { rec, error } = await runScripted([
+      { kind: 'starting' },
+      { kind: 'ok', viewPath: '/desktop/chrome' },
+    ]);
+
+    expect(error, 'a retryable cold start must not surface as an error').toBe(null);
+    // Asked twice — the proof that a retry happened at all.
+    expect(rec.posted.length).toBe(2);
+    // And the tab was actually sent to the browser view. THIS is «مرورگر بالا
+    // بیاد»: before the fix this array was empty and the tab sat on a failure
+    // page forever.
+    expect(rec.navigated.length).toBe(1);
+    expect(rec.navigated[0]).toContain('/desktop/chrome');
+    // No failure page was ever painted.
+    expect(rec.errors).toEqual([]);
+  });
+
+  it('keeps waiting across several refusals, then opens', async () => {
+    const { rec, error } = await runScripted([
+      { kind: 'starting' },
+      { kind: 'starting' },
+      { kind: 'starting' },
+      { kind: 'ok', viewPath: '/desktop/chrome' },
+    ]);
+    expect(error).toBe(null);
+    expect(rec.posted.length).toBe(4);
+    expect(rec.navigated[0]).toContain('/desktop/chrome');
+  });
+
+  it('the tab keeps its "starting" page for the whole wait — it is never told the launch failed', async () => {
+    const { rec } = await runScripted([
+      { kind: 'starting' },
+      { kind: 'starting' },
+      { kind: 'ok', viewPath: '/desktop/chrome' },
+    ]);
+    // The placeholder is written ONCE, up front, in the click gesture. A retry
+    // must not repaint it — and above all must not paint the FAILED variant,
+    // which is what the operator was seeing.
+    expect(rec.wrote.length).toBe(1);
+    expect(rec.wrote[0]).toContain('Starting the remote browser');
+    expect(rec.wrote.join('')).not.toContain('did not start');
+  });
+
+  it('a gateway 502/504 is also treated as "still starting"', async () => {
+    // A proxy that stopped waiting says nothing about the start having failed,
+    // and it arrives with no JSON body to carry `retryable`.
+    const { rec, error } = await runScripted([
+      { kind: 'gateway', status: 504 },
+      { kind: 'ok', viewPath: '/desktop/chrome' },
+    ]);
+    expect(error).toBe(null);
+    expect(rec.posted.length).toBe(2);
+    expect(rec.navigated[0]).toContain('/desktop/chrome');
+  });
+
+  it('a NON-retryable failure still fails immediately — the loop is not a blanket retry', async () => {
+    // The guard against overcorrecting. `remote_browser_disabled` is a
+    // configuration refusal: retrying it eight times would turn an instant,
+    // actionable message into a 20-second hang ending in the same message.
+    const { rec, error } = await runScripted([{ kind: 'fatal', error: 'remote_browser_disabled' }]);
+    expect(error && error.message).toContain('remote_browser_disabled');
+    expect(rec.posted.length, 'a non-retryable refusal must be asked exactly once').toBe(1);
+    // And the operator is told, in the tab they are looking at.
+    expect(rec.errors.join(' ')).toContain('remote_browser_disabled');
+  });
+
+  it('gives up after the budget rather than retrying forever', async () => {
+    // A stack that never comes up must end in a reported failure, not a silent
+    // infinite loop against the server.
+    const { rec, error } = await runScripted([{ kind: 'starting' }]);
+    expect(error, 'an endless cold start must eventually be reported').not.toBe(null);
+    expect(rec.posted.length).toBe(8);   // REAL_OPEN_ATTEMPTS
+    expect(rec.errors.join(' ')).toContain('remote_browser_starting');
+  });
+
+  it('the retry decision reads the SERVER\'s flag, not a guess about the message', async () => {
+    // MUTATION CHECK, expressed as behaviour: `retryable: true` with an error
+    // token this client has never heard of must still be retried. A predicate
+    // that string-matched 'remote_browser_starting' alone would fail here, and
+    // the route sets retryable on its runtime-repair path with a different
+    // token (`remote_browser_disabled` + fixable steps).
+    const rec = newRecorder();
+    let n = 0;
+    const sandbox = {
+      window: {
+        open() {
+          rec.order.push('open');
+          return {
+            document: fakeTabDocument(rec),
+            set location(href: string) { rec.navigated.push(href); },
+            close() { rec.closed++; },
+          };
+        },
+      },
+      API: {
+        getKey: () => 'K',
+        post: () => {
+          rec.posted.push({ path: '/browser/real/open', body: {} });
+          if (n++ === 0) {
+            return Promise.reject(Object.assign(new Error('some_new_token'), {
+              status: 503,
+              body: { success: false, error: 'some_new_token', retryable: true },
+            }));
+          }
+          return Promise.resolve({ success: true, viewPath: '/desktop/chrome' });
+        },
+      },
+      t: (k: string) => k,
+      toast: () => {},
+    };
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', `
+      ${openRealBrowserSource()}
+      REAL_OPEN_BACKOFF_MS = 1;
+      return openRealBrowser('');
+    `);
+    await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast);
+    expect(rec.posted.length).toBe(2);
+    expect(rec.navigated[0]).toContain('/desktop/chrome');
+  });
+
+  it('every attempt hits the SAME idempotent endpoint — no second browser is started', async () => {
+    const { rec } = await runScripted([
+      { kind: 'starting' },
+      { kind: 'starting' },
+      { kind: 'ok', viewPath: '/desktop/chrome' },
+    ]);
+    const paths = rec.posted.map((p) => p.path);
+    expect(paths).toEqual([
+      '/browser/real/open', '/browser/real/open', '/browser/real/open',
+    ]);
+    // The url is carried unchanged on every attempt, so a retry lands on the
+    // page the operator asked for rather than on about:blank.
+    for (const p of rec.posted) {
+      expect(p.body).toEqual({ url: 'https://example.com' });
+    }
+  });
+
+  it('opens the tab ONCE, synchronously, and reuses it across retries', async () => {
+    // The popup-blocker rule still holds: window.open() only survives inside
+    // the click gesture. A retry must not try to open a second tab — that one
+    // would be blocked, and the operator would be left watching the first.
+    const { rec } = await runScripted([
+      { kind: 'starting' },
+      { kind: 'starting' },
+      { kind: 'ok', viewPath: '/desktop/chrome' },
+    ]);
+    expect(rec.opened.length).toBe(1);
+    expect(rec.order[0]).toBe('open');
+    expect(rec.order.indexOf('post')).toBeGreaterThan(rec.order.indexOf('open'));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * `noTab` — THE LAUNCH WITHOUT A VIEWER.
+ *
+ * WHY THIS BLOCK EXISTS, STATED PLAINLY
+ * -------------------------------------
+ * Retry's contract is «Retry هیچ Tab جدیدی در Browser اصلی ایجاد نمی‌کند», and
+ * it keeps that promise by calling `openRealBrowser(url, null, {noTab:true})`.
+ * The Retry tests cover the CALL — that the flag is threaded from the button
+ * down to here — but they replace `openRealBrowser` with a fake, so they
+ * cannot see whether the real implementation honours the flag.
+ *
+ * That gap was measured, not assumed: deleting `o.noTab ? null :` from
+ * `browser-view.js` killed ZERO tests across the whole suite. A promise the
+ * suite cannot check is a promise the next refactor breaks silently.
+ *
+ * There are TWO places a viewer can appear, and both need pinning, because
+ * fixing only the first leaves `null` meaning "open one later":
+ *   1. on entry   — `target || window.open('', '_blank')`
+ *   2. on success — the `else` that opened a viewer when no tab was claimed
+ */
+describe('openRealBrowser honours noTab — the launch Retry depends on', () => {
+  /**
+   * Run `openRealBrowser` directly, rather than through `requestPick`.
+   *
+   * Retry does not go through the crosshair, so testing it via `requestPick`
+   * would test a path Retry never takes — and `requestPick` always claims a
+   * tab of its own, which would mask the very thing being asserted.
+   */
+  async function runOpenRealBrowser(
+    target: unknown,
+    opts: unknown,
+    postResult: { ok: true; viewPath: string } | { ok: false; error: string } =
+      { ok: true, viewPath: '/desktop/chrome' },
+  ): Promise<Recorder> {
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, postResult);
+    const body = `
+      ${openRealBrowserSource()}
+      return openRealBrowser('https://example.com', TARGET, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'TARGET', 'OPTS', body);
+    try {
+      await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, target, opts);
+    } catch { /* the failure path rethrows on purpose; the recorder is what matters */ }
+    await new Promise((r) => setTimeout(r, 0));
+    return rec;
+  }
+
+  it('opens NOTHING when noTab is set and no tab is handed in', async () => {
+    const rec = await runOpenRealBrowser(null, { noTab: true });
+    expect(rec.opened).toEqual([]);
+  });
+
+  it('still ASKS THE SERVER to bring the browser up', async () => {
+    // The point of the flag is "launch, but do not show me" — a Retry after the
+    // browser was closed by hand still needs it running, or the Alert has
+    // nowhere to render.
+    const rec = await runOpenRealBrowser(null, { noTab: true });
+    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
+    expect(rec.posted[0].body).toEqual({ url: 'https://example.com' });
+  });
+
+  it('opens no viewer ON THE SUCCESS PATH either', async () => {
+    // The second half. `if (tab) ... else window.open(...)` would fire here,
+    // AFTER the POST resolves, so an entry-only guard is not enough.
+    const rec = await runOpenRealBrowser(null, { noTab: true });
+    expect(rec.opened).toEqual([]);
+    expect(rec.navigated).toEqual([]);
+  });
+
+  it('navigates nothing and closes nothing when noTab is set', async () => {
+    // Zero navigation and zero closes are explicit in the spec: «صفر
+    // navigation برای Alert / صفر close برای Tabهای دیگر».
+    const rec = await runOpenRealBrowser(null, { noTab: true });
+    expect(rec.navigated).toEqual([]);
+    expect(rec.closed).toBe(0);
+  });
+
+  it('opens no viewer even when the launch FAILS', async () => {
+    const rec = await runOpenRealBrowser(null, { noTab: true }, { ok: false, error: 'boom' });
+    expect(rec.opened).toEqual([]);
+  });
+
+  it('DOES claim a tab when noTab is absent — the crosshair path is unchanged', async () => {
+    // The complement, and the reason this is a flag rather than a rewrite: the
+    // Picker must keep showing the operator the browser it just launched.
+    const rec = await runOpenRealBrowser(null, undefined);
+    expect(rec.opened.length).toBe(1);
+    expect(rec.opened[0].target).toBe('_blank');
+    expect(rec.navigated.length).toBe(1);
+  });
+
+  it('DOES claim a tab when noTab is explicitly false', async () => {
+    const rec = await runOpenRealBrowser(null, { noTab: false });
+    expect(rec.opened.length).toBe(1);
+  });
+
+  it('uses a tab it was HANDED without opening another', async () => {
+    // The popup-blocker path: the caller claimed the tab inside the gesture.
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, { ok: true, viewPath: '/desktop/chrome' });
+    const handed = {
+      document: fakeTabDocument(rec),
+      set location(href: string) { rec.navigated.push(href); rec.order.push('navigate'); },
+      close() { rec.closed++; },
+    };
+    const body = `
+      ${openRealBrowserSource()}
+      return openRealBrowser('https://example.com', TARGET, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'TARGET', 'OPTS', body);
+    await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, handed, undefined);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rec.opened).toEqual([]);
+    expect(rec.navigated.length).toBe(1);
+  });
+
+  it('IGNORES a handed-in tab when noTab is set, rather than navigating it', async () => {
+    // A caller that passes both a tab and `noTab` is contradicting itself, and
+    // the flag wins: Retry must never navigate a tab the operator is using.
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, { ok: true, viewPath: '/desktop/chrome' });
+    const handed = {
+      document: fakeTabDocument(rec),
+      set location(href: string) { rec.navigated.push(href); rec.order.push('navigate'); },
+      close() { rec.closed++; },
+    };
+    const body = `
+      ${openRealBrowserSource()}
+      return openRealBrowser('https://example.com', TARGET, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'TARGET', 'OPTS', body);
+    await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, handed, { noTab: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rec.opened).toEqual([]);
+    expect(rec.navigated).toEqual([]);
   });
 });
