@@ -859,6 +859,16 @@
   // The choice
   // ---------------------------------------------------------------------------
 
+  /**
+   * THE PICKER TRACE, dashboard side. The first links of the chain the
+   * operator asked to see live HERE (the click, the chooser, the viewer tab);
+   * the rest are logged by the server ([picker][trace], [RealChrome][trace])
+   * and by the extension inside the Local Browser ([ab-consent][trace]).
+   */
+  function trace(msg) {
+    try { console.info('[picker][trace] ' + msg); } catch (e) { /* never block the pick */ }
+  }
+
   function choose(environment, ctx, opts) {
     var client = ic();
     if (!client) { toast(t('tgt.failed'), 'error'); return; }
@@ -896,6 +906,8 @@
     // browser this page can put on screen belongs to the server, and that is
     // LOCAL.
     var tab = (environment === 'local' && mayOpenTab) ? window.open('', '_blank') : null;
+    trace('browser selected: ' + environment + ' for node=' + ctx.nodeId + ' field=' + ctx.fieldKey
+      + (environment === 'local' ? (tab ? ' -> viewer tab claimed in the main browser (Picker)' : (mayOpenTab ? ' -> viewer tab BLOCKED by the popup blocker' : ' -> no viewer tab (Retry)')) : ''));
 
     client.targetingBegin(ctx.nodeId, ctx.fieldKey, environment, {
       action: ctx.action,
@@ -918,6 +930,8 @@
       // Driven by the SERVER's flag rather than by the `environment` argument, so
       // a server that declines to open anything cannot be overruled by this page.
       if (res.openServerBrowser) {
+        trace('picker request ' + (res.consent ? ((res.consent.reused ? 'reused ' : 'created ') + res.consent.consentId) : 'not needed (identity match)')
+          + ' -> opening/reusing the Local Browser');
         // REPORTED: «توی بخشی که اگر نود کانکت باشه اسم نود و فیلد ثبت میشد هم
         // خالی بودند» — the node name and field were never recorded.
         //
@@ -1207,6 +1221,7 @@
     // target with one Retry could never re-run.
     if (!c.nodeId || !c.fieldKey) return false;
     rememberTarget(c);
+    trace('Picker clicked: node=' + c.nodeId + ' field=' + c.fieldKey + ' -> lastPickerTarget updated; showing the browser chooser');
     return showPickerAlert(c, { mayOpenTab: true });
   }
 
@@ -1235,7 +1250,8 @@
    * instead of appearing to do something.
    */
   function retry() {
-    if (!lastPickerTarget) return false;
+    if (!lastPickerTarget) { trace('Retry: nothing to retry (no lastPickerTarget)'); return false; }
+    trace('Retry: node=' + lastPickerTarget.nodeId + ' field=' + lastPickerTarget.fieldKey + ' -> same flow, NO viewer tab');
     return showPickerAlert(lastPickerTarget, { mayOpenTab: false });
   }
 

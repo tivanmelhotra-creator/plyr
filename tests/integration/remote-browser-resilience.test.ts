@@ -151,6 +151,19 @@ vi.mock('../../src/core/RealChrome', () => {
       // Recorded so the next reader does not mistake the guard for load-bearing
       // coverage.
       alertSurface: async () => guard({ kind: 'overlay' as const, pages: 1 } as unknown),
+      // THE PROJECT PAGE STEP, reached unconditionally before alertSurface():
+      // the Local Browser's initial tab is navigated to the canonical project
+      // URL so the consent Alert has an http page to render in. Doubled as the
+      // "already there" answer, which is the steady state these resilience
+      // tests care about; the navigation itself is pinned by
+      // tests/unit/initial-tab-becomes-the-project-page.test.ts. Omitting this
+      // stub turned every successful launch into a TypeError → 503, exactly the
+      // way the missing `newPage` stub once did (see above).
+      projectPage: async () => guard({
+        page: { url: () => 'http://127.0.0.1:3000/' },
+        reason: 'exists' as const,
+        pages: 1,
+      } as unknown),
       // `alertTab` USED TO BE DOUBLED HERE, and its removal is deliberate.
       //
       // It was justified as "present so a test that forces the fallback has

@@ -1461,21 +1461,58 @@ export const createBrowserRoutes = (): Router => {
       void target.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => { /* visible on screen */ });
     }
 
-    // AND FOR THE ALERT ITSELF: NOTHING. NOT A NAVIGATION, NOT A PAGE.
+    // ─────────────────────────────────────────────────────────────────────
+    // THE FIRST LOCAL BROWSER TAB IS THE PROJECT PAGE — BUG #1'S MISSING LINK
+    // ─────────────────────────────────────────────────────────────────────
     //
-    // There used to be an `else` here that claimed a tab and sent it to
-    // `/inspector/consent-host`. It is gone, with the concept:
+    // REPORTED after the previous merge, in real Chrome, on BOTH a cold and a
+    // running browser:
     //
-    //   «دیگر Priority 2 / fallback برای ساختن consent-host به عنوان Alert Tab
-    //    نمی‌خواهیم … Alert نباید page جدید داشته باشد.»
+    //   «Picker → Local Browser → viewer tab opens → Local Browser loads →
+    //    127.0.0.1:3000 is displayed → ❌ NO Picker Alert»
     //
-    // `alertSurface()` is still called, and still only asks a question — it is
-    // now incapable of answering with a page. The count it returns goes into
-    // the response so the client and the tests can see what the server saw:
-    // `pages: 0` means a cold window with nowhere to draw yet, and the pending
-    // consent stays queued server-side until there is somewhere. That wait is
-    // the honest behaviour; manufacturing a destination is what was removed.
+    // MEASURED HERE, cold launch, Picker → Local Browser via the exact two
+    // requests the dashboard sends:
+    //
+    //   POST /inspector/targeting/begin  → consent cns_… state=pending
+    //   POST /browser/real/open          → tabs=[about:blank]  alertSurface.pages=0
+    //   CDP /json/list                   → page about:blank        dialogs=0
+    //
+    // The consent existed. Nothing could draw it: the ONLY page was
+    // `about:blank`, where the manifest injects no content script, so
+    // `consent.js` never polled and `showPickerAlert()` was never reached. The
+    // previous fix removed the Alert Tab — correctly — and replaced it with
+    // NOTHING: `alertSurface()` said `pages: 0` and this route returned. Then,
+    // navigating that same blank tab to the project URL over CDP produced
+    // `dialogs=1 owner=1` within one poll tick — every link downstream works;
+    // the destination alone was missing.
+    //
+    // WHAT THE SPEC SAYS THE DESTINATION IS
+    //
+    //   «The Local Browser's FIRST / INITIAL TAB becomes: http://127.0.0.1:3000
+    //    → That page is the ACTIVE Local Browser tab → Picker Alert appears ON
+    //    THAT TAB»
+    //   «The initial page itself should become the project page.»
+    //
+    // So the initial page (about:blank / chrome://newtab — nothing of the
+    // operator's) is NAVIGATED to the canonical project URL, in place. Not a
+    // new page (`ctx.newPage()` is not called), not the consent host (gone),
+    // not the last/active/indexed tab (only `isInitialPage()` tabs qualify).
+    // Idempotent: a project page already open is returned untouched, so a
+    // running browser's page count does not change and Picker×3 / Retry×2 add
+    // nothing. See RealChrome.projectPage() for the full contract and trace.
+    const project = await RealChrome.projectPage();
+
+    // WHERE THE ALERT CAN DRAW, REPORTED — the census after the step above.
+    // `pages: 0` now only happens when there was neither a project page nor an
+    // initial page to reuse (every tab is the operator's own non-http page),
+    // and the pending consent stays queued until they land on one.
     const surface = await RealChrome.alertSurface();
+    const { pages: injectable } = surface;
+    console.log(
+      `[RealChrome][trace] picker open: project=${project.reason} `
+      + `injectable=${injectable} pages=${project.pages}`,
+    );
 
     return {
       success: true,
@@ -1504,6 +1541,11 @@ export const createBrowserRoutes = (): Router => {
       // mystery: with it, the client can say "the browser has no page I can
       // draw on yet" instead of appearing to do nothing.
       alertSurface: surface,
+      // WHAT HAPPENED TO THE INITIAL TAB: 'navigated' (cold browser, the blank
+      // start tab became the project page), 'exists' (a project page was
+      // already open, nothing touched), or 'none' (no reusable tab — every tab
+      // is the operator's own). Reported so the client can say which.
+      projectPage: { reason: project.reason, url: project.page ? project.page.url() : '' },
     };
   }
 

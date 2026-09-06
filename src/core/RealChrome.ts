@@ -129,6 +129,98 @@ function isInjectable(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
+/**
+ * THE POSITIONAL `about:blank` PLAYWRIGHT ADDS TO EVERY PERSISTENT LAUNCH.
+ *
+ * MEASURED, and it is the real source of the extra blank tabs — not a leak of
+ * ours, and not session restore on its own:
+ *
+ *   node_modules/playwright-core/lib/server/chromium/chromium.js
+ *     defaultArgs():  if (isPersistent) chromeArguments.push("about:blank");
+ *
+ * `/proc/<chrome pid>/cmdline` of the running Local Browser showed the bare
+ * `about:blank` positional argument after `--restore-last-session`. Chrome
+ * treats a positional URL as "open this in a tab AS WELL AS whatever startup
+ * does", and with restore on (`restore_on_startup = 5`, which this profile
+ * needs so the operator's tabs survive a recycle) that means, MEASURED over
+ * three restarts of the real browser:
+ *
+ *   launch    :  [about:blank]                                  <- the argument
+ *   restart 1 :  [about:blank, about:blank, live-view]          <- restored + argument
+ *   restart 2 :  [about:blank, about:blank, about:blank, ...]   <- and again
+ *
+ * One more about:blank per launch, forever — each restored blank is written
+ * back into the session and the next launch adds a fresh one. That is the
+ * «۵ یا بیشتر about:blank» pile.
+ *
+ * The fix is to NOT pass the argument, which `ignoreDefaultArgs` allows: it
+ * filters by exact string against the default list, and `about:blank` is on
+ * that list. Playwright still waits for whichever page Chrome opens on its own
+ * (`_loadDefaultContextAsIs` waits for the first Page event), so the launch
+ * resolves with a live context — MEASURED (tools/probe-initial-page.mjs):
+ * fresh profile -> exactly one page, `chrome://new-tab-page/`; restart with a
+ * saved session -> the saved tabs plus at most one start page, never more.
+ *
+ * That start page is a `chrome://` URL rather than `about:blank`, so
+ * `isInitialPage()` accepts both: they are the same thing — the tab Chrome
+ * opened because a window has to hold something — and the project page is
+ * what that tab is FOR (see `projectPage()`).
+ */
+export const POSITIONAL_BLANK_ARG = 'about:blank';
+
+/**
+ * Is this a tab Chrome opened only because a window needs one?
+ *
+ * `about:blank` (Playwright's positional argument, or an older profile's
+ * restored blank), and `chrome://new-tab-page/` / `chrome://newtab/` (Chrome's
+ * own start page when the argument is not passed). None can host a content
+ * script, none was opened by the operator, and all are exactly the
+ * «initial/reusable page» the spec says the project page must be navigated
+ * INTO rather than opened beside.
+ */
+export function isInitialPage(url: string): boolean {
+  const u = String(url || '');
+  return u === '' || u === 'about:blank'
+    || /^chrome:\/\/(new-tab-page|newtab)\/?/i.test(u);
+}
+
+/**
+ * THE CANONICAL PROJECT URL — where the Local Browser's first tab lands.
+ *
+ *   «URL نهایی اولین Local Browser tab باید همان URL پروژه باشد:
+ *    http://127.0.0.1:3000»
+ *
+ * Same source as the extension's seeded `AB_BOOTSTRAP.baseUrl`
+ * (InspectorExtension.serverBaseUrl): loopback on the port this process
+ * actually listens on. Loopback rather than the public address on purpose —
+ * the Local Browser runs on the same machine as this server, and a public
+ * hostname behind a proxy may not resolve from there.
+ */
+export function projectUrl(): string {
+  return `http://127.0.0.1:${config.PORT}/`;
+}
+
+/** Is `url` on the project origin (any path)? */
+export function isProjectPage(url: string): boolean {
+  try {
+    return new URL(String(url || '')).origin === new URL(projectUrl()).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A short, stable identity for a page, for the trace log. Playwright Pages
+ * have no public id, so one is minted per object and remembered on it.
+ */
+const pageIds = new WeakMap<Page, string>();
+let pageSeq = 0;
+export function pageId(p: Page): string {
+  let id = pageIds.get(p);
+  if (!id) { id = `p${++pageSeq}`; pageIds.set(p, id); }
+  return id;
+}
+
 export interface RealChromeStatus {
   enabled: boolean;
   running: boolean;
@@ -972,7 +1064,10 @@ export class RealChrome {
         // the password manager). Both must be REMOVED here; countering them
         // with extra args does not work. See IGNORED_DEFAULT_ARGS for the
         // measurement.
-        ignoreDefaultArgs: [...IGNORED_DEFAULT_ARGS],
+        //
+        // And the positional `about:blank`, the MEASURED source of the
+        // one-more-blank-tab-per-launch pile — see POSITIONAL_BLANK_ARG.
+        ignoreDefaultArgs: [...IGNORED_DEFAULT_ARGS, POSITIONAL_BLANK_ARG],
         args,
         env,
         // null lets the PAGE follow the real window instead of being pinned to
@@ -990,6 +1085,20 @@ export class RealChrome {
       });
 
       this.loaded = extensions;
+
+      // PAGE-CREATION TRACE. The operator asked for the real source of every
+      // page, not a count: «اگر چند about:blank ساخته می‌شوند، من می‌خواهم
+      // منبع واقعی ساخت آن‌ها پیدا شود». Every page the context ever gains is
+      // logged with identity, URL and the running count at the moment it
+      // appears, so a blank that turns up later is attributable to WHEN it
+      // appeared (launch, restore, the operator's Ctrl+T — or this server,
+      // which must never be the answer again).
+      context.on('page', (p) => {
+        console.log(
+          `[RealChrome][trace] page created id=${pageId(p)} url=${p.url() || '(empty)'} `
+          + `count=${context.pages().length}`,
+        );
+      });
 
       // Start watching for downloads BEFORE anyone can navigate. A download
       // that fires before the listener is attached is one Playwright throws
@@ -1039,6 +1148,10 @@ export class RealChrome {
       // SWEEP THE PAGES A PREVIOUS RELEASE LEAKED INTO THIS PROFILE.
       const swept = await sweepRestoredAlertPages(context);
 
+      // THE LAUNCH CENSUS: what the window holds before anyone touches it.
+      const census = context.pages().map((p) => `${pageId(p)}:${p.url() || '(empty)'}`);
+      console.log(`[RealChrome][trace] launch census pages=${census.length} [${census.join(', ')}]`);
+
       console.log(
         `[RealChrome] ✓ persistent Chrome up — ${extensions.length} extension(s), ` +
         `profile=${userDataDir}, tab-restore=${restoreSaid}, installs=${installsSaid}` +
@@ -1079,12 +1192,112 @@ export class RealChrome {
   static async newPage(): Promise<Page> {
     const ctx = await this.getContext();
     const existing = ctx.pages();
-    const blank = existing.find((p) => {
-      const u = p.url();
-      return u === 'about:blank' || u === '';
-    });
+    const blank = existing.find((p) => isInitialPage(p.url()));
     if (blank) return blank;
     return ctx.newPage();
+  }
+
+  /**
+   * THE PROJECT PAGE: THE LOCAL BROWSER'S INITIAL TAB, NAVIGATED — NEVER ADDED.
+   *
+   * WHY THIS EXISTS — BUG #1, «Alert کاملاً نمایش داده نمی‌شود»
+   * -----------------------------------------------------------
+   * MEASURED on a fresh launch, Picker -> Local Browser:
+   *
+   *   tabs: [about:blank]      alertSurface: { pages: 0 }      dialogs: 0
+   *
+   * and the consent WAS pending server-side (`GET /inspector/consent` returned
+   * it). The chain broke at exactly one link: `extension/manifest.json` injects
+   * `content/consent.js` into http/https pages only, and the window held none.
+   * No content script -> no poll -> no `showPickerAlert()` -> no dialog. The
+   * previous fix removed the Alert Tab (correctly) but replaced it with nothing
+   * — `alertSurface()` reported `pages: 0` and stopped — so on a cold browser
+   * the Alert could never appear until the operator typed a URL by hand. Then
+   * it DID appear (measured: navigating the blank tab to the project URL over
+   * CDP produced `dialogs=1 owner=1` within one poll), which is the proof that
+   * everything downstream works and only the destination was missing.
+   *
+   * THE RULE THIS IMPLEMENTS
+   * ------------------------
+   *   «launchPersistentContext() -> initial/reusable page -> navigate that SAME
+   *    page to http://127.0.0.1:3000»
+   *
+   *   «Alert باید روی همان project page / active page نمایش داده شود.»
+   *
+   * The project page is NOT an Alert Tab. It is the page the spec names as the
+   * Local Browser's first tab — the project UI — and the Alert is an overlay
+   * that `consent.js` draws INTO it because it is an http page in the active
+   * tab. The distinction the operator drew is kept exactly:
+   *
+   *   - `ctx.newPage()` is never called here. If there is no initial page and
+   *     no project page, this returns null and the caller reports it; it does
+   *     not manufacture a tab.
+   *   - `page.goto()` is called ONLY on a page `isInitialPage()` accepts —
+   *     about:blank or chrome://newtab, tabs that hold nothing of the
+   *     operator's. Google, YouTube, a form half filled in: untouched. (The
+   *     `landingPage()` hijack of the last tab is what this is NOT.)
+   *   - The destination is the canonical project URL, never
+   *     `/inspector/consent-host` — that page and its concept are gone.
+   *
+   * IDEMPOTENT. Called on every Picker and every Retry:
+   *   - a project page already open -> returned as-is, nothing navigated
+   *     (`reason: 'exists'`), so a running browser's page count is unchanged
+   *     (Test B) and a repeat Picker adds nothing (Test D, Test E);
+   *   - an initial page and no project page -> navigated (`reason: 'navigated'`);
+   *   - neither -> null (`reason: 'none'`), and the pending consent stays
+   *     queued until the operator lands on an http page themselves.
+   *
+   * `bringToFront()` on the navigated page is what makes it the ACTIVE tab, so
+   * the worker's `chrome.tabs.query({active:true})` names it and the Alert is
+   * drawn there and nowhere else. It is NOT called in the `exists` case: the
+   * operator may deliberately be on another tab, and stealing focus back to
+   * the project page would be the tab-hijack in a new coat. The Alert follows
+   * the active tab either way (background.js/consent.js ownership).
+   */
+  static async projectPage(): Promise<{
+    page: Page | null;
+    reason: 'exists' | 'navigated' | 'none';
+    pages: number;
+  }> {
+    const ctx = await this.getContext();
+    const all = ctx.pages();
+    const url = projectUrl();
+
+    const already = all.find((p) => isProjectPage(p.url()));
+    if (already) {
+      console.log(
+        `[RealChrome][trace] project page exists id=${pageId(already)} url=${already.url()} `
+        + `pages=${all.length} — nothing navigated`,
+      );
+      return { page: already, reason: 'exists', pages: all.length };
+    }
+
+    const initial = all.find((p) => isInitialPage(p.url()));
+    if (!initial) {
+      console.log(
+        `[RealChrome][trace] no initial page to reuse pages=${all.length} `
+        + `[${all.map((p) => p.url()).join(', ')}] — nothing created, nothing navigated`,
+      );
+      return { page: null, reason: 'none', pages: all.length };
+    }
+
+    console.log(
+      `[RealChrome][trace] navigating initial page id=${pageId(initial)} `
+      + `from=${initial.url() || '(empty)'} to=${url} pages=${all.length}`,
+    );
+    try {
+      await initial.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    } catch (e) {
+      // A slow server is still a server; the navigation is committed and the
+      // content script arrives with the document. Log, do not fail the Picker.
+      console.warn(`[RealChrome][trace] project page goto: ${(e as Error).message}`);
+    }
+    await initial.bringToFront().catch(() => { /* headless: no window to raise */ });
+    console.log(
+      `[RealChrome][trace] project page ready id=${pageId(initial)} url=${initial.url()} `
+      + `pages=${ctx.pages().length} active=true`,
+    );
+    return { page: initial, reason: 'navigated', pages: ctx.pages().length };
   }
 
   /**
@@ -1144,7 +1357,12 @@ export class RealChrome {
    */
   static async alertSurface(): Promise<AlertSurface> {
     const ctx = await this.getContext();
-    const injectable = ctx.pages().filter((p) => isInjectable(p.url()));
+    const all = ctx.pages();
+    const injectable = all.filter((p) => isInjectable(p.url()));
+    console.log(
+      `[RealChrome][trace] alert surface: pages=${all.length} injectable=${injectable.length} `
+      + `[${all.map((p) => `${pageId(p)}:${p.url() || '(empty)'}${isInjectable(p.url()) ? '' : ' (no content script)'}`).join(', ')}]`,
+    );
     return { kind: 'overlay', pages: injectable.length };
   }
 
