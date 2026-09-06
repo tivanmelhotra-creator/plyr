@@ -1119,6 +1119,21 @@ export const createModeRoutes = (): Router => {
         })
         : null;
 
+      // THE PICKER TRACE, server side, step "picker request created". The
+      // consent id printed here is the one the Local Browser must later draw.
+      if (consent) {
+        console.log(
+          `[picker][trace] picker request ${consent.reused ? 'REUSED' : 'created'}: `
+          + `${consent.request.consentId} node=${target.nodeId} field=${target.fieldKey} `
+          + `label="${target.label || ''}" env=local`,
+        );
+      } else {
+        console.log(
+          `[picker][trace] no request needed: extension already holds node=${target.nodeId} `
+          + `field=${target.fieldKey} (identity MATCH)`,
+        );
+      }
+
       // A field that now MATCHES must not leave an older prompt for itself
       // sitting unanswered in the browser. Approving that stale card later would
       // re-settle a binding that is already correct, and — worse — would make
@@ -1523,6 +1538,18 @@ export const createModeRoutes = (): Router => {
         seen.add(r.consentId);
         requests.push(r);
       }
+    }
+
+    // THE PICKER TRACE, server side, step "request delivered to the browser".
+    // Only when something is actually handed over: the idle 4s poll must not
+    // fill the log with empty answers. The consent id + node/field here should
+    // match the `showPickerAlert()` line in the Local Browser's own console.
+    if (requests.length > 0) {
+      console.log(
+        `[picker][trace] consent poll answered: ${requests.length} pending -> `
+        + requests.map((r) => `${r.consentId} (${r.nodeId}/${r.fieldKey})`).join(', ')
+        + ` env=${filter || 'any'}`,
+      );
     }
 
     res.json({ success: true, count: requests.length, requests });

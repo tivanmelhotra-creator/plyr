@@ -877,7 +877,10 @@ async function consentList(sender) {
   // Alert instead of copying it. See consentOwnershipChanged() for the push
   // that makes the hand-over immediate rather than one poll tick late.
   var owner = await isConsentOwner(sender);
+  var tabId = sender && sender.tab ? sender.tab.id : null;
+  var tabUrl = sender && sender.tab ? sender.tab.url : '';
   if (!owner) {
+    consentTrace('list: tab ' + tabId + ' is NOT the active tab -> owner:false, 0 requests', tabUrl);
     return { ok: true, count: 0, requests: [], environment: env, owner: false, skipped: 'not_active_tab' };
   }
 
@@ -927,13 +930,41 @@ async function consentList(sender) {
       environment: env,
     };
   }
+  var requests = data.requests || [];
+  if (requests.length) {
+    consentTrace(
+      'list: tab ' + tabId + ' IS the active tab -> delivering ' + requests.length + ' request(s): '
+      + requests.map(function (r) { return r.consentId + ' (' + r.nodeId + '/' + r.fieldKey + ')'; }).join(', '),
+      tabUrl
+    );
+  }
   return {
     ok: true,
     owner: true,
     count: data.count || 0,
-    requests: data.requests || [],
+    requests: requests,
     environment: env,
   };
+}
+
+/**
+ * THE PICKER TRACE, worker side. One line per decision that matters:
+ *
+ *   picker request created (server) -> content-script poll arrives here ->
+ *   ownership decided -> request delivered to ONE tab -> (consent.js) dialog
+ *
+ * The operator asked for exactly this chain to be visible so that a missing
+ * Alert can be placed at the link where it went missing, instead of guessed
+ * at. It writes to the service worker console (chrome://extensions -> service
+ * worker -> Inspect), and to nothing else. Only in the managed browser: an
+ * operator's own Chrome never reaches consentList()'s server call anyway, and
+ * must not log about a flow it is not part of.
+ */
+function consentTrace(msg, url) {
+  try {
+    if (typeof AB_BOOTSTRAP === 'undefined' || !AB_BOOTSTRAP || AB_BOOTSTRAP.managed !== true) return;
+    console.log('[ab-consent][trace] ' + msg + (url ? '  @ ' + url : ''));
+  } catch (e) { /* logging must never break the poll */ }
 }
 
 /**
@@ -1010,6 +1041,7 @@ function consentOwnershipChanged(newTabId) {
   if (newTabId == null || newTabId === lastConsentOwnerTabId) return;
   var previous = lastConsentOwnerTabId;
   lastConsentOwnerTabId = newTabId;
+  consentTrace('active tab changed ' + previous + ' -> ' + newTabId + ': old owner told to close, new owner told to ask now');
   // The old owner FIRST, so at no instant are two dialogs open on purpose.
   if (previous != null) tellTab(previous, { type: 'AB_CONSENT_OWNER_CHANGED', owner: false });
   tellTab(newTabId, { type: 'AB_CONSENT_OWNER_CHANGED', owner: true });

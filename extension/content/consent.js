@@ -92,6 +92,21 @@
 
   var HOST_ID = 'ab-consent-host';
 
+  /**
+   * THE PICKER TRACE, page side. The chain the operator asked to see:
+   *
+   *   content-script present -> poll -> owner? -> request delivered ->
+   *   showPickerAlert() -> dialog created -> dialog.showModal()
+   *
+   * Written to THIS page's console (the Local Browser tab's DevTools), one line
+   * per step, so "no Alert" can be located at the exact link that did not run.
+   * Only emitted once the environment gate has confirmed this is the server's
+   * own browser; an operator's personal Chrome logs nothing.
+   */
+  function trace(msg) {
+    try { console.log('[ab-consent][trace] ' + msg + '  @ ' + location.href); } catch (e) { /* never break the prompt */ }
+  }
+
   // How often to ask. 4s is a compromise: fast enough that pressing the picker
   // in the dashboard feels like it opened a prompt here, slow enough that an
   // idle server browser is not making 20 requests a minute forever.
@@ -287,6 +302,7 @@
     state.shadow = shadow;
     state.host = host;
     state.dialog = dialog;
+    trace('dialog created (the one <dialog>, in a closed shadow root)');
     return shadow;
   }
 
@@ -394,7 +410,10 @@
    *   «Alert 1 → Picker دوباره اجرا شد → Alert 1 removed/replaced → Alert 2»
    */
   function render(req) {
-    if (!ensurePanel()) return;
+    // `showPickerAlert()` in the spec's chain IS this function: the one place
+    // a delivered request becomes a dialog.
+    trace('showPickerAlert() called for ' + req.consentId + ' node=' + req.nodeId + ' field=' + req.fieldKey);
+    if (!ensurePanel()) { trace('showPickerAlert(): no shadow root available, nothing drawn'); return; }
     var dialog = state.dialog;
     if (!dialog) return;
 
@@ -405,8 +424,10 @@
     if (state.current === req.consentId && dialog.open) return;
 
     // REPLACE. Not append — see the note on `state.dialog`.
+    var replaced = state.current && state.current !== req.consentId;
     while (dialog.firstChild) dialog.removeChild(dialog.firstChild);
     state.current = req.consentId;
+    if (replaced) trace('replacing the open Alert with the newer request (singleton: one dialog, new question)');
 
     var badge = document.createElement('div');
     badge.className = 'badge';
@@ -545,6 +566,7 @@
     if (!dialog.open) {
       try {
         dialog.showModal();
+        trace('dialog.showModal() -> shown for ' + req.consentId);
       } catch (e) {
         // showModal() is unavailable in a handful of contexts (and in the
         // fake DOM the unit tests drive this file with). A non-modal open still
@@ -624,12 +646,32 @@
         // is the only thing that may draw it, and the verdict is "not you".
         relinquish();
       } else {
+        if (!state.owner) trace('poll: this tab is the active tab -> it owns the Alert');
         state.owner = true;
-        var requests = res.requests || [];
-        for (var i = 0; i < requests.length; i++) {
-          if (requests[i] && requests[i].consentId) render(requests[i]);
+        var requests = (res.requests || []).filter(function (r) { return r && r.consentId; });
+        // ONE REQUEST, ONE DIALOG — THE NEWEST.
+        //
+        // FOUND BY THE TRACE, not by the census: with N requests pending the
+        // server answers oldest-first, and this loop used to call render() N
+        // times per tick. The "same id, already open" guard only matched the
+        // LAST one, so every 4s the dialog was torn down and rebuilt N times —
+        // the operator's focus yanked, a "Connecting…" message wiped mid-read,
+        // and `showPickerAlert()` logged six times for one question. The
+        // census said "dialogs=1" throughout, which is why it was never seen.
+        //
+        // The spec's model is «one picker request → one active dialog», and
+        // «Alert 1 → replaced by → Alert 2» — the NEWEST pick is the one the
+        // operator just made, and lastPickerTarget on the dashboard is that
+        // same pick. Older pending prompts stay pending on the server (Retry
+        // and Not-now still work for them); they are simply not drawn on top
+        // of the current one.
+        var newest = requests.length ? requests[requests.length - 1] : null;
+        if (newest) {
+          trace('poll: ' + requests.length + ' pending request(s); drawing the newest (' + newest.consentId + ')');
+          render(newest);
+        } else {
+          mark();
         }
-        if (!requests.length) mark();
       }
 
       state.timer = setTimeout(poll, wait);
@@ -736,6 +778,7 @@
       // Confirmed to be the server's own browser: only now may the loop run,
       // here or from the visibilitychange listener above.
       state.armed = true;
+      trace('content script present; environment=local; polling ' + (document.hidden ? 'deferred (tab hidden)' : 'starts now'));
       if (!document.hidden) poll();
     });
   } catch (e) {
