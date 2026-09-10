@@ -244,6 +244,9 @@
    *   send:      function(msgObject) — the WebSocket sender,
    *   userId:    string or function() -> string; the SAME identity the socket
    *              was opened with, so the upload lands where the session looks,
+   *   workflowId: optional string or function() -> string; the saved workflow
+   *              whose files "Choose from Workflow Files" browses (defaults to
+   *              the editor's open workflow, see workflow-files.js),
    *   isBusy:    optional function() -> bool; true = swallow nothing (e.g.
    *              element-selection mode, where keys mean something else)
    * }
@@ -258,10 +261,16 @@
     var userId = typeof o.userId === 'function'
       ? o.userId
       : function () { return o.userId || ''; };
+    // The saved workflow this surface belongs to, for "Choose from Workflow
+    // Files". Optional: WorkflowFiles falls back to the editor's open workflow.
+    var workflowId = typeof o.workflowId === 'function'
+      ? o.workflowId
+      : function () { return o.workflowId || ''; };
     if (!stage) return { onMessage: function () { return false; }, detach: function () {} };
 
     var bar = null;          // the file prompt, created on demand
     var pending = null;      // { accept, multiple }
+    var wfmOpen = false;     // the Workflow File Manager THIS bar opened is up
     var listeners = [];
 
     function on(el, type, fn, capture) {
@@ -312,6 +321,12 @@
     function closeBar() {
       if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
       bar = null;
+      // The Workflow File Manager this bar opened goes with it: the page has
+      // stopped asking (or been answered), so a Select now has no dialog.
+      if (wfmOpen && window.WorkflowFiles && window.WorkflowFiles.close) {
+        wfmOpen = false;
+        window.WorkflowFiles.close('bar-closed');
+      }
     }
 
     function sendFiles(fileList) {
@@ -339,9 +354,20 @@
     function setBarBusy(busy) {
       if (!bar) return;
       var btn = bar.querySelector('.rio-choose');
+      var wf = bar.querySelector('.rio-workflow');
       var status = bar.querySelector('.rio-status');
       if (btn) btn.disabled = !!busy;
+      if (wf) wf.disabled = !!busy;
       if (status) status.textContent = busy ? t('rio.uploading', 'sending…') : '';
+    }
+
+    /** While the Workflow File Manager is open the bar's own buttons stand down. */
+    function setBarWaiting(waiting) {
+      if (!bar) return;
+      var btn = bar.querySelector('.rio-choose');
+      var wf = bar.querySelector('.rio-workflow');
+      if (btn) btn.disabled = !!waiting;
+      if (wf) wf.disabled = !!waiting;
     }
 
     function openBar(info) {
@@ -358,8 +384,17 @@
             : '') +
         '</span>' +
         '<span class="rio-status"></span>' +
+        // ADD FILE, TWO SOURCES. The first is the existing upload bridge; the
+        // second is the workflow's own persistent files on the server, which
+        // need no local picker at all (public/js/workflow-files.js). Both are
+        // the operator's own click, which is what makes the native picker
+        // reliable regardless of how long ago the page asked.
         '<button type="button" class="btn btn-primary btn-sm rio-choose">' +
-          t('rio.choose', 'Choose a file…') + '</button>' +
+          t('rio.choose', 'Upload from Computer') + '</button>' +
+        (window.WorkflowFiles
+          ? '<button type="button" class="btn btn-sm rio-workflow">' +
+              t('rio.fromWorkflow', 'Choose from Workflow Files') + '</button>'
+          : '') +
         '<button type="button" class="btn btn-sm rio-cancel">' +
           t('rio.cancel', 'Cancel') + '</button>';
 
@@ -378,6 +413,27 @@
         pending = null;
         closeBar();
       });
+      var wfBtn = bar.querySelector('.rio-workflow');
+      if (wfBtn) {
+        wfBtn.addEventListener('click', function () {
+          // The manager's Select posts to /browser/workflow-files/<id>/use with
+          // the SAME identity the socket runs as, so the server finds this
+          // session's waiting dialog. The hand-over is confirmed by the
+          // 'fileChooserDone' message the session emits, exactly as for tokens.
+          setBarWaiting(true);
+          wfmOpen = window.WorkflowFiles.open({
+            host: host,
+            workflowId: workflowId(),
+            userId: userId,
+            accept: info.accept,
+            onUsed: function () { setBarBusy(true); /* fileChooserDone closes the bar */ },
+            onClose: function (reason) {
+              wfmOpen = false;
+              if (reason !== 'used') setBarWaiting(false);
+            }
+          });
+        });
+      }
       input.addEventListener('change', function () {
         sendFiles(input.files);
       });

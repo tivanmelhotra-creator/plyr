@@ -1047,7 +1047,7 @@
       // and would fail silently — «بستن یا از دست دادن Alert قبلی باعث از بین
       // رفتن امکان Retry نمی‌شود» covers that case too. It just does not put a
       // viewer tab on screen.
-      bv.openRealBrowser(ctx.url || '', tab, { noTab: noTab }).catch(function () {});
+      bv.openRealBrowser(ctx.url || '', tab, { noTab: noTab, workflowId: ctx.workflowId }).catch(function () {});
       armed(res.target, env, ctx);
     }
 
@@ -1099,7 +1099,7 @@
         // Not awaited, and the rejection is swallowed: openRealBrowser already
         // reports failure inside the tab the operator is looking at, and it
         // rethrows for callers that do await.
-        bv.openRealBrowser(ctx.url || '', tab, { noTab: noTab }).catch(function () {});
+        bv.openRealBrowser(ctx.url || '', tab, { noTab: noTab, workflowId: ctx.workflowId }).catch(function () {});
       }
       // No `else` branch, and that absence IS the Retry contract. The browser is
       // already live and the Alert this `begin` raised renders as an overlay

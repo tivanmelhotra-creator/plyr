@@ -730,6 +730,19 @@ export class RealChrome {
     return this.chooser.accept(id, tokens);
   }
 
+  /**
+   * Answer that dialog with files the SERVER resolved from a Workflow's own
+   * workspace (see WorkflowStorage.resolveForBrowser and the
+   * /browser/workflow-files/:workflowId/use route). Paths never come from a
+   * client; see RemoteFileChooser.acceptPaths.
+   */
+  static async acceptChooserPaths(id: string, paths: string[]): Promise<{ count: number }> {
+    if (!this.chooser) {
+      throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
+    }
+    return this.chooser.acceptPaths(id, paths);
+  }
+
   /** Dismiss it. An empty id cancels whatever is pending. */
   static async cancelChooser(id = ''): Promise<boolean> {
     return this.chooser ? this.chooser.cancel(id) : false;

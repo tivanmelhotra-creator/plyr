@@ -50,6 +50,10 @@ const JS_ALL = [
   // much user-visible copy and belongs under the same emoji + icon-name guards
   // as everything else here.
   'targeting-flow.js',
+  // The Workflow File Manager ("Add File -> Choose from Workflow Files" on the
+  // canvas views). Renders folder rows, button labels and error sentences, so
+  // it is user-visible copy and its icons must resolve like everyone else's.
+  'workflow-files.js',
 ];
 
 /**
