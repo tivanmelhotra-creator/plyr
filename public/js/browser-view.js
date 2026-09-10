@@ -351,7 +351,10 @@
           stage: stage, host: stage, send: send,
           // Same identity as the socket line above, or the upload lands in a
           // directory this session never looks in.
-          userId: uid
+          userId: uid,
+          // "Choose from Workflow Files" browses the workflow open in the
+          // editor; the Live view has no pick context of its own.
+          workflowId: function () { return workflowIdFor(null); }
         });
       }
       ws.onopen = function () {
@@ -589,6 +592,25 @@
     return status === 502 || status === 504;
   }
 
+  /**
+   * The saved-workflow id a pick belongs to, for the viewer URL.
+   *
+   * Preferred: the id the caller passed (TargetingFlow carries `ctx.workflowId`
+   * from the NDV, and lastPickerTarget keeps it for Retry). Fallback: the
+   * workflow open in the editor. Both are the WorkflowService id; nothing here
+   * invents one. Empty when the graph has never been saved.
+   */
+  function workflowIdFor(o) {
+    var id = o && o.workflowId ? String(o.workflowId) : '';
+    if (!id && window.FlowEditor && typeof window.FlowEditor.getCurrentWorkflow === 'function') {
+      try {
+        var cur = window.FlowEditor.getCurrentWorkflow();
+        if (cur && cur.id) id = String(cur.id);
+      } catch (e) { /* no editor on this page */ }
+    }
+    return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : '';
+  }
+
   /** How long to keep waiting for a cold start, and how often to ask. */
   var REAL_OPEN_ATTEMPTS = 8;
   var REAL_OPEN_BACKOFF_MS = 2500;
@@ -663,6 +685,14 @@
         var sep = r.viewPath.indexOf('?') >= 0 ? '&' : '?';
         var href = r.viewPath + sep + 'api_key=' +
           encodeURIComponent(API.getKey ? API.getKey() : '');
+        // WHICH WORKFLOW'S FILES. The view's "Add File -> Choose from Workflow
+        // Files" reads this id and talks to /browser/workflow-files/<id>. It
+        // is the canonical saved-workflow id (WorkflowService, `wf_...`) --
+        // the same one the picker context carries -- never a tab or session
+        // id. Only appended when there is one, so the URL of a pick made
+        // outside a saved workflow is unchanged.
+        var wfId = workflowIdFor(o);
+        if (wfId) href += '&workflowId=' + encodeURIComponent(wfId);
         if (tab) tab.location = href;
         // `noTab` STOPS HERE, and this line is the reason the flag exists at
         // all. The old `else` opened a viewer via window.open() whenever no tab
@@ -3324,6 +3354,10 @@
           // Same identity as the socket, or the upload lands in a directory
           // this session never looks in.
           userId: effectiveUserId,
+          // The saved workflow this pick belongs to (canonical WorkflowService
+          // id from the caller, else the editor's), for "Choose from Workflow
+          // Files". Never a tab or session id.
+          workflowId: function () { return workflowIdFor(o); },
           // While the crosshair is armed every key means "walk the DOM", so the
           // clipboard shortcuts must stand down rather than fight the picker.
           isBusy: function () { return !!(pickState && pickState.selectMode); }

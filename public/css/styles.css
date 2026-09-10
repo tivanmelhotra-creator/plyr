@@ -5687,6 +5687,98 @@ body.route-fullbleed .fe-mm-restore {
   outline-offset: -6px;
 }
 
+/* ---- the Workflow File Manager (public/js/workflow-files.js) ------------
+ *
+ * A compact panel INSIDE the stage, never a tab or a window: it opens from
+ * the file prompt's "Choose from Workflow Files" and sits just above that bar
+ * so the question ("the page is asking for a file") and the answer (this
+ * workflow's files) are on screen together. One z-index above the bar. */
+.wfm-panel {
+  position: absolute;
+  inset-inline-end: 12px;
+  bottom: 64px;
+  z-index: 7;
+  width: min(24rem, calc(100% - 24px));
+  max-height: min(22rem, calc(100% - 80px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.wfm-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.wfm-head h4 { margin: 0; flex: 1 1 auto; font-size: 0.82rem; font-weight: 600; color: var(--text); }
+.wfm-crumb {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.wfm-crumb .wfm-back { padding: 0.1rem 0.5rem; }
+/* Paths are machine-readable and always LTR, even in the Persian UI. */
+.wfm-path { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; direction: ltr; text-align: start; }
+.wfm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0.4rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 4rem;
+}
+.wfm-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: calc(var(--radius-sm) / 1.5);
+  color: var(--text);
+}
+.wfm-list li.wfm-dir, .wfm-list li.wfm-file { cursor: pointer; }
+.wfm-list li.wfm-dir:hover, .wfm-list li.wfm-file:hover { background: var(--bg-elev); }
+.wfm-list li.sel { background: rgba(255, 138, 31, 0.16); outline: 1px solid rgba(255, 138, 31, 0.5); }
+.wfm-list li.wfm-empty { color: var(--text-dim); cursor: default; }
+.wfm-ico { display: inline-flex; flex: 0 0 auto; color: var(--primary); }
+.wfm-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; direction: ltr; text-align: start; }
+.wfm-size { flex: 0 0 auto; color: var(--text-dim); font-size: 0.72rem; font-family: var(--mono); }
+.wfm-act { display: none; gap: 0.15rem; flex: 0 0 auto; }
+.wfm-list li:hover .wfm-act, .wfm-list li.sel .wfm-act { display: inline-flex; }
+.wfm-act button {
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  cursor: pointer;
+}
+.wfm-act button:hover { border-color: var(--border-strong); color: var(--text); }
+.wfm-act button.danger:hover { color: var(--danger); border-color: var(--danger); }
+.wfm-note { color: var(--text-dim); padding: 0.2rem 0.7rem 0; min-height: 1.2em; font-size: 0.75rem; }
+.wfm-note.err { color: var(--danger); }
+.wfm-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.7rem;
+  border-top: 1px solid var(--border);
+}
+.wfm-grow { flex: 1 1 auto; }
+/* Hidden, not removed: the visible Upload button forwards its click here. */
+.wfm-input { display: none; }
+
 /* ---- the floating panel ------------------------------------------------ */
 .bvp-panel {
   position: absolute;

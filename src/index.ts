@@ -509,6 +509,7 @@ app.use('/', routes.health);
 app.use('/', routes.user);
 app.use('/', routes.browser);
 app.use('/', routes.mode);
+app.use('/', routes.workflowFiles);
 app.use('/admin', routes.admin);
 
 // ============================================

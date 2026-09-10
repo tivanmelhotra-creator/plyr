@@ -8,6 +8,7 @@ import { createUserRoutes } from './user.routes';
 import { createAdminRoutes } from './admin.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createModeRoutes } from './mode.routes';
+import { createWorkflowFilesRoutes } from './workflow-files.routes';
 
 interface RoutesDeps {
   queue: Queue;
@@ -39,6 +40,10 @@ export const createAllRoutes = (deps: RoutesDeps) => {
     // singletons (browserModes, localBridges, inspectorHub), because what they
     // describe — live sockets — only exists inside this process.
     mode: createModeRoutes(),
+    // Workflow File Workspace: persistent per-workflow files, and the bridge
+    // that hands a selected file to the browser's waiting file dialog. Needs
+    // Redis to confirm the workflow belongs to the caller before any disk I/O.
+    workflowFiles: createWorkflowFilesRoutes({ connection: deps.connection }),
     admin: createAdminRoutes({
       queue: deps.queue,
       connection: deps.connection,
@@ -55,3 +60,4 @@ export { createUserRoutes } from './user.routes';
 export { createAdminRoutes } from './admin.routes';
 export { createBrowserRoutes } from './browser.routes';
 export { createModeRoutes } from './mode.routes';
+export { createWorkflowFilesRoutes } from './workflow-files.routes';

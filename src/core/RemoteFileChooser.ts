@@ -302,6 +302,44 @@ export class RemoteFileChooser {
   }
 
   /**
+   * Hand SERVER-RESOLVED files to the dialog the page is waiting on.
+   *
+   * This is the Workflow Files half of Add File. The paths here were produced by
+   * WorkflowStorage.resolveForBrowser() — validated against the workflow root,
+   * symlink-checked, canonical — and they arrive from the ROUTE, never from a
+   * client. The route accepts `workflowId + relativePath` and nothing else; a
+   * client cannot reach this method with a string of its own choosing. That is
+   * the same rule as `accept()` (tokens, never paths) expressed one layer up:
+   * the thing the client names is an entry in a namespace the server owns.
+   *
+   * Same first-come/id discipline as `accept()`: the answer names the dialog it
+   * is for, and a stale id is refused rather than delivered to whatever asked
+   * next.
+   */
+  async acceptPaths(id: string, paths: string[]): Promise<{ count: number }> {
+    const chooser = this.chooser;
+    if (!chooser || !this.info) {
+      throw new FileChooserError('The page is not asking for a file any more.');
+    }
+    if (String(id || '') !== this.id) {
+      throw new FileChooserError('That file request is no longer the current one.');
+    }
+    const multiple = this.info.multiple;
+    this.forget();
+
+    const list = (Array.isArray(paths) ? paths : [])
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .slice(0, MAX_FILES);
+    if (!list.length) {
+      await chooser.setFiles([]).catch(() => {});
+      throw new FileChooserError('No file was selected.');
+    }
+    const use = multiple ? list : [list[0]];
+    await chooser.setFiles(use);
+    return { count: use.length };
+  }
+
+  /**
    * Dismiss the dialog. `setFiles([])` is what "Cancel" means to a page.
    *
    * An empty `id` cancels whatever is pending, which is what a teardown needs: a

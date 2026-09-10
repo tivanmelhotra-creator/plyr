@@ -206,6 +206,80 @@ export function chromeViewHtml(): string {
   .uphint { color: #9fe0b0; display: block; }
   .uphint .sub { color: #8b8b98; padding-top: 2px; }
   #up { display: none; }
+
+  /* ── Add File and the Workflow File Manager ──────────────────────────────
+     THE ACTIVATION PROBLEM, AND WHY THIS IS A BUTTON AND NOT A TIMER.
+     'upInput.click()' opens the operator's native picker only within a few
+     seconds of a real gesture (MEASURED: works at 4900 ms, gone at 5500 ms).
+     The page's request arrives by polling, so by the time offerFile() runs the
+     remote click may already be too old. The fix is not a faster poll; it is a
+     control the operator presses HERE, whose own click is the activation. That
+     press shows two sources -- the operator's computer, or this workflow's
+     own files on the server -- and 'Upload from Computer' calls the picker
+     inside that same click handler.
+
+     Orange, and the only orange thing on this page: the spec asks for a dark
+     UI with an orange accent for the workspace, and the one accent colour is
+     what tells the new control apart from the blue download plumbing. */
+  .fbtn.accent { background: #e8731a; border-color: #f0862f; color: #fff; }
+  .fbtn.accent:hover { background: #f0862f; }
+  #addmenu {
+    display: flex; flex-direction: column; gap: 6px;
+    width: 15rem; background: rgba(30,30,37,.97); border: 1px solid #43434e;
+    border-radius: 8px; padding: 9px 10px; box-shadow: 0 6px 22px rgba(0,0,0,.45);
+  }
+  #addmenu[hidden] { display: none; }
+  #addmenu h4 { margin: 0 0 3px; font-size: 12px; font-weight: 600; color: #b9b9c6; }
+  #addmenu .fbtn { width: 100%; justify-content: flex-start; }
+  #addmenu .sub { color: #8b8b98; font-size: 11px; padding: 0 2px; }
+  #wfm {
+    width: 24rem; max-height: 22rem; display: flex; flex-direction: column;
+    background: rgba(30,30,37,.97); border: 1px solid #43434e;
+    border-radius: 8px; box-shadow: 0 6px 22px rgba(0,0,0,.45); overflow: hidden;
+  }
+  #wfm[hidden] { display: none; }
+  .wfm-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    border-bottom: 1px solid #38383f;
+  }
+  .wfm-head h4 { margin: 0; flex: 1 1 auto; font-size: 12px; font-weight: 600; color: #e6e6ee; }
+  .wfm-x { font: inherit; color: #8b8b98; background: none; border: 0; cursor: pointer; padding: 0 4px; font-size: 15px; line-height: 1; }
+  .wfm-x:hover { color: #fff; }
+  .wfm-crumb {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    border-bottom: 1px solid #38383f; color: #b9b9c6;
+  }
+  .wfm-crumb .fbtn { padding: 2px 8px; }
+  #wfmpath { flex: 1 1 auto; overflow-wrap: anywhere; direction: ltr; }
+  #wfmlist { list-style: none; margin: 0; padding: 4px 6px; overflow-y: auto; flex: 1 1 auto; min-height: 4rem; }
+  #wfmlist li {
+    display: flex; align-items: center; gap: 7px; padding: 5px 6px;
+    border-radius: 5px; cursor: default;
+  }
+  #wfmlist li:hover { background: rgba(255,255,255,.05); }
+  #wfmlist li.sel { background: rgba(232,115,26,.18); outline: 1px solid rgba(232,115,26,.5); }
+  #wfmlist li.wfm-dir { cursor: pointer; }
+  #wfmlist li.wfm-file { cursor: pointer; }
+  .wfm-ico { flex: none; width: 1.1em; text-align: center; color: #e8731a; }
+  .wfm-name { flex: 1 1 auto; overflow-wrap: anywhere; direction: ltr; }
+  .wfm-act { display: none; gap: 2px; }
+  #wfmlist li:hover .wfm-act, #wfmlist li.sel .wfm-act { display: inline-flex; }
+  .wfm-act button {
+    font: inherit; font-size: 11px; color: #b9b9c6; background: none;
+    border: 1px solid transparent; border-radius: 4px; padding: 1px 5px; cursor: pointer;
+  }
+  .wfm-act button:hover { border-color: #4a4a55; color: #fff; }
+  .wfm-act button.danger:hover { color: #ff9d9d; border-color: #ff9d9d; }
+  .wfm-foot {
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    border-top: 1px solid #38383f;
+  }
+  .wfm-foot .grow { flex: 1 1 auto; }
+  .wfm-foot .fbtn { padding: 5px 10px; }
+  .wfm-foot .fbtn:disabled { opacity: .5; cursor: default; }
+  #wfmnote { color: #8b8b98; padding: 4px 10px 0; min-height: 1.2em; }
+  #wfmnote.err { color: #ff9d9d; }
+  #wfmup { display: none; }
 </style>
 </head>
 <body>
@@ -220,7 +294,37 @@ export function chromeViewHtml(): string {
     <p class="fhelp">Downloads from the remote browser land here. A file you send waits here too, and is handed over automatically the moment a page asks for one &mdash; you never type its name.</p>
     <ul id="dls"><li class="empty">Nothing downloaded yet.</li></ul>
   </div>
+  <!-- The Workflow File Manager: a compact panel, never a tab or a window. It
+       is part of THIS page and talks to /browser/workflow-files/<workflowId>. -->
+  <div id="wfm" hidden>
+    <div class="wfm-head">
+      <h4>Workflow Files</h4>
+      <button class="wfm-x" id="wfmclose" type="button" title="Close">&times;</button>
+    </div>
+    <div class="wfm-crumb">
+      <button class="fbtn" id="wfmback" type="button" title="Go to the parent folder">&#8592;</button>
+      <span id="wfmpath">Workflow</span>
+    </div>
+    <ul id="wfmlist"><li class="empty">Loading&hellip;</li></ul>
+    <div id="wfmnote"></div>
+    <div class="wfm-foot">
+      <button class="fbtn" id="wfmnew" type="button" title="Create a folder here">New Folder</button>
+      <button class="fbtn" id="wfmupload" type="button" title="Upload a file from your computer into this folder">Upload</button>
+      <span class="grow"></span>
+      <button class="fbtn accent" id="wfmselect" type="button" disabled title="Hand the selected file to the page">Select</button>
+    </div>
+    <input id="wfmup" type="file" multiple>
+  </div>
+  <!-- Add File: the operator's OWN click, so the native picker is allowed to
+       open no matter how long ago the remote page asked. Two sources. -->
+  <div id="addmenu" hidden>
+    <h4>Add File</h4>
+    <button class="fbtn" id="addpc" type="button">&#8593; Upload from Computer</button>
+    <button class="fbtn" id="addwf" type="button">&#128193; Choose from Workflow Files</button>
+    <span class="sub" id="addsub"></span>
+  </div>
   <div style="display:flex; gap:8px">
+    <button class="fbtn accent" id="addbtn" type="button" title="Give the page a file: from your computer, or from this workflow's files">+ Add File</button>
     <button class="fbtn" id="upbtn" type="button" title="Choose a file on your machine, ready for the page to ask for it">&#8593; Send a file</button>
     <!-- The count rides on this button so "did my download arrive?" is answered
          without opening anything. #dlcount is a CHILD span, so writing the
@@ -1277,10 +1381,364 @@ function offerFile() {
   pick.addEventListener('click', () => openLocalPicker());
   pendingRow.appendChild(pick);
 
+  // The Add File menu comes up as well, with both sources. Its buttons are
+  // the operator's OWN gesture, which is what makes the native picker
+  // reliably openable no matter how old the remote click is by now -- and
+  // the second source, this workflow's files, never needed a picker at all.
+  showAddMenu('The page is asking for a file.');
+
   // The attempt itself. It works while the click on the remote screen still
-  // counts as activation; when it does not, the button above is right there.
+  // counts as activation; when it does not, the buttons above are right there.
   openLocalPicker();
   return null;
+}
+
+// ── ADD FILE: TWO SOURCES ─────────────────────────────────────────────────────────
+//
+//   Add File
+//   ├── Upload from Computer      -> the existing upload bridge (upInput,
+//   │                                uploadOne, /browser/uploads, tokens)
+//   └── Choose from Workflow Files -> the Workflow File Manager below, and
+//                                    POST /browser/workflow-files/<id>/use
+//
+// WHY THE OPERATOR'S CLICK MATTERS (the diagnosed regression). offerFile()
+// calls upInput.click() when the poll finds a request, and Chrome only honours
+// that inside the transient-activation window of the operator's last gesture
+// (MEASURED: 4900 ms works, 5500 ms does not). Both buttons here run inside
+// the operator's own click, so 'Upload from Computer' opens the picker every
+// time. Nothing here simulates a gesture or clicks Upload on the operator's
+// behalf; the fix is that the gesture is theirs.
+//
+// WHICH WORKFLOW. The page is opened with ?workflowId=<id> by browser-view.js
+// (the id of the workflow the picker was pressed in, i.e. the canonical
+// WorkflowService id). Without one the second source is offered but explains
+// that a saved workflow is needed, rather than inventing a bucket.
+const addMenu   = document.getElementById('addmenu');
+const addSub    = document.getElementById('addsub');
+const workflowId = qs.get('workflowId') || '';
+
+function showAddMenu(why) {
+  if (!addMenu) return;
+  if (addSub) addSub.textContent = why || '';
+  addMenu.hidden = false;
+}
+function hideAddMenu() {
+  if (addMenu) addMenu.hidden = true;
+}
+
+const addBtn = document.getElementById('addbtn');
+if (addBtn) {
+  addBtn.addEventListener('click', () => {
+    if (!addMenu.hidden) { hideAddMenu(); return; }
+    wfmHide();
+    showAddMenu(pendingId
+      ? 'The page is asking for a file.'
+      : 'No page is asking yet; the file will wait until one does.');
+  });
+}
+
+const addPc = document.getElementById('addpc');
+if (addPc) {
+  addPc.addEventListener('click', () => {
+    // Same input, same upload path, same tokens as the bottom Upload control.
+    // If a page is asking, the input mirrors its accept/multiple; otherwise it
+    // parks the file exactly as Upload does.
+    hideAddMenu();
+    if (pendingId) openLocalPicker();
+    else {
+      upInput.accept = '';
+      upInput.multiple = true;
+      try { upInput.click(); } catch (e) { /* the bottom button still works */ }
+    }
+  });
+}
+
+const addWf = document.getElementById('addwf');
+if (addWf) {
+  addWf.addEventListener('click', () => {
+    hideAddMenu();
+    wfmShow();
+  });
+}
+
+// ── WORKFLOW FILE MANAGER ─────────────────────────────────────────────────────────────
+// A compact panel inside this page. Every request names workflowId + a
+// workflow-RELATIVE path; the server decides where that is on disk and this
+// page never sees an absolute path. Persistent: files here outlive the
+// temporary upload TTL and the browser session.
+const wfm       = document.getElementById('wfm');
+const wfmList   = document.getElementById('wfmlist');
+const wfmPath   = document.getElementById('wfmpath');
+const wfmNote   = document.getElementById('wfmnote');
+const wfmBack   = document.getElementById('wfmback');
+const wfmSelect = document.getElementById('wfmselect');
+const wfmUp     = document.getElementById('wfmup');
+
+/** The folder on screen (workflow-relative, '' = root) and the picked file. */
+let wfmCwd = '';
+let wfmParent = null;
+let wfmSelected = null;   // { path, name }
+let wfmSelectedRow = null;
+
+function wfmBase() {
+  return '/browser/workflow-files/' + encodeURIComponent(workflowId);
+}
+
+function wfmSay(text, isErr) {
+  if (!wfmNote) return;
+  wfmNote.textContent = text || '';
+  wfmNote.className = isErr ? 'err' : '';
+}
+
+/** Read a JSON answer, and turn a refusal into an Error with the server's words. */
+function wfmJson(r) {
+  return r.text().then((txt) => {
+    let d = null;
+    try { d = JSON.parse(txt); } catch (e) { /* not JSON: the status decides */ }
+    if (r.status === 401 || r.status === 403) {
+      throw new Error((d && d.error) || 'Not authorised.');
+    }
+    if (!r.ok || !d || !d.success) {
+      throw new Error((d && d.error) || ('The server refused (HTTP ' + r.status + ').'));
+    }
+    return d;
+  });
+}
+
+function wfmFetch(path, init) {
+  const o = init || {};
+  const headers = Object.assign({}, authHeaders(), o.headers || {});
+  return fetch(path, Object.assign({}, o, { headers: headers, credentials: 'same-origin' }))
+    .then(wfmJson);
+}
+
+function wfmShow() {
+  if (!wfm) return;
+  wfm.hidden = false;
+  panel.hidden = true;
+  if (!workflowId) {
+    wfmList.textContent = '';
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'This browser was not opened from a saved workflow, so it has no workflow files. Save the workflow and press the picker again.';
+    wfmList.appendChild(li);
+    wfmSay('', false);
+    return;
+  }
+  void wfmLoad(wfmCwd);
+}
+
+function wfmHide() {
+  if (wfm) wfm.hidden = true;
+}
+
+function wfmSetSelected(entry, row) {
+  if (wfmSelectedRow) wfmSelectedRow.className = wfmSelectedRow.className.replace(/\\bsel\\b/g, '').trim();
+  wfmSelected = entry || null;
+  wfmSelectedRow = row || null;
+  if (row) row.className = row.className + ' sel';
+  wfmSelect.disabled = !wfmSelected;
+}
+
+function wfmLoad(rel) {
+  wfmSay('', false);
+  wfmSetSelected(null, null);
+  return wfmFetch(wfmBase() + '?path=' + encodeURIComponent(rel || ''))
+    .then((d) => {
+      wfmCwd = d.path || '';
+      wfmParent = (d.parent === null || d.parent === undefined) ? null : String(d.parent);
+      wfmRender(d.entries || []);
+    })
+    .catch((e) => {
+      wfmSay((e && e.message) || 'Could not read the workflow files.', true);
+    });
+}
+
+function wfmRender(entries) {
+  wfmPath.textContent = 'Workflow' + (wfmCwd ? ' / ' + wfmCwd.split('/').join(' / ') : '');
+  wfmBack.disabled = wfmParent === null;
+  wfmList.textContent = '';
+  if (!entries.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'This folder is empty. Upload a file or create a folder.';
+    wfmList.appendChild(li);
+    return;
+  }
+  entries.forEach((e) => {
+    const li = document.createElement('li');
+    const isDir = e.type === 'dir';
+    li.className = isDir ? 'wfm-dir' : 'wfm-file';
+
+    const ico = document.createElement('span');
+    ico.className = 'wfm-ico';
+    ico.textContent = isDir ? '\uD83D\uDCC1' : '\uD83D\uDCC4';
+    li.appendChild(ico);
+
+    const name = document.createElement('span');
+    name.className = 'wfm-name';
+    // textContent, never markup: the name came from a filesystem the operator
+    // shares with uploads they did not necessarily inspect.
+    name.textContent = e.name;
+    li.appendChild(name);
+
+    if (!isDir) {
+      const sz = document.createElement('span');
+      sz.className = 'sz';
+      sz.textContent = humanSize(e.size);
+      li.appendChild(sz);
+    }
+
+    const act = document.createElement('span');
+    act.className = 'wfm-act';
+    const ren = document.createElement('button');
+    ren.type = 'button';
+    ren.textContent = 'Rename';
+    ren.title = 'Rename ' + e.name;
+    ren.addEventListener('click', (ev) => {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      wfmRename(e);
+    });
+    act.appendChild(ren);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'danger';
+    del.textContent = 'Delete';
+    del.title = 'Delete ' + e.name;
+    del.addEventListener('click', (ev) => {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      wfmDelete(e);
+    });
+    act.appendChild(del);
+    li.appendChild(act);
+
+    li.addEventListener('click', () => {
+      if (isDir) { void wfmLoad(e.path); return; }
+      // Only FILES can be selected: a folder cannot go into an input.
+      wfmSetSelected({ path: e.path, name: e.name, size: e.size }, li);
+    });
+    li.addEventListener('dblclick', () => {
+      if (!isDir) { wfmSetSelected({ path: e.path, name: e.name, size: e.size }, li); wfmUse(); }
+    });
+    wfmList.appendChild(li);
+  });
+}
+
+/** window.prompt / confirm, guarded: the unit harness has no window dialogs. */
+function ask(text, initial) {
+  try { return (typeof prompt === 'function') ? prompt(text, initial || '') : null; }
+  catch (e) { return null; }
+}
+function agree(text) {
+  try { return (typeof confirm === 'function') ? confirm(text) : false; }
+  catch (e) { return false; }
+}
+
+function wfmNewFolder() {
+  const name = ask('New folder name:', '');
+  if (!name) return;
+  wfmFetch(wfmBase() + '/mkdir', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: wfmCwd, name: name }),
+  })
+    .then(() => wfmLoad(wfmCwd))
+    .catch((e) => wfmSay((e && e.message) || 'Could not create the folder.', true));
+}
+
+function wfmRename(entry) {
+  const name = ask('Rename to:', entry.name);
+  if (!name || name === entry.name) return;
+  wfmFetch(wfmBase() + '/rename', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: entry.path, name: name }),
+  })
+    .then(() => wfmLoad(wfmCwd))
+    .catch((e) => wfmSay((e && e.message) || 'Could not rename.', true));
+}
+
+function wfmDelete(entry) {
+  const isDir = entry.type === 'dir';
+  // Recursive deletion is EXPLICIT: the folder is named and the word
+  // 'everything inside it' is on screen before anything is sent.
+  const q = isDir
+    ? 'Delete the folder "' + entry.name + '" and everything inside it?'
+    : 'Delete "' + entry.name + '"?';
+  if (!agree(q)) return;
+  wfmFetch(wfmBase() + '?path=' + encodeURIComponent(entry.path) + (isDir ? '&recursive=1' : ''), {
+    method: 'DELETE',
+  })
+    .then(() => wfmLoad(wfmCwd))
+    .catch((e) => wfmSay((e && e.message) || 'Could not delete.', true));
+}
+
+/** Upload from the operator's computer INTO the current workflow folder. */
+function wfmUploadFiles(list) {
+  if (!list.length) return Promise.resolve();
+  wfmSay('Uploading ' + list.length + ' file' + (list.length === 1 ? '' : 's') + '\u2026', false);
+  return list.reduce(
+    (chain, file) => chain.then(() => wfmFetch(
+      wfmBase() + '/upload?path=' + encodeURIComponent(wfmCwd)
+        + '&name=' + encodeURIComponent(file.name || 'file'),
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+    )),
+    Promise.resolve(),
+  )
+    .then(() => { wfmSay('Uploaded.', false); return wfmLoad(wfmCwd); })
+    .catch((e) => { wfmSay((e && e.message) || 'The upload failed.', true); return wfmLoad(wfmCwd); });
+}
+
+/**
+ * Hand the selected workflow file to the page that is asking.
+ *
+ * The body names the CHOOSER and a workflow-relative PATH. The server resolves
+ * that inside the workflow root and gives the real Chromium the file through the
+ * same FileChooser.setFiles() the upload path uses (RemoteFileChooser).
+ */
+function wfmUse() {
+  if (!wfmSelected) return;
+  if (!pendingId) {
+    wfmSay('No page is asking for a file right now. Press the page\u2019s own Choose/Browse button first, then Select.', true);
+    return;
+  }
+  const id = pendingId;
+  const chosen = wfmSelected;
+  wfmSelect.disabled = true;
+  wfmSay('Sending ' + chosen.name + '\u2026', false);
+  wfmFetch(wfmBase() + '/use', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: chosen.path, chooserId: id }),
+  })
+    .then(() => {
+      clearPending();
+      wfmHide();
+      noteInPanel('uphint', 'Sent to the site: ' + chosen.name);
+    })
+    .catch((e) => {
+      wfmSelect.disabled = false;
+      wfmSay((e && e.message) || 'The file could not be sent.', true);
+    });
+}
+
+if (wfm) {
+  document.getElementById('wfmclose').addEventListener('click', () => wfmHide());
+  wfmBack.addEventListener('click', () => {
+    if (wfmParent !== null) void wfmLoad(wfmParent);
+  });
+  document.getElementById('wfmnew').addEventListener('click', () => wfmNewFolder());
+  document.getElementById('wfmupload').addEventListener('click', () => {
+    // The operator's own click: the picker opens here without any dependency
+    // on a remote gesture.
+    try { wfmUp.click(); } catch (e) { /* nothing to do */ }
+  });
+  wfmUp.addEventListener('change', () => {
+    const list = Array.from(wfmUp.files || []);
+    wfmUp.value = '';
+    void wfmUploadFiles(list);
+  });
+  wfmSelect.addEventListener('click', () => wfmUse());
 }
 
 /** Raise the operator's OWN file dialog, filtered like the page's input. */
@@ -1346,6 +1804,9 @@ function clearPending() {
     pendingRow.remove();
     pendingRow = null;
   }
+  // The menu that offerFile() raised for THIS request comes down with it; the
+  // operator can still open it from the Add File button at any time.
+  hideAddMenu();
 }
 
 /**

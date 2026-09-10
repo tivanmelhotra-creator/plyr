@@ -3067,6 +3067,50 @@ export class LiveBrowserSession {
     }
   }
 
+  /** Is a page in this session waiting on a file dialog right now? */
+  hasPendingFileChooser(): boolean {
+    return !!this.pendingChooser;
+  }
+
+  /**
+   * Hand SERVER-RESOLVED files to the dialog the page is waiting on.
+   *
+   * The Workflow Files half of Add File for the canvas views. `paths` were
+   * produced by WorkflowStorage.resolveForBrowser() inside the
+   * /browser/workflow-files/:workflowId/use route -- validated against the
+   * workflow root, symlink-checked, canonical -- and are passed from that route
+   * to this method in-process. No socket message and no HTTP body can carry a
+   * path here: the client names `workflowId + relativePath`, and the server
+   * decides what that is. Same discipline as acceptFiles (tokens, never paths),
+   * one layer up.
+   */
+  async acceptFilePaths(paths: string[]): Promise<{ count: number }> {
+    this.touch();
+    const chooser = this.pendingChooser;
+    if (!chooser) {
+      throw new Error('The page is not asking for a file any more.');
+    }
+    this.pendingChooser = null;
+    this.pendingChooserPage = null;
+    const list = (Array.isArray(paths) ? paths : [])
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .slice(0, 10);
+    if (!list.length) {
+      await chooser.setFiles([]).catch(() => {});
+      this.emit('fileChooserDone', { ok: false, reason: 'no_valid_files' });
+      throw new Error('No file was selected.');
+    }
+    const use = chooser.isMultiple() ? list : [list[0]];
+    try {
+      await chooser.setFiles(use);
+      this.emit('fileChooserDone', { ok: true, count: use.length });
+      return { count: use.length };
+    } catch (e) {
+      this.emit('fileChooserDone', { ok: false, reason: (e as Error).message });
+      throw e;
+    }
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   // Downloads
   //

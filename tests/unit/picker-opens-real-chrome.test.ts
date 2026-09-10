@@ -99,7 +99,10 @@ function extractVar(src: string, name: string): string {
  * `ReferenceError: stillStarting is not defined`, pointing at the harness rather
  * than at any behaviour.
  */
-const OPEN_REAL_BROWSER_DEPS = ['tabPlaceholder', 'directViewHref', 'stillStarting'] as const;
+// `workflowIdFor` joined when the viewer URL learned to carry the saved
+// workflow's id for the Workflow File Manager (Add File -> Choose from Workflow
+// Files); without it the harness would fail on the fake, not the behaviour.
+const OPEN_REAL_BROWSER_DEPS = ['tabPlaceholder', 'directViewHref', 'stillStarting', 'workflowIdFor'] as const;
 
 /**
  * The retry budget, EXTRACTED rather than restated.

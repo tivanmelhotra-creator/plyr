@@ -223,6 +223,16 @@ export const config = {
   UPLOADS_DIR: path.resolve(cleanEnv(process.env.UPLOADS_DIR) || './uploads'),
   DOWNLOADS_DIR: path.resolve(cleanEnv(process.env.DOWNLOADS_DIR) || './downloads'),
 
+  // ── Workflow File Workspace: PERSISTENT, per workflow ─────────────────
+  // NOT the same thing as UPLOADS_DIR (temporary, TTL-swept transport for a
+  // file on its way to a page) or DOWNLOADS_DIR (ephemeral). Files here belong
+  // to one Workflow and live until the operator deletes them:
+  //     WORKFLOW_STORAGE_ROOT/<userId>/<workflowId>/<relativePath>
+  // See src/core/WorkflowStorage.ts for the containment rules.
+  WORKFLOW_STORAGE_ROOT: path.resolve(
+    cleanEnv(process.env.WORKFLOW_STORAGE_ROOT) || './workflow-files'
+  ),
+
   // ── Remote downloads: TEMPORARY by default ────────────────────────────
   // The owner's requirement, verbatim: «ایا این فایل ها توی سرور موقت هستند یا
   // ذخیره میشن؟ … وقت باشن یعنی tmp باشند خوبه تا دائمی چون کاربردش فقط همون
