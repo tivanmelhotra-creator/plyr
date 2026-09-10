@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+
+<html class="dark h-full" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Arena - Workspace</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              DEFAULT: '#ff6b00',
+              orange: '#ff6b00',
+              orangeHover: '#f97316',
+              surface: '#11141c',
+              border: '#232b3c',
+            }
+          },
+          fontFamily: {
+            serif: ['Newsreader', 'Georgia', 'serif'],
+            sans: ['Inter', '-apple-system', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&amp;family=Newsreader:ital,wght@1,500;1,600&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<style>
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #090b10; }
+    ::-webkit-scrollbar-thumb { background: #22293a; border-radius: 9999px; }
+    .sidebar-drawer {
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), margin-right 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .sidebar-closed {
+      transform: translateX(100%);
+      margin-right: -370px;
+    }
+    .menu-pop { animation: popIn 0.15s cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes popIn {
+      0% { opacity: 0; transform: scale(0.96) translateY(-4px); }
+      100% { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .icon-plate {
+      background: linear-gradient(135deg, rgba(255, 107, 0, 0.08) 0%, rgba(20, 24, 34, 0.7) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .tb-tool-btn {
+      width: 34px; height: 34px; border-radius: 8px;
+      background: rgba(22, 27, 38, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex; align-items: center; justify-content: center;
+      color: #9aa5bb; transition: all 0.16s ease;
+    }
+    .tb-tool-btn:hover {
+      background: rgba(32, 39, 56, 0.9);
+      border-color: rgba(255, 107, 0, 0.4);
+      color: #ff6b00; transform: translateY(-1px);
+    }
+    .tree-row:hover .item-checkbox, .has-multiselect .item-checkbox, .is-selected .item-checkbox { opacity: 1 !important; }
+    .tree-row.is-selected {
+      background: linear-gradient(90deg, rgba(255, 107, 0, 0.14) 0%, rgba(30, 37, 52, 0.85) 100%) !important;
+      border-color: rgba(255, 107, 0, 0.45) !important;
+    }
+    .fade-out { transition: all 0.2s ease; opacity: 0; transform: translateX(12px) scale(0.95); max-height: 0; padding: 0 !important; margin: 0 !important; overflow: hidden; }
+    
+    /* Workspace subtle grid background pattern */
+    .bg-grid-pattern {
+      background-size: 32px 32px;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    }
+  </style>
+</head>
+<body class="bg-[#08090d] text-[#e1e4ea] h-full overflow-hidden flex flex-col font-sans select-none antialiased">
+<div class="flex flex-1 h-full w-full overflow-hidden relative">
+<!-- Main Left Workspace (Clean Dark Canvas) -->
+<main class="flex-1 flex flex-col h-full overflow-hidden relative bg-[#07080b] bg-grid-pattern">
+<!-- Top Bar Controls -->
+<div class="h-14 px-6 flex items-center justify-between relative z-20 border-b border-white/[0.03]">
+<div class="flex items-center gap-3">
+<div class="w-2 h-2 rounded-full bg-brand-orange/80 shadow-[0_0_8px_rgba(255,107,0,0.6)]"></div>
+<span class="text-xs font-mono uppercase tracking-widest text-[#4f5768]">Workspace</span>
+</div>
+<div class="flex items-center gap-3">
+<button class="p-2.5 rounded-xl text-white bg-[#11141d]/90 hover:bg-[#181d2a] border border-[#202737] shadow-lg transition-all backdrop-blur-md group" id="toggleSidebarBtn" title="Toggle Navigation Menu">
+<svg class="w-5 h-5 stroke-current stroke-[2] group-hover:text-brand-orange transition-colors" fill="none" viewbox="0 0 24 24">
+<line x1="4" x2="20" y1="7" y2="7"></line>
+<line x1="4" x2="20" y1="12" y2="12"></line>
+<line x1="4" x2="20" y1="17" y2="17"></line>
+</svg>
+</button>
+</div>
+</div>
+<!-- Empty Workspace Canvas Backdrop Area -->
+<div class="flex-1 flex flex-col items-center justify-center relative p-6 select-none pointer-events-none">
+<div class="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white/[0.015] via-transparent to-transparent"></div>
+</div>
+</main>
+<!-- Right Files Sidebar Panel -->
+<aside class="sidebar-drawer w-[370px] bg-[#0d1017]/95 backdrop-blur-2xl border-l border-[#202737] flex flex-col h-full shrink-0 relative select-none z-30 shadow-2xl" id="filesDrawer">
+<input id="hiddenFileInput" multiple="" style="display:none;" type="file"/>
+<!-- Panel Header -->
+<div class="h-14 px-4 flex items-center justify-between border-b border-[#1c2230]">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-brand-orange/10 border border-brand-orange/20 flex items-center justify-center shrink-0">
+<svg class="w-4 h-4 text-brand-orange" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+</svg>
+</div>
+<span class="text-sm font-semibold text-white tracking-tight">Files</span>
+<span class="text-[10px] bg-[#181e2b] text-[#8e9bb3] px-2 py-0.5 rounded-full border border-[#2b354a]" id="filesCountBadge">16 items</span>
+</div>
+<div class="flex items-center gap-1.5">
+<button class="text-[#7d889e] hover:text-white hover:bg-[#1a2130] px-2 py-1 rounded-lg transition-colors flex items-center gap-1.5 text-[11px]" id="headerSelectAllBtn">
+<svg class="w-3.5 h-3.5 stroke-current stroke-2 text-brand-orange" fill="none" viewbox="0 0 24 24"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"></path></svg>
+<span>Select All</span>
+</button>
+<button class="text-[#7d889e] hover:text-white hover:bg-[#1a2130] p-1.5 rounded-lg transition-colors" id="closeDrawerBtn">
+<svg class="w-4 h-4 stroke-current stroke-2" fill="none" viewbox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"></path></svg>
+</button>
+</div>
+</div>
+<!-- Action Toolbar -->
+<div class="p-3 relative">
+<div class="bg-[#131722]/90 border border-[#212939] rounded-xl p-1.5 flex items-center justify-around text-[#8b95aa]">
+<button class="tb-tool-btn group" id="tbNewFolderBtn" title="New Folder">
+<svg class="w-4 h-4 stroke-current stroke-[1.8]" fill="none" viewbox="0 0 24 24"><path d="M12 10v6m3-3H9m13-2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2h5l2 2h7a2 2 0 012 2z"></path></svg>
+</button>
+<button class="tb-tool-btn group" id="tbNewFileBtn" title="New File">
+<svg class="w-4 h-4 stroke-current stroke-[1.8]" fill="none" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" x2="12" y1="12" y2="18"></line><line x1="9" x2="15" y1="15" y2="15"></line></svg>
+</button>
+<button class="tb-tool-btn group" id="tbUploadBtn" title="Upload Files">
+<svg class="w-4 h-4 stroke-current stroke-[1.8]" fill="none" viewbox="0 0 24 24"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"></path><polyline points="7 9 12 4 17 9"></polyline><line x1="12" x2="12" y1="4" y2="16"></line></svg>
+</button>
+<button class="tb-tool-btn group" id="tbRefreshBtn" title="Refresh">
+<svg class="w-4 h-4 stroke-current stroke-[1.8] fill-none transition-transform duration-500" id="refreshIcon" viewbox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</button>
+<button class="tb-tool-btn group" id="tbMoreBtn" title="More">
+<svg class="w-4 h-4 fill-current" viewbox="0 0 24 24"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>
+</button>
+</div>
+<!-- More Dropdown -->
+<div class="hidden absolute right-4 top-14 z-40 w-52 bg-[#141824] border border-[#2b354a] rounded-xl shadow-2xl py-1 text-xs text-[#c6ccd9] menu-pop backdrop-blur-xl" id="moreOptionsMenu">
+<div class="px-3 py-2 hover:bg-[#202737] hover:text-white cursor-pointer flex items-center gap-2.5" id="actionCollapseAll">
+<svg class="w-3.5 h-3.5 text-brand-orange" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M4 8l8-4 8 4M4 16l8-4 8 4"></path></svg>
+<span>Collapse All</span>
+</div>
+<div class="px-3 py-2 hover:bg-[#202737] hover:text-white cursor-pointer flex items-center gap-2.5" id="actionExpandAll">
+<svg class="w-3.5 h-3.5 text-brand-orange" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M4 4l8 4 8-4M4 12l8 4 8-4"></path></svg>
+<span>Expand All</span>
+</div>
+<div class="h-px bg-[#242b3b] my-1"></div>
+<div class="px-3 py-2 hover:bg-[#202737] hover:text-white cursor-pointer flex items-center gap-2.5" id="actionDownloadAllZip">
+<svg class="w-3.5 h-3.5 text-brand-orange" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+<span>Download Workspace (ZIP)</span>
+</div>
+</div>
+</div>
+<!-- Tree View -->
+<div class="flex-1 overflow-y-auto px-2 py-1 space-y-0.5 text-xs text-[#b3bac9] relative pb-28" id="fileTreeContainer">
+<!-- Folder: Projects -->
+<div class="file-tree-node" data-items="2 items" data-name="Projects" data-type="folder">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="arrow-icon w-3.5 h-3.5 text-[#626c80] group-hover:text-white transition-transform shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path></svg>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="currentColor" fill-opacity="0.2" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+<span class="node-title font-medium text-[#c4cbe0] group-hover:text-white truncate">Projects</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">2 items</span>
+</div>
+<div class="sub-tree hidden pl-4 space-y-0.5 mt-0.5">
+<div class="file-tree-node" data-name="app-frontend.tsx" data-size="14 KB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2m4-4l2 2-2 2"></path></svg>
+<span class="node-title text-[#cbd1df] truncate">app-frontend.tsx</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">14 KB</span>
+</div>
+</div>
+<div class="file-tree-node" data-name="server-api.py" data-size="9 KB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M9 14h6m-3-3v6"></path></svg>
+<span class="node-title text-[#cbd1df] truncate">server-api.py</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">9 KB</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Folder: Designs -->
+<div class="file-tree-node" data-items="1 item" data-name="Designs" data-type="folder">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="arrow-icon w-3.5 h-3.5 text-[#626c80] group-hover:text-white transition-transform shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path></svg>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="currentColor" fill-opacity="0.2" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+<span class="node-title font-medium text-[#c4cbe0] group-hover:text-white truncate">Designs</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">1 item</span>
+</div>
+<div class="sub-tree hidden pl-4 space-y-0.5 mt-0.5">
+<div class="file-tree-node" data-name="dashboard-mock.fig" data-size="4.8 MB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4 4 4 0 0 0 4 4h4V6a4 4 0 0 0-4-4z"></path><path d="M8 10a4 4 0 1 0 4 4V10H8z"></path><path d="M12 18a4 4 0 1 0 4-4h-4v4z"></path></svg>
+<span class="node-title text-[#cbd1df] truncate">dashboard-mock.fig</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">4.8 MB</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Folder: Assets (Open) -->
+<div class="file-tree-node" data-items="4 items" data-name="Assets" data-type="folder">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="arrow-icon w-3.5 h-3.5 text-[#79859f] rotate-90 transition-transform shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path></svg>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="currentColor" fill-opacity="0.2" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+<span class="node-title font-medium text-white truncate">Assets</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">4 items</span>
+</div>
+<div class="sub-tree pl-4 space-y-0.5">
+<!-- Subfolder: Images -->
+<div class="file-tree-node" data-items="1 item" data-name="Images" data-type="folder">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-[#181e2b] text-white border border-[#2b354a] cursor-pointer group">
+<div class="flex items-center gap-2 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="arrow-icon w-3.5 h-3.5 text-[#8793ad] transition-transform shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path></svg>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="currentColor" fill-opacity="0.2" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+<span class="node-title font-medium text-white truncate">Images</span>
+</div>
+<span class="node-meta text-[11px] text-[#6b768d] shrink-0">1 item</span>
+</div>
+<div class="sub-tree hidden pl-4 space-y-0.5 mt-0.5">
+<div class="file-tree-node" data-name="hero-banner.webp" data-size="112 KB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><rect height="18" rx="2" width="18" x="3" y="3"></rect><circle cx="8.5" cy="8.5" fill="currentColor" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+<span class="node-title text-[#cbd1df] truncate">hero-banner.webp</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">112 KB</span>
+</div>
+</div>
+</div>
+</div>
+<!-- File: logo.svg -->
+<div class="file-tree-node" data-name="logo.svg" data-size="24 KB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><rect height="18" rx="2" width="18" x="3" y="3"></rect><circle cx="8.5" cy="8.5" fill="currentColor" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+<span class="node-title text-[#cbd1df] group-hover:text-white truncate">logo.svg</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">24 KB</span>
+</div>
+</div>
+<!-- File: brand-guidelines.pdf -->
+<div class="file-tree-node" data-name="brand-guidelines.pdf" data-size="2.4 MB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" x2="16" y1="13" y2="13"></line><line x1="8" x2="14" y1="17" y2="17"></line></svg>
+<span class="node-title text-[#cbd1df] group-hover:text-white truncate">brand-guidelines.pdf</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">2.4 MB</span>
+</div>
+</div>
+</div>
+</div>
+<!-- File: readme.md -->
+<div class="file-tree-node" data-name="readme.md" data-size="8 KB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" x2="8" y1="13" y2="13"></line><line x1="16" x2="8" y1="17" y2="17"></line></svg>
+<span class="node-title text-[#cbd1df] group-hover:text-white truncate">readme.md</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">8 KB</span>
+</div>
+</div>
+<!-- File: notes.txt -->
+<div class="file-tree-node" data-name="notes.txt" data-size="12 KB" data-type="file">
+<div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+<div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+<input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" x2="16" y1="12" y2="12"></line><line x1="8" x2="16" y1="16" y2="16"></line></svg>
+<span class="node-title text-[#cbd1df] group-hover:text-white truncate">notes.txt</span>
+</div>
+<span class="node-meta text-[11px] text-[#555e71] shrink-0">12 KB</span>
+</div>
+</div>
+</div>
+<!-- Floating Batch Action Bar -->
+<div class="absolute bottom-4 left-3 right-3 z-40 bg-[#141824]/95 border border-[#2b354a] rounded-xl p-3 shadow-2xl flex flex-col gap-2 translate-y-24 opacity-0 pointer-events-none backdrop-blur-xl transition-all duration-200" id="batchActionBar">
+<div class="flex items-center justify-between px-1">
+<div class="flex items-center gap-2">
+<span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand-orange/20 text-brand-orange text-xs font-semibold" id="batchCountBadge">0</span>
+<span class="text-xs font-medium text-white" id="batchTitleText">0 items selected</span>
+</div>
+<button class="text-[11px] text-[#808a9f] hover:text-white underline underline-offset-2 transition-colors" id="batchDeselectBtn">Cancel</button>
+</div>
+<div class="grid grid-cols-2 gap-2 pt-1 border-t border-[#232a3d]">
+<button class="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-orange hover:bg-brand-orangeHover text-white text-xs font-medium active:scale-95 transition-all" id="batchDownloadZipBtn">
+<svg class="w-3.5 h-3.5 stroke-current stroke-2" fill="none" viewbox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+<span>Zip &amp; Download</span>
+</button>
+<button class="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1a202d] hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30 border border-[#2c3547] text-[#b0b8cb] text-xs font-medium transition-all" id="batchDeleteBtn">
+<svg class="w-3.5 h-3.5 stroke-current stroke-2" fill="none" viewbox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+<span>Delete</span>
+</button>
+</div>
+</div>
+</aside>
+</div>
+<!-- In-App Text / Code Editor Modal -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md hidden transition-opacity" id="textEditorModal">
+<div class="relative w-[92%] max-w-4xl h-[82vh] bg-[#0f121a] border border-[#263147] rounded-2xl shadow-2xl flex flex-col overflow-hidden modal-pop">
+<div class="h-14 px-5 bg-[#131722] border-b border-[#21293c] flex items-center justify-between shrink-0">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-lg bg-brand-orange/10 border border-brand-orange/20 flex items-center justify-center shrink-0">
+<svg class="w-4 h-4 text-brand-orange" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<input class="bg-transparent border border-transparent hover:border-[#323d54] focus:border-brand-orange text-white text-sm font-semibold rounded px-1.5 py-0.5 outline-none tracking-tight focus:bg-[#192030] transition-colors" id="editorFileNameInput" type="text" value="notes.txt"/>
+<span class="w-2 h-2 rounded-full bg-brand-orange hidden" id="unsavedIndicator" title="Unsaved changes"></span>
+</div>
+<div class="text-[11px] text-[#6b7790] flex items-center gap-1.5 pl-1.5">
+<span>Arena</span><span>/</span><span id="editorFolderPath">Workspace</span><span>/</span><span class="text-[#a1adc7]" id="editorCurrentName">notes.txt</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-2.5">
+<span class="text-xs text-[#62708b] hidden sm:inline">Ctrl + S to save</span>
+<button class="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-brand-orange hover:bg-brand-orangeHover text-white text-xs font-medium shadow-md shadow-brand-orange/20 active:scale-95 transition-all" id="editorSaveBtn">
+<svg class="w-3.5 h-3.5 stroke-current stroke-2" fill="none" viewbox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+<span>Save File</span>
+</button>
+<button class="p-1.5 rounded-lg text-[#7c889f] hover:text-white hover:bg-[#1f2636] transition-colors" id="editorCloseBtn">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"></path></svg>
+</button>
+</div>
+</div>
+<div class="flex-1 flex overflow-hidden bg-[#0c0e15] relative font-mono text-xs">
+<div class="w-12 py-3 bg-[#0a0c12] border-r border-[#1e2536] text-[#4a5468] select-none text-right pr-3 font-mono text-xs leading-6 overflow-hidden" id="editorLineNumbers">
+<div>1</div><div>2</div><div>3</div><div>4</div>
+</div>
+<textarea class="flex-1 h-full w-full bg-transparent text-[#e3e8f5] p-3 font-mono text-xs leading-6 resize-none outline-none border-0 focus:ring-0 focus:outline-none selection:bg-brand-orange/30 placeholder-[#475269]/60" id="editorTextarea" spellcheck="false"></textarea>
+</div>
+<div class="h-8 px-4 bg-[#10141e] border-t border-[#1e2536] flex items-center justify-between text-[11px] text-[#6d7b95] select-none">
+<div class="flex items-center gap-4">
+<span class="flex items-center gap-1.5 text-brand-orange">
+<span class="w-1.5 h-1.5 rounded-full bg-brand-orange"></span>
+<span id="editorStatusState">Ready</span>
+</span>
+<span id="editorStatsLines">Lines: 1</span>
+<span id="editorStatsChars">Chars: 0</span>
+</div>
+<div class="flex items-center gap-4">
+<span>UTF-8</span>
+<span class="text-[#c8d0e0]" id="editorFileTypeLabel">Plain Text</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Context Menu & Toast -->
+<div class="fixed hidden z-50 w-56 bg-[#141824]/95 border border-[#2b354a] rounded-xl shadow-2xl py-1.5 text-xs text-[#c6ccd9] menu-pop backdrop-blur-xl" id="dynamicContextMenu"></div>
+<div class="fixed bottom-5 right-5 z-50 bg-[#141824]/95 border border-[#2a3449] text-[#e1e4ea] px-4 py-2.5 rounded-xl text-xs shadow-2xl flex items-center gap-3 transform translate-y-16 opacity-0 transition-all duration-300 pointer-events-none max-w-md backdrop-blur-xl" id="toastNotification">
+<div class="toast-icon-wrapper shrink-0">
+<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<span id="toastMessage">Action completed</span>
+</div>
+<script>
+  // DOM Elements
+  const toggleBtn = document.getElementById('toggleSidebarBtn');
+  const filesDrawer = document.getElementById('filesDrawer');
+  const closeDrawerBtn = document.getElementById('closeDrawerBtn');
+  const fileTreeContainer = document.getElementById('fileTreeContainer');
+  const contextMenu = document.getElementById('dynamicContextMenu');
+  const toast = document.getElementById('toastNotification');
+  const toastMsg = document.getElementById('toastMessage');
+  const filesCountBadge = document.getElementById('filesCountBadge');
+
+  // Toolbar
+  const tbNewFolderBtn = document.getElementById('tbNewFolderBtn');
+  const tbNewFileBtn = document.getElementById('tbNewFileBtn');
+  const tbUploadBtn = document.getElementById('tbUploadBtn');
+  const tbRefreshBtn = document.getElementById('tbRefreshBtn');
+  const refreshIcon = document.getElementById('refreshIcon');
+  const tbMoreBtn = document.getElementById('tbMoreBtn');
+  const moreOptionsMenu = document.getElementById('moreOptionsMenu');
+  const hiddenFileInput = document.getElementById('hiddenFileInput');
+
+  // Multi-Select
+  const headerSelectAllBtn = document.getElementById('headerSelectAllBtn');
+  const batchActionBar = document.getElementById('batchActionBar');
+  const batchCountBadge = document.getElementById('batchCountBadge');
+  const batchTitleText = document.getElementById('batchTitleText');
+  const batchDeselectBtn = document.getElementById('batchDeselectBtn');
+  const batchDownloadZipBtn = document.getElementById('batchDownloadZipBtn');
+  const batchDeleteBtn = document.getElementById('batchDeleteBtn');
+  const actionCollapseAll = document.getElementById('actionCollapseAll');
+  const actionExpandAll = document.getElementById('actionExpandAll');
+  const actionDownloadAllZip = document.getElementById('actionDownloadAllZip');
+
+  // Text Editor
+  const textEditorModal = document.getElementById('textEditorModal');
+  const editorFileNameInput = document.getElementById('editorFileNameInput');
+  const editorFolderPath = document.getElementById('editorFolderPath');
+  const editorCurrentName = document.getElementById('editorCurrentName');
+  const editorTextarea = document.getElementById('editorTextarea');
+  const editorLineNumbers = document.getElementById('editorLineNumbers');
+  const editorSaveBtn = document.getElementById('editorSaveBtn');
+  const editorCloseBtn = document.getElementById('editorCloseBtn');
+  const editorStatsLines = document.getElementById('editorStatsLines');
+  const editorStatsChars = document.getElementById('editorStatsChars');
+  const editorStatusState = document.getElementById('editorStatusState');
+  const editorFileTypeLabel = document.getElementById('editorFileTypeLabel');
+  const unsavedIndicator = document.getElementById('unsavedIndicator');
+
+  // File Store
+  const fileContentsStore = new Map();
+  fileContentsStore.set('notes.txt', "Arena Workspace Notes\n=====================\n\n1. Powered by signature warm orange brand identity (#ff6b00).\n2. Standard crisp developer tool icons.\n3. Real file upload with filename, size, and content preservation.\n4. Real ZIP packaging and download.");
+  fileContentsStore.set('readme.md', "# Arena Frontier\n\nExperience the next generation AI workbench.\n\n### Features\n- Real file upload support\n- In-app text and code editor\n- Multi-select and ZIP downloads");
+  fileContentsStore.set('app-frontend.tsx', "import React from 'react';\n\nexport default function App() {\n  return <h1 className=\"text-orange-500\">Arena Frontier</h1>;\n}");
+  fileContentsStore.set('server-api.py', "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/')\ndef root():\n    return {'status': 'online'}\n");
+
+  let activeNode = null;
+  let currentlyEditingNode = null;
+  let toastTimeout = null;
+  let uploadTargetOverride = null;
+  const selectedNodes = new Set();
+
+  function quickToast(msg, type = 'success', dur = 2800) {
+    if (!toast) return;
+    toastMsg.textContent = msg;
+    toast.classList.remove('translate-y-16', 'opacity-0');
+    toast.classList.add('translate-y-0', 'opacity-100');
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => {
+      toast.classList.add('translate-y-16', 'opacity-0');
+      toast.classList.remove('translate-y-0', 'opacity-100');
+    }, dur);
+  }
+
+  function getFileContent(name) {
+    return fileContentsStore.get(name) || '';
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(i > 1 ? 1 : 0)) + ' ' + sizes[i];
+  }
+
+  function getIconSvgForFilename(fileName) {
+    const ext = fileName.split('.').pop().toLowerCase();
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)) {
+      return '<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><rect height="18" rx="2" width="18" x="3" y="3"></rect><circle cx="8.5" cy="8.5" fill="currentColor" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>';
+    }
+    if (ext === 'pdf') {
+      return '<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="14" y2="17"></line></svg>';
+    }
+    if (['ts', 'tsx', 'js', 'jsx', 'json', 'py', 'html', 'css'].includes(ext)) {
+      return '<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2m4-4l2 2-2 2"></path></svg>';
+    }
+    return '<svg class="w-4 h-4 text-brand-orange shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="12" x2="16" y2="12"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>';
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function collectNodeEntries(node, parentPath = '') {
+    const entries = [];
+    const name = node.dataset.name || 'item';
+    const type = node.dataset.type;
+    const currentPath = parentPath ? `${parentPath}/${name}` : name;
+    if (type === 'folder') {
+      const subTree = node.querySelector(':scope > .sub-tree');
+      if (subTree) {
+        subTree.querySelectorAll(':scope > .file-tree-node').forEach(child => {
+          entries.push(...collectNodeEntries(child, currentPath));
+        });
+      }
+      if (entries.filter(e => e.path.startsWith(currentPath)).length === 0) {
+        entries.push({ path: `${currentPath}/.keep`, content: '' });
+      }
+    } else {
+      entries.push({ path: currentPath, content: getFileContent(name) });
+    }
+    return entries;
+  }
+
+  async function packageAndDownloadZip(filesToPack, zipFilename) {
+    const finalZipName = zipFilename.endsWith('.zip') ? zipFilename : `${zipFilename}.zip`;
+    quickToast(`Packaging ${finalZipName}...`);
+    try {
+      const zip = new JSZip();
+      filesToPack.forEach(f => zip.file(f.path, f.content));
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+      downloadBlob(blob, finalZipName);
+      quickToast(`Downloaded "${finalZipName}" successfully`);
+    } catch (err) {
+      quickToast(`Error creating ZIP`, 'alert');
+    }
+  }
+
+  function updateCountBadge() {
+    const all = fileTreeContainer.querySelectorAll('.file-tree-node');
+    if (filesCountBadge) filesCountBadge.textContent = `${all.length} items`;
+  }
+
+  function updateFolderItemCount(folderNode) {
+    if (!folderNode || folderNode.dataset.type !== 'folder') return;
+    const subTree = folderNode.querySelector(':scope > .sub-tree');
+    if (subTree) {
+      const count = subTree.querySelectorAll(':scope > .file-tree-node').length;
+      const countStr = `${count} item${count === 1 ? '' : 's'}`;
+      folderNode.dataset.items = countStr;
+      const metaEl = folderNode.querySelector(':scope > .tree-row .node-meta');
+      if (metaEl) metaEl.textContent = countStr;
+    }
+  }
+
+  function updateBatchBar() {
+    const count = selectedNodes.size;
+    if (count > 0) {
+      batchCountBadge.textContent = count;
+      batchTitleText.textContent = `${count} item${count > 1 ? 's' : ''} selected`;
+      batchActionBar.classList.remove('translate-y-24', 'opacity-0', 'pointer-events-none');
+      batchActionBar.classList.add('translate-y-0', 'opacity-100');
+      fileTreeContainer.classList.add('has-multiselect');
+    } else {
+      batchActionBar.classList.add('translate-y-24', 'opacity-0', 'pointer-events-none');
+      batchActionBar.classList.remove('translate-y-0', 'opacity-100');
+      fileTreeContainer.classList.remove('has-multiselect');
+    }
+  }
+
+  function setNodeSelected(node, isSelected) {
+    const row = node.querySelector(':scope > .tree-row');
+    const chk = node.querySelector(':scope > .tree-row .item-checkbox');
+    if (isSelected) {
+      selectedNodes.add(node);
+      if (row) row.classList.add('is-selected');
+      if (chk) chk.checked = true;
+    } else {
+      selectedNodes.delete(node);
+      if (row) row.classList.remove('is-selected');
+      if (chk) chk.checked = false;
+    }
+    updateBatchBar();
+  }
+
+  function toggleNodeSelected(node) {
+    setNodeSelected(node, !selectedNodes.has(node));
+  }
+
+  function deselectAllNodes() {
+    selectedNodes.forEach(n => {
+      const row = n.querySelector(':scope > .tree-row');
+      const chk = n.querySelector(':scope > .tree-row .item-checkbox');
+      if (row) row.classList.remove('is-selected');
+      if (chk) chk.checked = false;
+    });
+    selectedNodes.clear();
+    updateBatchBar();
+  }
+
+  // Sidebar toggle
+  toggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    filesDrawer.classList.toggle('sidebar-closed');
+    hideMenus();
+  });
+  closeDrawerBtn.addEventListener('click', () => {
+    filesDrawer.classList.add('sidebar-closed');
+    hideMenus();
+  });
+
+  function hideMenus() {
+    contextMenu.classList.add('hidden');
+    moreOptionsMenu.classList.add('hidden');
+  }
+
+  // Text Editor
+  function openTextEditor(node) {
+    if (!node || node.dataset.type === 'folder') return;
+    currentlyEditingNode = node;
+    const fileName = node.dataset.name || 'untitled.txt';
+    editorFileNameInput.value = fileName;
+    editorCurrentName.textContent = fileName;
+    editorFolderPath.textContent = 'Workspace';
+    editorTextarea.value = getFileContent(fileName);
+    unsavedIndicator.classList.add('hidden');
+    editorStatusState.textContent = 'Ready';
+    updateEditorStats();
+    textEditorModal.classList.remove('hidden');
+    setTimeout(() => editorTextarea.focus(), 40);
+  }
+
+  function closeTextEditor() {
+    textEditorModal.classList.add('hidden');
+    currentlyEditingNode = null;
+  }
+
+  function saveCurrentEditorFile() {
+    if (!currentlyEditingNode) return;
+    const oldName = currentlyEditingNode.dataset.name;
+    const newName = editorFileNameInput.value.trim() || oldName;
+    const content = editorTextarea.value;
+    fileContentsStore.set(newName, content);
+    if (oldName !== newName) {
+      fileContentsStore.delete(oldName);
+      currentlyEditingNode.dataset.name = newName;
+      const titleEl = currentlyEditingNode.querySelector(':scope > .tree-row .node-title');
+      if (titleEl) titleEl.textContent = newName;
+      editorCurrentName.textContent = newName;
+    }
+    const sizeStr = formatBytes(new TextEncoder().encode(content).length);
+    currentlyEditingNode.dataset.size = sizeStr;
+    const metaEl = currentlyEditingNode.querySelector(':scope > .tree-row .node-meta');
+    if (metaEl) metaEl.textContent = sizeStr;
+
+    unsavedIndicator.classList.add('hidden');
+    editorStatusState.textContent = 'Saved';
+    quickToast(`File "${newName}" saved`);
+  }
+
+  function updateEditorStats() {
+    const text = editorTextarea.value || '';
+    const lines = text.length === 0 ? 1 : text.split('\n').length;
+    editorStatsLines.textContent = `Lines: ${lines}`;
+    editorStatsChars.textContent = `Chars: ${text.length}`;
+    let nums = '';
+    for (let i = 1; i <= Math.max(lines, 4); i++) nums += `<div>${i}</div>`;
+    editorLineNumbers.innerHTML = nums;
+  }
+
+  editorTextarea.addEventListener('input', () => {
+    unsavedIndicator.classList.remove('hidden');
+    editorStatusState.textContent = 'Modified';
+    updateEditorStats();
+  });
+  editorSaveBtn.addEventListener('click', saveCurrentEditorFile);
+  editorCloseBtn.addEventListener('click', closeTextEditor);
+
+  function generateUniqueName(container, baseName = 'untitled.txt', type = 'file') {
+    const existingNodes = container.querySelectorAll(':scope > .file-tree-node');
+    const existingNames = new Set();
+    existingNodes.forEach(n => { if (n.dataset.name) existingNames.add(n.dataset.name.toLowerCase()); });
+
+    if (!existingNames.has(baseName.toLowerCase())) return baseName;
+    const dotIndex = baseName.lastIndexOf('.');
+    const prefix = dotIndex !== -1 ? baseName.substring(0, dotIndex) : baseName;
+    const ext = dotIndex !== -1 ? baseName.substring(dotIndex) : '';
+    let counter = 1;
+    let candidate = `${prefix}-${counter}${ext}`;
+    while (existingNames.has(candidate.toLowerCase())) {
+      counter++;
+      candidate = `${prefix}-${counter}${ext}`;
+    }
+    return candidate;
+  }
+
+  // Real Uploaded File Creator
+  function createUploadedFileNode(targetFolderNode, fileName, sizeStr, initialContent = '') {
+    let container = fileTreeContainer;
+    if (targetFolderNode) {
+      let subTree = targetFolderNode.querySelector(':scope > .sub-tree');
+      if (!subTree) {
+        subTree = document.createElement('div');
+        subTree.className = 'sub-tree pl-4 space-y-0.5 mt-0.5';
+        targetFolderNode.appendChild(subTree);
+      }
+      subTree.classList.remove('hidden');
+      const arrow = targetFolderNode.querySelector(':scope > .tree-row .arrow-icon');
+      if (arrow) arrow.classList.add('rotate-90');
+      container = subTree;
+    }
+
+    const uniqueName = generateUniqueName(container, fileName, 'file');
+    fileContentsStore.set(uniqueName, initialContent);
+
+    const newNode = document.createElement('div');
+    newNode.className = 'file-tree-node';
+    newNode.dataset.type = 'file';
+    newNode.dataset.name = uniqueName;
+    newNode.dataset.size = sizeStr;
+
+    const iconHtml = getIconSvgForFilename(uniqueName);
+    newNode.innerHTML = `
+      <div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+        <div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+          <input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+          ${iconHtml}
+          <span class="node-title text-[#cbd1df] group-hover:text-white truncate ml-0.5">${uniqueName}</span>
+        </div>
+        <span class="node-meta text-[11px] text-[#555e71] shrink-0">${sizeStr}</span>
+      </div>
+    `;
+
+    container.appendChild(newNode);
+    bindNodeEvents(newNode);
+    if (targetFolderNode) updateFolderItemCount(targetFolderNode);
+    updateCountBadge();
+    return newNode;
+  }
+
+  // Create empty file/folder
+  function createNodeInTarget(targetFolderNode, type = 'file') {
+    let container = fileTreeContainer;
+    if (targetFolderNode) {
+      let subTree = targetFolderNode.querySelector(':scope > .sub-tree');
+      if (!subTree) {
+        subTree = document.createElement('div');
+        subTree.className = 'sub-tree pl-4 space-y-0.5 mt-0.5';
+        targetFolderNode.appendChild(subTree);
+      }
+      subTree.classList.remove('hidden');
+      const arrow = targetFolderNode.querySelector(':scope > .tree-row .arrow-icon');
+      if (arrow) arrow.classList.add('rotate-90');
+      container = subTree;
+    }
+
+    const uniqueName = generateUniqueName(container, type === 'folder' ? 'New Folder' : 'untitled.txt', type);
+    const newNode = document.createElement('div');
+    newNode.className = 'file-tree-node';
+    newNode.dataset.type = type;
+    newNode.dataset.name = uniqueName;
+
+    if (type === 'folder') {
+      newNode.dataset.items = '0 items';
+      newNode.innerHTML = `
+        <div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer transition-colors group">
+          <div class="flex items-center gap-2 flex-1 min-w-0">
+            <input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+            <svg class="arrow-icon w-3.5 h-3.5 text-[#626c80] group-hover:text-white transition-transform shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path></svg>
+            <svg class="w-4 h-4 text-brand-orange shrink-0" fill="currentColor" fill-opacity="0.2" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+            <span class="node-title font-medium text-[#c4cbe0] group-hover:text-white truncate ml-0.5">${uniqueName}</span>
+          </div>
+          <span class="node-meta text-[11px] text-[#555e71] shrink-0">0 items</span>
+        </div>
+        <div class="sub-tree hidden pl-4 space-y-0.5 mt-0.5"></div>
+      `;
+    } else {
+      newNode.dataset.size = '0 B';
+      fileContentsStore.set(uniqueName, '');
+      const iconHtml = getIconSvgForFilename(uniqueName);
+      newNode.innerHTML = `
+        <div class="tree-row flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#151924] cursor-pointer group">
+          <div class="flex items-center gap-2 pl-3 flex-1 min-w-0">
+            <input class="item-checkbox opacity-0 w-3.5 h-3.5 rounded bg-[#171c28] border-[#313c52] text-brand-orange focus:ring-0 cursor-pointer shrink-0 transition-opacity" type="checkbox"/>
+            ${iconHtml}
+            <span class="node-title text-[#cbd1df] group-hover:text-white truncate ml-0.5">${uniqueName}</span>
+          </div>
+          <span class="node-meta text-[11px] text-[#555e71] shrink-0">0 B</span>
+        </div>
+      `;
+    }
+
+    container.appendChild(newNode);
+    bindNodeEvents(newNode);
+    if (targetFolderNode) updateFolderItemCount(targetFolderNode);
+    updateCountBadge();
+    inlineRename(newNode);
+    return newNode;
+  }
+
+  function inlineRename(node) {
+    const titleEl = node.querySelector(':scope > .tree-row .node-title');
+    if (!titleEl) return;
+    const oldName = titleEl.textContent.trim();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldName;
+    input.className = 'bg-[#181d2a] border border-brand-orange text-white text-xs px-1.5 py-0.5 rounded outline-none focus:ring-1 focus:ring-brand-orange w-full max-w-[140px]';
+
+    const finish = () => {
+      const newName = input.value.trim() || oldName;
+      titleEl.textContent = newName;
+      node.dataset.name = newName;
+      if (fileContentsStore.has(oldName)) {
+        const d = fileContentsStore.get(oldName);
+        fileContentsStore.delete(oldName);
+        fileContentsStore.set(newName, d);
+      }
+      input.replaceWith(titleEl);
+    };
+
+    input.addEventListener('blur', finish);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') finish();
+      else if (e.key === 'Escape') input.replaceWith(titleEl);
+    });
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  function deleteNode(node) {
+    const name = node.dataset.name;
+    const parentFolder = node.parentElement.closest('.file-tree-node');
+    node.classList.add('fade-out');
+    setTimeout(() => {
+      node.remove();
+      if (parentFolder) updateFolderItemCount(parentFolder);
+      updateCountBadge();
+      quickToast(`Deleted "${name}"`);
+    }, 200);
+  }
+
+  function showContextMenu(x, y, items, targetNode) {
+    hideMenus();
+    contextMenu.innerHTML = items.map(item => {
+      if (item.separator) return '<div class="h-px bg-[#242b3b] my-1"></div>';
+      return `
+        <div class="menu-action-item flex items-center gap-2.5 px-3 py-2 hover:bg-[#1f2637] ${item.danger ? 'hover:text-red-400 text-[#a9b0c2]' : 'hover:text-white'} cursor-pointer transition-colors rounded-md mx-1" data-action="${item.action}">
+          ${item.icon}
+          <span>${item.label}</span>
+        </div>
+      `;
+    }).join('');
+
+    contextMenu.querySelectorAll('.menu-action-item').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleAction(btn.dataset.action, targetNode);
+        hideMenus();
+      });
+    });
+
+    contextMenu.classList.remove('hidden');
+    let posX = Math.min(x, window.innerWidth - 230);
+    let posY = Math.min(y, window.innerHeight - 260);
+    contextMenu.style.left = `${posX}px`;
+    contextMenu.style.top = `${posY}px`;
+  }
+
+  async function handleAction(action, node) {
+    const name = node ? (node.dataset.name || 'item') : '';
+    switch (action) {
+      case 'edit_file':
+        openTextEditor(node);
+        break;
+      case 'new_subfile':
+        createNodeInTarget(node, 'file');
+        break;
+      case 'new_subfolder':
+        createNodeInTarget(node, 'folder');
+        break;
+      case 'upload_to_folder':
+        uploadTargetOverride = node;
+        hiddenFileInput.value = '';
+        hiddenFileInput.click();
+        break;
+      case 'download_folder':
+        await packageAndDownloadZip(collectNodeEntries(node), `${name}.zip`);
+        break;
+      case 'download_file':
+        downloadBlob(new Blob([getFileContent(name)], { type: 'text/plain;charset=utf-8' }), name);
+        quickToast(`Downloaded "${name}"`);
+        break;
+      case 'rename_item':
+        inlineRename(node);
+        break;
+      case 'toggle_select':
+        toggleNodeSelected(node);
+        break;
+      case 'delete_item':
+        selectedNodes.delete(node);
+        deleteNode(node);
+        updateBatchBar();
+        break;
+    }
+  }
+
+  function bindNodeEvents(node) {
+    const row = node.querySelector(':scope > .tree-row');
+    const type = node.dataset.type;
+    const subTree = node.querySelector(':scope > .sub-tree');
+    const arrow = node.querySelector(':scope > .tree-row .arrow-icon');
+    const checkbox = node.querySelector(':scope > .tree-row .item-checkbox');
+    if (!row) return;
+
+    if (checkbox) {
+      checkbox.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setNodeSelected(node, checkbox.checked);
+      });
+    }
+
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      activeNode = node;
+      hideMenus();
+      if (e.ctrlKey || e.metaKey) {
+        toggleNodeSelected(node);
+        return;
+      }
+      document.querySelectorAll('#fileTreeContainer .tree-row').forEach(r => {
+        r.classList.remove('bg-[#181e2b]', 'text-white', 'border', 'border-[#2b354a]');
+      });
+      row.classList.add('bg-[#181e2b]', 'text-white', 'border', 'border-[#2b354a]');
+
+      if (type === 'folder') {
+        if (subTree) {
+          const isCol = subTree.classList.contains('hidden');
+          subTree.classList.toggle('hidden');
+          if (arrow) arrow.classList.toggle('rotate-90', isCol);
+        }
+      } else {
+        openTextEditor(node);
+      }
+    });
+
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      activeNode = node;
+
+      if (type === 'folder') {
+        showContextMenu(e.clientX, e.clientY, [
+          { label: 'New File', action: 'new_subfile', icon: '<svg class="w-3.5 h-3.5 stroke-brand-orange stroke-2" fill="none" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="12" x2="12" y2="18"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>' },
+          { label: 'New Folder', action: 'new_subfolder', icon: '<svg class="w-3.5 h-3.5 stroke-brand-orange stroke-2" fill="none" viewBox="0 0 24 24"><path d="M12 10v6m3-3H9m13-2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2h5l2 2h7a2 2 0 012 2z"></path></svg>' },
+          { separator: true },
+          { label: 'Upload Here', action: 'upload_to_folder', icon: '<svg class="w-3.5 h-3.5 stroke-brand-orange stroke-2" fill="none" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"></path><polyline points="7 9 12 4 17 9"></polyline><line x1="12" y1="4" x2="12" y2="16"></line></svg>' },
+          { label: 'Download as ZIP', action: 'download_folder', icon: '<svg class="w-3.5 h-3.5 text-brand-orange" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>' },
+          { separator: true },
+          { label: 'Rename', action: 'rename_item', icon: '<svg class="w-3.5 h-3.5 text-[#cbd1df]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>' },
+          { label: 'Delete', action: 'delete_item', icon: '<svg class="w-3.5 h-3.5 text-red-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>', danger: true }
+        ], node);
+      } else {
+        showContextMenu(e.clientX, e.clientY, [
+          { label: 'Open in Editor', action: 'edit_file', icon: '<svg class="w-3.5 h-3.5 stroke-brand-orange stroke-2" fill="none" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>' },
+          { label: 'Download', action: 'download_file', icon: '<svg class="w-3.5 h-3.5 text-brand-orange" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>' },
+          { separator: true },
+          { label: 'Rename', action: 'rename_item', icon: '<svg class="w-3.5 h-3.5 text-[#cbd1df]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>' },
+          { label: 'Delete', action: 'delete_item', icon: '<svg class="w-3.5 h-3.5 text-red-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>', danger: true }
+        ], node);
+      }
+    });
+  }
+
+  // Bind existing nodes
+  document.querySelectorAll('#fileTreeContainer .file-tree-node').forEach(bindNodeEvents);
+  window.addEventListener('click', hideMenus);
+
+  // Toolbar Actions
+  tbNewFolderBtn.addEventListener('click', (e) => { e.stopPropagation(); createNodeInTarget(null, 'folder'); });
+  tbNewFileBtn.addEventListener('click', (e) => { e.stopPropagation(); createNodeInTarget(null, 'file'); });
+
+  // SMART FILE UPLOAD FIX
+  tbUploadBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    uploadTargetOverride = null;
+    const selectedFolders = Array.from(selectedNodes).filter(n => n.dataset.type === 'folder');
+    if (selectedFolders.length === 1) {
+      uploadTargetOverride = selectedFolders[0];
+      quickToast(`Uploading to "${uploadTargetOverride.dataset.name}"...`);
+    } else {
+      quickToast('Uploading to Workspace Root...');
+    }
+    hiddenFileInput.value = '';
+    hiddenFileInput.click();
+  });
+
+  hiddenFileInput.addEventListener('change', (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const targetFolder = uploadTargetOverride;
+    const destName = targetFolder ? targetFolder.dataset.name : 'Workspace';
+
+    Array.from(files).forEach(f => {
+      const sizeStr = formatBytes(f.size);
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        createUploadedFileNode(targetFolder, f.name, sizeStr, evt.target.result || '');
+      };
+      reader.onerror = () => {
+        createUploadedFileNode(targetFolder, f.name, sizeStr, '');
+      };
+      reader.readAsText(f);
+    });
+
+    quickToast(`Uploaded ${files.length} file(s) into ${destName}`);
+    hiddenFileInput.value = '';
+    uploadTargetOverride = null;
+  });
+
+  tbRefreshBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    refreshIcon.classList.add('rotate-180');
+    setTimeout(() => refreshIcon.classList.remove('rotate-180'), 500);
+    quickToast('Files refreshed');
+  });
+
+  tbMoreBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    moreOptionsMenu.classList.toggle('hidden');
+    contextMenu.classList.add('hidden');
+  });
+
+  actionCollapseAll.addEventListener('click', () => {
+    fileTreeContainer.querySelectorAll('.sub-tree').forEach(st => st.classList.add('hidden'));
+    fileTreeContainer.querySelectorAll('.arrow-icon').forEach(ai => ai.classList.remove('rotate-90'));
+    hideMenus();
+  });
+
+  actionExpandAll.addEventListener('click', () => {
+    fileTreeContainer.querySelectorAll('.sub-tree').forEach(st => st.classList.remove('hidden'));
+    fileTreeContainer.querySelectorAll('.arrow-icon').forEach(ai => ai.classList.add('rotate-90'));
+    hideMenus();
+  });
+
+  actionDownloadAllZip.addEventListener('click', async () => {
+    hideMenus();
+    const all = [];
+    fileTreeContainer.querySelectorAll(':scope > .file-tree-node').forEach(n => all.push(...collectNodeEntries(n)));
+    await packageAndDownloadZip(all, 'arena-workspace.zip');
+  });
+
+  // Batch actions
+  headerSelectAllBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    fileTreeContainer.querySelectorAll('.file-tree-node').forEach(n => setNodeSelected(n, true));
+    quickToast('Selected all files');
+  });
+
+  batchDeselectBtn.addEventListener('click', deselectAllNodes);
+
+  batchDownloadZipBtn.addEventListener('click', async () => {
+    const all = [];
+    selectedNodes.forEach(n => all.push(...collectNodeEntries(n)));
+    await packageAndDownloadZip(all, `arena-selected-${selectedNodes.size}-files.zip`);
+  });
+
+  batchDeleteBtn.addEventListener('click', () => {
+    const cnt = selectedNodes.size;
+    selectedNodes.forEach(n => { n.classList.add('fade-out'); setTimeout(() => n.remove(), 200); });
+    selectedNodes.clear();
+    updateBatchBar();
+    setTimeout(updateCountBadge, 220);
+    quickToast(`Deleted ${cnt} items`);
+  });
+</script>
+</body></html>
