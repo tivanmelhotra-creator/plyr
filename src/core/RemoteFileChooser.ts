@@ -67,6 +67,7 @@
 import type { BrowserContext, FileChooser, Page } from 'playwright';
 
 import { resolveUpload } from './RemoteUploads';
+import { persistUploads, realChromeWorkflow } from './WorkflowBinding';
 
 /**
  * What the view needs to know about the dialog the page is waiting on.
@@ -298,6 +299,12 @@ export class RemoteFileChooser {
     if (this.consumed.length > MAX_CONSUMED) {
       this.consumed.splice(0, this.consumed.length - MAX_CONSUMED);
     }
+    // "Upload from Computer" went through the TEMPORARY transport (TTL-swept).
+    // When this browser is bound to a saved workflow the same files are also
+    // filed under `<workflow>/uploads/`, so the input the operator just gave a
+    // page is there next time -- for them, and for an automation node. After
+    // setFiles, so the page is never kept waiting on a copy; never fatal.
+    void persistUploads(realChromeWorkflow(), use).catch(() => { /* logged inside */ });
     return { count: use.length };
   }
 

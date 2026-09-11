@@ -458,7 +458,7 @@
   // that is not even in the foreground. So the tab gets written to immediately,
   // and gets told what happened, including a link it can use itself if this
   // page's own attempt to navigate it never lands.
-  function tabPlaceholder(tab, state, detail) {
+  function tabPlaceholder(tab, state, detail, ctx) {
     if (!tab) return;
     var doc;
     try { doc = tab.document; } catch (e) { return; }   // already navigated away
@@ -526,7 +526,7 @@
       var deps = doc.getElementById && doc.getElementById('deps');
       if (deps && /Missing:/i.test(String(detail || ''))) deps.hidden = false;
       var direct = doc.getElementById && doc.getElementById('direct');
-      if (direct) direct.setAttribute('href', directViewHref());
+      if (direct) direct.setAttribute('href', directViewHref(ctx));
       // Retry points at the view, and that is only correct because the view now
       // STARTS the stack on load (ChromeView.startThenConnect). It used not to:
       //
@@ -538,14 +538,26 @@
       // just relocated the dead end. Do not point this at a view that cannot
       // start anything again. See tools/probe-remote-browser-retry.js.
       var again = doc.getElementById && doc.getElementById('again');
-      if (again) again.setAttribute('href', directViewHref());
+      if (again) again.setAttribute('href', directViewHref(ctx));
     } catch (x) { /* a cross-origin tab: nothing we can do, and nothing broken */ }
   }
 
-  /** The view URL, with the api_key a freshly opened tab cannot send as a header. */
-  function directViewHref() {
-    return '/desktop/chrome?api_key='
+  /**
+   * The view URL, with the api_key a freshly opened tab cannot send as a
+   * header -- AND the workflow id, for the same reason openRealBrowser()
+   * appends it: the view's Workflow Files talk to
+   * /browser/workflow-files/<workflowId>, and a view reached through the
+   * placeholder's own links ("Open the remote browser view", "Retry") used to
+   * arrive with NO id, build an empty-id URL, and read "Endpoint not found"
+   * back from the server. `o` is the same picker context openRealBrowser()
+   * has; the editor's current workflow is the fallback, as everywhere else.
+   */
+  function directViewHref(o) {
+    var href = '/desktop/chrome?api_key='
       + encodeURIComponent(API.getKey ? (API.getKey() || '') : '');
+    var wfId = workflowIdFor(o);
+    if (wfId) href += '&workflowId=' + encodeURIComponent(wfId);
+    return href;
   }
 
   /**
@@ -634,7 +646,7 @@
     var tab = o.noTab ? null : (target || window.open('', '_blank'));
     // Write to it NOW, in the same gesture, so the operator is never looking at
     // an unexplained about:blank while Chrome boots.
-    tabPlaceholder(tab, 'starting');
+    tabPlaceholder(tab, 'starting', '', o);
     toast(t('bvp.realOpening'), 'info');
 
     /**
@@ -709,7 +721,7 @@
         // usually in the FOREGROUND while this page is not, so the operator sees
         // a window vanish and never reads the toast that explained why. Telling
         // them inside the tab they are actually looking at is the whole point.
-        tabPlaceholder(tab, 'failed', e && e.message ? e.message : 'unknown error');
+        tabPlaceholder(tab, 'failed', e && e.message ? e.message : 'unknown error', o);
         toast(t('bvp.realFailed') + ': ' + (e && e.message ? e.message : ''), 'error');
         throw e;
       });
@@ -856,7 +868,9 @@
     // the failure toast has already been shown. The operator has been told what
     // went wrong; letting the same rejection escape a second time only trips
     // page-level error reporting. Swallow it HERE, not in openRealBrowser.
-    openRealBrowser(typeof o.url === 'string' ? o.url : '')
+    // The picker context rides along so the view URL -- and the placeholder's
+    // own links -- carry the saved workflow's id (see directViewHref).
+    openRealBrowser(typeof o.url === 'string' ? o.url : '', undefined, { workflowId: o.workflowId })
       .catch(function () { /* already surfaced as a toast */ });
   }
 
@@ -3758,7 +3772,7 @@
     // Show the real Chrome window, carrying the address bar's URL across.
     q('bvp-real').addEventListener('click', function () {
       // Fire-and-forget, so it must absorb the rethrow. See requestPick().
-      openRealBrowser((urlIn.value || '').trim())
+      openRealBrowser((urlIn.value || '').trim(), undefined, { workflowId: o.workflowId })
         .catch(function () { /* already surfaced as a toast */ });
     });
     q('bvp-clip').addEventListener('click', function () {

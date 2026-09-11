@@ -1,5 +1,5 @@
 /**
- * workflow-files-client.test.ts — the Workflow File Manager for the canvas views.
+ * workflow-files-client.test.ts — the Workflow Files drawer for the canvas views.
  *
  * public/js/workflow-files.js is the second source of "Add File" in the picker
  * modal and the Live Browser View: instead of uploading from the operator's
@@ -58,10 +58,18 @@ function boot(opts: { workflow?: { id: string } | null; answers?: Record<string,
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch { /* raw */ } }
     calls.push({ url, method, headers: (init && init.headers) || {}, body });
     const key = `${method} ${url.split('?')[0].replace(/\/browser\/workflow-files\/[^/?]+/, '/wf')}`;
+    // The default listing answers EVERY folder with the same two names, but
+    // with paths under the folder that was asked for -- as the real server
+    // does. A fake that returned `docs` as a child of `docs` made the tree
+    // recurse into itself forever (MEASURED: "Maximum call stack size
+    // exceeded" as an unhandled rejection under every run of this file).
+    const qm = /[?&]path=([^&]*)/.exec(url);
+    const folder = method === 'GET' && qm ? decodeURIComponent(qm[1]) : '';
+    const under = (name: string) => (folder ? `${folder}/${name}` : name);
     const answer = (opts.answers && opts.answers[key]) || {
-      success: true, path: '', parent: null, entries: [
-        { name: 'docs', path: 'docs', type: 'dir', size: 0 },
-        { name: 'cookies.json', path: 'cookies.json', type: 'file', size: 12 },
+      success: true, path: folder, parent: folder ? '' : null, entries: [
+        { name: 'docs', path: under('docs'), type: 'dir', size: 0 },
+        { name: 'cookies.json', path: under('cookies.json'), type: 'file', size: 12 },
       ],
     };
     const status = typeof (answer as any).__status === 'number' ? (answer as any).__status : 200;
@@ -113,7 +121,7 @@ describe('WorkflowFiles: which workflow', () => {
     const ok = w.WorkflowFiles.open({ host: stage, onClose: (r: string) => { closedWith = r; } });
     expect(ok).toBe(false);
     expect(w.WorkflowFiles.isOpen()).toBe(false);
-    expect(stage.querySelector('.wfm-panel')).toBeNull();
+    expect(stage.querySelector('.wfm-drawer')).toBeNull();
     expect(calls).toHaveLength(0);
     // t() falls back to the English sentence when the key is untranslated in
     // this harness; the point is that the operator is TOLD, once.
@@ -217,9 +225,13 @@ describe('WorkflowFiles: the panel and its requests', () => {
     expect((b.stage.querySelector('.wfm-select') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('uploads INTO the current folder as raw bytes with the name in the query', async () => {
+  it('the toolbar\u2019s Upload lands in uploads/ from the workspace root, as raw bytes with the name in the query', async () => {
+    // uploads/ is the folder the contract says staged INPUT lives in; a file
+    // dropped in the root would still hand over, but a node looking for
+    // inputs would not find it.
     b.w.WorkflowFiles.open({ host: b.stage });
     await b.tick();
+    (b.stage.querySelector('.wfm-upload') as HTMLElement).click();
     const input = b.stage.querySelector('.wfm-input') as HTMLInputElement;
     const file = new b.w.File(['a,b'], 'rows.csv', { type: 'text/csv' });
     Object.defineProperty(input, 'files', { value: [file], configurable: true });
@@ -228,17 +240,166 @@ describe('WorkflowFiles: the panel and its requests', () => {
     const up = b.calls.find((c) => c.url.indexOf('/upload?') >= 0)!;
     expect(up).toBeTruthy();
     expect(up.method).toBe('POST');
-    expect(up.url).toBe('/browser/workflow-files/wf_abc123/upload?path=&name=rows.csv');
+    expect(up.url).toBe('/browser/workflow-files/wf_abc123/upload?path=uploads&name=rows.csv');
     expect(up.headers['Content-Type']).toBe('application/octet-stream');
     expect(up.body).toBe(file);
   });
 
-  it('a second open() replaces the first; close() removes the panel', () => {
+  it('Upload Here on a folder lands in THAT folder', async () => {
+    b.w.WorkflowFiles.open({ host: b.stage });
+    await b.tick();
+    const dir = b.stage.querySelector('li.wfm-dir') as HTMLElement;
+    dir.dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }));
+    const item = [...b.stage.querySelectorAll('.wfm-menu button')].find((x) => x.textContent === 'Upload Here') as HTMLElement;
+    expect(item).toBeTruthy();
+    item.click();
+    const input = b.stage.querySelector('.wfm-input') as HTMLInputElement;
+    const file = new b.w.File(['x'], 'n.txt');
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new b.w.Event('change'));
+    await b.tick(); await b.tick(); await b.tick();
+    const up = b.calls.find((c) => c.url.indexOf('/upload?') >= 0)!;
+    expect(up.url).toBe('/browser/workflow-files/wf_abc123/upload?path=docs&name=n.txt');
+  });
+
+  it('New File goes through POST /file with a JSON body, never a one-byte upload', async () => {
+    b.w.prompt = () => 'notes.md';
+    b.w.WorkflowFiles.open({ host: b.stage });
+    await b.tick();
+    (b.stage.querySelector('.wfm-mkfile') as HTMLElement).click();
+    await b.tick(); await b.tick();
+    const mk = b.calls.find((c) => c.url.endsWith('/file'))!;
+    expect(mk).toBeTruthy();
+    expect(mk.method).toBe('POST');
+    expect(mk.headers['Content-Type']).toBe('application/json');
+    expect(mk.body).toEqual({ path: '', name: 'notes.md' });
+    expect(b.calls.some((c) => c.url.indexOf('/upload') >= 0)).toBe(false);
+  });
+
+  describe('the breadcrumb: going INTO a folder and back', () => {
+    const deep = {
+      'GET /wf': {
+        success: true, path: '', parent: null, entries: [
+          { name: 'docs', path: 'docs', type: 'dir', size: 0 },
+          { name: 'cookies.json', path: 'cookies.json', type: 'file', size: 12 },
+        ],
+      },
+    };
+    const crumbs = () => [...b.stage.querySelectorAll('.wfm-crumbs .wfm-crumb:not(.wfm-back)')].map((c) => c.textContent);
+
+    it('starts at the workspace with no Back arrow; double-clicking a folder roots the tree there', async () => {
+      b = boot({ answers: deep });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      expect(crumbs()).toEqual(['Workflow']);
+      expect(b.stage.querySelector('.wfm-back')).toBeNull();
+      expect(b.stage.querySelector('.wfm-crumb.on')!.getAttribute('aria-current')).toBe('location');
+
+      (b.stage.querySelector('li.wfm-dir') as HTMLElement).dispatchEvent(new b.w.MouseEvent('dblclick', { bubbles: true }));
+      await b.tick(); await b.tick();
+      expect(crumbs()).toEqual(['Workflow', 'docs']);
+      expect(b.stage.querySelector('.wfm-back')).toBeTruthy();
+      expect(b.calls.some((c) => c.url === '/browser/workflow-files/wf_abc123?path=docs')).toBe(true);
+      // The fake answers every folder with the same two entries, so the rows
+      // now on screen are docs' children at depth 0.
+      const rows = [...b.stage.querySelectorAll('.wfm-list li[data-path]')] as HTMLElement[];
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0].style.getPropertyValue('--wfm-depth')).toBe('0');
+    });
+
+    it('Back goes up one level and the folder just left stays expanded in place', async () => {
+      b = boot({ answers: deep });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      (b.stage.querySelector('li.wfm-dir') as HTMLElement).dispatchEvent(new b.w.MouseEvent('dblclick', { bubbles: true }));
+      await b.tick(); await b.tick();
+      (b.stage.querySelector('.wfm-back') as HTMLElement).click();
+      await b.tick(); await b.tick();
+      expect(crumbs()).toEqual(['Workflow']);
+      const docs = b.stage.querySelector('li[data-path="docs"]')!;
+      expect(docs.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('the menu\u2019s Open goes into the folder; the toolbar then acts on THAT folder', async () => {
+      b = boot({ answers: deep });
+      b.w.prompt = () => 'sub';
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      const dir = b.stage.querySelector('li.wfm-dir') as HTMLElement;
+      dir.dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }));
+      const open = [...b.stage.querySelectorAll('.wfm-menu button')].find((x) => x.textContent === 'Open') as HTMLElement;
+      open.click();
+      await b.tick(); await b.tick();
+      expect(crumbs()).toEqual(['Workflow', 'docs']);
+      (b.stage.querySelector('.wfm-mkdir') as HTMLElement).click();
+      await b.tick();
+      const mk = b.calls.find((c) => c.url.endsWith('/mkdir'))!;
+      expect(mk.body).toEqual({ path: 'docs', name: 'sub' });
+    });
+  });
+
+  describe('the system folders uploads/ and downloads/', () => {
+    const withSystem = {
+      'GET /wf': {
+        success: true, path: '', parent: null, entries: [
+          { name: 'uploads', path: 'uploads', type: 'dir', size: 0, system: true },
+          { name: 'downloads', path: 'downloads', type: 'dir', size: 0, system: true },
+          { name: 'docs', path: 'docs', type: 'dir', size: 0 },
+          { name: 'cookies.json', path: 'cookies.json', type: 'file', size: 12 },
+        ],
+      },
+    };
+    const labels = () => [...b.stage.querySelectorAll('.wfm-menu button')].map((x) => x.textContent);
+
+    it('are drawn apart with a tag saying what each is for', async () => {
+      b = boot({ answers: withSystem });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      const up = b.stage.querySelector('li[data-path="uploads"]')!;
+      const down = b.stage.querySelector('li[data-path="downloads"]')!;
+      expect(up.className).toContain('wfm-sys');
+      expect(up.getAttribute('data-system')).toBe('true');
+      expect(up.querySelector('.wfm-sys-tag')!.textContent).toBe('input');
+      expect(down.querySelector('.wfm-sys-tag')!.textContent).toBe('output');
+      expect(b.stage.querySelector('li[data-path="docs"] .wfm-sys-tag')).toBeNull();
+    });
+
+    it('offer no Rename or Delete in their menu, but everything that puts files INTO them', async () => {
+      b = boot({ answers: withSystem });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      (b.stage.querySelector('li[data-path="uploads"]') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here']);
+      (b.stage.querySelector('li[data-path="docs"]') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Rename', 'Delete']);
+    });
+  });
+
+  it('bind() POSTs /bind with target live and the socket identity, and resolves what the server said', async () => {
+    b = boot({ answers: { 'POST /wf/bind': { success: true, target: 'live', workflowId: 'wf_abc123', bound: true } } });
+    const bound = await b.w.WorkflowFiles.bind({ userId: () => 'u-42' });
+    expect(bound).toBe(true);
+    const c = b.calls.find((x) => x.url.endsWith('/bind'))!;
+    expect(c.method).toBe('POST');
+    expect(c.url).toBe('/browser/workflow-files/wf_abc123/bind');
+    expect(c.body).toEqual({ target: 'live', userId: 'u-42' });
+    expect(c.headers['x-api-key']).toBe('THE-KEY');
+  });
+
+  it('bind() resolves false -- and sends nothing -- without a saved workflow; false, not a throw, on a refusal', async () => {
+    const none = boot({ workflow: null });
+    expect(await none.w.WorkflowFiles.bind({ userId: 'u' })).toBe(false);
+    expect(none.calls).toHaveLength(0);
+    b = boot({ answers: { 'POST /wf/bind': { success: false, error: 'nope', __status: 403 } } });
+    expect(await b.w.WorkflowFiles.bind({ userId: 'u' })).toBe(false);
+  });
+
+  it('a second open() replaces the first; close() removes the drawer', () => {
     b.w.WorkflowFiles.open({ host: b.stage });
     b.w.WorkflowFiles.open({ host: b.stage });
-    expect(b.stage.querySelectorAll('.wfm-panel')).toHaveLength(1);
+    expect(b.stage.querySelectorAll('.wfm-drawer')).toHaveLength(1);
     b.w.WorkflowFiles.close();
-    expect(b.stage.querySelector('.wfm-panel')).toBeNull();
+    expect(b.stage.querySelector('.wfm-drawer')).toBeNull();
   });
 });
 
@@ -286,6 +447,42 @@ describe('RemoteIO offers Workflow Files as the second source', () => {
     expect(rio.hasPendingFile()).toBe(false);
   });
 
+  it('binds the live session to the workflow when the socket says ready, and again on every ready', async () => {
+    const b = boot({ answers: { 'POST /wf/bind': { success: true, bound: true } } });
+    const rio = b.w.RemoteIO.attach({
+      stage: b.stage, host: b.stage, send: () => {},
+      userId: () => 'u-42', workflowId: () => 'wf_explicit',
+    });
+    // 'ready' is observed, not consumed: the view still gets to act on it.
+    expect(rio.onMessage({ t: 'ready', url: 'about:blank' })).toBe(false);
+    await b.tick();
+    const binds = b.calls.filter((c) => c.url.endsWith('/bind'));
+    expect(binds).toHaveLength(1);
+    expect(binds[0].url).toBe('/browser/workflow-files/wf_explicit/bind');
+    expect(binds[0].body).toEqual({ target: 'live', userId: 'u-42' });
+    // A reconnect says 'ready' again: bind again (a re-bind replaces on the server).
+    rio.onMessage({ t: 'ready' });
+    await b.tick();
+    expect(b.calls.filter((c) => c.url.endsWith('/bind'))).toHaveLength(2);
+    rio.detach();
+  });
+
+  it('does not bind when there is no saved workflow, and survives the module being absent', async () => {
+    const b = boot({ workflow: null });
+    const rio = b.w.RemoteIO.attach({ stage: b.stage, host: b.stage, send: () => {}, userId: 'u' });
+    expect(rio.onMessage({ t: 'ready' })).toBe(false);
+    await b.tick();
+    expect(b.calls).toHaveLength(0);
+    // No WorkflowFiles at all: still not an error.
+    const dom = new JSDOM('<!doctype html><html><body><div id="stage"></div></body></html>', { runScripts: 'outside-only' });
+    const w = dom.window as unknown as Record<string, any>;
+    w.AppUtil = { t: (k: string) => k, toast: () => {} };
+    dom.window.eval(remoteIoSrc);
+    const stage = dom.window.document.getElementById('stage')!;
+    const bare = w.RemoteIO.attach({ stage, host: stage, send: () => {}, userId: 'u' });
+    expect(bare.onMessage({ t: 'ready' })).toBe(false);
+  });
+
   it('without the module, the prompt is exactly what it was: upload + cancel', () => {
     const dom = new JSDOM('<!doctype html><html><body><div id="stage"></div></body></html>', { runScripts: 'outside-only' });
     const w = dom.window as unknown as Record<string, any>;
@@ -327,20 +524,32 @@ describe('the wiring', () => {
     }
   });
 
-  it('the panel is styled, sits above the file prompt, and its raw input is hidden', () => {
-    expect(css).toContain('.wfm-panel');
+  it('the breadcrumb, the system-folder tag and the two new icons are all present', () => {
+    expect(css).toContain('.wfm-crumbs');
+    expect(css).toContain('.wfm-sys-tag');
+    const icons = read('public/js/icons.js');
+    expect(icons).toContain("'arrow-left'");
+    expect(icons).toContain("'folder-open'");
+  });
+
+  it('the drawer is styled, sits above the file prompt, and its raw input is hidden', () => {
+    expect(css).toContain('.wfm-drawer');
     expect(css).toMatch(/\.wfm-input\s*\{[^}]*display:\s*none/s);
     const bar = /\.rio-filebar\s*\{[^}]*z-index:\s*(\d+)/s.exec(css);
-    const panel = /\.wfm-panel\s*\{[^}]*z-index:\s*(\d+)/s.exec(css);
-    expect(bar && panel).toBeTruthy();
-    expect(Number(panel![1])).toBeGreaterThan(Number(bar![1]));
+    const drawer = /\.wfm-drawer\s*\{[^}]*z-index:\s*(\d+)/s.exec(css);
+    expect(bar && drawer).toBeTruthy();
+    expect(Number(drawer![1])).toBeGreaterThan(Number(bar![1]));
+    // The hamburger is the ONE permanent control, and it goes away while the
+    // drawer it opens is up.
+    expect(css).toContain('.bvp-hamburger');
+    expect(css).toMatch(/\.bvp-hamburger\.is-off\s*\{[^}]*display:\s*none/s);
   });
 
   it('the Local Browser view has its own copy that names the chooser instead of a userId', () => {
     // ChromeView polls GET /browser/real/chooser and answers a specific dialog,
     // so its /use carries chooserId; the canvas views carry the socket's userId.
     expect(chromeView).toContain("'/browser/workflow-files/' + encodeURIComponent(workflowId)");
-    expect(chromeView).toMatch(/JSON\.stringify\(\{\s*path:\s*chosen\.path,\s*chooserId:\s*id\s*\}\)/);
+    expect(chromeView).toMatch(/\{\s*path:\s*chosen\[0\]\.path,\s*chooserId:\s*id\s*\}/);
     // The canvas module's /use body never carries a chooserId (code, not comments).
     const code = moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     expect(code).not.toContain('chooserId');
@@ -349,6 +558,6 @@ describe('the wiring', () => {
   it('the client never sends or receives a filesystem path', () => {
     expect(moduleSrc).not.toMatch(/absolutePath|\/home\/|C:\\\\/);
     // The only path words are workflow-RELATIVE ones the server returned.
-    expect(moduleSrc).toContain('path: chosen.path');
+    expect(moduleSrc).toContain('path: chosen[0].path');
   });
 });

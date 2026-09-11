@@ -23,6 +23,7 @@ import {
 } from './RemoteDownloads';
 import { DownloadHeaderIndex } from './DownloadHeaders';
 import { preferDeclaredName } from './RealChromeShelf';
+import { persistDownload, persistUploads, type WorkflowRef } from './WorkflowBinding';
 import {
   loadTabs,
   saveTabs,
@@ -147,6 +148,8 @@ export interface DownloadInfo {
   error?: string;
   /** Present once the file is on disk: hand this to the fetch route. */
   token?: string;
+  /** `downloads/<name>` inside the bound workflow, once the copy is there. */
+  workflowPath?: string;
 }
 
 export interface PickAttr {
@@ -659,6 +662,8 @@ interface LiveDownload {
   total: number;
   path: string;
   error: string;
+  /** `downloads/<name>` inside the bound workflow, once persisted there. */
+  workflowPath?: string;
 }
 
 interface LiveTab {
@@ -875,10 +880,31 @@ export class LiveBrowserSession {
    * asked for" from "somebody else's browsing".
    */
   private expectOrphanUntil = 0;
+  /**
+   * The saved Workflow this session works FOR, when the client said so.
+   *
+   * Set by /browser/workflow-files/:workflowId/bind (which has verified the
+   * caller owns that workflow). While bound, a completed download is also
+   * filed under `<workflow>/downloads/` and an "Upload from Computer" under
+   * `<workflow>/uploads/` -- the two folders automation nodes may rely on.
+   * Never set from a socket message: a socket can name a workflow id but the
+   * ownership check lives in the route, so that is the only way in.
+   */
+  private workflow: WorkflowRef | null = null;
 
   constructor(id: string, userId: string) {
     this.id = id;
     this.userId = userId;
+  }
+
+  /** Bind (or, with null, unbind) this session to a workflow's workspace. */
+  bindWorkflow(ref: WorkflowRef | null): void {
+    this.workflow = ref ? { userId: String(ref.userId), workflowId: String(ref.workflowId) } : null;
+  }
+
+  /** The workflow this session is bound to, if any. */
+  boundWorkflow(): WorkflowRef | null {
+    return this.workflow ? { ...this.workflow } : null;
   }
 
   setSinks(frameSink: FrameSink, eventSink: EventSink): void {
@@ -3057,11 +3083,15 @@ export class LiveBrowserSession {
     }
 
     try {
-      await chooser.setFiles(chooser.isMultiple() ? paths : [paths[0]]);
+      const use = chooser.isMultiple() ? paths : [paths[0]];
+      await chooser.setFiles(use);
       // Remember, do not delete yet: Chrome reads the file when the page asks,
       // which can be long after setFiles resolves.
       this.consumedUploads.push(...(tokens || []).map(String));
       this.emit('fileChooserDone', { ok: true, count: paths.length });
+      // And the workflow's own copy under `uploads/`, when bound. After the
+      // hand-over so the page never waits on it; failures are logged inside.
+      void persistUploads(this.workflow, use).catch(() => {});
     } catch (e) {
       this.emit('fileChooserDone', { ok: false, reason: (e as Error).message });
     }
@@ -3213,6 +3243,13 @@ export class LiveBrowserSession {
         entry.state = 'failed';
         entry.path = '';
         entry.error = 'download_too_large';
+      } else if (this.workflow) {
+        // THE WORKFLOW'S OWN COPY: `<workflow>/downloads/<name>`. The shelf
+        // copy above is ephemeral and token-fetched; this one is what the
+        // Workflow Files drawer lists and what a later node reads. Awaited so
+        // the 'completed' event below can carry where it went; never fatal.
+        const persisted = await persistDownload(this.workflow, finalName, finalPath);
+        if (persisted) entry.workflowPath = persisted.path;
       }
       void sweepDownloads(this.userId).catch(() => { /* best-effort housekeeping */ });
     } catch (e) {
@@ -3405,6 +3442,9 @@ export class LiveBrowserSession {
       // A token, never a path: the fetch route resolves it, so the client can
       // never name a file on the server's disk.
       ...(d.state === 'completed' ? { token: d.token } : {}),
+      // A workflow-RELATIVE path, so the drawer can point at the copy. Not a
+      // filesystem path: it only means something to /browser/workflow-files.
+      ...(d.workflowPath ? { workflowPath: d.workflowPath } : {}),
     };
   }
 

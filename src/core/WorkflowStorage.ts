@@ -37,6 +37,24 @@
  * isolation is the route's job (the owner comes from the API key and the
  * workflow must exist for that owner) and is reinforced here by keying the root
  * on userId as well.
+ *
+ * SYSTEM FOLDERS: THE CONTRACT WITH AUTOMATION
+ * --------------------------------------------
+ * Every workspace is initialised with two folders whose names are fixed and
+ * which automation nodes may rely on:
+ *
+ *     <root>/<userId>/<workflowId>/
+ *     ├── uploads/     files staged as INPUT — what a page's <input type=file>
+ *     │                is answered with, and where "Upload from Computer"
+ *     │                persists its copy when the browser belongs to a workflow
+ *     └── downloads/   what the browser DOWNLOADED from a site while running
+ *                      for this workflow (finalised here from the ephemeral
+ *                      DOWNLOADS_DIR shelf)
+ *
+ * They are ordinary directories on disk — listed like any other, browsable,
+ * and files inside them may be renamed or deleted — but the folders themselves
+ * cannot be renamed or deleted, and they are recreated on every ensureRoot().
+ * Listings flag them with `system: true` so a UI can draw them apart.
  */
 
 import { promises as fs, type Dirent, type Stats } from 'fs';
@@ -59,6 +77,19 @@ export interface WorkflowEntry {
   type: 'file' | 'dir';
   size: number;
   modifiedAt: string;
+  /** True for the fixed `uploads/` and `downloads/` folders at the root. */
+  system?: boolean;
+}
+
+/** The folder names every workspace is born with. Order is display order. */
+export const SYSTEM_FOLDERS = ['uploads', 'downloads'] as const;
+export type SystemFolder = (typeof SYSTEM_FOLDERS)[number];
+export const UPLOADS_FOLDER: SystemFolder = 'uploads';
+export const DOWNLOADS_FOLDER: SystemFolder = 'downloads';
+
+/** Is this workflow-relative path one of the system folders themselves? */
+export function isSystemFolder(rel: string): rel is SystemFolder {
+  return (SYSTEM_FOLDERS as readonly string[]).includes(String(rel || ''));
 }
 
 export interface WorkflowListing {
@@ -217,7 +248,14 @@ export class WorkflowStorage {
     return this.root;
   }
 
-  /** Create the workflow directory if it is not there yet. */
+  /**
+   * Create the workflow directory — and its system folders — if not there yet.
+   *
+   * Idempotent and cheap (two mkdirs that usually do nothing), so it is safe
+   * to call on every request; that is also what makes the contract hold for a
+   * workspace created by an older version, or one whose `uploads/` the
+   * operator deleted from a shell: the next request brings it back.
+   */
   async ensureRoot(): Promise<void> {
     await fs.mkdir(this.root, { recursive: true });
     // If the root itself were replaced by a symlink pointing elsewhere, every
@@ -226,6 +264,26 @@ export class WorkflowStorage {
     if (st.isSymbolicLink()) {
       throw new WorkflowStorageError('The workflow storage directory is not usable.', 500);
     }
+    for (const name of SYSTEM_FOLDERS) {
+      const p = path.join(this.root, name);
+      let s: Stats | null = null;
+      try { s = await fs.lstat(p); } catch { /* absent: create below */ }
+      if (s && s.isSymbolicLink()) {
+        throw new WorkflowStorageError(`The ${name} folder is not usable.`, 500);
+      }
+      if (s && !s.isDirectory()) {
+        // A FILE squatting on the name would silently break every automation
+        // node that writes into the folder. Move it aside rather than lose it.
+        await fs.rename(p, `${p}.file`).catch(() => {});
+        s = null;
+      }
+      if (!s) await fs.mkdir(p, { recursive: true });
+    }
+  }
+
+  /** The workflow-relative path of a system folder — for callers that write into it. */
+  systemFolder(which: SystemFolder): string {
+    return which;
   }
 
   /**
@@ -310,12 +368,15 @@ export class WorkflowStorage {
     // Symlinks and specials are not shown at all: a row the operator cannot
     // open, rename or delete through this API is a row that lies.
     if (st.isSymbolicLink() || !(st.isDirectory() || st.isFile())) return null;
+    const rel = dirRel ? `${dirRel}/${d.name}` : d.name;
+    const system = !dirRel && st.isDirectory() && isSystemFolder(rel);
     return {
       name: d.name,
-      path: dirRel ? `${dirRel}/${d.name}` : d.name,
+      path: rel,
       type: st.isDirectory() ? 'dir' : 'file',
       size: st.isDirectory() ? 0 : st.size,
       modifiedAt: st.mtime.toISOString(),
+      ...(system ? { system: true } : {}),
     };
   }
 
@@ -331,6 +392,12 @@ export class WorkflowStorage {
     }
     rows.sort((a, b) => {
       if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      // System folders first, in their declared order, so `uploads/` and
+      // `downloads/` are always where the operator (and a node) expects them.
+      const sa = a.system ? (SYSTEM_FOLDERS as readonly string[]).indexOf(a.name) : -1;
+      const sb = b.system ? (SYSTEM_FOLDERS as readonly string[]).indexOf(b.name) : -1;
+      if ((sa >= 0) !== (sb >= 0)) return sa >= 0 ? -1 : 1;
+      if (sa >= 0 && sb >= 0) return sa - sb;
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
     });
     const parent = rel ? toPosix(path.posix.dirname(rel)).replace(/^\.$/, '') : null;
@@ -360,9 +427,9 @@ export class WorkflowStorage {
     parentRelative: unknown,
     name: string,
     bytes: Buffer,
-    opts: { overwrite?: boolean } = {},
+    opts: { overwrite?: boolean; allowEmpty?: boolean } = {},
   ): Promise<WorkflowEntry> {
-    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    if (!Buffer.isBuffer(bytes) || (bytes.length === 0 && !opts.allowEmpty)) {
       throw new WorkflowStorageError('The uploaded file was empty.');
     }
     if (bytes.length > MAX_WORKFLOW_FILE_BYTES) {
@@ -370,12 +437,78 @@ export class WorkflowStorage {
         `File is too large (${bytes.length} bytes). The limit is ${MAX_WORKFLOW_FILE_BYTES} bytes.`,
       );
     }
+    const target = await this.claimTarget(parentRelative, name, !!opts.overwrite);
+    // write-then-rename so a crash mid-write never leaves a truncated file the
+    // operator would later upload to a site believing it whole.
+    const tmp = `${target.absolute}.${process.pid}.${Date.now()}.part`;
+    await fs.writeFile(tmp, bytes, { mode: 0o600 });
+    await fs.rename(tmp, target.absolute);
+    return this.describe(target.rel);
+  }
+
+  /**
+   * Create an EMPTY file — "New File" in the UI.
+   *
+   * Separate from writeFile because an empty UPLOAD is almost always a failed
+   * transfer and is refused, whereas an empty new file is exactly what was
+   * asked for. The name is the operator's own typing, so the strict rule.
+   */
+  async createFile(parentRelative: unknown, name: string, content = ''): Promise<WorkflowEntry> {
+    const seg = assertSegment(name);
+    return this.writeFile(parentRelative, seg, Buffer.from(String(content ?? ''), 'utf8'), { allowEmpty: true });
+  }
+
+  /**
+   * Bring a file that already exists ON THIS SERVER into the workspace.
+   *
+   * This is how a browser download is finalised into `downloads/` and how an
+   * "Upload from Computer" that went through the temporary transport is
+   * persisted into `uploads/`. `sourceAbsolute` is a path the SERVER produced
+   * (RemoteDownloads / RemoteUploads), never one a client sent. Copy, not
+   * rename: the source may still be serving a token the operator's machine is
+   * about to fetch, and the ephemeral sweeper owns its lifetime.
+   */
+  async importFile(
+    parentRelative: unknown,
+    name: string,
+    sourceAbsolute: string,
+  ): Promise<WorkflowEntry> {
+    let src: Stats;
+    try {
+      src = await fs.stat(String(sourceAbsolute || ''));
+    } catch {
+      throw new WorkflowStorageError('The source file does not exist.', 404);
+    }
+    if (!src.isFile()) throw new WorkflowStorageError('The source is not a file.', 400);
+    if (src.size > MAX_WORKFLOW_FILE_BYTES) {
+      throw new WorkflowStorageError(
+        `File is too large (${src.size} bytes). The limit is ${MAX_WORKFLOW_FILE_BYTES} bytes.`,
+      );
+    }
+    const target = await this.claimTarget(parentRelative, name, false);
+    const tmp = `${target.absolute}.${process.pid}.${Date.now()}.part`;
+    await fs.copyFile(String(sourceAbsolute), tmp);
+    await fs.chmod(tmp, 0o600).catch(() => {});
+    await fs.rename(tmp, target.absolute);
+    return this.describe(target.rel);
+  }
+
+  /**
+   * Decide WHERE a new file goes: sanitised name, existing parent folder, and
+   * — unless overwriting — a numbered name when the plain one is taken, so
+   * uploading `a.txt` twice yields `a (2).txt` rather than replacing the first.
+   */
+  private async claimTarget(
+    parentRelative: unknown,
+    name: string,
+    overwrite: boolean,
+  ): Promise<{ absolute: string; rel: string }> {
     const seg = assertSegment(sanitizeFileName(name));
     const parent = await this.resolve(parentRelative);
     if (!parent.stat || !parent.stat.isDirectory()) throw new WorkflowStorageError('Not a folder.', 400);
 
     let finalName = seg;
-    if (!opts.overwrite) {
+    if (!overwrite) {
       const ext = path.extname(seg);
       const stem = ext ? seg.slice(0, -ext.length) : seg;
       for (let n = 2; ; n += 1) {
@@ -391,13 +524,7 @@ export class WorkflowStorage {
     if (target.stat && target.stat.isDirectory()) {
       throw new WorkflowStorageError('A folder with that name already exists.', 409);
     }
-    // write-then-rename so a crash mid-write never leaves a truncated file the
-    // operator would later upload to a site believing it whole.
-    const tmp = `${target.absolute}.${process.pid}.${Date.now()}.part`;
-    await fs.writeFile(tmp, bytes, { mode: 0o600 });
-    await fs.rename(tmp, target.absolute);
-    const st = await fs.lstat(target.absolute);
-    return { name: finalName, path: rel, type: 'file', size: st.size, modifiedAt: st.mtime.toISOString() };
+    return { absolute: target.absolute, rel };
   }
 
   /** Rename a file or folder IN PLACE (same parent). */
@@ -405,6 +532,9 @@ export class WorkflowStorage {
     const seg = assertSegment(newName);
     const src = await this.resolve(relative);
     if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be renamed.', 400);
+    if (isSystemFolder(src.relative)) {
+      throw new WorkflowStorageError(`The ${src.relative} folder is part of the workflow and cannot be renamed.`, 400);
+    }
     const parentRel = path.posix.dirname(src.relative).replace(/^\.$/, '');
     const dstRel = parentRel ? `${parentRel}/${seg}` : seg;
     if (dstRel === src.relative) {
@@ -426,6 +556,9 @@ export class WorkflowStorage {
   async remove(relative: unknown, opts: { recursive?: boolean } = {}): Promise<void> {
     const target = await this.resolve(relative);
     if (!target.relative) throw new WorkflowStorageError('The workspace root cannot be deleted.', 400);
+    if (isSystemFolder(target.relative)) {
+      throw new WorkflowStorageError(`The ${target.relative} folder is part of the workflow and cannot be deleted.`, 400);
+    }
     if (target.stat && target.stat.isDirectory()) {
       const inside = await fs.readdir(target.absolute);
       if (inside.length && !opts.recursive) {
@@ -441,12 +574,14 @@ export class WorkflowStorage {
   async describe(relative: unknown): Promise<WorkflowEntry> {
     const { absolute, relative: rel, stat } = await this.resolve(relative);
     if (!stat) throw new WorkflowStorageError('No such file or folder.', 404);
+    const system = stat.isDirectory() && isSystemFolder(rel);
     return {
       name: rel ? path.posix.basename(rel) : '',
       path: rel,
       type: stat.isDirectory() ? 'dir' : 'file',
       size: stat.isDirectory() ? 0 : stat.size,
       modifiedAt: stat.mtime.toISOString(),
+      ...(system ? { system: true } : {}),
     };
   }
 

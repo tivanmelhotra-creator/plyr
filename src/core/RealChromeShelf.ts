@@ -62,6 +62,7 @@ import {
 } from './RemoteDownloads';
 import { safeFileName, extensionOf } from './RemoteUploads';
 import { DownloadHeaderIndex } from './DownloadHeaders';
+import { persistDownload, realChromeWorkflow } from './WorkflowBinding';
 
 /** One row of the shelf, as the view renders it. */
 export interface ShelfEntry {
@@ -75,6 +76,8 @@ export interface ShelfEntry {
   error: string;
   /** Epoch ms, so the view can show newest first. */
   at: number;
+  /** Where the workflow's own copy went (`downloads/<name>`), when bound. */
+  workflowPath?: string;
 }
 
 /** Newest-first, capped: a page in a download loop must not grow this forever. */
@@ -296,6 +299,14 @@ export class RealChromeShelf {
         await discardDownload(this.userId, entry.token).catch(() => {});
         entry.state = 'failed';
         entry.error = 'download_too_large';
+      } else {
+        // THE WORKFLOW'S OWN COPY. The shelf is ephemeral (DOWNLOADS_DIR, TTL);
+        // a browser bound to a saved workflow also files the download under
+        // `<workflow>/downloads/`, which is the folder automation nodes read.
+        // Awaited so the row is only reported complete once both copies exist,
+        // but never fatal: the shelf copy is already safe.
+        const persisted = await persistDownload(realChromeWorkflow(), entry.name, done.path);
+        if (persisted) entry.workflowPath = persisted.path;
       }
 
       void sweepDownloads(this.userId).catch(() => { /* best-effort housekeeping */ });
