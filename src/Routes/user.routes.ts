@@ -24,7 +24,27 @@ import { isVipUser } from '../utils/helpers';
 import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValidWorkflowId } from '../utils/redis-keys';
 import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { WorkflowService } from '../services/workflow.service';
+import { WorkflowStorage } from '../core/WorkflowStorage';
 import type { AuthenticatedRequest } from '../middleware/auth';
+
+/**
+ * Give a freshly saved workflow its file workspace NOW -- `uploads/` and
+ * `downloads/` included -- rather than on its first listing.
+ *
+ * The two system folders are the fixed contract between a workflow and the
+ * automation nodes that will read staged input from `uploads/` and file
+ * browser downloads under `downloads/`; a node that runs before anyone has
+ * opened Workflow Files must still find them. Best-effort on purpose: a disk
+ * that refuses the mkdir must not turn a successful save into a failure (the
+ * workspace is recreated on first contact anyway, WorkflowStorage.ensureRoot).
+ */
+async function provisionWorkspace(userId: string, workflowId: string): Promise<void> {
+  try {
+    await new WorkflowStorage(userId, workflowId).ensureRoot();
+  } catch (e) {
+    console.warn('[WORKFLOW-FILES] workspace not provisioned for', workflowId, (e as Error)?.message || e);
+  }
+}
 
 interface UserRoutesDeps {
   queue: Queue;
@@ -900,6 +920,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         headless: body.headless ?? null,
         webhookUrl,
       });
+      await provisionWorkspace(userId, wf.id);
       return res.status(201).json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;

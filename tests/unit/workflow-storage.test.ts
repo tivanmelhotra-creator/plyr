@@ -19,6 +19,9 @@ import { config } from '../../src/config';
 import {
   WorkflowStorage,
   WorkflowStorageError,
+  WorkflowListing,
+  WorkflowEntry,
+  SYSTEM_FOLDERS,
   normalizeRelativePath,
   assertSegment,
 } from '../../src/core/WorkflowStorage';
@@ -44,6 +47,16 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
   await fs.rm(outside, { recursive: true, force: true });
 });
+
+/**
+ * The operator's OWN entries of a listing: the two system folders every
+ * workspace is born with (`uploads/`, `downloads/`, see SYSTEM_FOLDERS) are
+ * filtered out, because they are the workflow contract and not something a
+ * test here created. Their own behaviour has its own describe block below.
+ */
+function own(l: WorkflowListing): WorkflowEntry[] {
+  return l.entries.filter((e) => !e.system);
+}
 
 async function rejects(p: Promise<unknown>, status?: number): Promise<WorkflowStorageError> {
   let err: unknown = null;
@@ -114,7 +127,11 @@ describe('WorkflowStorage: ordinary operations', () => {
   it('lists an empty workspace, creating it on first use', async () => {
     const s = new WorkflowStorage(USER, WF_A);
     const l = await s.list('');
-    expect(l).toEqual({ workflowId: WF_A, path: '', parent: null, entries: [] });
+    expect({ ...l, entries: own(l) }).toEqual({ workflowId: WF_A, path: '', parent: null, entries: [] });
+    // Born with its system folders, and nothing else.
+    expect(l.entries.map((e) => [e.name, e.type, e.system])).toEqual(
+      SYSTEM_FOLDERS.map((n) => [n, 'dir', true]),
+    );
     expect((await fs.stat(s.rootDir())).isDirectory()).toBe(true);
   });
 
@@ -126,8 +143,8 @@ describe('WorkflowStorage: ordinary operations', () => {
     await s.writeFile('assets/images', 'pic.png', Buffer.from('png'));
 
     const root = await s.list('');
-    expect(root.entries.map((e) => [e.name, e.type])).toEqual([['assets', 'dir'], ['zeta.txt', 'file']]);
-    expect(root.entries[1].size).toBe(1);
+    expect(own(root).map((e) => [e.name, e.type])).toEqual([['assets', 'dir'], ['zeta.txt', 'file']]);
+    expect(own(root)[1].size).toBe(1);
 
     const images = await s.list('assets/images');
     expect(images.path).toBe('assets/images');
@@ -168,7 +185,7 @@ describe('WorkflowStorage: ordinary operations', () => {
     await rejects(s.rename('a.txt', 'sub/a.txt'));
     await rejects(s.rename('a.txt', '/etc/a.txt'));
     await rejects(s.rename('', 'x'), 400);
-    expect((await s.list('')).entries.map((e) => e.name)).toEqual(['a.txt']);
+    expect(own(await s.list('')).map((e) => e.name)).toEqual(['a.txt']);
   });
 
   it('deletes files, refuses a non-empty folder without recursive, and deletes with it', async () => {
@@ -181,7 +198,7 @@ describe('WorkflowStorage: ordinary operations', () => {
     await s.mkdir('', 'e');
     await s.writeFile('e', 'a.txt', Buffer.from('a'));
     await s.remove('e', { recursive: true });
-    expect((await s.list('')).entries).toEqual([]);
+    expect(own(await s.list(''))).toEqual([]);
     await rejects(s.remove(''), 400);
   });
 
@@ -209,6 +226,62 @@ describe('WorkflowStorage: ordinary operations', () => {
     expect(r.absolutePath).toBe(await fs.realpath(path.join(s.rootDir(), 'd', 'a.txt')));
     await rejects(s.resolveForBrowser('d'), 400);
     await rejects(s.resolveForBrowser(''), 400);
+  });
+});
+
+describe('WorkflowStorage: the system folders uploads/ and downloads/', () => {
+  it('are created with the workspace, listed first and in their declared order, and flagged', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.mkdir('', 'aaa'); // sorts before 'downloads' by name -- and must still come after it
+    await s.writeFile('', '000.txt', Buffer.from('0'));
+    const l = await s.list('');
+    expect(l.entries.slice(0, SYSTEM_FOLDERS.length).map((e) => e.name)).toEqual([...SYSTEM_FOLDERS]);
+    for (const e of l.entries.slice(0, SYSTEM_FOLDERS.length)) {
+      expect(e.type).toBe('dir');
+      expect(e.system).toBe(true);
+    }
+    // Only the root's own folders are system folders: a nested `uploads/`
+    // is an ordinary folder.
+    await s.mkdir('aaa', 'uploads');
+    const nested = await s.list('aaa');
+    expect(nested.entries.map((e) => [e.name, e.system])).toEqual([['uploads', undefined]]);
+  });
+
+  it('refuse rename and delete, because automation nodes depend on the names', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.ensureRoot();
+    for (const name of SYSTEM_FOLDERS) {
+      await rejects(s.rename(name, 'renamed'));
+      await rejects(s.remove(name));
+      await rejects(s.remove(name, { recursive: true }));
+    }
+    expect((await s.list('')).entries.filter((e) => e.system).map((e) => e.name)).toEqual([...SYSTEM_FOLDERS]);
+  });
+
+  it('accept files like any other folder', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    const w = await s.writeFile('uploads', 'cookies.json', Buffer.from('{}'));
+    expect(w.path).toBe('uploads/cookies.json');
+    expect((await s.list('uploads')).entries.map((e) => e.name)).toEqual(['cookies.json']);
+    expect((await s.list('uploads')).parent).toBe('');
+  });
+
+  it('come back on the next request when removed from a shell', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.ensureRoot();
+    await fs.rm(path.join(s.rootDir(), 'downloads'), { recursive: true, force: true });
+    const l = await s.list('');
+    expect(l.entries.filter((e) => e.system).map((e) => e.name)).toEqual([...SYSTEM_FOLDERS]);
+  });
+
+  it('are not usable when replaced by a symlink', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.ensureRoot();
+    await fs.rm(path.join(s.rootDir(), 'uploads'), { recursive: true, force: true });
+    await fs.symlink(outside, path.join(s.rootDir(), 'uploads'), 'dir');
+    await rejects(s.list(''), 500);
+    await rejects(s.writeFile('uploads', 'planted.txt', Buffer.from('x')), 500);
+    expect(await fs.readdir(outside)).toEqual(['secret.txt']);
   });
 });
 
@@ -249,7 +322,7 @@ describe('WorkflowStorage: the boundary', () => {
     // Nothing leaked through, nothing was written or removed outside.
     expect(await fs.readdir(outside)).toEqual(['secret.txt']);
     // And the listing does not even show the link as something to click.
-    expect((await s.list('')).entries).toEqual([]);
+    expect(own(await s.list(''))).toEqual([]);
   });
 
   it('refuses a symlink to a FILE outside the workspace', async () => {
@@ -283,7 +356,7 @@ describe('WorkflowStorage: the boundary', () => {
     await fs.symlink(path.join(s.rootDir(), 'real'), path.join(s.rootDir(), 'alias'), 'dir');
     await rejects(s.list('alias'), 403);
     await rejects(s.resolveForBrowser('alias/a.txt'), 403);
-    expect((await s.list('')).entries.map((e) => e.name)).toEqual(['real']);
+    expect(own(await s.list('')).map((e) => e.name)).toEqual(['real']);
   });
 
   it('refuses a dangling symlink as a creation target', async () => {
@@ -299,19 +372,19 @@ describe('WorkflowStorage: the boundary', () => {
     const a = new WorkflowStorage(USER, WF_A);
     const b = new WorkflowStorage(USER, WF_B);
     await b.writeFile('', 'b-private.txt', Buffer.from('B'));
-    expect((await a.list('')).entries).toEqual([]);
+    expect(own(await a.list(''))).toEqual([]);
     await rejects(a.list(`../${WF_B}`));
     await rejects(a.resolveForBrowser(`../${WF_B}/b-private.txt`));
     await rejects(a.remove(`../${WF_B}/b-private.txt`));
     await rejects(a.rename(`../${WF_B}/b-private.txt`, 'stolen.txt'));
-    expect((await b.list('')).entries.map((e) => e.name)).toEqual(['b-private.txt']);
+    expect(own(await b.list('')).map((e) => e.name)).toEqual(['b-private.txt']);
   });
 
   it('keeps two users apart even with the same workflow id', async () => {
     const mine = new WorkflowStorage('alice', WF_A);
     const theirs = new WorkflowStorage('bob', WF_A);
     await theirs.writeFile('', 'bob.txt', Buffer.from('bob'));
-    expect((await mine.list('')).entries).toEqual([]);
+    expect(own(await mine.list(''))).toEqual([]);
     await rejects(mine.list(`../../bob/${WF_A}`));
   });
 

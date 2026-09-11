@@ -3,10 +3,25 @@
  *
  *   GET    /browser/workflow-files/:workflowId?path=                 list a folder
  *   POST   /browser/workflow-files/:workflowId/mkdir                 { path, name }
+ *   POST   /browser/workflow-files/:workflowId/file                  { path, name, content? }  (New File)
  *   POST   /browser/workflow-files/:workflowId/upload?path=&name=    raw bytes
  *   PATCH  /browser/workflow-files/:workflowId/rename                { path, name }
  *   DELETE /browser/workflow-files/:workflowId?path=&recursive=1
- *   POST   /browser/workflow-files/:workflowId/use                   { path, chooserId?, userId? }
+ *   POST   /browser/workflow-files/:workflowId/use                   { path, paths?, chooserId?, userId? }
+ *   POST   /browser/workflow-files/:workflowId/bind                  { target: 'local'|'live', userId? }
+ *
+ * `/bind` is what connects the REAL transfers to the workspace: after it, the
+ * Local Browser's (target 'local') or the caller's live session's (target
+ * 'live') completed downloads are filed under `downloads/` and files sent
+ * with "Upload from Computer" under `uploads/` (core/WorkflowBinding). The
+ * caller must own the workflow -- the same `open()` gate as every other verb
+ * -- so a client can only ever bind a browser to a workspace it may see.
+ *
+ * Every workspace carries the two SYSTEM folders `uploads/` and `downloads/`
+ * (core/WorkflowStorage SYSTEM_FOLDERS). They are created on first contact,
+ * listed with `system: true`, and refuse rename/delete with a 400.
+ * `?path=` defaults to the root; an `upload` with no `path` lands in the ROOT,
+ * and the UI's "Upload" toolbar button targets `uploads/` explicitly.
  *
  * THREE RULES, ENFORCED HERE AND NOWHERE ELSE
  * -------------------------------------------
@@ -31,6 +46,24 @@
  *
  * This router is mounted under the same auth as the rest of /browser
  * (index.ts), so every handler runs behind a validated API key.
+ *
+ * THE `endpoint not found` INCIDENT
+ * --------------------------------
+ * MEASURED in the running server (not the test app): New Folder, New File and
+ * Upload from the Local Browser view all answered `{"error":"Endpoint not
+ * found"}`. Every one of those handlers exists and is mounted; the request
+ * simply never reached them, because the view had been opened WITHOUT
+ * `?workflowId=` and built its URLs from an empty id:
+ *
+ *     POST /browser/workflow-files//mkdir      <- two slashes, no id
+ *     POST /browser/workflow-files//file
+ *     POST /browser/workflow-files//upload?path=uploads&name=x
+ *
+ * Express's `:workflowId` needs at least one character, so nothing here
+ * matched and the request fell through to index.ts's generic 404 -- a message
+ * that names the wrong problem. The client no longer sends these (it will
+ * not build a URL without an id), and `missingId` below makes sure that if
+ * anything ever does, the answer names the REAL cause with a 400.
  */
 
 import { Router, type Response } from 'express';
@@ -49,6 +82,7 @@ import {
 import { RealChrome, RealChromeError } from '../core/RealChrome';
 import { FileChooserError } from '../core/RemoteFileChooser';
 import { liveBrowserSessions } from '../core/LiveSessions';
+import { bindRealChrome, realChromeWorkflow } from '../core/WorkflowBinding';
 
 interface Deps {
   connection: IORedis;
@@ -84,6 +118,20 @@ function resolveOwner(req: AuthenticatedRequest): string | null {
 export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
   const router = Router();
   const workflows = new WorkflowService(connection);
+
+  // A request under our prefix with NO workflow id. `:workflowId` cannot match
+  // an empty segment, so these would otherwise fall out of this router
+  // altogether and be answered by the app-wide 404 ("Endpoint not found").
+  // Registered FIRST so the two-slash form is caught before anything else,
+  // and only for the exact shapes an id-less client produces, so a real id
+  // (`/browser/workflow-files/wf_x/...`) never lands here.
+  const NO_ID_HINT = 'Open the browser from a saved workflow (the view carries ?workflowId=), or save the workflow first.';
+  function missingId(_req: AuthenticatedRequest, res: Response): void {
+    fail(res, 400, 'No workflow id was given.', NO_ID_HINT);
+  }
+  router.all('/browser/workflow-files', missingId);
+  router.all('/browser/workflow-files/', missingId);
+  router.all(/^\/browser\/workflow-files\/\/.*$/, missingId);
 
   /**
    * Validate the id, find the owner, confirm the workflow is theirs, and open its
@@ -125,6 +173,52 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
     } catch (e) { sendError(res, e); }
   });
 
+  // ── bind: this browser works for this workflow from now on ────────────────
+  //
+  //   target 'local'  -> the ONE process-wide Local Browser (RealChrome)
+  //   target 'live'   -> the caller's LiveBrowserSession (`userId` = the
+  //                      identity the socket was opened with, as for /use)
+  //
+  // Idempotent, and a re-bind to another workflow simply replaces the first:
+  // the browser is shared, and whichever workflow the operator is working in
+  // NOW is the one its transfers belong to. Answers with what is bound so the
+  // client can show it; `bound: false` when no live session is open yet is not
+  // an error -- the client binds again when its socket says 'ready'.
+  router.post('/browser/workflow-files/:workflowId/bind', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      // Creating the workspace here is what makes `uploads/` and `downloads/`
+      // exist BEFORE the first transfer, not after the first listing.
+      await store.ensureRoot();
+      const body = (req.body ?? {}) as { target?: unknown; userId?: unknown };
+      const target = String(body.target || 'local');
+      const ref = { userId: store.userId, workflowId: store.workflowId };
+      if (target === 'local') {
+        bindRealChrome(ref);
+        return res.json({ success: true, target, workflowId: ref.workflowId, bound: true });
+      }
+      if (target === 'live') {
+        const sessionUser = String(body.userId || req.apiKeyUserId || SINGLE_USER_ID);
+        const session = liveBrowserSessions.forUser(sessionUser);
+        if (!session) {
+          return res.json({ success: true, target, workflowId: ref.workflowId, bound: false,
+            hint: 'No live browser is open for this user yet; bind again once it is.' });
+        }
+        session.bindWorkflow(ref);
+        return res.json({ success: true, target, workflowId: ref.workflowId, bound: true });
+      }
+      fail(res, 400, "target must be 'local' or 'live'.");
+    } catch (e) { sendError(res, e); }
+  });
+
+  // What the Local Browser is bound to right now. Not under :workflowId on
+  // purpose: the view asks before it knows whether ITS id is the bound one.
+  router.get('/browser/workflow-files-binding', (_req: AuthenticatedRequest, res) => {
+    const ref = realChromeWorkflow();
+    res.json({ success: true, local: ref ? { workflowId: ref.workflowId } : null });
+  });
+
   // ── mkdir ─────────────────────────────────────────────────────────────────
   router.post('/browser/workflow-files/:workflowId/mkdir', async (req: AuthenticatedRequest, res) => {
     try {
@@ -132,6 +226,23 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       if (!store) return;
       const body = (req.body ?? {}) as { path?: unknown; name?: unknown };
       const entry = await store.mkdir(String(body.path ?? ''), String(body.name ?? ''));
+      res.status(201).json({ success: true, entry });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── new (empty) file ─────────────────────────────────────────────────────────
+  //
+  // "New File" used to be a one-byte upload because the storage refused an
+  // empty upload. That was a workaround, not a feature: a real empty file is
+  // what the operator asked for, and this endpoint makes one. `content` is
+  // optional text for a small seed (a JSON skeleton, a header row).
+  router.post('/browser/workflow-files/:workflowId/file', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { path?: unknown; name?: unknown; content?: unknown };
+      const content = typeof body.content === 'string' ? body.content : '';
+      const entry = await store.createFile(String(body.path ?? ''), String(body.name ?? ''), content);
       res.status(201).json({ success: true, entry });
     } catch (e) { sendError(res, e); }
   });
@@ -195,14 +306,26 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
     try {
       const store = await open(req, res);
       if (!store) return;
-      const body = (req.body ?? {}) as { path?: unknown; chooserId?: unknown; userId?: unknown };
-      const file = await store.resolveForBrowser(String(body.path ?? ''));
+      const body = (req.body ?? {}) as { path?: unknown; paths?: unknown; chooserId?: unknown; userId?: unknown };
+      // ONE request, however many files. Both chooser bridges answer a dialog
+      // once and then forget it, so a client that wants a `multiple` input to
+      // receive several files has to name them all here: `path` is the first
+      // (and the only one a single-file client ever sends), `paths` the full
+      // list. Every one is resolved by the store, so a stray entry cannot name
+      // anything outside the workflow root.
+      const wanted = Array.isArray(body.paths) && body.paths.length
+        ? body.paths.map((p) => String(p ?? ''))
+        : [String(body.path ?? '')];
+      const files = [];
+      for (const rel of wanted) files.push(await store.resolveForBrowser(rel));
+      const file = files[0];
+      const absolute = files.map((f) => f.absolutePath);
 
       const chooserId = body.chooserId === undefined || body.chooserId === null
         ? ''
         : String(body.chooserId);
       if (chooserId) {
-        const done = await RealChrome.acceptChooserPaths(chooserId, [file.absolutePath]);
+        const done = await RealChrome.acceptChooserPaths(chooserId, absolute);
         return res.json({ success: true, name: file.name, size: file.size, ...done });
       }
 
@@ -215,7 +338,7 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       if (!session.hasPendingFileChooser()) {
         return fail(res, 409, 'The page is not asking for a file any more.');
       }
-      const done = await session.acceptFilePaths([file.absolutePath]);
+      const done = await session.acceptFilePaths(absolute);
       res.json({ success: true, name: file.name, size: file.size, ...done });
     } catch (e) { sendError(res, e); }
   });

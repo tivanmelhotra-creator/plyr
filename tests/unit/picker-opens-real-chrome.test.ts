@@ -314,6 +314,27 @@ describe('clicking the crosshair', () => {
     expect(rec.navigated).toEqual(['/desktop/chrome?api_key=THE-KEY']);
   });
 
+  it('THE INCIDENT: the waiting tab\u2019s own links carry the workflow id too, or its Workflow Files have no workflow', async () => {
+    // A view reached through the placeholder's "open the view yourself" link
+    // or its Retry used to arrive with no ?workflowId=, build
+    // /browser/workflow-files//mkdir from the empty id, and read "Endpoint not
+    // found". The id rides on those links exactly as it rides on the
+    // navigation openRealBrowser() performs.
+    const rec = await runRequestPick({ workflowId: 'wf_42' }, { ok: true, viewPath: '/desktop/chrome' });
+    expect(rec.links.direct).toBe('/desktop/chrome?api_key=THE-KEY&workflowId=wf_42');
+    expect(rec.navigated[0]).toContain('workflowId=wf_42');
+    const failed = await runRequestPick({ workflowId: 'wf_42' }, { ok: false, error: 'boom' });
+    expect(failed.links.again).toBe('/desktop/chrome?api_key=THE-KEY&workflowId=wf_42');
+  });
+
+  it('a workflow id that is not a saved-workflow id is NOT put on the links', async () => {
+    // The view ignores a malformed id rather than sending it to the server;
+    // the placeholder must not hand it one in the first place.
+    const rec = await runRequestPick({ workflowId: '../etc' }, { ok: true, viewPath: '/desktop/chrome' });
+    expect(rec.links.direct).toBe('/desktop/chrome?api_key=THE-KEY');
+    expect(rec.navigated).toEqual(['/desktop/chrome?api_key=THE-KEY']);
+  });
+
   it('never sends the operator to a noVNC client', async () => {
     // The complaint was «نمیخام به گزینه های مثل vnc یا novnc روبرو بشم».
     // vnc.html ships 64 noVNC UI elements; vnc_lite.html still has a status bar.
@@ -759,9 +780,13 @@ describe('a failed launch does not escape as an unhandled rejection', () => {
 
   it('the in-panel button swallows it too', async () => {
     // Same shape as the bvp-real click handler: call, ignore the promise.
+    // The handler lives inside requestPickCanvas(), whose scope holds the
+    // address bar (`urlIn`) and the picker context (`o`, from which the saved
+    // workflow's id rides onto the view URL). Both are mirrored here.
     const caught = await unhandledFrom(`
       ${openRealBrowserSource()}
       var urlIn = { value: 'https://example.com' };
+      var o = { workflowId: 'wf_42' };
       ${extractClickHandlerBody(SRC, 'bvp-real')}
     `);
     expect(

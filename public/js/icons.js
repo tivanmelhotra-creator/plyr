@@ -34,6 +34,8 @@
   var P = {
     'alert-circle': ['<circle cx="12" cy="12" r="9"/>', '<path d="M12 8v5"/>', '<path d="M12 16.5h.01"/>'],
     'alert-triangle': ['<path d="M10.3 4.1a2 2 0 0 1 3.4 0l7 12.1a2 2 0 0 1-1.7 3H5a2 2 0 0 1-1.7-3z"/>', '<path d="M12 9.5v4"/>', '<path d="M12 17h.01"/>'],
+    // Back in the Workflow Files breadcrumb: one level up.
+    'arrow-left': ['<path d="M19 12H5"/>', '<path d="m11 18-6-6 6-6"/>'],
     // The product's own brand mark (G13). Traced from the highest-resolution
     // locked image, `docs/uiux/state-empty-canvas.webp` at 1672px: TWO facing
     // crescent arcs (open at top-centre and bottom-centre) around a small ring
@@ -75,8 +77,15 @@
     eye: ['<path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/>', '<circle cx="12" cy="12" r="2.9"/>'],
     'eye-off': ['<path d="M10.7 6c.4-.1.9-.2 1.3-.2 6 0 9.5 6.2 9.5 6.2s-1 1.8-2.7 3.4"/>', '<path d="M6.6 7.9C4.1 9.6 2.5 12 2.5 12S6 18.2 12 18.2c1.6 0 3-.4 4.2-1"/>', '<path d="M10 10a2.9 2.9 0 0 0 4 4"/>', '<path d="m3.5 3.5 17 17"/>'],
     'file-text': ['<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>', '<path d="M14 3v5h5"/>', '<path d="M9 13.5h6"/>', '<path d="M9 17h4"/>'],
+    // Workflow Files drawer toolbar (public/js/workflow-files.js): a document
+    // and a folder each with a plus, matching the reference UI in upload-ui/.
+    'file-plus': ['<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>', '<path d="M14 3v5h5"/>', '<path d="M12 11.5v6"/>', '<path d="M9 14.5h6"/>'],
     filter: ['<path d="M3 5.5h18l-7 8.2V20l-4-2.2v-4.1z"/>'],
     folder: ['<path d="M3 7a2 2 0 0 1 2-2h4l2.2 2.6H19a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
+    // "Open" in the Workflow Files menu: go INTO the folder (the breadcrumb
+    // is the way back), as opposed to the chevron that expands it in place.
+    'folder-open': ['<path d="M3 7a2 2 0 0 1 2-2h4l2.2 2.6H19a2 2 0 0 1 2 2V11H6.5a2 2 0 0 0-1.9 1.4L3 18z"/>', '<path d="M3 18a2 2 0 0 0 2 2h13a2 2 0 0 0 1.9-1.4L22 11"/>'],
+    'folder-plus': ['<path d="M3 7a2 2 0 0 1 2-2h4l2.2 2.6H19a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', '<path d="M12 10.5v6"/>', '<path d="M9 13.5h6"/>'],
     frame: ['<path d="M4 8h16"/>', '<path d="M4 16h16"/>', '<path d="M8 4v16"/>', '<path d="M16 4v16"/>'],
     gauge: ['<path d="M3.6 17.5a9 9 0 1 1 16.8 0"/>', '<path d="m12 14 4-4"/>', '<circle cx="12" cy="14.4" r="1.3" fill="currentColor"/>'],
     'git-branch': ['<path d="M6 8.5v10"/>', '<circle cx="18" cy="6" r="2.6"/>', '<circle cx="6" cy="5.6" r="2.6"/>', '<circle cx="6" cy="18.6" r="2.6"/>', '<path d="M18 8.6a7.4 7.4 0 0 1-7.4 7.4H8.6"/>'],
@@ -110,6 +119,10 @@
     // would look static however fast it spins.
     loader: ['<path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round"/>'],
     map: ['<path d="m3 6.6 6-2.6 6 2.6 6-2.6v13l-6 2.6-6-2.6-6 2.6z"/>', '<path d="M9 4v13"/>', '<path d="M15 6.6v13"/>'],
+    // The hamburger that opens the Workflow Files drawer: three bars, nothing
+    // else, so it reads as "menu" at 18px on a dark stage.
+    menu: ['<path d="M4 7h16"/>', '<path d="M4 12h16"/>', '<path d="M4 17h16"/>'],
+    'more-horizontal': ['<circle cx="5" cy="12" r="1.5" fill="currentColor"/>', '<circle cx="12" cy="12" r="1.5" fill="currentColor"/>', '<circle cx="19" cy="12" r="1.5" fill="currentColor"/>'],
     maximize: ['<path d="M8 3H5a2 2 0 0 0-2 2v3"/>', '<path d="M16 3h3a2 2 0 0 1 2 2v3"/>', '<path d="M21 16v3a2 2 0 0 1-2 2h-3"/>', '<path d="M3 16v3a2 2 0 0 0 2 2h3"/>'],
     'message-square': ['<path d="M21 15.4a2 2 0 0 1-2 2H8.4L4 21.5V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>'],
     minus: ['<path d="M5 12h14"/>'],

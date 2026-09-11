@@ -118,11 +118,36 @@ beforeEach(() => {
 
 const base = () => `/browser/workflow-files/${wfAlice}`;
 
+/** Names in a listing WITHOUT the two system folders every workspace carries. */
+const userNames = (r: request.Response) =>
+  (r.body.entries as Array<{ name: string; system?: boolean }>)
+    .filter((e) => !e.system)
+    .map((e) => e.name);
+const systemNames = (r: request.Response) =>
+  (r.body.entries as Array<{ name: string; system?: boolean; type: string }>)
+    .filter((e) => e.system)
+    .map((e) => e.name)
+    .sort();
+
 describe('workflow files: CRUD over HTTP', () => {
-  it('lists an empty workspace for a workflow the caller owns', async () => {
+  it('lists a fresh workspace: only the two SYSTEM folders uploads/ and downloads/', async () => {
     const r = await request(app).get(base());
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ success: true, workflowId: wfAlice, path: '', parent: null, entries: [] });
+    expect(r.body).toMatchObject({ success: true, workflowId: wfAlice, path: '', parent: null });
+    expect(systemNames(r)).toEqual(['downloads', 'uploads']);
+    expect(userNames(r)).toEqual([]);
+    for (const e of r.body.entries) expect(e.type).toBe('dir');
+  });
+
+  it('the system folders refuse rename and delete (they are the workflow contract)', async () => {
+    for (const name of ['uploads', 'downloads']) {
+      let r = await request(app).patch(`${base()}/rename`).send({ path: name, name: 'x' });
+      expect(r.status, `rename ${name}`).toBe(400);
+      r = await request(app).delete(`${base()}?path=${name}&recursive=1`);
+      expect(r.status, `delete ${name}`).toBe(400);
+    }
+    const r = await request(app).get(base());
+    expect(systemNames(r)).toEqual(['downloads', 'uploads']);
   });
 
   it('creates folders, uploads, renames, lists nested, deletes', async () => {
@@ -154,7 +179,8 @@ describe('workflow files: CRUD over HTTP', () => {
     r = await request(app).delete(`${base()}?path=assets&recursive=1`);
     expect(r.status).toBe(200);
     r = await request(app).get(base());
-    expect(r.body.entries).toEqual([]);
+    expect(userNames(r)).toEqual([]);
+    expect(systemNames(r)).toEqual(['downloads', 'uploads']);
   });
 
   it('refuses an empty upload and a bad name', async () => {
@@ -182,6 +208,51 @@ describe('workflow files: the boundary over HTTP', () => {
     expect([400, 404]).toContain(r.status);
   });
 
+  // REGRESSION — the `endpoint not found` incident. A view opened without
+  // ?workflowId= built `/browser/workflow-files//mkdir` (empty id); Express's
+  // `:workflowId` cannot match an empty segment, so the request fell through to
+  // the app-wide 404 and the operator read "Endpoint not found" for a problem
+  // that was really "no workflow". The router must now answer these itself,
+  // with a 400 that names the real cause, for EVERY verb the UI sends.
+  it('an EMPTY workflow id (two slashes) is a 400 naming the cause, never the generic 404', async () => {
+    const generic404 = express();
+    generic404.use(express.json());
+    generic404.use(asUser('alice'));
+    const { createWorkflowFilesRoutes } = await import('../../src/Routes/workflow-files.routes');
+    generic404.use('/', createWorkflowFilesRoutes({ connection: connection as never }));
+    generic404.use((_req, res) => { res.status(404).json({ success: false, error: 'Endpoint not found' }); });
+
+    const shapes: Array<[string, string, object | Buffer | undefined]> = [
+      ['get',    '/browser/workflow-files/?path=', undefined],
+      ['get',    '/browser/workflow-files//?path=', undefined],
+      ['post',   '/browser/workflow-files//mkdir', { path: '', name: 'x' }],
+      ['post',   '/browser/workflow-files//file', { path: '', name: 'x.txt' }],
+      ['post',   '/browser/workflow-files//upload?path=uploads&name=x.txt', Buffer.from('x')],
+      ['patch',  '/browser/workflow-files//rename', { path: 'a', name: 'b' }],
+      ['delete', '/browser/workflow-files//?path=a', undefined],
+      ['post',   '/browser/workflow-files//use', { path: 'a' }],
+      ['post',   '/browser/workflow-files//bind', { target: 'local' }],
+    ];
+    for (const [method, url, body] of shapes) {
+      let req = (request(generic404) as unknown as Record<string, (u: string) => request.Test>)[method](url);
+      if (Buffer.isBuffer(body)) req = req.set('content-type', 'application/octet-stream').send(body);
+      else if (body) req = req.send(body);
+      const r = await req;
+      expect(r.status, `${method} ${url}`).toBe(400);
+      expect(r.body.success, `${method} ${url}`).toBe(false);
+      expect(r.body.error, `${method} ${url}`).not.toMatch(/endpoint not found/i);
+      expect(r.body.error, `${method} ${url}`).toMatch(/workflow id/i);
+      expect(r.body.hint, `${method} ${url}`).toMatch(/saved workflow|save the workflow/i);
+    }
+  });
+
+  it('a REAL id is never mistaken for a missing one', async () => {
+    const r = await request(app).get(`${base()}?path=`);
+    expect(r.status).toBe(200);
+    const m = await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'real-id-ok' });
+    expect(m.status).toBe(201);
+  });
+
   it('cannot see another user\'s workflow even with its exact id (404, not the files)', async () => {
     // Bob puts a file in his workflow.
     let r = await request(app)
@@ -199,7 +270,7 @@ describe('workflow files: the boundary over HTTP', () => {
     expect(realChrome.pathsGiven).toEqual([]);
     // Bob still has his file.
     r = await request(app).get(`/browser/workflow-files/${wfBob}`).set('x-test-user', 'bob');
-    expect(r.body.entries.map((e: { name: string }) => e.name)).toEqual(['bob.txt']);
+    expect(userNames(r)).toEqual(['bob.txt']);
   });
 
   it('a non-admin key may not name another userId in the query', async () => {
@@ -210,7 +281,7 @@ describe('workflow files: the boundary over HTTP', () => {
   it('an admin key may act for an explicit userId', async () => {
     const r = await request(app).get(`/browser/workflow-files/${wfBob}?userId=bob`).set('x-test-user', 'env_root');
     expect(r.status).toBe(200);
-    expect(r.body.entries.map((e: { name: string }) => e.name)).toEqual(['bob.txt']);
+    expect(userNames(r)).toEqual(['bob.txt']);
   });
 
   it('refuses a symlink planted in the workspace through every verb', async () => {

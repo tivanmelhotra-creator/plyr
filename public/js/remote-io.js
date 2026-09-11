@@ -250,7 +250,14 @@
    *   isBusy:    optional function() -> bool; true = swallow nothing (e.g.
    *              element-selection mode, where keys mean something else)
    * }
-   * Returns { onMessage(msg) -> handled, detach() }.
+   *
+   * Attaching also draws the ONE permanent file control this surface has: a
+   * small hamburger that opens the Workflow Files drawer. It replaces the
+   * standing «[+ Add File] [Sent] [Files]» row entirely, and it is removed
+   * again by detach(), because a drawer on a disconnected stage has no dialog
+   * for its Select to answer.
+   *
+   * Returns { onMessage(msg) -> handled, detach(), openFiles() }.
    */
   function attach(opts) {
     var o = opts || {};
@@ -321,12 +328,79 @@
     function closeBar() {
       if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
       bar = null;
-      // The Workflow File Manager this bar opened goes with it: the page has
+      // The Workflow Files drawer this bar opened goes with it: the page has
       // stopped asking (or been answered), so a Select now has no dialog.
       if (wfmOpen && window.WorkflowFiles && window.WorkflowFiles.close) {
         wfmOpen = false;
         window.WorkflowFiles.close('bar-closed');
       }
+    }
+
+    // ── The hamburger ──────────────────────────────────────────────────────
+    //
+    // THE ONE PERMANENT FILE CONTROL ON THIS SURFACE.
+    //
+    // What used to stand here was «[+ Add File] [Sent] [Files]»: three buttons
+    // welded to the stage whether or not anyone wanted a file, and none of the
+    // three labels said what it would do. This is the whole replacement. It
+    // opens the Workflow Files drawer, which is an OVERLAY — while it is shut
+    // it occupies nothing, and this button is the only thing on screen.
+    //
+    // It hides ITSELF while the drawer is up: the drawer has its own Close, and
+    // two dismissals in the same corner is one too many.
+
+    var burger = null;
+
+    function syncBurger() {
+      if (!burger) return;
+      var up = !!(window.WorkflowFiles && window.WorkflowFiles.isOpen && window.WorkflowFiles.isOpen());
+      if (up) burger.classList.add('is-off');
+      else burger.classList.remove('is-off');
+    }
+
+    /**
+     * Open the drawer from the hamburger — i.e. with NO page waiting.
+     *
+     * There is no `accept` and no `multiple` to honour, and a Select would have
+     * no dialog to answer, so this is the workspace in its own right: browse,
+     * upload, organise. When a page IS asking, `openBar` opens the drawer with
+     * the request's own filters instead.
+     */
+    function openFiles() {
+      if (!window.WorkflowFiles) return false;
+      if (window.WorkflowFiles.isOpen()) {
+        window.WorkflowFiles.close('toggled');
+        syncBurger();
+        return false;
+      }
+      var ok = window.WorkflowFiles.open({
+        host: host,
+        workflowId: workflowId(),
+        userId: userId,
+        // A page that is mid-request keeps its own filters even when the drawer
+        // is opened from the hamburger: the operator can still Select, and the
+        // file still has to be one the page will take.
+        accept: pending ? pending.accept : '',
+        multiple: pending ? !!pending.multiple : false,
+        onUsed: function () { if (bar) setBarBusy(true); },
+        onClose: function () { syncBurger(); }
+      });
+      syncBurger();
+      return ok;
+    }
+
+    if (window.WorkflowFiles && host) {
+      burger = document.createElement('button');
+      burger.type = 'button';
+      burger.className = 'bvp-hamburger';
+      burger.title = t('rio.filesMenu', 'Workflow Files');
+      burger.setAttribute('aria-label', t('rio.filesMenu', 'Workflow Files'));
+      burger.innerHTML = BIC('menu', 18);
+      burger.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        openFiles();
+      });
+      host.appendChild(burger);
     }
 
     function sendFiles(fileList) {
@@ -415,30 +489,52 @@
       });
       var wfBtn = bar.querySelector('.rio-workflow');
       if (wfBtn) {
-        wfBtn.addEventListener('click', function () {
-          // The manager's Select posts to /browser/workflow-files/<id>/use with
-          // the SAME identity the socket runs as, so the server finds this
-          // session's waiting dialog. The hand-over is confirmed by the
-          // 'fileChooserDone' message the session emits, exactly as for tokens.
-          setBarWaiting(true);
-          wfmOpen = window.WorkflowFiles.open({
-            host: host,
-            workflowId: workflowId(),
-            userId: userId,
-            accept: info.accept,
-            onUsed: function () { setBarBusy(true); /* fileChooserDone closes the bar */ },
-            onClose: function (reason) {
-              wfmOpen = false;
-              if (reason !== 'used') setBarWaiting(false);
-            }
-          });
-        });
+        wfBtn.addEventListener('click', function () { openWorkflowDrawer(info); });
       }
       input.addEventListener('change', function () {
         sendFiles(input.files);
       });
 
       host.appendChild(bar);
+      syncBurger();
+    }
+
+    /**
+     * "Choose from Workflow Files" — open the drawer, already filtered.
+     *
+     * THE OPERATOR NEVER PRESSES THE HAMBURGER FOR THIS. Choosing the second
+     * source IS the request to browse, so the drawer opens by itself:
+     *
+     *     Choose from Workflow Files  ->  drawer opens, on the workflow's files
+     *
+     * The drawer's Select posts to /browser/workflow-files/<id>/use with the
+     * SAME identity the socket runs as, so the server finds this session's
+     * waiting dialog. The hand-over is confirmed by the 'fileChooserDone'
+     * message the session emits, exactly as for upload tokens — nothing about
+     * that architecture changes, only what the operator is looking at.
+     *
+     * `multiple` is passed through, which is what turns on multi-select: the
+     * page's own input decides whether several files may be picked, not the
+     * drawer.
+     */
+    function openWorkflowDrawer(info) {
+      if (!window.WorkflowFiles) return false;
+      setBarWaiting(true);
+      wfmOpen = window.WorkflowFiles.open({
+        host: host,
+        workflowId: workflowId(),
+        userId: userId,
+        accept: info.accept,
+        multiple: !!info.multiple,
+        onUsed: function () { setBarBusy(true); /* fileChooserDone closes the bar */ },
+        onClose: function (reason) {
+          wfmOpen = false;
+          if (reason !== 'used') setBarWaiting(false);
+          syncBurger();
+        }
+      });
+      syncBurger();
+      return wfmOpen;
     }
 
     // Drag a file onto the canvas — the gesture people try first, and which
@@ -456,10 +552,38 @@
       if (ev.dataTransfer && ev.dataTransfer.files) sendFiles(ev.dataTransfer.files);
     });
 
+    // ── Binding the session to the workflow ────────────────────────────────
+
+    /**
+     * POST /browser/workflow-files/:workflowId/bind { target:'live', userId }
+     * through WorkflowFiles.bind(), which knows the id rule and the headers.
+     * Best-effort: nothing here can fail the connection, and without a saved
+     * workflow there is nothing to bind to (WorkflowFiles says so by
+     * resolving false, silently -- the hamburger explains it when pressed).
+     */
+    function bindWorkflow() {
+      if (!window.WorkflowFiles || typeof window.WorkflowFiles.bind !== 'function') return;
+      try {
+        var p = window.WorkflowFiles.bind({ workflowId: workflowId(), userId: userId });
+        if (p && typeof p.then === 'function') p.then(null, function () { /* logged server-side */ });
+      } catch (e) { /* never the connection's problem */ }
+    }
+
     // ── Inbound messages ───────────────────────────────────────────────────
 
     function onMessage(msg) {
       if (!msg || !msg.t) return false;
+      // 'ready' is OBSERVED, never consumed: the views act on it too (first
+      // navigation, status line). It is the first moment a live session
+      // exists on the server, so it is when the session is bound to the
+      // saved workflow -- after it, that session's downloads are filed under
+      // downloads/ and the files the operator sends under uploads/. A
+      // reconnect says 'ready' again and binds again, which is what the
+      // server expects (a re-bind replaces, never errors).
+      if (msg.t === 'ready') {
+        bindWorkflow();
+        return false;
+      }
       switch (msg.t) {
         case 'filechooser':
           openBar({
@@ -470,6 +594,9 @@
         case 'fileChooserDone':
           pending = null;
           closeBar();
+          // closeBar() takes the drawer down with the bar, so the hamburger
+          // has to come back: it is hidden only while the drawer is up.
+          syncBurger();
           if (msg.ok) {
             toast(t('rio.sent', 'File sent to the page.'), 'success');
           } else if (msg.reason && msg.reason !== 'cancelled') {
@@ -524,6 +651,11 @@
       listeners = [];
       pending = null;
       closeBar();
+      // The hamburger belongs to the SESSION, not to the page: it goes with
+      // the session it was created for, or a disconnected stage would keep a
+      // button that opens a drawer no Select can answer from.
+      if (burger && burger.parentNode) burger.parentNode.removeChild(burger);
+      burger = null;
     }
 
     return {
@@ -531,7 +663,13 @@
       detach: detach,
       /** Explicit "pull the remote clipboard" for the toolbar button. */
       pullClipboard: function () { send({ t: 'copy' }); },
-      hasPendingFile: function () { return !!pending; }
+      hasPendingFile: function () { return !!pending; },
+      /**
+       * Open the Workflow Files drawer from outside — what the hamburger does,
+       * exposed so a surface that draws its own trigger (or a test) can reach
+       * the same one entry point.
+       */
+      openFiles: openFiles
     };
   }
 

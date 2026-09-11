@@ -98,8 +98,10 @@ describe('the view shows a browser, not a VNC client', () => {
     // These are what vnc_lite.html still shows, which is why dropping down to
     // it was not an acceptable substitute.
     const text = visibleText(chromeViewHtml());
+    // Whole words: the drawer's own "Delete" (a file action, not a key) must
+    // not read as the "Del" of Send-CtrlAltDel.
     for (const word of ['ctrl', 'alt', 'del', 'clipboard', 'shutdown', 'reboot', 'fullscreen']) {
-      expect(text, `unexpected VNC control: ${word}`).not.toContain(word);
+      expect(text, `unexpected VNC control: ${word}`).not.toMatch(new RegExp(`\\b${word}\\b`));
     }
   });
 
