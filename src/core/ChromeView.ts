@@ -368,6 +368,7 @@ export function chromeViewHtml(): string {
      sit at the same weight as Select — it destroys, Select delivers. */
   #ddelsel[hidden] { display: none; }
   #ddelsel:hover { color: #ff9d9d; border-color: #ff9d9d; }
+  #ddownsel[hidden] { display: none; }
 
   /* ── The panes ─────────────────────────────────────────────────────────
      The drawer is ONE surface and what it shows changes: the workflow's own
@@ -438,8 +439,10 @@ export function chromeViewHtml(): string {
     <h4>Workflow Files</h4>
     <span id="dtotal"></span>
     <span class="dgrow"></span>
-    <!-- Only when the page's input is 'multiple'; see wfmSyncSelection(). -->
-    <button id="dall" type="button" hidden>
+    <!-- Every file on screen. Always offered: the selection is the drawer's
+         OWN (Download, Delete work on any number); only SENDING to a page
+         is bound by the page's 'multiple', and that is checked at Select. -->
+    <button id="dall" type="button">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       <span>Select All</span>
     </button>
@@ -485,6 +488,7 @@ export function chromeViewHtml(): string {
       <span id="dcount"></span>
       <button id="dclear" type="button" hidden>Clear</button>
       <span class="dgrow"></span>
+      <button class="fbtn" id="ddownsel" type="button" hidden title="Download the selected files (several become one .zip)">Download</button>
       <button class="fbtn" id="ddelsel" type="button" hidden title="Delete the selected files">Delete</button>
       <button class="fbtn accent" id="wfmselect" type="button" disabled title="Hand the selected file to the page">Select</button>
     </div>
@@ -1335,10 +1339,10 @@ upInput.addEventListener('change', () => {
   // file must not be delivered to whatever asked next.
   const answering = pendingId;
   if (!list.length) {
-    // The operator opened their own picker and chose nothing. The remote page is
-    // still waiting on a dialog, and a page that thinks a dialog is open behaves
-    // as if it is still waiting for input -- so release it.
-    if (answering) void cancelPending(answering);
+    // The operator opened their own picker and chose nothing. The request is
+    // NOT released: the other source is still on offer (see the 'cancel'
+    // listener below for the measured reason).
+    if (answering) showSourceChooser('The page is still asking for a file.');
     return;
   }
   const done = [];
@@ -1381,12 +1385,19 @@ upInput.addEventListener('change', () => {
     });
 });
 
-// A picker the operator dismissed. Modern browsers fire this and NOT 'change',
-// so without it a cancelled pick would leave the remote page waiting on a dialog
-// until the server's own timeout released it minutes later.
+// A picker the operator dismissed. Modern browsers fire this and NOT 'change'.
+//
+// This does NOT release the page's request. Closing the native dialog means
+// "not from my computer", not "the page gets nothing": the request stays
+// pending so the operator can still pick the other source (Workflow Files),
+// which is the whole point of offering two. MEASURED before this change: the
+// 'cancel' here sent DELETE /browser/real/chooser, and the next Select in the
+// workspace was answered with "No page is asking for a file right now".
+// Saying no to the page is an explicit act -- the 'Not now' button on the
+// request's own row (offerFile) -- and the server's TTL still releases a
+// request nobody answers.
 upInput.addEventListener('cancel', () => {
-  const answering = pendingId;
-  if (answering) void cancelPending(answering);
+  if (pendingId) showSourceChooser('The page is still asking for a file.');
 });
 
 // ── AUTOMATIC TRANSFER, BOTH DIRECTIONS ────────────────────────────────────
@@ -1472,7 +1483,12 @@ function pollChooser() {
   })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => {
-      const c = j && j.chooser;
+      // Only a DEFINITE answer moves the state. A failed or malformed poll
+      // (the server hiccupped, the browser is restarting) says nothing about
+      // the request, and treating it as "gone" would drop a request the
+      // operator is in the middle of answering from the workspace.
+      if (!j || !j.success) return null;
+      const c = j.chooser;
       if (!c || !c.id) {
         // The request is gone: answered, cancelled, or its page closed. Take the
         // prompt down so the bar does not ask for a file nothing is waiting for.
@@ -1509,30 +1525,39 @@ function offerFile() {
     return answerPending(pendingId, tokens, names);
   }
 
-  // A line on the shelf, with a button that is a real way to do it by hand:
-  // the picker can be refused when the activation from the remote click has
-  // expired, and then this button's OWN click is the activation.
+  // A line on the shelf that names the request, and the way to say "no" to it:
+  // the page is released (the Local Browser's Cancel), instead of being left
+  // waiting on a dialog the operator has decided not to answer.
   pendingRow = noteInPanel(
     'uphint',
     'The page is asking for a file.',
-    'Choose it on your own computer and it goes straight to the site.',
+    'Pick a source below: your computer, or this workflow\u2019s files.',
+    { raise: false },
   );
-  const pick = document.createElement('button');
-  pick.className = 'fbtn';
-  pick.type = 'button';
-  pick.textContent = 'Choose file';
-  pick.addEventListener('click', () => openLocalPicker());
-  pendingRow.appendChild(pick);
+  const no = document.createElement('button');
+  no.className = 'fbtn';
+  no.type = 'button';
+  no.textContent = 'Not now';
+  no.title = 'Release the page without giving it a file';
+  no.addEventListener('click', () => { const id = pendingId; if (id) void cancelPending(id); });
+  pendingRow.appendChild(no);
 
-  // And the drawer opens ON THE TWO SOURCES. Both buttons there are the
-  // operator's own gesture, which is what makes the native picker reliably
-  // openable no matter how old the remote click is by now -- and the second
-  // source, this workflow's files, never needed a picker at all.
+  // THE ONLY thing that happens on the request: the drawer opens ON THE TWO
+  // SOURCES. The native picker is NOT raised here. It used to be
+  // ('openLocalPicker()' as a first attempt, with the buttons as fallback), and
+  // that is the measured cause of the unstable Add File behaviour:
+  //
+  //   * inside the activation window the native dialog opened BEFORE the
+  //     operator had chosen a source -- Workflow Files was never offered;
+  //   * outside it the click was refused, so only the chooser appeared;
+  //   * and dismissing that unasked-for dialog fired 'cancel', which released
+  //     the page's request, so a later "Choose from Workflow Files -> Select"
+  //     met "No page is asking for a file right now".
+  //
+  // One request, one behaviour: source chooser first, always. The picker opens
+  // on "Upload from Computer", the operator's own click, which is what makes
+  // it reliable no matter how old the remote click is by now.
   showSourceChooser('The page is asking for a file.');
-
-  // The attempt itself. It works while the click on the remote screen still
-  // counts as activation; when it does not, the buttons above are right there.
-  openLocalPicker();
   return null;
 }
 
@@ -1626,12 +1651,10 @@ if (addPc) {
     // Same input, same upload path, same tokens as "Send a file". If a page is
     // asking, the input mirrors its accept/multiple; otherwise it parks the
     // file exactly as Send does.
-    if (pendingId) openLocalPicker();
-    else {
-      upInput.accept = '';
-      upInput.multiple = true;
-      try { upInput.click(); } catch (e) { /* the shelf's Send still works */ }
-    }
+    if (pendingId) { openLocalPicker(); return; }
+    upInput.accept = '';
+    upInput.multiple = true;
+    try { upInput.click(); } catch (e) { /* the shelf's Send still works */ }
   });
 }
 
@@ -1666,6 +1689,7 @@ const wfmAll     = document.getElementById('dall');
 const wfmCount   = document.getElementById('dcount');
 const wfmClear   = document.getElementById('dclear');
 const wfmDelSel  = document.getElementById('ddelsel');
+const wfmDownSel = document.getElementById('ddownsel');
 const wfmConfirm = document.getElementById('dconfirm');
 const wfmMenu    = document.getElementById('dmenu');
 const wfmCrumbs  = document.getElementById('dcrumbs');
@@ -1677,9 +1701,14 @@ const wfmCrumbs  = document.getElementById('dcrumbs');
  *   wfmOpen     rel-path -> true        folders currently expanded
  *   wfmSelected [{ path, name, size }]  in the order they were picked
  *
- * Selection is a LIST, not one entry: an 'input type=file multiple' may take
- * several, and this drawer is the only place the operator can say which. For
- * a single-file input picking a second REPLACES the first.
+ * Selection is a LIST, not one entry, and it is the DRAWER'S OWN: any number
+ * of files can be picked at any time, because Download and Delete act on the
+ * whole set. The page's 'multiple' does NOT shape the selection -- it used to
+ * (a second pick REPLACED the first for a single-file input), and that made
+ * the drawer behave differently depending on which page happened to be
+ * asking, with no way to batch-delete while a single-file input waited.
+ * Where 'multiple' binds is SENDING: wfmUse() refuses to hand several files
+ * to a page that takes one, and says so.
  */
 const wfmFolders = {};
 const wfmOpen = { '': true };
@@ -1769,13 +1798,8 @@ function wfmIsPicked(rel) {
 
 function wfmPick(entry, on) {
   const want = (on === undefined) ? !wfmIsPicked(entry.path) : !!on;
-  let next = wfmSelected.filter((x) => x.path !== entry.path);
-  if (want) {
-    // A single-file input can hold exactly one, so picking a second REPLACES
-    // the first rather than silently keeping a choice the page cannot take.
-    if (!pendingMultiple) next = [];
-    next.push({ path: entry.path, name: entry.name, size: entry.size });
-  }
+  const next = wfmSelected.filter((x) => x.path !== entry.path);
+  if (want) next.push({ path: entry.path, name: entry.name, size: entry.size });
   wfmSelected = next;
   wfmSyncSelection();
 }
@@ -1785,9 +1809,8 @@ function wfmClearSelection() {
   wfmSyncSelection();
 }
 
-/** Every visible file -- offered only when the page's input is 'multiple'. */
+/** Every visible file. Always available: see the note on wfmSelected. */
 function wfmSelectAllVisible() {
-  if (!pendingMultiple) return;
   const next = [];
   wfmEachRow((li) => {
     if (li.getAttribute('data-type') !== 'file') return;
@@ -1829,8 +1852,17 @@ function wfmSyncSelection() {
   if (wfmCount) wfmCount.textContent = n ? (n === 1 ? '1 selected' : n + ' selected') : '';
   if (wfmClear) wfmClear.hidden = n === 0;
   if (wfmDelSel) wfmDelSel.hidden = n === 0;
-  // "Select All" is a promise only a 'multiple' input can keep.
-  if (wfmAll) wfmAll.hidden = !pendingMultiple;
+  if (wfmDownSel) wfmDownSel.hidden = n === 0;
+  // Select is the hand-over to a page, so it needs a page that is asking,
+  // and a single-file page can take exactly one. Said on the button itself
+  // (title) so the operator learns the rule before pressing, and again in
+  // the note if they press anyway (wfmUse).
+  if (wfmSelect) {
+    if (!pendingId) wfmSelect.title = 'Hand the selected file to the page (no page is asking right now)';
+    else if (n > 1 && !pendingMultiple) wfmSelect.title = 'The page takes ONE file; pick just one to send';
+    else wfmSelect.title = 'Hand the selected file' + (n > 1 ? 's' : '') + ' to the page';
+  }
+  if (wfmAll) wfmAll.hidden = false;
 }
 
 // ── Reading the tree ─────────────────────────────────────────────────────────
@@ -2017,6 +2049,7 @@ function wfmGlyph(kind) {
     file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
     'file-plus': '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 11.5v6"/><path d="M9 14.5h6"/>',
     upload: '<path d="M12 19V5"/><path d="m5.5 11.5 6.5-6.5 6.5 6.5"/><path d="M4 20.5h16"/>',
+    download: '<path d="M12 5v14"/><path d="m5.5 12.5 6.5 6.5 6.5-6.5"/><path d="M4 20.5h16"/>',
     'rotate-cw': '<path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/><path d="M20.5 4.5V10h-5.5"/>',
     'arrow-left': '<path d="M19 12H5"/><path d="m11 18-6-6 6-6"/>',
     'folder-open': '<path d="M3 7a2 2 0 0 1 2-2h4l2.2 2.6H19a2 2 0 0 1 2 2V11H6.5a2 2 0 0 0-1.9 1.4L3 18z"/><path d="M3 18a2 2 0 0 0 2 2h13a2 2 0 0 0 1.9-1.4L22 11"/>',
@@ -2388,6 +2421,86 @@ function wfmDeleteSelected() {
   });
 }
 
+// ── Download: the operator's own copy ────────────────────────────────────────
+//
+// «کلیک روی Download → فایل مستقیماً روی Windows کاربر ذخیره شود» -- the same
+// rule as the shelf: the bytes go to the operator's machine in one step. One
+// file is served as itself; a folder, the workspace, or a picked set is ONE
+// .zip the server streams (core/ZipStream), because a browser saves one thing
+// per click. Both go through the same HEAD-preflight-then-blob path as
+// fetchDownload(), so a refusal is shown in the server's OWN words and the
+// key stays in a header (a URL with the key only for a stream too big for a
+// Blob, exactly as downloadHref does).
+
+/** GET url for one path: a file as itself, a folder / the root as a zip. */
+function wfmDownloadHref(rel, withToken) {
+  const path = wfmBase() + '/download' + (rel ? '?path=' + encodeURIComponent(rel) : '');
+  return withToken ? api(path) : path;
+}
+
+/**
+ * Save what a download URL serves. 'init' is the request (GET by default, or
+ * a POST with the picked paths); 'fallbackName' is used when the server names
+ * nothing. Returns a promise that settles when the save has been handed to
+ * the browser, or after the error was shown.
+ */
+function wfmSaveFrom(path, init, fallbackName, withTokenHref) {
+  const headers = Object.assign({}, authHeaders(), (init && init.headers) || {});
+  const req = Object.assign({}, init || {}, { headers: headers, credentials: 'same-origin' });
+  const fail = (res) => res.text().then((txt) => {
+    let body = null;
+    try { body = JSON.parse(txt); } catch (e) { /* not JSON: status decides */ }
+    throw new Error(downloadFailureMessage(res.status, body));
+  });
+  return fetch(path, req)
+    .then((r) => {
+      if (!r.ok) return fail(r);
+      const want = nameFromDisposition(r.headers.get('content-disposition')) || fallbackName || 'download';
+      const len = parseInt(r.headers.get('content-length') || '0', 10) || 0;
+      if (len > BLOB_LIMIT_BYTES && withTokenHref) {
+        // Too big to hold in memory: let the browser stream it to disk itself.
+        // Only a GET can be a navigation, which is why POST zips (unknown
+        // length, never the Content-Length branch) always come through here.
+        r.body && r.body.cancel && r.body.cancel().catch(() => {});
+        saveAs(withTokenHref, want, false);
+        return null;
+      }
+      return r.blob().then((blob) => { saveAs(URL.createObjectURL(blob), want, true); return null; });
+    })
+    .then(() => { wfmSay('Downloaded: ' + (fallbackName || 'files'), false); })
+    .catch((e) => { wfmSay((e && e.message) || 'The download failed.', true); });
+}
+
+/** Download ONE entry: a file as itself, a folder as <name>.zip. */
+function wfmDownload(entry) {
+  if (!wfmRequire()) return;
+  const isDir = entry.type === 'dir';
+  const name = isDir ? entry.name + '.zip' : entry.name;
+  wfmSay((isDir ? 'Zipping ' : 'Fetching ') + entry.name + '\u2026', false);
+  return wfmSaveFrom(wfmDownloadHref(entry.path, false), { method: 'GET' }, name, wfmDownloadHref(entry.path, true));
+}
+
+/** Download the whole workspace as <workflowId>.zip. */
+function wfmDownloadAll() {
+  if (!wfmRequire()) return;
+  wfmSay('Zipping the workspace\u2026', false);
+  return wfmSaveFrom(wfmDownloadHref('', false), { method: 'GET' }, workflowId + '.zip', wfmDownloadHref('', true));
+}
+
+/** Download every picked file: one as itself, several as one zip. */
+function wfmDownloadSelected() {
+  if (!wfmSelected.length || !wfmRequire()) return;
+  const chosen = wfmSelected.slice();
+  if (chosen.length === 1) return wfmDownload({ path: chosen[0].path, name: chosen[0].name, type: 'file' });
+  const zipName = (wfmRoot ? wfmRoot.split('/').pop() : workflowId) + '.zip';
+  wfmSay('Zipping ' + chosen.length + ' files\u2026', false);
+  return wfmSaveFrom(wfmBase() + '/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths: chosen.map((c) => c.path), path: wfmRoot }),
+  }, zipName, '');
+}
+
 /** Upload from the operator's computer INTO a named workflow folder. */
 function wfmUploadFiles(list) {
   if (!list.length) return Promise.resolve();
@@ -2479,8 +2592,10 @@ function wfmMenuSep() {
  * the chevron on the row expands it in place instead.
  *
  * "Open / Preview" is deliberately NOT offered for a file: this page has no
- * viewer and no download route for a workflow file, and a menu entry that
- * does nothing is worse than one that is absent.
+ * viewer, and a menu entry that does nothing is worse than one that is
+ * absent. "Download" IS offered -- for a file (as itself), a folder (as a
+ * .zip of its tree) and, from the empty space, the folder on screen or the
+ * whole workspace.
  */
 function wfmOpenMenu(entry, x, y) {
   if (!wfmMenu) return;
@@ -2490,6 +2605,10 @@ function wfmOpenMenu(entry, x, y) {
     wfmMenuItem('New File', 'file-plus', () => wfmNewFile(wfmRoot));
     wfmMenuItem('Upload File', 'upload', () => wfmAskForUpload(wfmUploadTarget()));
     wfmMenuSep();
+    wfmMenuItem('Select All', 'check', () => wfmSelectAllVisible());
+    wfmMenuItem(wfmRoot ? 'Download this folder' : 'Download workspace (.zip)', 'download',
+      () => { void (wfmRoot ? wfmDownload({ path: wfmRoot, name: wfmRoot.split('/').pop(), type: 'dir' }) : wfmDownloadAll()); });
+    wfmMenuSep();
     wfmMenuItem('Refresh', 'rotate-cw', () => { void wfmRefresh(); });
   } else if (entry.type === 'dir') {
     wfmMenuItem('Open', 'folder-open', () => { void wfmGoTo(entry.path); });
@@ -2497,6 +2616,8 @@ function wfmOpenMenu(entry, x, y) {
     wfmMenuItem('New File', 'file-plus', () => wfmNewFile(entry.path));
     wfmMenuItem('New Folder', 'folder-plus', () => wfmNewFolder(entry.path));
     wfmMenuItem('Upload Here', 'upload', () => wfmAskForUpload(entry.path));
+    wfmMenuSep();
+    wfmMenuItem('Download (.zip)', 'download', () => { void wfmDownload(entry); });
     if (!entry.system) {
       wfmMenuSep();
       wfmMenuItem('Rename', 'pencil', () => wfmRename(entry));
@@ -2504,6 +2625,7 @@ function wfmOpenMenu(entry, x, y) {
     }
   } else {
     wfmMenuItem('Select', 'check', () => wfmPick(entry, true));
+    wfmMenuItem('Download', 'download', () => { void wfmDownload(entry); });
     wfmMenuSep();
     wfmMenuItem('Rename', 'pencil', () => wfmRename(entry));
     wfmMenuItem('Delete', 'trash', () => wfmDelete(entry), true);
@@ -2540,6 +2662,12 @@ function wfmUse() {
     return;
   }
   const chosen = wfmSelected.slice();
+  if (chosen.length > 1 && !pendingMultiple) {
+    // The server refuses this too (409), but the sentence is better said here,
+    // before a request, and with the selection intact for Download/Delete.
+    wfmSay('The page takes ONE file; pick just one to send. (Several can still be downloaded or deleted together.)', true);
+    return;
+  }
   if (pendingAccept) {
     const bad = chosen.filter((c) => !wfmAccepts(pendingAccept, c.name));
     if (bad.length) {
@@ -2598,6 +2726,7 @@ if (wfmList) {
   if (wfmAll) wfmAll.addEventListener('click', () => wfmSelectAllVisible());
   if (wfmClear) wfmClear.addEventListener('click', () => wfmClearSelection());
   if (wfmDelSel) wfmDelSel.addEventListener('click', () => wfmDeleteSelected());
+  if (wfmDownSel) wfmDownSel.addEventListener('click', () => { void wfmDownloadSelected(); });
   // A right-click on the empty space is the root's own menu, and a plain click
   // there clears the selection -- both from the reference UI.
   wfmList.addEventListener('contextmenu', (ev) => {

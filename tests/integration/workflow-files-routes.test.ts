@@ -14,6 +14,7 @@ import request from 'supertest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
+import { inflateRawSync } from 'zlib';
 
 const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-routes-'));
 
@@ -30,12 +31,17 @@ const realChrome = {
   pathsGiven: [] as string[][],
   idsGiven: [] as string[],
   pending: true,
+  /** What GET /browser/real/chooser would report: the waiting dialog, if any. */
+  chooser: null as null | { id: string; multiple: boolean },
 };
 vi.mock('../../src/core/RealChrome', () => {
   class RealChromeError extends Error {}
   return {
     RealChromeError,
     RealChrome: {
+      pendingChooser: vi.fn(() => (realChrome.chooser
+        ? { id: realChrome.chooser.id, multiple: realChrome.chooser.multiple, accept: '', name: '', at: Date.now() }
+        : null)),
       acceptChooserPaths: vi.fn(async (id: string, paths: string[]) => {
         if (!realChrome.pending) throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
         realChrome.idsGiven.push(id);
@@ -48,7 +54,7 @@ vi.mock('../../src/core/RealChrome', () => {
 
 // The canvas bridge: one fake live session per user.
 const live = {
-  sessions: new Map<string, { pending: boolean; given: string[][] }>(),
+  sessions: new Map<string, { pending: boolean; given: string[][]; multiple?: boolean }>(),
 };
 vi.mock('../../src/core/LiveSessions', () => ({
   liveBrowserSessions: {
@@ -57,6 +63,7 @@ vi.mock('../../src/core/LiveSessions', () => ({
       if (!s) return null;
       return {
         hasPendingFileChooser: () => s.pending,
+        pendingFileChooserMultiple: () => (s.pending ? !!s.multiple : null),
         acceptFilePaths: async (paths: string[]) => { s.given.push(paths); s.pending = false; return { count: paths.length }; },
       };
     },
@@ -113,6 +120,7 @@ beforeEach(() => {
   realChrome.pathsGiven = [];
   realChrome.idsGiven = [];
   realChrome.pending = true;
+  realChrome.chooser = null;
   live.sessions.clear();
 });
 
@@ -350,5 +358,180 @@ describe('workflow files: /use hands the SERVER-resolved file to the chooser', (
     live.sessions.set('alice', { pending: false, given: [] });
     r = await request(app).post(`${base()}/use`).send({ path: 'doc.pdf' });
     expect(r.status).toBe(409);
+  });
+});
+
+describe('workflow files: /use refuses several files for a single-file page', () => {
+  beforeEach(async () => {
+    for (const n of ['a.txt', 'b.txt', 'c.txt']) {
+      await request(app).post(`${base()}/upload?path=&name=${n}`).set('Content-Type', 'application/octet-stream').send(Buffer.from(n));
+    }
+  });
+
+  it('Local Browser view: 409 with the one-file sentence when the dialog is not `multiple`; nothing is handed over', async () => {
+    realChrome.chooser = { id: 'fc9', multiple: false };
+    const r = await request(app).post(`${base()}/use`).send({ paths: ['a.txt', 'b.txt', 'c.txt'], chooserId: 'fc9' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/ONE file/);
+    expect(r.body.hint).toMatch(/Download or Delete/);
+    expect(realChrome.pathsGiven).toEqual([]);
+  });
+
+  it('Local Browser view: all of them reach a `multiple` dialog, in the order picked', async () => {
+    realChrome.chooser = { id: 'fc9', multiple: true };
+    const r = await request(app).post(`${base()}/use`).send({ paths: ['c.txt', 'a.txt'], chooserId: 'fc9' });
+    expect(r.status).toBe(200);
+    expect(r.body.count).toBe(2);
+    expect(realChrome.pathsGiven[0].map((p) => path.basename(p))).toEqual(['c.txt', 'a.txt']);
+  });
+
+  it('Local Browser view: one file is always fine, whatever the dialog takes', async () => {
+    realChrome.chooser = { id: 'fc9', multiple: false };
+    const r = await request(app).post(`${base()}/use`).send({ paths: ['b.txt'], chooserId: 'fc9' });
+    expect(r.status).toBe(200);
+    expect(realChrome.pathsGiven[0].map((p) => path.basename(p))).toEqual(['b.txt']);
+  });
+
+  it('canvas view: the live session is asked the same question', async () => {
+    live.sessions.set('alice', { pending: true, given: [], multiple: false });
+    let r = await request(app).post(`${base()}/use`).send({ paths: ['a.txt', 'b.txt'] });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/ONE file/);
+    expect(live.sessions.get('alice')!.given).toEqual([]);
+
+    live.sessions.set('alice', { pending: true, given: [], multiple: true });
+    r = await request(app).post(`${base()}/use`).send({ paths: ['a.txt', 'b.txt'] });
+    expect(r.status).toBe(200);
+    expect(live.sessions.get('alice')!.given[0].map((p) => path.basename(p))).toEqual(['a.txt', 'b.txt']);
+  });
+});
+
+/** Minimal ZIP reader: names + inflated contents, straight from the central directory. */
+function readZip(buf: Buffer): Array<{ name: string; data: Buffer }> {
+  const eocd = buf.length - 22;
+  expect(buf.readUInt32LE(eocd)).toBe(0x06054b50);
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out: Array<{ name: string; data: Buffer }> = [];
+  for (let i = 0; i < count; i++) {
+    expect(buf.readUInt32LE(p)).toBe(0x02014b50);
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8');
+    const dataStart = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.subarray(dataStart, dataStart + csize);
+    out.push({ name, data: method === 8 ? inflateRawSync(raw) : Buffer.from(raw) });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+/** supertest hands binary bodies back as a Buffer when told to. */
+const binary = (req: request.Test) => req.buffer(true).parse((res, cb) => {
+  const chunks: Buffer[] = [];
+  res.on('data', (c: Buffer) => chunks.push(c));
+  res.on('end', () => cb(null, Buffer.concat(chunks)));
+});
+
+describe('workflow files: /download gives the operator their own copy', () => {
+  // Built ONCE: an upload of an existing name is kept as "name (2).ext", so a
+  // per-test rebuild would grow the tree between tests.
+  beforeAll(async () => {
+    // A small tree: docs/{report.pdf, notes/ideas.md}, empty/, and one at the root.
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'docs' });
+    await request(app).post(`${base()}/mkdir`).send({ path: 'docs', name: 'notes' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'empty' });
+    await request(app).post(`${base()}/upload?path=docs&name=report.pdf`).set('Content-Type', 'application/octet-stream').send(Buffer.from('%PDF-1.4 report'));
+    await request(app).post(`${base()}/upload?path=docs/notes&name=ideas.md`).set('Content-Type', 'application/octet-stream').send(Buffer.from('# ideas'));
+    await request(app).post(`${base()}/upload?path=&name=${encodeURIComponent('گزارش.txt')}`).set('Content-Type', 'application/octet-stream').send(Buffer.from('سلام'));
+  });
+  afterAll(async () => {
+    for (const p of ['docs', 'empty', 'گزارش.txt']) await request(app).delete(`${base()}?path=${encodeURIComponent(p)}`);
+  });
+
+  it('one file: as itself, named by Content-Disposition (UTF-8 form), with Content-Length', async () => {
+    const r = await binary(request(app).get(`${base()}/download?path=docs/report.pdf`));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toBe('application/octet-stream');
+    expect(r.headers['content-length']).toBe(String('%PDF-1.4 report'.length));
+    expect(r.headers['content-disposition']).toContain('filename="report.pdf"');
+    expect(r.headers['content-disposition']).toContain("filename*=UTF-8''report.pdf");
+    expect(Buffer.from(r.body).toString()).toBe('%PDF-1.4 report');
+
+    const fa = await binary(request(app).get(`${base()}/download?path=${encodeURIComponent('گزارش.txt')}`));
+    expect(fa.status).toBe(200);
+    expect(fa.headers['content-disposition']).toContain(`filename*=UTF-8''${encodeURIComponent('گزارش.txt')}`);
+    expect(Buffer.from(fa.body).toString()).toBe('سلام');
+  });
+
+  it('HEAD answers the same headers with no body (the client preflight)', async () => {
+    const r = await request(app).head(`${base()}/download?path=docs/report.pdf`);
+    expect(r.status).toBe(200);
+    expect(r.headers['content-disposition']).toContain('report.pdf');
+    expect(r.headers['content-length']).toBe(String('%PDF-1.4 report'.length));
+    const z = await request(app).head(`${base()}/download?path=docs`);
+    expect(z.status).toBe(200);
+    expect(z.headers['content-type']).toBe('application/zip');
+    expect(z.headers['content-disposition']).toContain('docs.zip');
+    const missing = await request(app).head(`${base()}/download?path=nope.txt`);
+    expect(missing.status).toBe(404);
+  });
+
+  it('a folder: <name>.zip holding the tree UNDER a top-level folder of its own name, empty folders kept', async () => {
+    const r = await binary(request(app).get(`${base()}/download?path=docs`));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toBe('application/zip');
+    expect(r.headers['content-disposition']).toContain('filename="docs.zip"');
+    expect(r.headers['content-length']).toBeUndefined(); // streamed
+    const entries = readZip(Buffer.from(r.body));
+    expect(entries.map((e) => e.name)).toEqual(['docs/', 'docs/notes/', 'docs/notes/ideas.md', 'docs/report.pdf']);
+    expect(entries.find((e) => e.name === 'docs/report.pdf')!.data.toString()).toBe('%PDF-1.4 report');
+  });
+
+  it('the root: <workflowId>.zip with the tree as the drawer shows it, system folders included', async () => {
+    const r = await binary(request(app).get(`${base()}/download`));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-disposition']).toContain(`filename="${wfAlice}.zip"`);
+    const names = readZip(Buffer.from(r.body)).map((e) => e.name);
+    expect(names).toContain('docs/');
+    expect(names).toContain('docs/notes/ideas.md');
+    expect(names).toContain('empty/');
+    expect(names).toContain('گزارش.txt');
+    expect(names).toContain('uploads/');
+    expect(names).toContain('downloads/');
+  });
+
+  it('POST with a picked SET: one file is sent as itself; several become one zip relative to the folder on screen', async () => {
+    const one = await binary(request(app).post(`${base()}/download`).send({ paths: ['docs/report.pdf'], path: 'docs' }));
+    expect(one.status).toBe(200);
+    expect(one.headers['content-type']).toBe('application/octet-stream');
+    expect(one.headers['content-disposition']).toContain('report.pdf');
+
+    const several = await binary(request(app).post(`${base()}/download`).send({ paths: ['docs/report.pdf', 'docs/notes'], path: 'docs' }));
+    expect(several.status).toBe(200);
+    expect(several.headers['content-type']).toBe('application/zip');
+    expect(several.headers['content-disposition']).toContain('filename="docs.zip"');
+    expect(readZip(Buffer.from(several.body)).map((e) => e.name)).toEqual(['report.pdf', 'notes/', 'notes/ideas.md']);
+
+    // From the root, with a name of the client's choosing.
+    const named = await binary(request(app).post(`${base()}/download`).send({ paths: ['docs', 'گزارش.txt'], name: 'picked' }));
+    expect(named.status).toBe(200);
+    expect(named.headers['content-disposition']).toContain('filename="picked.zip"');
+    expect(readZip(Buffer.from(named.body)).map((e) => e.name)).toEqual(['docs/', 'docs/notes/', 'docs/notes/ideas.md', 'docs/report.pdf', 'گزارش.txt']);
+  });
+
+  it('refuses before the first byte: no paths, a missing path, an escape, a stranger\'s workflow', async () => {
+    expect((await request(app).post(`${base()}/download`).send({ paths: [] })).status).toBe(400);
+    expect((await request(app).post(`${base()}/download`).send({ paths: ['docs/report.pdf', 'nope.txt'] })).status).toBe(404);
+    expect((await request(app).get(`${base()}/download?path=../../etc`)).status).toBe(400);
+    expect((await request(app).get(`${base()}/download?path=nope`)).status).toBe(404);
+    expect((await request(app).get(`/browser/workflow-files/${wfBob}/download`)).status).toBe(404);
+    const noId = await request(app).get('/browser/workflow-files//download');
+    expect(noId.status).toBe(400);
+    expect(noId.body.error).toMatch(/No workflow id/);
   });
 });

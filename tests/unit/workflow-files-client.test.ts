@@ -40,7 +40,19 @@ const chromeView = read('src/core/ChromeView.ts');
 
 interface Call { url: string; method: string; headers: Record<string, string>; body: unknown }
 
-function boot(opts: { workflow?: { id: string } | null; answers?: Record<string, unknown> } = {}) {
+/** What the fake server does when asked for a download (GET/POST .../download). */
+interface DownloadKnob {
+  /** HTTP status; 200 serves bytes, anything else serves a JSON refusal. */
+  status?: number;
+  /** The refusal text, in the server's own words. */
+  error?: string;
+  /** The Content-Disposition header the fake serves with the bytes. */
+  disposition?: string;
+  /** The body served. */
+  bytes?: string;
+}
+
+function boot(opts: { workflow?: { id: string } | null; answers?: Record<string, unknown>; download?: DownloadKnob } = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="stage"></div></body></html>', {
     runScripts: 'outside-only',
     url: 'http://localhost/',
@@ -48,6 +60,18 @@ function boot(opts: { workflow?: { id: string } | null; answers?: Record<string,
   const w = dom.window as unknown as Record<string, any>;
   const calls: Call[] = [];
   const toasts: string[] = [];
+  /** Every <a download> the module clicked: the file name the operator would see. */
+  const saved: string[] = [];
+
+  // jsdom has no object URLs and does not navigate on <a>.click(); the module
+  // saves through exactly those two, so both are stood in for here.
+  w.URL.createObjectURL = () => 'blob:fake';
+  w.URL.revokeObjectURL = () => undefined;
+  const realClick = w.HTMLAnchorElement.prototype.click;
+  w.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+    if (this.hasAttribute('download')) { saved.push(this.getAttribute('download') || ''); return; }
+    return realClick.call(this);
+  };
 
   w.AppUtil = { t: (k: string) => k, toast: (m: string) => toasts.push(m) };
   w.API = { getKey: () => 'THE-KEY' };
@@ -58,6 +82,21 @@ function boot(opts: { workflow?: { id: string } | null; answers?: Record<string,
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch { /* raw */ } }
     calls.push({ url, method, headers: (init && init.headers) || {}, body });
     const key = `${method} ${url.split('?')[0].replace(/\/browser\/workflow-files\/[^/?]+/, '/wf')}`;
+    if (key === 'GET /wf/download' || key === 'POST /wf/download') {
+      // A download is BYTES with a Content-Disposition, or a JSON refusal --
+      // never a JSON "success" envelope.
+      const d = opts.download || {};
+      const status = d.status ?? 200;
+      const headers = new Map<string, string>();
+      if (status === 200 && d.disposition) headers.set('content-disposition', d.disposition);
+      return Promise.resolve({
+        ok: status === 200,
+        status,
+        headers: { get: (h: string) => headers.get(h.toLowerCase()) ?? null },
+        text: () => Promise.resolve(status === 200 ? (d.bytes ?? 'BYTES') : JSON.stringify({ success: false, error: d.error || 'refused' })),
+        blob: () => Promise.resolve(new w.Blob([d.bytes ?? 'BYTES'])),
+      });
+    }
     // The default listing answers EVERY folder with the same two names, but
     // with paths under the folder that was asked for -- as the real server
     // does. A fake that returned `docs` as a child of `docs` made the tree
@@ -88,7 +127,7 @@ function boot(opts: { workflow?: { id: string } | null; answers?: Record<string,
   dom.window.eval(moduleSrc);
 
   const tick = () => new Promise((r) => setTimeout(r, 0));
-  return { dom, w, calls, toasts, tick, stage: dom.window.document.getElementById('stage')! };
+  return { dom, w, calls, toasts, saved, tick, stage: dom.window.document.getElementById('stage')! };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -368,10 +407,205 @@ describe('WorkflowFiles: the panel and its requests', () => {
       b = boot({ answers: withSystem });
       b.w.WorkflowFiles.open({ host: b.stage });
       await b.tick();
+      // Download (.zip) is offered on EVERY folder -- a system folder is the
+      // workflow's, but its contents are still the operator's to take a copy of.
       (b.stage.querySelector('li[data-path="uploads"]') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)']);
       (b.stage.querySelector('li[data-path="docs"]') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Rename', 'Delete']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete']);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  describe('selection is the drawer\u2019s own: any number, Select All always on offer', () => {
+    const many = {
+      'GET /wf': {
+        success: true, path: '', parent: null, entries: [
+          { name: 'docs', path: 'docs', type: 'dir', size: 0 },
+          { name: 'a.csv', path: 'a.csv', type: 'file', size: 1 },
+          { name: 'b.csv', path: 'b.csv', type: 'file', size: 2 },
+          { name: 'c.txt', path: 'c.txt', type: 'file', size: 3 },
+        ],
+      },
+    };
+    const files = () => [...b.stage.querySelectorAll('li.wfm-file')] as HTMLElement[];
+    const menuLabels = () => [...b.stage.querySelectorAll('.wfm-menu button')].map((x) => x.textContent);
+
+    it('picks several files for a single-file page, and shows the Download / Delete footer with a selection', async () => {
+      b = boot({ answers: many });
+      b.w.WorkflowFiles.open({ host: b.stage, multiple: false });
+      await b.tick();
+      const foot = b.stage.querySelector('.wfm-foot')!;
+      expect(foot.className).not.toContain('has-sel');
+      files()[0].click();
+      files()[1].click();
+      expect(b.stage.querySelectorAll('li.sel')).toHaveLength(2);
+      expect(foot.className).toContain('has-sel');
+      expect(b.stage.querySelector('.wfm-count')!.textContent).toBe('2 selected');
+      expect((b.stage.querySelector('.wfm-clear') as HTMLElement).hidden).toBe(false);
+      expect(b.stage.querySelector('.wfm-downsel')).toBeTruthy();
+      expect(b.stage.querySelector('.wfm-delsel')).toBeTruthy();
+      // Select warns on the button itself, before it is pressed.
+      expect((b.stage.querySelector('.wfm-select') as HTMLElement).title).toContain('ONE');
+    });
+
+    it('SENDING several to a single-file page is refused in words, before any /use, with the selection kept', async () => {
+      b = boot({ answers: many });
+      b.w.WorkflowFiles.open({ host: b.stage, multiple: false });
+      await b.tick();
+      files()[0].click();
+      files()[1].click();
+      (b.stage.querySelector('.wfm-select') as HTMLElement).click();
+      await b.tick();
+      expect(b.calls.some((c) => c.url.endsWith('/use'))).toBe(false);
+      const note = b.stage.querySelector('.wfm-note')!;
+      expect(note.className).toContain('err');
+      expect(note.textContent).toContain('ONE');
+      expect(b.stage.querySelectorAll('li.sel')).toHaveLength(2);
+      expect(b.w.WorkflowFiles.isOpen()).toBe(true);
+    });
+
+    it('a multiple page takes several in ONE /use: `path` the first, `paths` the whole list, in the order picked', async () => {
+      const used: unknown[] = [];
+      b = boot({ answers: { ...many, 'POST /wf/use': { success: true, name: 'b.csv', size: 2, count: 2 } } });
+      b.w.WorkflowFiles.open({ host: b.stage, multiple: true, onUsed: (d: unknown) => used.push(d) });
+      await b.tick();
+      files()[1].click(); // b.csv first, on purpose
+      files()[0].click();
+      (b.stage.querySelector('.wfm-select') as HTMLElement).click();
+      await b.tick();
+      const use = b.calls.filter((c) => c.url.endsWith('/use'));
+      expect(use).toHaveLength(1);
+      expect(use[0].body).toEqual({ path: 'b.csv', paths: ['b.csv', 'a.csv'] });
+      expect(used).toEqual([[{ name: 'b.csv', size: 2 }, { name: 'a.csv', size: 1 }]]);
+    });
+
+    it('Select All -- in the head and in the empty-space menu -- picks every file drawn, never a folder', async () => {
+      b = boot({ answers: many });
+      b.w.WorkflowFiles.open({ host: b.stage, multiple: false });
+      await b.tick();
+      const all = b.stage.querySelector('.wfm-selectall') as HTMLElement;
+      expect(all).toBeTruthy();
+      expect(all.textContent).toContain('Select All');
+      all.click();
+      expect(b.stage.querySelectorAll('li.sel')).toHaveLength(3);
+      expect(b.stage.querySelector('li.wfm-dir.sel')).toBeNull();
+      expect(b.stage.querySelector('.wfm-count')!.textContent).toBe('3 selected');
+      (b.stage.querySelector('.wfm-clear') as HTMLElement).click();
+      expect(b.stage.querySelectorAll('li.sel')).toHaveLength(0);
+      // The same from the menu on empty space, which also offers the workspace zip.
+      (b.stage.querySelector('.wfm-list') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      expect(menuLabels()).toEqual(['New Folder', 'New File', 'Upload File', 'Select All', 'Download workspace (.zip)', 'Refresh']);
+      ([...b.stage.querySelectorAll('.wfm-menu button')].find((x) => x.textContent === 'Select All') as HTMLElement).click();
+      expect(b.stage.querySelectorAll('li.sel')).toHaveLength(3);
+    });
+
+    it('a file\u2019s own menu offers Download beside Select', async () => {
+      b = boot({ answers: many });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      files()[0].dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      expect(menuLabels()).toEqual(['Select', 'Download', 'Rename', 'Delete']);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  describe('Download: the operator\u2019s own copy, fetched with the key in a HEADER and saved as a Blob', () => {
+    const many = {
+      'GET /wf': {
+        success: true, path: '', parent: null, entries: [
+          { name: 'docs', path: 'docs', type: 'dir', size: 0 },
+          { name: 'a.csv', path: 'a.csv', type: 'file', size: 1 },
+          { name: 'b.csv', path: 'b.csv', type: 'file', size: 2 },
+        ],
+      },
+    };
+    const files = () => [...b.stage.querySelectorAll('li.wfm-file')] as HTMLElement[];
+    const menuButton = (label: string) => [...b.stage.querySelectorAll('.wfm-menu button')].find((x) => x.textContent === label) as HTMLElement;
+    const settle = async () => { for (let i = 0; i < 6; i++) await b.tick(); };
+
+    it('ONE file is GET .../download?path=<relative>, saved under the server\u2019s Content-Disposition name', async () => {
+      b = boot({ answers: many, download: { disposition: 'attachment; filename="a.csv"' } });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      files()[0].dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      menuButton('Download').click();
+      await settle();
+      const dl = b.calls.find((c) => c.url.indexOf('/download') >= 0)!;
+      expect(dl.method).toBe('GET');
+      expect(dl.url).toBe('/browser/workflow-files/wf_abc123/download?path=a.csv');
+      expect(dl.url).not.toContain('THE-KEY');
+      expect(dl.headers['x-api-key']).toBe('THE-KEY');
+      expect(b.saved).toEqual(['a.csv']);
+      expect(b.stage.querySelector('.wfm-note')!.textContent).toContain('a.csv');
+      expect(b.stage.querySelector('.wfm-note')!.className).not.toContain('err');
+    });
+
+    it('a FOLDER is GET .../download?path=<folder>, one .zip named after it', async () => {
+      b = boot({ answers: many });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      (b.stage.querySelector('li.wfm-dir') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      menuButton('Download (.zip)').click();
+      await settle();
+      const dl = b.calls.find((c) => c.url.indexOf('/download') >= 0)!;
+      expect(dl.method).toBe('GET');
+      expect(dl.url).toBe('/browser/workflow-files/wf_abc123/download?path=docs');
+      // No Content-Disposition from the fake: the client\u2019s own fallback name.
+      expect(b.saved).toEqual(['docs.zip']);
+    });
+
+    it('the whole WORKSPACE is GET .../download with no path, named <workflowId>.zip', async () => {
+      b = boot({ answers: many });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      (b.stage.querySelector('.wfm-list') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      menuButton('Download workspace (.zip)').click();
+      await settle();
+      const dl = b.calls.find((c) => c.url.indexOf('/download') >= 0)!;
+      expect(dl.method).toBe('GET');
+      expect(dl.url).toBe('/browser/workflow-files/wf_abc123/download');
+      expect(b.saved).toEqual(['wf_abc123.zip']);
+    });
+
+    it('the footer\u2019s Download: ONE picked file is the plain GET; SEVERAL are one POST with `paths`, as one .zip', async () => {
+      b = boot({ answers: many, download: { disposition: "attachment; filename*=UTF-8''wf_abc123.zip" } });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      files()[0].click();
+      (b.stage.querySelector('.wfm-downsel') as HTMLElement).click();
+      await settle();
+      let dls = b.calls.filter((c) => c.url.indexOf('/download') >= 0);
+      expect(dls).toHaveLength(1);
+      expect(dls[0].method).toBe('GET');
+      expect(dls[0].url).toBe('/browser/workflow-files/wf_abc123/download?path=a.csv');
+
+      files()[1].click();
+      (b.stage.querySelector('.wfm-downsel') as HTMLElement).click();
+      await settle();
+      dls = b.calls.filter((c) => c.url.indexOf('/download') >= 0);
+      expect(dls).toHaveLength(2);
+      expect(dls[1].method).toBe('POST');
+      expect(dls[1].url).toBe('/browser/workflow-files/wf_abc123/download');
+      expect(dls[1].headers['Content-Type']).toBe('application/json');
+      expect(dls[1].body).toEqual({ paths: ['a.csv', 'b.csv'], path: '' });
+      expect(b.saved[1]).toBe('wf_abc123.zip');
+      // The selection is untouched by a download; the operator may still send or delete it.
+      expect(b.stage.querySelectorAll('li.sel')).toHaveLength(2);
+    });
+
+    it('a refusal is shown in the server\u2019s own words, and nothing is saved', async () => {
+      b = boot({ answers: many, download: { status: 404, error: 'No such file in this workspace.' } });
+      b.w.WorkflowFiles.open({ host: b.stage });
+      await b.tick();
+      files()[0].dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
+      menuButton('Download').click();
+      await settle();
+      expect(b.saved).toEqual([]);
+      const note = b.stage.querySelector('.wfm-note')!;
+      expect(note.className).toContain('err');
+      expect(note.textContent).toBe('No such file in this workspace.');
+      expect(b.w.WorkflowFiles.isOpen()).toBe(true);
     });
   });
 

@@ -6095,6 +6095,10 @@ body.route-fullbleed .fe-mm-restore {
 .wfm-delsel { display: none; }
 .wfm-foot.has-sel .wfm-delsel { display: inline-flex; }
 .wfm-delsel:hover { color: var(--danger); border-color: var(--danger); }
+/* Batch download: one file as itself, several as one .zip. Same rule as
+ * Delete -- only once something is picked. */
+.wfm-downsel { display: none; }
+.wfm-foot.has-sel .wfm-downsel { display: inline-flex; }
 /* Hidden, not removed: the visible Upload buttons forward their click here. */
 .wfm-input { display: none; }
 

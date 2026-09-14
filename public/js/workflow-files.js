@@ -223,9 +223,14 @@
 
   // ── Selection ──────────────────────────────────────────────────────────
   //
-  // A LIST, not one entry: an `<input type="file" multiple>` may take several,
-  // and the drawer is the only place the operator can say which. Order is the
-  // order they were picked, which is the order they reach the page.
+  // A LIST, not one entry, and it is the DRAWER'S OWN: any number of files can
+  // be picked at any time, because Download and Delete act on the whole set.
+  // The page's `multiple` does NOT shape the selection -- it used to (a second
+  // pick REPLACED the first for a single-file input), which made the drawer
+  // behave differently depending on which page was asking and left no way to
+  // batch-delete while a single-file input waited. Where `multiple` binds is
+  // SENDING: use() refuses to hand several files to a page that takes one.
+  // Order is the order they were picked, which is the order they reach the page.
 
   function isPicked(rel) {
     if (!state) return false;
@@ -242,12 +247,7 @@
     for (var i = 0; i < state.selected.length; i++) {
       if (state.selected[i].path !== entry.path) next.push(state.selected[i]);
     }
-    if (want) {
-      // A single-file input can hold exactly one, so picking a second REPLACES
-      // the first rather than silently keeping a choice the page cannot take.
-      if (!state.multiple) next = [];
-      next.push({ path: entry.path, name: entry.name, size: entry.size });
-    }
+    if (want) next.push({ path: entry.path, name: entry.name, size: entry.size });
     state.selected = next;
     syncSelection();
   }
@@ -282,6 +282,11 @@
       : '';
     els.clear.hidden = n === 0;
     els.foot.classList.toggle('has-sel', n > 0);
+    // Select is the hand-over to a page; a single-file page takes exactly one.
+    // Said on the button before it is pressed, and again in the note if it is.
+    els.select.title = (n > 1 && !state.multiple)
+      ? t('wfm.oneOnly', 'The page takes ONE file; pick just one to send.')
+      : t('wfm.selectTitle', 'Hand the selected file(s) to the page');
   }
 
   // ── Reading the tree ───────────────────────────────────────────────────
@@ -379,6 +384,7 @@
     li.setAttribute('role', isDir ? 'treeitem' : 'option');
     li.setAttribute('data-path', entry.path);
     li.setAttribute('data-type', entry.type);
+    li.setAttribute('data-size', String(entry.size || 0));
     if (isSys) li.setAttribute('data-system', 'true');
     li.style.setProperty('--wfm-depth', String(depth));
 
@@ -788,6 +794,91 @@
     );
   }
 
+  // ── Download: the operator's own copy ──────────────────────────────────
+  //
+  // One file is served as itself; a folder, the workspace, or a picked SET
+  // is ONE .zip the server streams (GET/POST .../download). The bytes are
+  // fetched with the key in a HEADER and saved through a Blob + <a download>,
+  // so the key never lands in a URL or the download history, and a refusal
+  // is shown in the server's own words rather than Chrome's generic "Failed".
+
+  function nameFromDisposition(h) {
+    var v = String(h || '');
+    var star = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(v);
+    if (star) { try { return decodeURIComponent(star[1].trim()); } catch (e) { /* fall through */ } }
+    var plain = /filename\s*=\s*"?([^";]+)"?/.exec(v);
+    return plain ? plain[1].trim() : '';
+  }
+
+  function saveBlob(blob, name) {
+    var href = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = href;
+    a.download = name || 'download';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { try { URL.revokeObjectURL(href); } catch (e) { /* fine */ } }, 60000);
+  }
+
+  /** Fetch a download URL and hand the bytes to the operator's browser. */
+  function saveFrom(path, init, fallbackName) {
+    if (!state) return Promise.resolve();
+    var s = state;
+    var o = init || {};
+    return fetch(path, {
+      method: o.method || 'GET',
+      headers: apiHeaders(o.headers || {}),
+      body: o.body,
+      credentials: 'same-origin'
+    })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.text().then(function (txt) {
+            var d = null;
+            try { d = JSON.parse(txt); } catch (e) { /* not JSON */ }
+            throw new Error((d && d.error) || (t('wfm.downloadFailed', 'The download failed.') + ' (HTTP ' + r.status + ')'));
+          });
+        }
+        var want = nameFromDisposition(r.headers.get('content-disposition')) || fallbackName || 'download';
+        return r.blob().then(function (blob) { saveBlob(blob, want); return want; });
+      })
+      .then(function (name) { if (state === s) say(t('wfm.downloaded', 'Downloaded:') + ' ' + name, false); })
+      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.downloadFailed', 'The download failed.'), true); });
+  }
+
+  /** Download ONE entry: a file as itself, a folder as <name>.zip. */
+  function downloadEntry(entry) {
+    if (!state) return Promise.resolve();
+    var isDir = entry.type === 'dir';
+    say((isDir ? t('wfm.zipping', 'Zipping\u2026') : t('wfm.fetching', 'Fetching\u2026')) + ' ' + entry.name, false);
+    return saveFrom(base() + '/download?path=' + encodeURIComponent(entry.path), { method: 'GET' },
+      isDir ? entry.name + '.zip' : entry.name);
+  }
+
+  /** Download the whole workspace as <workflowId>.zip. */
+  function downloadAll() {
+    if (!state) return Promise.resolve();
+    say(t('wfm.zipping', 'Zipping\u2026'), false);
+    return saveFrom(base() + '/download', { method: 'GET' }, state.workflowId + '.zip');
+  }
+
+  /** Download every picked file: one as itself, several as one zip. */
+  function downloadSelected() {
+    if (!state || !state.selected.length) return Promise.resolve();
+    var chosen = state.selected.slice();
+    if (chosen.length === 1) return downloadEntry({ path: chosen[0].path, name: chosen[0].name, type: 'file' });
+    var leaf = state.root ? state.root.split('/').pop() : state.workflowId;
+    say(t('wfm.zipping', 'Zipping\u2026') + ' (' + chosen.length + ')', false);
+    return saveFrom(base() + '/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: chosen.map(function (c) { return c.path; }), path: state.root })
+    }, leaf + '.zip');
+  }
+
   /**
    * Upload from the operator's computer INTO a named folder.
    *
@@ -902,6 +993,12 @@
       menuItem(menu, t('wfm.newFile', 'New File'), 'file-plus', function () { newFile(state.root); });
       menuItem(menu, t('wfm.upload', 'Upload File'), 'upload', function () { askForUpload(uploadTarget()); });
       menuSep(menu);
+      menuItem(menu, t('wfm.selectAll', 'Select All'), 'square-check', function () { selectAllVisible(); });
+      menuItem(menu, state.root ? t('wfm.downloadFolder', 'Download this folder') : t('wfm.downloadAll', 'Download workspace (.zip)'),
+        'download', function () {
+          void (state.root ? downloadEntry({ path: state.root, name: state.root.split('/').pop(), type: 'dir' }) : downloadAll());
+        });
+      menuSep(menu);
       menuItem(menu, t('wfm.refresh', 'Refresh'), 'rotate-cw', function () { void refresh(); });
     } else if (entry.type === 'dir') {
       menuItem(menu, t('wfm.open', 'Open'), 'folder-open', function () { void goTo(entry.path); });
@@ -909,6 +1006,8 @@
       menuItem(menu, t('wfm.newFile', 'New File'), 'file-plus', function () { newFile(entry.path); });
       menuItem(menu, t('wfm.newFolder', 'New Folder'), 'folder-plus', function () { newFolder(entry.path); });
       menuItem(menu, t('wfm.uploadHere', 'Upload Here'), 'upload', function () { askForUpload(entry.path); });
+      menuSep(menu);
+      menuItem(menu, t('wfm.downloadZip', 'Download (.zip)'), 'download', function () { void downloadEntry(entry); });
       if (!entry.system) {
         // uploads/ and downloads/ are part of the workflow: no Rename, no Delete.
         menuSep(menu);
@@ -917,6 +1016,7 @@
       }
     } else {
       menuItem(menu, t('wfm.pick', 'Select'), 'check', function () { pick(entry, true); });
+      menuItem(menu, t('wfm.download', 'Download'), 'download', function () { void downloadEntry(entry); });
       menuSep(menu);
       menuItem(menu, t('wfm.rename', 'Rename'), 'pencil', function () { renameEntry(entry); });
       menuItem(menu, t('wfm.delete', 'Delete'), 'trash', function () { deleteEntry(entry); }, true);
@@ -982,6 +1082,12 @@
     if (!state || !state.selected.length) return;
     var s = state;
     var chosen = s.selected.slice();
+    if (chosen.length > 1 && !s.multiple) {
+      // The server refuses this too (409); saying it here keeps the selection
+      // intact for Download / Delete and costs no request.
+      say(t('wfm.oneOnly', 'The page takes ONE file; pick just one to send.'), true);
+      return;
+    }
     if (s.opts.accept) {
       var bad = chosen.filter(function (c) { return !accepts(s.opts.accept, c.name); });
       if (bad.length) {
@@ -1149,6 +1255,13 @@
     var grow2 = document.createElement('span');
     grow2.className = 'wfm-grow';
     foot.appendChild(grow2);
+    var down = document.createElement('button');
+    down.type = 'button';
+    down.className = 'btn btn-ghost btn-sm wfm-downsel';
+    down.textContent = t('wfm.download', 'Download');
+    down.title = t('wfm.downloadSelTitle', 'Download the selected files (several become one .zip)');
+    down.addEventListener('click', function () { void downloadSelected(); });
+    foot.appendChild(down);
     var del = document.createElement('button');
     del.type = 'button';
     del.className = 'btn btn-ghost btn-sm wfm-delsel';
@@ -1198,19 +1311,15 @@
     };
   }
 
-  /** Pick every FILE currently drawn (i.e. in an expanded folder). */
+  /** Pick every FILE currently drawn (i.e. in an expanded folder). Always on offer. */
   function selectAllVisible() {
     if (!state) return;
-    if (!state.multiple) {
-      say(t('wfm.oneOnly', 'This page accepts a single file.'), false);
-      return;
-    }
     var next = [];
     var rows = state.els.list.querySelectorAll('li.wfm-file');
     for (var i = 0; i < rows.length; i++) {
       var rel = rows[i].getAttribute('data-path');
       var name = (rows[i].querySelector('.wfm-name') || {}).textContent || '';
-      next.push({ path: rel, name: name, size: 0 });
+      next.push({ path: rel, name: name, size: Number(rows[i].getAttribute('data-size') || 0) });
     }
     state.selected = next;
     syncSelection();
@@ -1258,8 +1367,9 @@
       opts: o,
       els: els
     };
-    // Multi-select is only offered when the page can take more than one file.
-    els.selectAll.hidden = !state.multiple;
+    // Multi-select is the drawer's own (Download / Delete any number); the
+    // page's `multiple` only decides whether SEVERAL can be SENT (see use()).
+    els.selectAll.hidden = false;
     els.foot.classList.toggle('is-multi', !!state.multiple);
     render();
     void expand('');
