@@ -2,7 +2,7 @@ SESSION: S10 — 2026-09-14T15:44Z (this session)
 PREVIOUS SESSION: S9 — 2026-09-14T15:19Z (history file fa_..._2026-09-14T15-44-10Z.md; ended on credit stop after MESSAGE 61)
 
 PROJECT STATE: branch genspark_ai_developer @ 53c279b (1 squashed commit on top of origin/main 53e3535). PR #29 OPEN, not merged.
-CURRENT BACKUP: (created at end of S10, see BACKUP LINEAGE)
+CURRENT BACKUP: https://www.genspark.ai/api/files/s/H1BgI2mK  (webapp_backup_2026-09-14_S10_pr29.tar.gz, 15.59 MB, tree == 84d3ffe, clean)
 PREVIOUS BACKUP: https://www.genspark.ai/api/files/s/zQ9nUMQv  (webapp_backup_i6oivnl9.tar.gz, 15.33 MB, tree == c0183b0, clean)
 
 OBJECTIVE:
@@ -78,4 +78,4 @@ HISTORY:
 BACKUP LINEAGE:
 - backup9  BpvqsjcH  webapp_backup_isteb32b.tar.gz  (S8→S9 start, 2 commits + uncommitted shelf test)
 - backup10 zQ9nUMQv  webapp_backup_i6oivnl9.tar.gz  (S9 end, c0183b0 clean)
-- backup11 (S10 end) = backup10 + squash 53c279b + handoff files  → see current-handoff.md
+- backup11 H1BgI2mK  webapp_backup_2026-09-14_S10_pr29.tar.gz  (S10 end: squash 53c279b + handoff commit 84d3ffe)
