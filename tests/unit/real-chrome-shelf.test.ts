@@ -197,6 +197,10 @@ interface Harness {
   setDownloads: (rows: Array<{ token?: string }>) => void;
   /** Make the downloads fetch reject outright. */
   failDownloadsFetch: boolean;
+  /** GET /browser/real/chooser answers 500 with a non-JSON body: a hiccup, not an answer. */
+  failChooserPoll: boolean;
+  /** GET/POST .../download: status and the served Content-Disposition (zip or file). */
+  wfDownload: { status: number; disposition: string; length: number; error: string };
   /** Make DELETE /browser/real/downloads/:token answer 404. */
   failDelete: boolean;
   /** Make upload POSTs answer !ok. */
@@ -451,6 +455,8 @@ async function runView(
     rejectReadText: !!opts.rejectReadText,
     rejectWriteText: !!opts.rejectWriteText,
     failDownloadsFetch: false,
+    failChooserPoll: false,
+    wfDownload: { status: 200, disposition: '', length: 12, error: 'No such file or folder.' },
     failUploads: false,
     // Make the Remove endpoint answer 404, the way the real route does when the
     // token is not on the shelf (e.g. the browser restarted since the panel was
@@ -640,6 +646,7 @@ async function runView(
         state.pendingChooser = null;
         return Promise.resolve(reply({ body: { success: true, cancelled: true } }));
       }
+      if (state.failChooserPoll) return Promise.resolve(reply({ status: 500, body: 'Bad Gateway' }));
       return Promise.resolve(reply({
         body: { success: true, owner: state.owner, chooser: state.pendingChooser },
       }));
@@ -664,6 +671,25 @@ async function runView(
       // allFetches), nothing more: the persistence it enables lives on the server.
       if (url.indexOf('/bind') >= 0 && method === 'POST') {
         return Promise.resolve(reply({ body: { success: true, target: 'local', workflowId: 'wf_42', bound: true } }));
+      }
+      // The operator's own copy: a file as itself, a folder / the root / a
+      // picked set as a zip. Served with the same headers the real route sets.
+      if (url.indexOf('/download') >= 0) {
+        const d = state.wfDownload;
+        if (d.status !== 200) {
+          return Promise.resolve(reply({ status: d.status, body: { success: false, error: d.error } }));
+        }
+        const rel = (/[?&]path=([^&]*)/.exec(url) || [])[1];
+        const isZip = method === 'POST' || !rel || rel.indexOf('.') < 0;
+        const leaf = rel ? decodeURIComponent(rel).split('/').pop()! : 'wf_42';
+        const disposition = d.disposition || ('attachment; filename="' + (isZip ? leaf + '.zip' : leaf) + '"');
+        return Promise.resolve(reply({
+          status: 200,
+          headers: Object.assign(
+            { 'Content-Type': isZip ? 'application/zip' : 'application/octet-stream', 'Content-Disposition': disposition },
+            isZip ? {} : { 'Content-Length': String(d.length) },
+          ),
+        }));
       }
       if (url.indexOf('/use') >= 0 && method === 'POST') {
         if (state.wfUseStatus === 200) {
@@ -869,6 +895,9 @@ async function runView(
     setDownloads: (rows) => { state.downloads = rows; },
     get failDownloadsFetch() { return state.failDownloadsFetch; },
     set failDownloadsFetch(v: boolean) { state.failDownloadsFetch = v; },
+    get failChooserPoll() { return state.failChooserPoll; },
+    set failChooserPoll(v: boolean) { state.failChooserPoll = v; },
+    get wfDownload() { return state.wfDownload; },
     get failDelete() { return state.failDelete; },
     set failDelete(v: boolean) { state.failDelete = v; },
     get failUploads() { return state.failUploads; },
@@ -1801,24 +1830,33 @@ describe('a page asking for a file gets one without the operator going to fetch 
     expect(h.watch.some((f) => f.url.indexOf('/browser/real/chooser') >= 0)).toBe(true);
   });
 
-  it('raises the operator OWN picker when a page asks, with no press in this bar', async () => {
+  it('opens the SOURCE CHOOSER when a page asks, and does NOT raise the native picker by itself', async () => {
     // The measured reason this can work at all: interception is a property of
     // the CDP connection, not of who moved the mouse
     // (tools/probe-upload-vnc.js), so a hand-driven click on the VNC screen
     // still produces a chooser the server can answer.
+    //
+    // What happens on the request is ONE thing: the drawer opens on the two
+    // sources (this computer / this workflow's files). The native picker is
+    // NOT clicked here. It used to be, and that was the measured cause of the
+    // unstable Add File behaviour: inside the activation window the dialog
+    // opened before a source was chosen (Workflow Files never offered);
+    // outside it the click was refused; and dismissing that unasked-for
+    // dialog released the page's request (see the 'cancel' test below).
     const h = await runView();
     h.connected();
     h.setPendingChooser(asking());
     await h.ticks(2);
 
-    // The hidden input was clicked BY THE PAGE. Nobody pressed Upload.
-    expect(h.el('up').clicks).toBeGreaterThan(0);
-    // And there is a visible way to do it by hand, because the picker can be
-    // refused when the activation from the remote click has expired.
+    expect(h.el('up').clicks).toBe(0);
+    expect(h.el('files').hidden).toBe(false);
+    expect(h.el('dpick').hidden).toBe(false);
+    // And the shelf names the request, with the way to say no to it.
     expect(h.el('dnotices').textContent).toMatch(/asking for a file/i);
+    expect(h.el('dnotices').textContent).toMatch(/Not now/);
   });
 
-  it('mirrors the page own accept filter onto the local picker', async () => {
+  it('mirrors the page own accept filter onto the local picker when "Upload from Computer" is pressed', async () => {
     // A cookie importer that takes only .json must not offer the operator a
     // .png: the file would be uploaded, handed over, and then rejected by the
     // site, which looks exactly like this feature not working.
@@ -1826,6 +1864,8 @@ describe('a page asking for a file gets one without the operator going to fetch 
     h.connected();
     h.setPendingChooser(asking({ accept: '.json,application/json' }));
     await h.ticks(2);
+    h.click('addpc');
+    expect(h.el('up').clicks).toBe(1);
     expect(h.el('up').accept).toBe('.json,application/json');
     expect(h.el('up').multiple).toBe(false);
   });
@@ -1835,6 +1875,7 @@ describe('a page asking for a file gets one without the operator going to fetch 
     h.connected();
     h.setPendingChooser(asking({ multiple: true }));
     await h.ticks(2);
+    h.click('addpc');
     expect(h.el('up').multiple).toBe(true);
   });
 
@@ -1863,33 +1904,46 @@ describe('a page asking for a file gets one without the operator going to fetch 
     expect(h.el('dnotices').textContent).toMatch(/sent to the site/i);
   });
 
-  it('does not re-open the picker on every tick while the same request stands', async () => {
-    // A picker re-raised every 700 ms would fight the operator for the dialog
+  it('does not re-open the source chooser, nor raise a picker, on every tick while the same request stands', async () => {
+    // A prompt re-raised every 700 ms would fight the operator for the drawer
     // they are standing in.
     const h = await runView();
     h.connected();
     h.setPendingChooser(asking());
     await h.ticks(4);
-    expect(h.el('up').clicks).toBe(1);
+    expect(h.el('up').clicks).toBe(0);
+    const rows = h.el('dnotices').children.filter((c) => /asking for a file/i.test(c.textContent));
+    expect(rows).toHaveLength(1);
   });
 
-  it('releases the page when the operator dismisses their own picker', async () => {
-    // Modern browsers fire 'cancel' and NOT 'change'. Without this the remote
-    // page would sit on an open dialog until the server timed it out minutes
-    // later, and a page that thinks a dialog is open does not move.
+  it('keeps the request when the operator dismisses their own picker; "Not now" is what releases the page', async () => {
+    // Modern browsers fire 'cancel' and NOT 'change'. Closing the native
+    // dialog means "not from my computer", not "the page gets nothing": the
+    // other source (Workflow Files) is still on offer, so the request stays.
+    // MEASURED before this change: 'cancel' sent DELETE /browser/real/chooser
+    // and the next Select in the workspace met "No page is asking for a file
+    // right now". The server's TTL still releases a request nobody answers.
     const h = await runView();
     h.connected();
     h.setPendingChooser(asking());
     await h.ticks(2);
 
+    h.click('addpc');
     h.el('up').emit('cancel');
     await new Promise((r) => setTimeout(r, 60));
 
-    const cancels = h.chooserCalls().filter(
-      (c) => String(c.init.method || '').toUpperCase() === 'DELETE',
-    );
-    expect(cancels).toHaveLength(1);
-    expect(cancels[0].url).toContain('fc_1a2b3c4d');
+    const dels = () => h.chooserCalls().filter((c) => String(c.init.method || '').toUpperCase() === 'DELETE');
+    expect(dels()).toHaveLength(0);
+    // Back on the two sources, with the reason.
+    expect(h.el('dpick').hidden).toBe(false);
+    expect(h.el('addsub').textContent).toMatch(/still asking/i);
+
+    // Saying no is an explicit act: the request row's own button.
+    const row = h.el('dnotices').children.find((c) => /asking for a file/i.test(c.textContent))!;
+    row.children.find((c) => c.textContent === 'Not now')!.emit('click');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(dels()).toHaveLength(1);
+    expect(dels()[0].url).toContain('fc_1a2b3c4d');
   });
 
   it('uses a file uploaded BEFORE the page asked, instead of asking again', async () => {
@@ -1963,7 +2017,25 @@ describe('a page asking for a file gets one without the operator going to fetch 
     }
     expect(seen).toEqual([]);
     // A failed poll is still a poll: the loop recovered and did its job.
-    expect(h.el('up').clicks).toBeGreaterThan(0);
+    expect(h.el('dnotices').textContent).toMatch(/asking for a file/i);
+    expect(h.el('dpick').hidden).toBe(false);
+  });
+
+  it('a failed or malformed poll says NOTHING about the request: the prompt stays up', async () => {
+    // Treating a hiccup as "the request is gone" dropped a request the operator
+    // was in the middle of answering from the workspace.
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    expect(h.el('dnotices').textContent).toMatch(/asking for a file/i);
+    h.failChooserPoll = true;
+    await h.ticks(2);
+    expect(h.el('dnotices').textContent).toMatch(/asking for a file/i);
+    h.failChooserPoll = false;
+    h.setPendingChooser(null);
+    await h.ticks(2);
+    expect(h.el('dnotices').textContent).not.toMatch(/asking for a file/i);
   });
 });
 
@@ -2324,16 +2396,50 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     expect(h.el('dcount').textContent).toBe('1 selected');
   });
 
-  it('a single-file input keeps ONE pick: the second replaces the first', async () => {
+  it('the selection is the drawer\u2019s OWN: any number, whatever the page takes, and Select All is always offered', async () => {
+    // It used to be shaped by the page's `multiple` (a second pick REPLACED
+    // the first for a single-file input), which made the drawer behave
+    // differently depending on which page was asking and left no way to
+    // batch-delete or batch-download while a single-file input waited.
     const h = await runView({ search: WF });
     await openFiles(h);
+    expect(h.el('dall').hidden).toBe(false);
     rowByPath(h, 'cookies.json')!.emit('click');
     rowByPath(h, 'photo.png')!.emit('click');
     expect(fileRows(h).filter((r) => r.className.indexOf('sel') >= 0).map((r) => r.attrs['data-name']))
-      .toEqual(['photo.png']);
-    expect(h.el('wfmselect').textContent).toBe('Select');
-    // And "Select All" is not on offer: a promise a single input cannot keep.
-    expect(h.el('dall').hidden).toBe(true);
+      .toEqual(['cookies.json', 'photo.png']);
+    expect(h.el('wfmselect').textContent).toBe('Select (2)');
+    expect(h.el('ddownsel').hidden).toBe(false);
+    expect(h.el('ddelsel').hidden).toBe(false);
+    // No page is asking: the Select button says so on itself.
+    expect(h.el('wfmselect').title).toMatch(/no page is asking/i);
+  });
+
+  it('SENDING several to a single-file page is refused in words, before any request, with the selection kept', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ multiple: false }));
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+    rowByPath(h, 'cookies.json')!.emit('click');
+    rowByPath(h, 'photo.png')!.emit('click');
+    expect(h.el('wfmselect').title).toMatch(/ONE file/);
+    h.click('wfmselect');
+    await settle();
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+    expect(h.el('wfmnote').textContent).toMatch(/takes ONE file/);
+    expect(h.el('wfmnote').textContent).toMatch(/downloaded or deleted/);
+    expect(h.el('dcount').textContent).toBe('2 selected');
+    // One, and it goes.
+    rowByPath(h, 'photo.png')!.emit('click');
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).path).toBe('cookies.json');
   });
 
   it('a multiple input takes several, and offers Select All', async () => {
@@ -2383,6 +2489,94 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     expect(h.el('files').hidden).toBe(true);
     expect(h.el('burger').hidden).toBe(false);
     expect(h.el('dnotices').textContent).toMatch(/Sent to the site: cookies\.json/);
+  });
+
+  describe('Download: the operator\u2019s own copy, saved to their machine in one step', () => {
+    const wfDownloads = (h: Harness) => h.wfCalls().filter((f) => f.url.indexOf('/download') >= 0);
+    const menu = (h: Harness) => h.el('dmenu');
+    const item = (h: Harness, label: string) => menu(h).children.find((c) => c.textContent === label)!;
+
+    it('a file, from its menu: GET .../download?path=<file>, key in a header, saved under the SERVED name', async () => {
+      const h = await runView({ search: WF });
+      await openFiles(h);
+      rowByPath(h, 'cookies.json')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
+      item(h, 'Download').emit('click', { stopPropagation() {} });
+      await settle();
+      await settle();
+      const calls = wfDownloads(h);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('/browser/workflow-files/wf_42/download?path=cookies.json');
+      expect(String(calls[0].init.method || 'GET')).toBe('GET');
+      expect((calls[0].init.headers as Record<string, string>)['x-api-key']).toBe('k');
+      expect(calls[0].url).not.toContain('api_key=');
+      const a = h.anchors();
+      expect(a).toHaveLength(1);
+      expect(a[0].download).toBe('cookies.json');
+      expect(a[0].clickedWhileInDocument).toBe(true);
+      expect(h.el('wfmnote').textContent).toMatch(/Downloaded: cookies\.json/);
+    });
+
+    it('a folder, from its menu: one .zip of its tree, named after it', async () => {
+      const h = await runView({ search: WF });
+      await openFiles(h);
+      rowByPath(h, 'docs')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
+      item(h, 'Download (.zip)').emit('click', { stopPropagation() {} });
+      await settle();
+      await settle();
+      expect(wfDownloads(h)[0].url).toBe('/browser/workflow-files/wf_42/download?path=docs');
+      expect(h.anchors()[0].download).toBe('docs.zip');
+    });
+
+    it('the workspace, from the empty space: GET .../download with no path, <workflowId>.zip', async () => {
+      const h = await runView({ search: WF });
+      await openFiles(h);
+      h.el('wfmlist').emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {} });
+      item(h, 'Download workspace (.zip)').emit('click', { stopPropagation() {} });
+      await settle();
+      await settle();
+      expect(wfDownloads(h)[0].url).toBe('/browser/workflow-files/wf_42/download');
+      expect(h.anchors()[0].download).toBe('wf_42.zip');
+    });
+
+    it('the selection: ONE picked file is fetched as itself; several are POSTed as one set and come back as one .zip', async () => {
+      const h = await runView({ search: WF });
+      await openFiles(h);
+      expect(h.el('ddownsel').hidden).toBe(true);
+      rowByPath(h, 'cookies.json')!.emit('click');
+      expect(h.el('ddownsel').hidden).toBe(false);
+      h.click('ddownsel');
+      await settle();
+      await settle();
+      expect(wfDownloads(h)).toHaveLength(1);
+      expect(wfDownloads(h)[0].url).toContain('?path=cookies.json');
+      expect(h.anchors()[0].download).toBe('cookies.json');
+
+      rowByPath(h, 'photo.png')!.emit('click');
+      h.click('ddownsel');
+      await settle();
+      await settle();
+      const post = wfDownloads(h)[1];
+      expect(post.url).toBe('/browser/workflow-files/wf_42/download');
+      expect(post.init.method).toBe('POST');
+      expect(JSON.parse(String(post.init.body))).toEqual({ paths: ['cookies.json', 'photo.png'], path: '' });
+      expect(h.anchors()[1].download).toBe('wf_42.zip');
+      // The selection survives a download: it is not consumed.
+      expect(h.el('dcount').textContent).toBe('2 selected');
+    });
+
+    it('a refusal is shown in the server\u2019s own words, and nothing is saved', async () => {
+      const h = await runView({ search: WF });
+      await openFiles(h);
+      h.wfDownload.status = 404;
+      h.wfDownload.error = 'No such file or folder.';
+      rowByPath(h, 'cookies.json')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
+      item(h, 'Download').emit('click', { stopPropagation() {} });
+      await settle();
+      await settle();
+      expect(h.anchors()).toHaveLength(0);
+      expect(h.el('wfmnote').textContent).toBe('No such file or folder.');
+      expect(h.el('wfmnote').className).toBe('err');
+    });
   });
 
   it('sends several files in ONE request, because the chooser forgets its id on the first answer', async () => {
@@ -2525,13 +2719,13 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     rowByPath(h, 'cookies.json')!.emit('contextmenu', { clientX: 40, clientY: 50, preventDefault() {}, stopPropagation() {} });
     expect(menu.hidden).toBe(false);
     const labels = () => menu.children.filter((c) => c.className.indexOf('dmi') === 0 && c.className !== 'dmi-sep').map((c) => c.textContent);
-    expect(labels()).toEqual(['Select', 'Rename', 'Delete']);
+    expect(labels()).toEqual(['Select', 'Download', 'Rename', 'Delete']);
     // Open a second menu: it REPLACES the first rather than stacking.
     rowByPath(h, 'docs')!.emit('contextmenu', { clientX: 40, clientY: 50, preventDefault() {}, stopPropagation() {} });
-    expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Rename', 'Delete']);
+    expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete']);
     // Empty space: the root's own actions.
     h.el('wfmlist').emit('contextmenu', { clientX: 40, clientY: 50, preventDefault() {} });
-    expect(labels()).toEqual(['New Folder', 'New File', 'Upload File', 'Refresh']);
+    expect(labels()).toEqual(['New Folder', 'New File', 'Upload File', 'Select All', 'Download workspace (.zip)', 'Refresh']);
   });
 
   it('the menu\u2019s Select picks the file; Delete on a folder warns about everything inside it and sends recursive=1', async () => {
@@ -2781,10 +2975,10 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
       const menu = h.el('dmenu');
       const labels = () => menu.children.filter((c) => c.className.indexOf('dmi') === 0 && c.className !== 'dmi-sep').map((c) => c.textContent);
       rowByPath(h, 'uploads')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)']);
       // An ordinary folder still has the full set.
       rowByPath(h, 'docs')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Rename', 'Delete']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete']);
     });
 
     it('files INSIDE uploads/ can still be selected and handed to the page', async () => {

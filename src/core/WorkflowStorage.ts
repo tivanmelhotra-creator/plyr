@@ -586,6 +586,34 @@ export class WorkflowStorage {
   }
 
   /**
+   * Every entry UNDER a folder, depth-first, folders before their contents.
+   *
+   * This is what "Download folder" / "Download workspace" archive. Paths are
+   * workflow-relative, so the caller can turn them into archive entry names
+   * with nothing but the prefix stripped. Symlinks and specials are skipped
+   * exactly as in list(): an archive must not carry a row the tree does not
+   * show. Empty folders ARE included, so the archive preserves them.
+   */
+  async walk(relative: unknown = ''): Promise<WorkflowEntry[]> {
+    const { absolute, relative: rel, stat } = await this.resolve(relative);
+    if (!stat || !stat.isDirectory()) throw new WorkflowStorageError('Not a folder.', 400);
+    const out: WorkflowEntry[] = [];
+    const visit = async (dirAbs: string, dirRel: string, depth: number): Promise<void> => {
+      if (depth > MAX_DEPTH) return;
+      const dirents = await fs.readdir(dirAbs, { withFileTypes: true });
+      dirents.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
+      for (const d of dirents) {
+        const e = await this.entryOf(dirAbs, dirRel, d);
+        if (!e) continue;
+        out.push(e);
+        if (e.type === 'dir') await visit(path.join(dirAbs, d.name), e.path, depth + 1);
+      }
+    };
+    await visit(absolute, rel, 0);
+    return out;
+  }
+
+  /**
    * The file a browser file dialog should be handed.
    *
    * Only a regular FILE resolves: a folder cannot go into an `<input type=file>`

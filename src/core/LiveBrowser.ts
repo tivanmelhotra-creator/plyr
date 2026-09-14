@@ -3103,6 +3103,18 @@ export class LiveBrowserSession {
   }
 
   /**
+   * Does the waiting dialog take MORE THAN ONE file? `null` when nothing is
+   * waiting. The route asks this BEFORE handing several paths over, so a
+   * single-file input is refused with a sentence instead of being handed the
+   * first of five and the operator believing all five arrived.
+   */
+  pendingFileChooserMultiple(): boolean | null {
+    const chooser = this.pendingChooser;
+    if (!chooser) return null;
+    try { return !!chooser.isMultiple(); } catch { return false; }
+  }
+
+  /**
    * Hand SERVER-RESOLVED files to the dialog the page is waiting on.
    *
    * The Workflow Files half of Add File for the canvas views. `paths` were

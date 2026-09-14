@@ -69,6 +69,8 @@
 import { Router, type Response } from 'express';
 import express from 'express';
 import type IORedis from 'ioredis';
+import { createReadStream } from 'fs';
+import path from 'path';
 
 import { config } from '../config';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
@@ -81,6 +83,8 @@ import {
 } from '../core/WorkflowStorage';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
 import { FileChooserError } from '../core/RemoteFileChooser';
+import { contentDispositionAttachment } from '../core/RemoteDownloads';
+import { ZipStream, ZipStreamError } from '../core/ZipStream';
 import { liveBrowserSessions } from '../core/LiveSessions';
 import { bindRealChrome, realChromeWorkflow } from '../core/WorkflowBinding';
 
@@ -293,6 +297,179 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
     } catch (e) { sendError(res, e); }
   });
 
+  // ── download: the operator's OWN copy of what is in the workspace ─────────
+  //
+  // Two shapes, one route family:
+  //
+  //   GET  /browser/workflow-files/:id/download?path=<file>
+  //        ONE file, as itself: Content-Disposition names it (RFC 6266, the
+  //        UTF-8 form preferred so «گزارش.pdf» survives), Content-Length so
+  //        the client can decide blob-vs-stream, and the bytes streamed off
+  //        the disk. HEAD answers the same headers with no body, which is
+  //        what the client's preflight reads to show the server's OWN error
+  //        sentence instead of Chrome's generic "Failed".
+  //
+  //   GET  /browser/workflow-files/:id/download?path=<folder>
+  //   GET  /browser/workflow-files/:id/download          (no path: the root)
+  //   POST /browser/workflow-files/:id/download  { paths: [...], path?: <base> }
+  //        A ZIP, STREAMED (core/ZipStream): a folder is archived with its
+  //        tree under a top-level folder of its own name, the workspace root
+  //        as `<workflowId>.zip` holding the tree as the operator sees it, and
+  //        a picked SET of paths (files and/or folders) relative to the folder
+  //        on screen. Empty folders are kept. No Content-Length -- the archive
+  //        is written as it is read -- so the client streams it to disk.
+  //
+  // Every path is resolved by the store, so a stray entry cannot name anything
+  // outside the workflow root, and the archive entry names are the RELATIVE
+  // paths the listing showed, never a server location.
+
+  const MAX_DOWNLOAD_PATHS = 500;
+
+  /** `docs.zip` for a folder, `<workflowId>.zip` for the root. */
+  function archiveName(store: WorkflowStorage, rel: string): string {
+    const leaf = rel ? path.posix.basename(rel) : store.workflowId;
+    return `${leaf}.zip`;
+  }
+
+  /** One file, as itself. `head` = headers only. */
+  async function sendFile(store: WorkflowStorage, rel: string, res: Response, head: boolean): Promise<void> {
+    const file = await store.resolveForBrowser(rel);
+    res.status(200);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', String(file.size));
+    res.setHeader('Content-Disposition', contentDispositionAttachment(file.name));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    if (head) { res.end(); return; }
+    await new Promise<void>((resolve, reject) => {
+      const rs = createReadStream(file.absolutePath);
+      rs.on('error', reject);
+      res.on('close', resolve);
+      res.on('finish', resolve);
+      rs.pipe(res);
+    });
+  }
+
+  /**
+   * Archive a set of workflow-relative paths into `res`.
+   *
+   * For each path: a file becomes one entry; a folder becomes a directory
+   * entry plus its whole tree (store.walk). Entry names are the path RELATIVE
+   * TO `base` (the folder the request was about), so archiving `docs/` from
+   * the root yields `docs/a.txt`, and a selection made inside `docs/` yields
+   * `a.txt` -- what the operator saw on screen is what the archive holds.
+   */
+  async function sendZip(
+    store: WorkflowStorage,
+    rels: string[],
+    base: string,
+    name: string,
+    res: Response,
+    head: boolean,
+  ): Promise<void> {
+    // Resolve EVERYTHING before the first byte goes out: a bad path must be a
+    // clean 4xx, not a truncated archive with a JSON error glued to its tail.
+    type Job = { rel: string; isDir: boolean; mtime: Date };
+    const jobs: Job[] = [];
+    const seen = new Set<string>();
+    for (const rel of rels) {
+      const r = await store.resolve(rel);
+      if (!r.stat) throw new WorkflowStorageError('No such file or folder.', 404);
+      if (seen.has(r.relative)) continue;
+      seen.add(r.relative);
+      jobs.push({ rel: r.relative, isDir: r.stat.isDirectory(), mtime: r.stat.mtime });
+    }
+    res.status(200);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', contentDispositionAttachment(name));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    if (head) { res.end(); return; }
+
+    const strip = base ? `${base}/` : '';
+    const entryName = (rel: string) => (strip && rel.startsWith(strip) ? rel.slice(strip.length) : rel);
+    const zip = new ZipStream(res);
+    for (const job of jobs) {
+      if (!job.isDir) {
+        const rf = await store.resolveForBrowser(job.rel);
+        await zip.addFile(entryName(job.rel), createReadStream(rf.absolutePath), { mtime: job.mtime });
+        continue;
+      }
+      // The folder itself (kept even when empty), then everything under it.
+      // The base folder / root is not an entry of its own: its children are.
+      if (job.rel && job.rel !== base) await zip.addDirectory(entryName(job.rel), { mtime: job.mtime });
+      for (const e of await store.walk(job.rel)) {
+        if (e.type === 'dir') {
+          await zip.addDirectory(entryName(e.path), { mtime: new Date(e.modifiedAt) });
+        } else {
+          const rf = await store.resolveForBrowser(e.path);
+          await zip.addFile(entryName(e.path), createReadStream(rf.absolutePath), { mtime: new Date(e.modifiedAt) });
+        }
+      }
+    }
+    await zip.finish();
+    await new Promise<void>((resolve) => res.end(resolve));
+  }
+
+  /** Shared by GET and HEAD: one file as itself, or a folder / the root as a ZIP. */
+  async function downloadByQuery(req: AuthenticatedRequest, res: Response, head: boolean): Promise<void> {
+    const store = await open(req, res);
+    if (!store) return;
+    const rel = String(req.query.path ?? '');
+    const r = await store.resolve(rel);
+    if (!r.stat) throw new WorkflowStorageError('No such file or folder.', 404);
+    if (r.stat.isFile()) return sendFile(store, r.relative, res, head);
+    // A folder: its tree under its own name (base = its parent). The root:
+    // the tree as is.
+    const base = r.relative ? path.posix.dirname(r.relative).replace(/^\.$/, '') : '';
+    return sendZip(store, [r.relative], base, archiveName(store, r.relative), res, head);
+  }
+
+  /**
+   * Errors AFTER headers were sent cannot become JSON. Destroying the socket
+   * is the honest answer: the client sees a failed download, not a "complete"
+   * archive that will not open.
+   */
+  function downloadError(res: Response, e: unknown): void {
+    if (res.headersSent) { res.destroy(); return; }
+    if (e instanceof ZipStreamError) return fail(res, 500, e.message);
+    sendError(res, e);
+  }
+
+  router.get('/browser/workflow-files/:workflowId/download', async (req: AuthenticatedRequest, res) => {
+    try { await downloadByQuery(req, res, false); } catch (e) { downloadError(res, e); }
+  });
+  router.head('/browser/workflow-files/:workflowId/download', async (req: AuthenticatedRequest, res) => {
+    try { await downloadByQuery(req, res, true); } catch (e) { downloadError(res, e); }
+  });
+
+  // A picked SET: `paths` is the selection, in the operator's order. One file
+  // alone is sent as itself (so "Download" on a single row and on a one-item
+  // selection behave the same); anything else is a ZIP named after the
+  // folder on screen (`path`), or the workspace, unless `name` says otherwise.
+  router.post('/browser/workflow-files/:workflowId/download', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { paths?: unknown; path?: unknown; name?: unknown };
+      const paths = (Array.isArray(body.paths) ? body.paths : [])
+        .map((p) => String(p ?? ''))
+        .filter((p) => p.length > 0);
+      if (!paths.length) return fail(res, 400, 'No paths were given.', 'Send { paths: ["a.txt", "docs"] }.');
+      if (paths.length > MAX_DOWNLOAD_PATHS) return fail(res, 400, `At most ${MAX_DOWNLOAD_PATHS} paths per download.`);
+      if (paths.length === 1) {
+        const r = await store.resolve(paths[0]);
+        if (r.stat && r.stat.isFile()) return await sendFile(store, r.relative, res, false);
+      }
+      const base = (await store.resolve(String(body.path ?? ''))).relative;
+      const wanted = typeof body.name === 'string' ? body.name.trim() : '';
+      const name = wanted
+        ? (wanted.toLowerCase().endsWith('.zip') ? wanted : `${wanted}.zip`)
+        : archiveName(store, base);
+      await sendZip(store, paths, base, name, res, false);
+    } catch (e) { downloadError(res, e); }
+  });
+
   // ── use: hand the selected file to the page that is asking ────────────────
   //
   // Two bridges, chosen by what the client sends:
@@ -321,10 +498,24 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       const file = files[0];
       const absolute = files.map((f) => f.absolutePath);
 
+      // A single-file input is REFUSED several files, not quietly handed the
+      // first. Both bridges used to truncate (`multiple ? list : [list[0]]`),
+      // so the client reported "Sent: a, b, c" while the page received `a`.
+      // The drawer lets the operator pick several for its OWN batch actions
+      // (delete, download); handing them to a page is where `multiple` binds.
+      const ONE_ONLY = 'The page takes ONE file; pick just one to send.';
+      const ONE_HINT = 'The other files stay selected for Download or Delete.';
+
       const chooserId = body.chooserId === undefined || body.chooserId === null
         ? ''
         : String(body.chooserId);
       if (chooserId) {
+        if (absolute.length > 1) {
+          const pending = RealChrome.pendingChooser();
+          if (pending && pending.id === chooserId && !pending.multiple) {
+            return fail(res, 409, ONE_ONLY, ONE_HINT);
+          }
+        }
         const done = await RealChrome.acceptChooserPaths(chooserId, absolute);
         return res.json({ success: true, name: file.name, size: file.size, ...done });
       }
@@ -337,6 +528,9 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       }
       if (!session.hasPendingFileChooser()) {
         return fail(res, 409, 'The page is not asking for a file any more.');
+      }
+      if (absolute.length > 1 && session.pendingFileChooserMultiple() === false) {
+        return fail(res, 409, ONE_ONLY, ONE_HINT);
       }
       const done = await session.acceptFilePaths(absolute);
       res.json({ success: true, name: file.name, size: file.size, ...done });
