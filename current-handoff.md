@@ -2,11 +2,11 @@
 
 Points to the newest handoff. Read that file first; then the latest backup; then continue.
 
-LATEST HANDOFF: handoffs/2026-09-14_S10_download-multiselect-pr29.md
-LATEST BACKUP:  https://www.genspark.ai/api/files/s/H1BgI2mK  (backup11, S10 end)
-BRANCH / HEAD:  genspark_ai_developer @ 53c279b (squashed), PR #29 open → https://github.com/tivanmelhotra-creator/plyr/pull/29
+LATEST HANDOFF: handoffs/2026-09-14_S15_chooser-lifecycle-uploads-identity.md
+LATEST BACKUP:  https://www.genspark.ai/api/files/s/sEwkbhf9  (backup13, webapp_backup_2026-09-14_S15_p1-p4.tar.gz, tree == 45b08fe, includes .git)
+BRANCH / HEAD:  genspark_ai_developer @ 9674007 (+ handoff commit) on top of origin/main 022d3ae. NOT YET PUSHED (no GitHub credential in the S15 sandbox).
 
-NEXT ACTION: wait for / act on PR #29 review; if merged, pull main and start the next feature from a fresh branch.
+NEXT ACTION: with GitHub auth available, `git fetch origin && git rebase origin/main && git push -f origin genspark_ai_developer`, open PR #30 (genspark_ai_developer → main), share the link.
 
 Layout:
 - current-handoff.md   → this pointer

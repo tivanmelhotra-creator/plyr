@@ -282,6 +282,47 @@
 
   // ---- Persistence (localStorage) -------------------------------------------
   var LS_KEY = 'ab_flow_graph';
+  // WHICH saved workflow the graph in LS_KEY belongs to, kept beside it.
+  //
+  // REPORTED: open a saved workflow, reload the page (or come back to the
+  // editor), then open the Local Browser: its Workflow Files drawer said the
+  // browser "was not opened from a saved workflow" and every file the
+  // operator had filed was gone from view. MEASURED cause: the graph came
+  // back from localStorage but `currentWorkflow` did not -- it lived only in
+  // memory -- so getCurrentWorkflow() answered null and every consumer
+  // (workflowIdFor() in browser-view.js, the NDV's pairing key, the run
+  // panel, the status bar) built its request with workflowId ''. The files
+  // were never lost; the page had forgotten whose they were.
+  //
+  // Stored SEPARATELY from the graph, and never inside serialize(): the undo
+  // stack and the clipboard reuse serialize(), and an identity is not
+  // something undo should be able to change.
+  var LS_WF_KEY = 'ab_flow_workflow';
+  function saveWorkflowIdentity() {
+    try {
+      if (currentWorkflow && currentWorkflow.id) {
+        localStorage.setItem(LS_WF_KEY, JSON.stringify(currentWorkflow));
+      } else {
+        localStorage.removeItem(LS_WF_KEY);
+      }
+    } catch (e) { /* quota / private mode: the graph still saves */ }
+  }
+  function loadWorkflowIdentity() {
+    try {
+      var raw = localStorage.getItem(LS_WF_KEY);
+      if (!raw) return null;
+      var meta = JSON.parse(raw);
+      if (!meta || !meta.id) return null;
+      return {
+        id: String(meta.id),
+        name: meta.name,
+        description: meta.description || '',
+        version: meta.version,
+        headless: meta.headless,
+        webhookUrl: meta.webhookUrl,
+      };
+    } catch (e) { return null; }
+  }
   function serialize() {
     return JSON.stringify({
       nodes: state.nodes, edges: state.edges, nextId: state.nextId,
@@ -291,6 +332,7 @@
   function saveLocal() {
     try {
       localStorage.setItem(LS_KEY, serialize());
+      saveWorkflowIdentity();
       lastSavedAt = clockLabel(new Date());
       return true;
     } catch (e) { return false; }
@@ -301,6 +343,9 @@
       if (!raw) return false;
       var data = JSON.parse(raw);
       if (!data || !data.nodes || !data.nodes.start) return false;
+      // mount() normally creates the graph first; called on its own (before
+      // mount, or from a test), there must still be a graph to restore INTO.
+      if (!state) state = newGraph();
       state.nodes = data.nodes;
       state.edges = Array.isArray(data.edges) ? data.edges : [];
       state.nextId = data.nextId || 0;
@@ -308,6 +353,10 @@
       state.selected = null;
       state.selSet = {};
       nodeStatus = {}; nodeMeta = {}; nodePins = {}; nodeResults = {};
+      // The graph and its identity travel together: a restored graph that
+      // belongs to a saved workflow is that workflow again, so Save does a
+      // PUT and the browser's Workflow Files find their workflow.
+      currentWorkflow = loadWorkflowIdentity();
       return true;
     } catch (e) { return false; }
   }
@@ -4756,7 +4805,7 @@
     loadSteps: loadSteps,
     saveLocal: saveLocal,
     loadLocal: function () { var ok = loadLocal(); clearHistory(); if (dom) renderAll(); return ok; },
-    reset: function () { state = newGraph(); clearHistory(); if (dom) renderAll(); },
+    reset: function () { state = newGraph(); currentWorkflow = null; saveWorkflowIdentity(); clearHistory(); if (dom) renderAll(); },
     getState: function () { return state; },
     ACTIONS: ACTIONS,
 
@@ -4942,17 +4991,25 @@
           }
         : null;
       loadSteps(steps || []);
+      // Written to localStorage WITH the graph, so a reload comes back as
+      // this workflow and not as an untitled draft of the same nodes.
+      saveLocal();
       if (dom) renderAll();
     },
     // Begin editing a brand-new, unsaved workflow (clears the canvas + context).
     newWorkflow: function () {
       currentWorkflow = null;
       state = newGraph();
+      saveLocal();
       if (dom) renderAll();
     },
     getCurrentWorkflow: function () { return currentWorkflow; },
     setCurrentWorkflow: function (meta) {
       currentWorkflow = meta || null;
+      // The identity just saved to the server is the one a reload must come
+      // back with -- a new workflow's FIRST save is exactly when the id is
+      // born, and forgetting it on reload would make the next save a create.
+      saveWorkflowIdentity();
       // Any successful save stamps the status bar's "Last saved" cell.
       lastSavedAt = meta ? clockLabel(new Date()) : null;
     },

@@ -723,7 +723,7 @@ export class RealChrome {
   }
 
   /** Answer that dialog with files already uploaded under `downloadOwner()`. */
-  static async acceptChooserFiles(id: string, tokens: string[]): Promise<{ count: number }> {
+  static async acceptChooserFiles(id: string, tokens: string[]): Promise<{ count: number; persisted: string[] }> {
     if (!this.chooser) {
       throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
     }

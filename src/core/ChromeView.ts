@@ -1189,10 +1189,14 @@ function closeDrawer() {
 
 if (burger) {
   burger.addEventListener('click', () => {
-    // A page that is mid-request has a question outstanding, so the drawer
-    // opens on the two sources rather than on a tree the operator would then
-    // have to find the point of.
-    openDrawer(pendingId ? 'pick' : 'files');
+    // The hamburger is the WORKSPACE's button, always. The source chooser is
+    // raised by the page's request (offerFile) and taken down with it
+    // (clearPending); it is never what the operator gets for pressing this.
+    // REPORTED: the hamburger opened on "The page is asking for a file" and
+    // the operator, who wanted their files, had to press a second button to
+    // reach them. If a request IS outstanding while the tree is up, Select
+    // still answers it (wfmUse), so nothing is lost by showing the tree.
+    openDrawer('files');
   });
 }
 const dcloseBtn = document.getElementById('dclose');
@@ -1220,7 +1224,13 @@ document.addEventListener('keydown', (ev) => {
  * credential into a URL.
  */
 function uploadOne(file) {
-  const query = '?name=' + encodeURIComponent(file.name || 'file');
+  // The identity the bytes are stored under must be the one the Local
+  // Browser's chooser resolves tokens under (RemoteFileChooser.userId). The
+  // server SAYS which ('owner' on the chooser poll and the shelf list), so it
+  // is sent back rather than assumed: the documented ENOENT hand-over bug is
+  // the bytes written under one id and looked for under another.
+  let query = '?name=' + encodeURIComponent(file.name || 'file');
+  if (shelfOwner) query += '&userId=' + encodeURIComponent(shelfOwner);
   const headers = authHeaders();
   headers['Content-Type'] = 'application/octet-stream';
   return fetch('/browser/uploads' + query, {
@@ -1369,12 +1379,14 @@ upInput.addEventListener('change', () => {
     })
     .catch((e) => {
       failure = (e && e.message) ? e.message : 'The upload failed.';
+      // A page still waiting on a dialog we cannot answer must be released, or
+      // the operator is left looking at a page that never moves. Released
+      // FIRST: that takes the source chooser down, so the receipt below lands
+      // on the workspace where it stays readable, not on a pane about to go.
+      if (answering) void cancelPending(answering);
       // Say WHY, in the panel, where it stays readable. A button that flicks
       // back to "Upload" after 2.5 s has told the operator nothing.
       noteInPanel('rowerr', failure);
-      // A page still waiting on a dialog we cannot answer must be released, or
-      // the operator is left looking at a page that never moves.
-      if (answering) void cancelPending(answering);
       // Files that DID arrive before the failure are still usable, and saying
       // so is the difference between "retry the rest" and "start over".
       if (done.length) {
@@ -1488,6 +1500,7 @@ function pollChooser() {
       // the request, and treating it as "gone" would drop a request the
       // operator is in the middle of answering from the workspace.
       if (!j || !j.success) return null;
+      if (j.owner) shelfOwner = String(j.owner);
       const c = j.chooser;
       if (!c || !c.id) {
         // The request is gone: answered, cancelled, or its page closed. Take the
@@ -1608,8 +1621,8 @@ const NO_WORKFLOW_TEXT = 'This browser was not opened from a saved workflow, so 
  */
 let workflowResolved = null;
 function resolveWorkflowId() {
+  if (workflowId) return Promise.resolve(workflowId);
   if (workflowResolved) return workflowResolved;
-  if (workflowId) { workflowResolved = Promise.resolve(workflowId); return workflowResolved; }
   workflowResolved = fetch('/browser/workflow-files-binding', { headers: authHeaders(), credentials: 'same-origin' })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => {
@@ -1617,7 +1630,17 @@ function resolveWorkflowId() {
       if (WORKFLOW_ID_RE.test(id)) workflowId = id;
       return workflowId;
     })
-    .catch(() => workflowId);
+    .catch(() => workflowId)
+    .then((id) => {
+      // Only a FOUND id is final. An empty answer is the state of the server
+      // at that moment -- the operator may bind a workflow (open the browser
+      // from one, in another tab) a second later -- so the next time the
+      // workspace is opened it asks again rather than repeating a stale ''.
+      // REPORTED: the drawer said "not opened from a saved workflow" for the
+      // rest of the page's life once it had been opened a moment too early.
+      if (!id) workflowResolved = null;
+      return id;
+    });
   return workflowResolved;
 }
 
@@ -1640,9 +1663,16 @@ function showSourceChooser(why) {
   if (addSub) addSub.textContent = why || '';
   openDrawer('pick');
 }
-/** The question is gone: back to the workspace if the chooser was up. */
+/**
+ * The question is gone. The chooser pane was raised FOR the request, so it
+ * leaves with it: if the drawer was only up to show the two sources, it
+ * closes and the page comes back; if the operator had moved on to the tree,
+ * the tree stays where they left it.
+ */
 function hideSourceChooser() {
-  if (drawerPane === 'pick') showPane('files');
+  if (drawerPane !== 'pick') return;
+  showPane('files');
+  if (drawerOpen()) closeDrawer();
 }
 
 const addPc = document.getElementById('addpc');
@@ -2770,20 +2800,37 @@ function answerPending(id, tokens, names) {
       }
       return d;
     }))
-    .then(() => {
+    .then((d) => {
+      // The request is answered, so the chooser it raised goes down and the
+      // page comes back (clearPending -> hideSourceChooser). The receipt does
+      // NOT re-raise the drawer: the operator pressed the page's own button
+      // and wants the page, not a pane telling them what they just did. It
+      // waits on the workspace for the next time it is opened.
       clearPending();
+      const filed = (d && Array.isArray(d.persisted)) ? d.persisted.filter((p) => typeof p === 'string' && p) : [];
       noteInPanel('uphint', names.length === 1
         ? 'Sent to the site: ' + names[0]
-        : 'Sent to the site: ' + names.join(', '));
+        : 'Sent to the site: ' + names.join(', '),
+      filed.length ? 'Filed in Workflow Files under ' + wfmParentOf(filed[0]) + '/' : '',
+      { raise: false });
+      // The workflow's copy is under uploads/ NOW (the server awaited the copy
+      // before answering), so the tree must show it: drop the cached listing
+      // of the folder it landed in, and re-read an OPEN workspace at once.
+      if (filed.length) {
+        filed.forEach((p) => { delete wfmFolders[wfmParentOf(p)]; });
+        if (drawerOpen() && drawerPane === 'files' && wfmLoadedOnce) void wfmRefresh();
+      }
       return null;
     })
     .catch((e) => {
       // The file IS on the server; only the hand-over failed. Saying which is
       // the difference between "pick it again" and "press the page button again".
-      noteInPanel('rowerr', (e && e.message) ? e.message : 'The file could not be sent.');
+      // The request is cleared first so the chooser pane it raised is gone and
+      // the receipt is written onto the workspace, where it can be read.
       readyTokens = readyTokens.concat(tokens);
       readyNames  = readyNames.concat(names);
       clearPending();
+      noteInPanel('rowerr', (e && e.message) ? e.message : 'The file could not be sent.');
       return null;
     });
 }
