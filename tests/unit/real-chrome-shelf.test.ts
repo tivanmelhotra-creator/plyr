@@ -230,6 +230,8 @@ interface Harness {
   setTree: (tree: Record<string, Array<{ name: string; path: string; type: string; size: number }>>) => void;
   /** What GET /browser/workflow-files-binding reports the Local Browser is bound to ('' = nothing). */
   setBinding: (id: string) => void;
+  /** What POST /browser/real/chooser reports it filed under uploads/ (workflow-relative paths). */
+  setPersisted: (paths: string[]) => void;
   /** The most uploads that were ever in flight at the same moment. */
   maxConcurrentUploads: () => number;
 }
@@ -476,6 +478,9 @@ async function runView(
     // of the time no page is asking for a file.
     pendingChooser: null as unknown,
     chooserAnswerStatus: 200,
+    // What the real server reports it filed under the bound workflow's
+    // uploads/ (RemoteFileChooser.accept -> persistUploads), workflow-relative.
+    chooserPersisted: [] as string[],
     chooserAnswerBody: {
       success: false,
       error: 'The page is not asking for a file any more.',
@@ -635,7 +640,7 @@ async function runView(
           // fake-fidelity gap, and it read exactly like the view failing to
           // reuse an already-uploaded file.
           state.pendingChooser = null;
-          return Promise.resolve(reply({ body: { success: true, count: 1 } }));
+          return Promise.resolve(reply({ body: { success: true, count: 1, persisted: state.chooserPersisted } }));
         }
         return Promise.resolve(
           reply({ status: state.chooserAnswerStatus, body: state.chooserAnswerBody }),
@@ -935,6 +940,7 @@ async function runView(
     failUse: (status, errorBody) => { state.wfUseStatus = status; state.wfUseBody = errorBody; },
     setTree: (tree) => { state.wfTree = tree; },
     setBinding: (id) => { state.boundWorkflowId = id; },
+    setPersisted: (paths) => { state.chooserPersisted = paths; },
     maxConcurrentUploads: () => conc.max,
   };
 }
@@ -1398,7 +1404,7 @@ describe('uploading a local file so the remote browser can pick it up', () => {
     await new Promise((r) => setTimeout(r, 120));
     const posts = h.fetches.filter((f) => f.url.indexOf('/browser/uploads') >= 0);
     expect(posts).toHaveLength(3);
-    expect(posts.map((p) => decodeURIComponent(p.url.split('name=')[1])))
+    expect(posts.map((p) => decodeURIComponent(p.url.split('name=')[1].split('&')[0])))
       .toEqual(['a.txt', 'b.txt', 'c.txt']);
     // The real assertion: they never overlapped. Parallel uploads of several
     // large files on a server that is also running a browser make both slow.
@@ -3066,5 +3072,197 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     expect(h.el('up').clicks).toBe(before + 1);
     expect(h.el('up').accept).toBe('.json');
     expect(h.el('up').multiple).toBe(false);
+  });
+});
+
+describe('the source chooser lives exactly as long as the page\u2019s request', () => {
+  // REPORTED (S12): the "The page is asking for a file" pane stayed up after
+  // the file had been handed over, and the hamburger -- the operator's way to
+  // THEIR files -- opened on that pane instead of on the workspace. The pane
+  // is the request's: it comes up with the request (offerFile) and goes down
+  // with it (clearPending), and nothing else opens it.
+  const WF = '?workflowId=wf_42&api_key=k';
+  const asking = (over: Record<string, unknown> = {}) => ({
+    id: 'fc_5s6t7u8v', multiple: false, accept: '', name: 'file', at: Date.now(), ...over,
+  });
+
+  it('the hamburger ALWAYS opens the workspace, even while a page is asking', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    // The request raised the chooser; the operator shuts it and goes to the tree.
+    expect(h.el('dpick').hidden).toBe(false);
+    h.click('dclose');
+    expect(h.el('files').hidden).toBe(true);
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.el('files').hidden).toBe(false);
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('dpick').hidden).toBe(true);
+    // The request is still outstanding, so Select in the tree still answers it.
+    expect(h.tree().map((r) => r.attrs['data-name'])).toContain('cookies.json');
+  });
+
+  it('answering from the computer takes the chooser down AND the drawer with it; the receipt waits on the workspace', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    expect(h.el('files').hidden).toBe(false);
+    expect(h.el('dpick').hidden).toBe(false);
+
+    h.chooseFiles(['report.pdf']);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // The page has its file: the pane that asked for it is gone and the
+    // drawer that only existed to show it is shut, so the page is back.
+    expect(h.el('dpick').hidden).toBe(true);
+    expect(h.el('files').hidden).toBe(true);
+    // Not lost: the receipt is on the workspace for the next time it opens.
+    expect(h.el('dnotices').textContent).toMatch(/Sent to the site: report\.pdf/);
+    h.click('burger');
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('dpick').hidden).toBe(true);
+  });
+
+  it('when the request goes away on its own, the chooser goes with it (and so does a drawer that only showed it)', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    expect(h.el('dpick').hidden).toBe(false);
+    h.setPendingChooser(null);
+    await h.ticks(2);
+    expect(h.el('dpick').hidden).toBe(true);
+    expect(h.el('files').hidden).toBe(true);
+  });
+
+  it('a tree the operator had moved on to is NOT shut when the request ends', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    h.setPendingChooser(null);
+    await h.ticks(2);
+    // They are in their files; the request ending is not a reason to take those away.
+    expect(h.el('files').hidden).toBe(false);
+    expect(h.el('panefiles').hidden).toBe(false);
+  });
+
+  it('"Not now" takes the chooser and its drawer down together', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    const row = h.el('dnotices').children.find((c) => /asking for a file/i.test(c.textContent))!;
+    row.children.find((c) => c.textContent === 'Not now')!.emit('click');
+    await settle();
+    await settle();
+    expect(h.el('dpick').hidden).toBe(true);
+    expect(h.el('files').hidden).toBe(true);
+  });
+});
+
+describe('a file sent from the computer is FILED under the workflow\u2019s uploads/', () => {
+  // REPORTED (S12): "Upload from Computer" handed the page its file, but the
+  // drawer's uploads/ folder did not show it. The server now awaits the copy
+  // and names what it filed (`persisted`); the view says so and re-reads the
+  // folder AFTER the copy, instead of racing it.
+  const WF = '?workflowId=wf_42&api_key=k';
+  const asking = (over: Record<string, unknown> = {}) => ({
+    id: 'fc_5s6t7u8v', multiple: false, accept: '', name: 'file', at: Date.now(), ...over,
+  });
+
+  it('the receipt names the folder, and the folder is re-read after the copy', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.click('burger');
+    await settle();
+    await settle();
+    const listsBefore = h.wfCalls().filter((f) => String(f.init.method || 'GET') === 'GET').length;
+    h.setPersisted(['uploads/report.pdf']);
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    // The operator was in the tree; the request put the chooser in its place.
+    h.chooseFiles(['report.pdf']);
+    await new Promise((r) => setTimeout(r, 250));
+
+    expect(h.el('dnotices').textContent).toMatch(/Sent to the site: report\.pdf/);
+    expect(h.el('dnotices').textContent).toMatch(/Filed in Workflow Files under uploads\//);
+    // The drawer was shut with the request (the chooser had replaced the
+    // tree), so no re-read under nobody; the folder's cache is dropped so the
+    // next opening reads uploads/ fresh rather than from before the copy.
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.wfCalls().filter((f) => String(f.init.method || 'GET') === 'GET').length).toBeGreaterThan(listsBefore);
+  });
+
+  it('a send that filed nothing (no bound workflow) says only that it was sent', async () => {
+    const h = await runView();
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    h.chooseFiles(['loose.txt']);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.el('dnotices').textContent).toMatch(/Sent to the site: loose\.txt/);
+    expect(h.el('dnotices').textContent).not.toMatch(/Filed in Workflow Files/);
+  });
+
+  it('the upload is stored under the identity the chooser resolves tokens under (owner from the poll)', async () => {
+    // The documented ENOENT hand-over bug is the bytes written under one id
+    // and looked for under another. The poll SAYS the owner; the upload
+    // carries it back.
+    const h = await runView();
+    h.setOwner('local');
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    h.chooseFiles(['a.txt']);
+    await new Promise((r) => setTimeout(r, 200));
+    const posts = h.fetches.filter((f) => f.url.indexOf('/browser/uploads') >= 0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url).toContain('userId=local');
+  });
+});
+
+describe('a view opened before the binding existed asks again', () => {
+  // REPORTED (S12): open the browser, open the drawer ("not opened from a
+  // saved workflow"), THEN open it from a workflow in another tab: the drawer
+  // kept saying so for the rest of the page's life. An empty answer was
+  // cached as final; only a found id is.
+  it('an empty binding is re-asked on the next opening; a found one is kept', async () => {
+    const h = await runView();
+    h.connected();
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.el('wfmlist').textContent).toMatch(/saved workflow/i);
+    const asks = () => h.fetches.filter((f) => f.url.indexOf('/browser/workflow-files-binding') >= 0).length;
+    expect(asks()).toBe(1);
+
+    h.click('dclose');
+    h.setBinding('wf_late');
+    h.click('burger');
+    await settle();
+    await settle();
+    await settle();
+    expect(asks()).toBe(2);
+    expect(h.wfCalls().some((f) => f.url.indexOf('/browser/workflow-files/wf_late?path=') >= 0)).toBe(true);
+    expect(h.tree().map((r) => r.attrs['data-name'])).toContain('cookies.json');
+
+    // Found: not asked a third time.
+    h.click('dclose');
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(asks()).toBe(2);
   });
 });

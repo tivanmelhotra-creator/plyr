@@ -259,7 +259,7 @@ export class RemoteFileChooser {
    * file picked for one page gets delivered to a different one that opened its
    * own dialog in the meantime.
    */
-  async accept(id: string, tokens: string[]): Promise<{ count: number }> {
+  async accept(id: string, tokens: string[]): Promise<{ count: number; persisted: string[] }> {
     const chooser = this.chooser;
     if (!chooser || !this.info) {
       throw new FileChooserError('The page is not asking for a file any more.');
@@ -304,8 +304,20 @@ export class RemoteFileChooser {
     // filed under `<workflow>/uploads/`, so the input the operator just gave a
     // page is there next time -- for them, and for an automation node. After
     // setFiles, so the page is never kept waiting on a copy; never fatal.
-    void persistUploads(realChromeWorkflow(), use).catch(() => { /* logged inside */ });
-    return { count: use.length };
+    //
+    // AWAITED, and the resulting workflow paths are RETURNED. REPORTED: a file
+    // sent from the computer did not appear under uploads/ in the drawer. The
+    // copy was fire-and-forget, so the view's refresh raced it and read the
+    // folder before the file landed; and the view had no way of knowing
+    // whether anything was filed at all. Now the answer names what was filed
+    // (`persisted`, workflow-relative), so the view can say so and re-read
+    // the tree AFTER the copy. A failed copy is still not fatal: the page has
+    // its file, and the receipt simply names nothing.
+    let persisted: string[] = [];
+    try {
+      persisted = (await persistUploads(realChromeWorkflow(), use)).map((e) => e.path);
+    } catch { /* logged inside persistUploads */ }
+    return { count: use.length, persisted };
   }
 
   /**
