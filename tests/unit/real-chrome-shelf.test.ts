@@ -438,6 +438,8 @@ function makeEl(tag: string, hidden = false): FakeEl {
 async function runView(
   opts: {
     rejectReadText?: boolean; rejectWriteText?: boolean; search?: string;
+    /** Override selected responses to exercise delayed and failed requests. */
+    interceptFetch?: (url: string) => Promise<Response> | undefined;
     /** Make POST /browser/real/open fail, as it does when Xvfb is absent. */
     failStart?: boolean;
     /**
@@ -592,6 +594,8 @@ async function runView(
 
   const fetch = (url: string, init: Record<string, unknown> = {}) => {
     allFetches.push({ url, init });
+    const intercepted = opts.interceptFetch?.(url);
+    if (intercepted) return intercepted;
     // Answered BEFORE the upload fallthrough below. Without a case of its own
     // the boot POST landed in that branch, which resolves after a timer and
     // reports an upload token: startThenConnect() then never reached connect(),
@@ -3237,8 +3241,8 @@ describe('a view opened before the binding existed asks again', () => {
   // REPORTED (S12): open the browser, open the drawer ("not opened from a
   // saved workflow"), THEN open it from a workflow in another tab: the drawer
   // kept saying so for the rest of the page's life. An empty answer was
-  // cached as final; only a found id is.
-  it('an empty binding is re-asked on the next opening; a found one is kept', async () => {
+  // cached as final. Neither an empty nor a server-derived id is permanent.
+  it('re-asks both empty and found bindings on each opening', async () => {
     const h = await runView();
     h.connected();
     h.click('burger');
@@ -3258,11 +3262,136 @@ describe('a view opened before the binding existed asks again', () => {
     expect(h.wfCalls().some((f) => f.url.indexOf('/browser/workflow-files/wf_late?path=') >= 0)).toBe(true);
     expect(h.tree().map((r) => r.attrs['data-name'])).toContain('cookies.json');
 
-    // Found: not asked a third time.
+    // Found ids can change too: Retry may rebind without opening another tab.
     h.click('dclose');
     h.click('burger');
     await settle();
     await settle();
+    expect(asks()).toBe(3);
+  });
+
+  it('lists B, not cached A, after a noTab launch rebinds the browser', async () => {
+    const h = await runView();
+    h.setBinding('wf_a');
+    h.connected();
+    h.click('burger');
+    await settle(); await settle();
+    expect(h.wfCalls().some((f) => f.url.includes('/wf_a?'))).toBe(true);
+    h.click('dall');
+    expect(h.el('dcount').textContent).not.toBe('');
+    h.click('dclose');
+    const before = h.wfCalls().length;
+    h.setBinding('wf_b');
+    h.setTree({ '': [{ name: 'only-b.txt', path: 'only-b.txt', type: 'file', size: 2 }] });
+    h.click('burger');
+    await settle(); await settle(); await settle();
+    const calls = h.wfCalls().slice(before);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((f) => f.url.includes('/wf_b?'))).toBe(true);
+    expect(h.tree().map((r) => r.attrs['data-name'])).toContain('only-b.txt');
+    expect(h.tree().map((r) => r.attrs['data-name'])).not.toContain('cookies.json');
+    expect(h.el('dcount').textContent).toBe('');
+    expect(h.el('ddelsel').hidden).toBe(true);
+  });
+
+  it('clears a removed binding, sends no empty-id requests, then recovers a later binding', async () => {
+    const h = await runView();
+    h.setBinding('wf_a');
+    h.connected(); h.click('burger');
+    await settle(); await settle();
+    h.click('dclose');
+    h.setBinding('');
+    const before = h.wfCalls().length;
+    h.click('burger');
+    await settle(); await settle();
+    expect(h.wfCalls()).toHaveLength(before);
+    expect(h.el('wfmlist').textContent).toMatch(/saved workflow/i);
+    h.click('dclose'); h.setBinding('wf_c'); h.click('burger');
+    await settle(); await settle();
+    expect(h.wfCalls().some((f) => f.url.includes('/wf_c?'))).toBe(true);
+    expect(h.fetches.some((f) => f.url.includes('/workflow-files//'))).toBe(false);
+  });
+
+  it.each([false, true])('ignores a late previous-workflow listing (failure=%s)', async (fail) => {
+    let finish!: (response: Response) => void;
+    const late = new Promise<Response>((resolve) => { finish = resolve; });
+    const h = await runView({
+      interceptFetch: (url) => url.includes('/workflow-files/wf_a?') ? late : undefined,
+    });
+    h.setBinding('wf_a'); h.connected(); h.click('burger');
+    await settle(); await settle();
+    expect(h.wfCalls().some((f) => f.url.includes('/wf_a?'))).toBe(true);
+    h.click('dclose'); h.setBinding('wf_b');
+    h.setTree({ '': [{ name: 'only-b.txt', path: 'only-b.txt', type: 'file', size: 2 }] });
+    h.click('burger');
+    await settle(); await settle();
+    expect(h.el('wfmlist').textContent).toContain('only-b.txt');
+    finish(new Response(JSON.stringify(fail
+      ? { success: false, error: 'Old workspace failed' }
+      : { success: true, entries: [{ name: 'only-a.txt', path: 'only-a.txt', type: 'file', size: 1 }] }),
+    { status: fail ? 500 : 200 }));
+    await settle(); await settle();
+    expect(h.el('wfmlist').textContent).toContain('only-b.txt');
+    expect(h.el('wfmlist').textContent).not.toContain('only-a.txt');
+    expect(h.el('wfmnote').textContent).not.toContain('Old workspace failed');
+  });
+
+  it('retains the last binding on lookup failure and retries on the next opening', async () => {
+    let fail = false;
+    const h = await runView({
+      interceptFetch: (url) => fail && url.includes('/workflow-files-binding')
+        ? Promise.resolve(new Response('Unavailable', { status: 503 })) : undefined,
+    });
+    h.setBinding('wf_a'); h.connected(); h.click('burger');
+    await settle(); await settle();
+    h.click('dclose'); fail = true; h.click('burger');
+    await settle(); await settle();
+    expect(h.el('wfmlist').textContent).toContain('cookies.json');
+    expect(h.el('wfmlist').textContent).not.toMatch(/not opened from a saved workflow/i);
+    h.click('dclose'); fail = false; h.setBinding('wf_b'); h.click('burger');
+    await settle(); await settle();
+    expect(h.wfCalls().at(-1)?.url).toContain('/wf_b?');
+  });
+
+  it('shares only an in-flight lookup, not its completed result', async () => {
+    let finish!: (response: Response) => void;
+    let hold = true;
+    const late = new Promise<Response>((resolve) => { finish = resolve; });
+    const h = await runView({
+      interceptFetch: (url) => hold && url.includes('/workflow-files-binding') ? late : undefined,
+    });
+    h.connected(); h.click('burger'); h.click('dclose'); h.click('burger');
+    await settle();
+    const asks = () => h.fetches.filter((f) => f.url.includes('/workflow-files-binding')).length;
+    expect(asks()).toBe(1);
+    finish(new Response(JSON.stringify({ success: true, local: { workflowId: 'wf_a' } })));
+    await settle(); await settle();
+    expect(h.el('wfmlist').textContent).toContain('cookies.json');
+    hold = false; h.setBinding('wf_b'); h.click('dclose'); h.click('burger');
+    await settle(); await settle();
     expect(asks()).toBe(2);
+    expect(h.wfCalls().at(-1)?.url).toContain('/wf_b?');
+  });
+
+  it('never rebinds a server-derived identity when the desktop reconnects', async () => {
+    const h = await runView();
+    h.setBinding('wf_a');
+    h.connected(); h.click('burger');
+    await settle(); await settle();
+    h.setBinding('wf_b');
+    h.connected();
+    await settle(); await settle();
+    expect(h.wfCalls().filter((f) => f.url.includes('/bind'))).toHaveLength(0);
+  });
+
+  it('keeps an explicit URL workflow pinned instead of adopting another binding', async () => {
+    const h = await runView({ search: '?workflowId=wf_explicit' });
+    h.setBinding('wf_other');
+    h.connected(); h.click('burger');
+    await settle(); await settle();
+    h.click('dclose'); h.setBinding('wf_next'); h.click('burger');
+    await settle(); await settle();
+    expect(h.fetches.some((f) => f.url.includes('/workflow-files-binding'))).toBe(false);
+    expect(h.wfCalls().every((f) => f.url.includes('/wf_explicit'))).toBe(true);
   });
 });
