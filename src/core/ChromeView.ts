@@ -1611,36 +1611,47 @@ function offerFile() {
 const pickAccept = document.getElementById('dpickaccept');
 const addSub     = document.getElementById('addsub');
 const WORKFLOW_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-let workflowId = WORKFLOW_ID_RE.test(qs.get('workflowId') || '') ? qs.get('workflowId') : '';
+const workflowIdFromUrl = WORKFLOW_ID_RE.test(qs.get('workflowId') || '') ? qs.get('workflowId') : '';
+let workflowId = workflowIdFromUrl;
 const NO_WORKFLOW_TEXT = 'This browser was not opened from a saved workflow, so it has no workflow files. Save the workflow, then open the browser from it.';
 
 /**
  * Find the workflow when the URL did not name one: the server knows which
  * workflow the Local Browser is bound to right now. Resolves to the id, or ''.
- * Runs once per page, before the first listing and before the first bind.
+ * An explicit URL id stays pinned. A server-derived id is re-read each time
+ * the drawer opens: Retry can bind the shared browser to another workflow
+ * without opening a new viewer. Only an in-flight lookup is shared.
  */
 let workflowResolved = null;
 function resolveWorkflowId() {
-  if (workflowId) return Promise.resolve(workflowId);
+  if (workflowIdFromUrl) return Promise.resolve(workflowIdFromUrl);
   if (workflowResolved) return workflowResolved;
   workflowResolved = fetch('/browser/workflow-files-binding', { headers: authHeaders(), credentials: 'same-origin' })
-    .then((r) => (r.ok ? r.json() : null))
+    .then(wfmJson)
     .then((j) => {
       const id = j && j.local && j.local.workflowId ? String(j.local.workflowId) : '';
-      if (WORKFLOW_ID_RE.test(id)) workflowId = id;
+      const nextId = WORKFLOW_ID_RE.test(id) ? id : '';
+      if (nextId !== workflowId) {
+        workflowId = nextId;
+        // Paths and selections belong to ONE workspace, not to the browser.
+        // Never carry A's selected files, subfolders or pending delete into B.
+        Object.keys(wfmFolders).forEach((k) => { delete wfmFolders[k]; });
+        Object.keys(wfmOpen).forEach((k) => { delete wfmOpen[k]; });
+        wfmOpen[''] = true;
+        wfmSelected = [];
+        wfmRoot = '';
+        wfmUploadInto = '';
+        wfmLoadedOnce = false;
+        wfmBound = false;
+        wfmCloseMenu();
+        if (wfmConfirm) { wfmConfirm.hidden = true; wfmConfirm.textContent = ''; }
+        wfmRender();
+      }
       return workflowId;
     })
+    // A transient lookup failure is not evidence that the binding was deleted.
     .catch(() => workflowId)
-    .then((id) => {
-      // Only a FOUND id is final. An empty answer is the state of the server
-      // at that moment -- the operator may bind a workflow (open the browser
-      // from one, in another tab) a second later -- so the next time the
-      // workspace is opened it asks again rather than repeating a stale ''.
-      // REPORTED: the drawer said "not opened from a saved workflow" for the
-      // rest of the page's life once it had been opened a moment too early.
-      if (!id) workflowResolved = null;
-      return id;
-    });
+    .then((id) => { workflowResolved = null; return id; });
   return workflowResolved;
 }
 
@@ -1902,12 +1913,15 @@ function wfmFetchFolder(rel, force) {
   const key = rel || '';
   if (!workflowId) return Promise.resolve([]);
   if (!force && wfmFolders[key]) return Promise.resolve(wfmFolders[key]);
+  const requestedWorkflowId = workflowId;
   return wfmFetch(wfmBase() + '?path=' + encodeURIComponent(key))
     .then((d) => {
+      if (workflowId !== requestedWorkflowId) return [];
       wfmFolders[key] = d.entries || [];
       return wfmFolders[key];
     })
     .catch((e) => {
+      if (workflowId !== requestedWorkflowId) return [];
       wfmSay((e && e.message) || 'Could not read the workflow files.', true);
       // An empty array, not a missing key: the row then says "empty" rather
       // than spinning for a listing that is never coming.
@@ -1971,7 +1985,7 @@ function bindWorkflow() {
   // (resolveWorkflowId) when it is opened -- binding the server to its own
   // answer would be a round trip that changes nothing, and connecting must
   // not fetch anything on its own.
-  if (!workflowId) return Promise.resolve(false);
+  if (!workflowIdFromUrl) return Promise.resolve(false);
   return bindResolved();
 }
 function bindResolved() {
