@@ -705,6 +705,18 @@
         // outside a saved workflow is unchanged.
         var wfId = workflowIdFor(o);
         if (wfId) href += '&workflowId=' + encodeURIComponent(wfId);
+        // BIND HERE, NOT ONLY IN THE VIEW. The viewer page binds the browser
+        // to ?workflowId= when its desktop connects -- but `noTab` (Retry, the
+        // Alert re-raise) never opens a viewer, so that path used to leave the
+        // browser bound to whatever it was bound to before, or to nothing
+        // after a server restart. The launch is the moment the operator says
+        // "this browser works for this workflow"; say so to the server now.
+        // Best-effort and idempotent (the view's own bind repeats it), and
+        // never on the launch's critical path: the tab has its URL already.
+        if (wfId) {
+          API.post('/browser/workflow-files/' + encodeURIComponent(wfId) + '/bind', { target: 'local' })
+            .catch(function () { /* the view binds again when it connects */ });
+        }
         if (tab) tab.location = href;
         // `noTab` STOPS HERE, and this line is the reason the flag exists at
         // all. The old `else` opened a viewer via window.open() whenever no tab

@@ -86,7 +86,7 @@ import { FileChooserError } from '../core/RemoteFileChooser';
 import { contentDispositionAttachment } from '../core/RemoteDownloads';
 import { ZipStream, ZipStreamError } from '../core/ZipStream';
 import { liveBrowserSessions } from '../core/LiveSessions';
-import { bindRealChrome, realChromeWorkflow } from '../core/WorkflowBinding';
+import { attachBindingStore, bindRealChrome, refreshRealChromeBinding } from '../core/WorkflowBinding';
 
 interface Deps {
   connection: IORedis;
@@ -122,6 +122,10 @@ function resolveOwner(req: AuthenticatedRequest): string | null {
 export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
   const router = Router();
   const workflows = new WorkflowService(connection);
+  // The Local Browser's binding lives in the same Redis as the workflow it
+  // names (see WorkflowBinding.ts, "WHERE THE LOCAL BROWSER'S BINDING LIVES"),
+  // so it survives a restart and is shared by every pm2 worker.
+  attachBindingStore(connection);
 
   // A request under our prefix with NO workflow id. `:workflowId` cannot match
   // an empty segment, so these would otherwise fall out of this router
@@ -199,7 +203,7 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       const target = String(body.target || 'local');
       const ref = { userId: store.userId, workflowId: store.workflowId };
       if (target === 'local') {
-        bindRealChrome(ref);
+        await bindRealChrome(ref);
         return res.json({ success: true, target, workflowId: ref.workflowId, bound: true });
       }
       if (target === 'live') {
@@ -218,9 +222,25 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
 
   // What the Local Browser is bound to right now. Not under :workflowId on
   // purpose: the view asks before it knows whether ITS id is the bound one.
-  router.get('/browser/workflow-files-binding', (_req: AuthenticatedRequest, res) => {
-    const ref = realChromeWorkflow();
-    res.json({ success: true, local: ref ? { workflowId: ref.workflowId } : null });
+  //
+  // Read THROUGH to the store (S16): this is the answer the view builds its
+  // whole workspace on, and process memory is empty after a restart and blind
+  // to a /bind that another pm2 worker took. A stale record -- the workflow
+  // has since been deleted -- is cleared here rather than handed out, so the
+  // view never builds requests for a workspace that no longer exists.
+  router.get('/browser/workflow-files-binding', async (req: AuthenticatedRequest, res) => {
+    try {
+      let ref = await refreshRealChromeBinding();
+      if (ref && !(await workflows.get(ref.userId, ref.workflowId))) {
+        await bindRealChrome(null);
+        ref = null;
+      }
+      // Never name another user's workflow to a caller who may not see it
+      // (the admin key sees everything, as it does for the files themselves).
+      const owner = resolveOwner(req);
+      if (ref && owner && owner !== 'env_root' && ref.userId !== owner) ref = null;
+      res.json({ success: true, local: ref ? { workflowId: ref.workflowId } : null });
+    } catch (e) { sendError(res, e); }
   });
 
   // ── mkdir ─────────────────────────────────────────────────────────────────
