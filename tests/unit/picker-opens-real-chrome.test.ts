@@ -1242,3 +1242,83 @@ describe('openRealBrowser honours noTab — the launch Retry depends on', () => 
     expect(rec.navigated).toEqual([]);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE LAUNCH BINDS THE BROWSER TO THE WORKFLOW (S16)
+//
+// REPORTED: after a server restart -- or when Retry brought the browser back
+// up with `noTab` -- the Workflow Files drawer said "not opened from a saved
+// workflow" and downloads were no longer filed under the workflow.
+//
+// The viewer page binds when its desktop connects; `noTab` never opens a
+// viewer, so nothing bound. The launch itself now says which workflow the
+// browser works for, the moment the server reports it is up.
+// ════════════════════════════════════════════════════════════════════════════
+describe('openRealBrowser binds the workflow after a successful launch', () => {
+  async function run(opts: unknown, postResult: { ok: true; viewPath: string } | { ok: false; error: string } =
+    { ok: true, viewPath: '/desktop/chrome' }): Promise<Recorder> {
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, postResult);
+    const body = `
+      ${openRealBrowserSource()}
+      return openRealBrowser('https://example.com', null, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'OPTS', body);
+    try {
+      await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, opts);
+    } catch { /* the recorder is what matters */ }
+    await new Promise((r) => setTimeout(r, 0));
+    return rec;
+  }
+
+  it('POSTs /browser/workflow-files/<id>/bind {target:local} once the browser is up', async () => {
+    const rec = await run({ noTab: true, workflowId: 'wf_42' });
+    expect(rec.posted.map((p) => p.path)).toEqual([
+      '/browser/real/open',
+      '/browser/workflow-files/wf_42/bind',
+    ]);
+    expect(rec.posted[1].body).toEqual({ target: 'local' });
+  });
+
+  it('binds on the noTab (Retry) path too -- the path that used to bind nothing', async () => {
+    const rec = await run({ noTab: true, workflowId: 'wf_42' });
+    expect(rec.opened).toEqual([]);
+    expect(rec.posted.some((p) => p.path === '/browser/workflow-files/wf_42/bind')).toBe(true);
+  });
+
+  it('binds NOTHING when there is no saved workflow to bind to', async () => {
+    const rec = await run({ noTab: true });
+    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
+  });
+
+  it('a malformed workflow id is not sent to the server', async () => {
+    const rec = await run({ noTab: true, workflowId: '../etc' });
+    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
+  });
+
+  it('does not bind when the launch failed -- there is no browser to bind', async () => {
+    const rec = await run({ noTab: true, workflowId: 'wf_42' }, { ok: false, error: 'boom' });
+    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
+  });
+
+  it('the launch resolves even if the bind is refused', async () => {
+    const rec = newRecorder();
+    const sandbox = sandboxFor(rec, { ok: true, viewPath: '/desktop/chrome' });
+    const realPost = sandbox.API.post;
+    sandbox.API.post = (path: string, body: unknown) => {
+      if (path.indexOf('/bind') >= 0) { rec.posted.push({ path, body }); return Promise.reject(new Error('404')); }
+      return realPost(path, body);
+    };
+    const body = `
+      ${openRealBrowserSource()}
+      return openRealBrowser('https://example.com', null, OPTS);
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function('window', 'API', 't', 'toast', 'OPTS', body);
+    const r = await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, { noTab: true, workflowId: 'wf_42' });
+    await new Promise((res) => setTimeout(res, 0));
+    expect(r && r.success).toBe(true);
+    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open', '/browser/workflow-files/wf_42/bind']);
+  });
+});

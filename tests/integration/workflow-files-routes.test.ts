@@ -535,3 +535,71 @@ describe('workflow files: /download gives the operator their own copy', () => {
     expect(noId.body.error).toMatch(/No workflow id/);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE LOCAL BROWSER'S BINDING LIVES IN REDIS, NOT IN THE PROCESS (S16)
+//
+// REPORTED: after a restart the drawer said "not opened from a saved workflow"
+// for a browser plainly opened from one. The binding was process memory; the
+// Chrome profile on disk was not. These tests bind through the real route,
+// then FORGET PROCESS MEMORY (as a restart or another pm2 worker would) and
+// show the route still answers from the same Redis the workflow lives in.
+// ════════════════════════════════════════════════════════════════════════════
+describe('workflow files: the Local Browser binding survives a restart', () => {
+  let binding: typeof import('../../src/core/WorkflowBinding');
+  beforeAll(async () => { binding = await import('../../src/core/WorkflowBinding'); });
+  beforeEach(async () => { await binding.bindRealChrome(null); binding.resetRealChromeBindingForTests(); });
+
+  it('POST /bind {local} answers bound:true and GET /workflow-files-binding names it', async () => {
+    const b = await request(app).post(`${base()}/bind`).send({ target: 'local' });
+    expect(b.status).toBe(200);
+    expect(b.body).toMatchObject({ success: true, target: 'local', workflowId: wfAlice, bound: true });
+    const g = await request(app).get('/browser/workflow-files-binding');
+    expect(g.status).toBe(200);
+    expect(g.body.local).toEqual({ workflowId: wfAlice });
+  });
+
+  it('the record is in the SAME store as the workflow, under the fixed key', async () => {
+    await request(app).post(`${base()}/bind`).send({ target: 'local' });
+    const raw = await connection.get(binding.REAL_CHROME_BINDING_KEY);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!)).toEqual({ userId: 'alice', workflowId: wfAlice });
+  });
+
+  it('after the process forgets everything, GET still answers the bound workflow', async () => {
+    await request(app).post(`${base()}/bind`).send({ target: 'local' });
+    binding.resetRealChromeBindingForTests();           // pm2 restart / other worker
+    expect(binding.realChromeWorkflow()).toBeNull();    // memory: nothing
+    const g = await request(app).get('/browser/workflow-files-binding');
+    expect(g.body.local).toEqual({ workflowId: wfAlice }); // route: the truth
+  });
+
+  it('a transfer on a fresh process files into the bound workflow', async () => {
+    await request(app).post(`${base()}/bind`).send({ target: 'local' });
+    binding.resetRealChromeBindingForTests();
+    expect(await binding.realChromeWorkflowForTransfer()).toEqual({ userId: 'alice', workflowId: wfAlice });
+  });
+
+  it('a binding to a workflow that no longer exists is cleared, not handed out', async () => {
+    await connection.set(binding.REAL_CHROME_BINDING_KEY, JSON.stringify({ userId: 'alice', workflowId: 'wf_gone' }));
+    const g = await request(app).get('/browser/workflow-files-binding');
+    expect(g.body.local).toBeNull();
+    expect(await connection.get(binding.REAL_CHROME_BINDING_KEY)).toBeNull();
+  });
+
+  it("another user's binding is not named to this caller", async () => {
+    await request(app).post(`/browser/workflow-files/${wfBob}/bind`).set('x-test-user', 'bob').send({ target: 'local' });
+    const asBob = await request(app).get('/browser/workflow-files-binding').set('x-test-user', 'bob');
+    expect(asBob.body.local).toEqual({ workflowId: wfBob });
+    const asAlice = await request(app).get('/browser/workflow-files-binding');
+    expect(asAlice.body.local).toBeNull();
+  });
+
+  it('a re-bind to another workflow replaces the first, durably', async () => {
+    await request(app).post(`${base()}/bind`).send({ target: 'local' });
+    await request(app).post(`/browser/workflow-files/${wfBob}/bind`).set('x-test-user', 'bob').send({ target: 'local' });
+    binding.resetRealChromeBindingForTests();
+    const g = await request(app).get('/browser/workflow-files-binding').set('x-test-user', 'bob');
+    expect(g.body.local).toEqual({ workflowId: wfBob });
+  });
+});

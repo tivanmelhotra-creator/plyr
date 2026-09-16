@@ -67,7 +67,7 @@
 import type { BrowserContext, FileChooser, Page } from 'playwright';
 
 import { resolveUpload } from './RemoteUploads';
-import { persistUploads, realChromeWorkflow } from './WorkflowBinding';
+import { persistUploads, realChromeWorkflowForTransfer } from './WorkflowBinding';
 
 /**
  * What the view needs to know about the dialog the page is waiting on.
@@ -315,7 +315,7 @@ export class RemoteFileChooser {
     // its file, and the receipt simply names nothing.
     let persisted: string[] = [];
     try {
-      persisted = (await persistUploads(realChromeWorkflow(), use)).map((e) => e.path);
+      persisted = (await persistUploads(await realChromeWorkflowForTransfer(), use)).map((e) => e.path);
     } catch { /* logged inside persistUploads */ }
     return { count: use.length, persisted };
   }
