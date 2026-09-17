@@ -137,9 +137,20 @@ describe('the condition-row crosshair reaches the chooser like every other one',
 
   it('pickerBtn forwards the row address, and still gates on identity', () => {
     const body = fn(ndvNodes, 'pickerBtn');
+    // The context is built by the SHARED pickContext(), which is what both the
+    // crosshair and the Retry beside it hand to TargetingFlow — so `pickerBtn`
+    // must route through it. Building the literal inline would let the two
+    // buttons drift apart, which is what makes the row address ambiguous.
     expect(
-      /rowPath:\s*opts\.rowPath/.test(body),
-      'pickerBtn must forward rowPath into the targeting context, otherwise the '
+      /pickContext\(\s*opts\s*\)/.test(body),
+      'pickerBtn must build its targeting context through pickContext(), the one '
+        + 'place every field property (rowPath included) is forwarded',
+    ).toBe(true);
+    // ...and pickContext() is where rowPath actually travels to the flow.
+    const built = fn(ndvNodes, 'pickContext');
+    expect(
+      /rowPath:\s*o\.rowPath/.test(built),
+      'pickContext must forward rowPath into the targeting context, otherwise the '
         + 'address is discarded at the boundary and delivery misroutes',
     ).toBe(true);
     // The gate is deliberately left in place: it is what produces the
