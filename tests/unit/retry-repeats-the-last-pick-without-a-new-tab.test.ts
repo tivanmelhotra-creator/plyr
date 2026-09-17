@@ -1,31 +1,35 @@
 /* ============================================================================
-   RETRY — the same Alert, for the same field, without another tab.
+   RETRY — the same Picker flow, for its OWN field, without another tab.
 
    WHAT WAS ASKED FOR
    ------------------
      «یک دکمه Retry کنار Picker اضافه شود»
      «Retry باید دقیقاً همان کاری را انجام دهد که Picker انجام می‌دهد، با این
       تفاوت که Tab جدیدی در Browser اصلی باز نمی‌کند»
-     «اگر کاربر آخرین بار روی Picker مربوط به Field 2 کلیک کرده باشد، Retry
-      باید فقط همان Field 2 را هدف قرار دهد»
 
-   and the architectural instruction that matters most here, because it is the
-   one a careless implementation breaks while still passing a demo:
+   and the correction that reshaped this file, because it is the one a careless
+   implementation gets wrong while still passing a demo:
 
-     Picker → ensureLocalBrowserTab() → showPickerAlert()
-     Retry  → reuseExistingLocalBrowser() → showPickerAlert()
-     «هدف این است که showPickerAlert() برای هر دو یکی باشد»
+     «Retry دیگر نباید بر مبنای `lastPickerTarget` باشد … Retry باید همان Picker
+      را دوباره اجرا کند، با همان target/contextی که دکمه Retry در همان موقعیت به
+      آن مربوط است.»
 
-   So these tests are not only "does Retry work". They pin that Retry and
-   Picker are ONE flow with ONE difference, because two flows that merely
-   happen to agree today are two flows that will disagree later.
+   So Retry no longer means «repeat the last Pick». It is the button that sits
+   beside ONE field, and it re-runs THAT field:
+
+     Picker → showPickerAlert(ctx, { mayOpenTab: true  })
+     Retry  → showPickerAlert(ctx, { mayOpenTab: false })
+
+   There is no shared "last pick" slot any more, so the two entry points differ
+   in exactly one thing — whether the press may put a viewer tab in the
+   operator's own browser.
 
    WHY THE MODULE IS RUN FOR REAL
    ------------------------------
    `public/js/targeting-flow.js` is a browser IIFE, so it is evaluated in a `vm`
    against a DOM built here. The alternative — reading the source and asserting
    on its text — cannot tell whether `mayOpenTab` actually ARRIVES at
-   `openRealBrowser`, and that thread through four functions is the whole fix.
+   `openRealBrowser`, and that thread through four functions is the whole point.
    ========================================================================= */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -35,6 +39,7 @@ import vm from 'node:vm';
 
 const ROOT = join(__dirname, '..', '..');
 const SRC = readFileSync(join(ROOT, 'public/js/targeting-flow.js'), 'utf8');
+const NDV = readFileSync(join(ROOT, 'public/js/ndv-nodes.js'), 'utf8');
 
 // ───────────────────────────────────────────────────────────────────────────
 // A DOM just real enough for a modal made of divs and buttons.
@@ -59,10 +64,6 @@ class El {
    * `d.backdrop.parentNode.removeChild(d.backdrop)`. Without a real
    * `parentNode` that branch does nothing, closed dialogs stay in <body>, and
    * a helper that looks up "the chooser" keeps finding the FIRST, stale one.
-   *
-   * That cost four failing tests that were reported against correct source —
-   * which is how a harness quietly starts lying about the module it is
-   * testing. Keep this field.
    */
   parentNode: El | null = null;
 
@@ -121,9 +122,7 @@ type RealCall = { url: string; gotTab: boolean; noTab: boolean | undefined };
 
 type Flow = {
   start(ctx: unknown): boolean;
-  retry(): boolean;
-  canRetry(): boolean;
-  lastTarget(): { nodeId: string; fieldKey: string } | null;
+  retry(ctx: unknown): boolean;
   close(): void;
   isOpen(): boolean;
 };
@@ -206,9 +205,6 @@ function boot(res: { serverLive?: boolean } = {}): Harness {
          * Omitting it sends the flow down the "already bound" path instead, so
          * `openRealBrowser` is never called, `realBrowser` stays empty, and
          * every `noTab` assertion below passes VACUOUSLY over an empty array.
-         *
-         * That is worse than a failing test: it is a green one guarding
-         * nothing. The `serverLive:false` case is what exposed it.
          */
         return Promise.resolve({
           success: true,
@@ -287,8 +283,10 @@ function boot(res: { serverLive?: boolean } = {}): Harness {
 }
 
 /**
- * The pick context ndv-nodes.js supplies. Defaults to Node A / Field 3 —
- * the spec's own example of the field Retry must re-run alone.
+ * The pick context ndv-nodes.js supplies. Defaults to Node A / Field 3.
+ *
+ * BOTH `start` and `retry` now take this: the field travels WITH the call
+ * rather than being remembered between presses.
  */
 function ctx(h: Harness, over: Record<string, unknown> = {}) {
   return {
@@ -320,9 +318,9 @@ async function picker(h: Harness, over: Record<string, unknown> = {}) {
   return ok;
 }
 
-/** Press Retry and let the chooser paint. */
-async function retry(h: Harness) {
-  const ok = h.flow.retry();
+/** Press Retry — handing it THIS field's context, as the button does. */
+async function retry(h: Harness, over: Record<string, unknown> = {}) {
+  const ok = h.flow.retry(ctx(h, over));
   await h.settle();
   return ok;
 }
@@ -333,63 +331,78 @@ async function chooseLocal(h: Harness) {
   await h.settle();
 }
 
+/** The node+field pairs the flow asked the server for, in order. */
+function askedFields(h: Harness): string[] {
+  return h.calls
+    .filter((c) => c.fn === 'targetingOptions')
+    .map((c) => String(c.args[0]) + '/' + String(c.args[1]));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-describe('Retry re-runs the LAST picker target, and only that one', () => {
+describe('Retry runs ITS OWN field, and no longer "the last pick"', () => {
   let h: Harness;
   beforeEach(() => { h = boot({ serverLive: true }); });
 
-  it('exposes retry/canRetry/lastTarget alongside start', () => {
+  it('exposes start and retry — and NOT a shared last-pick slot', () => {
+    expect(typeof h.flow.start).toBe('function');
     expect(typeof h.flow.retry).toBe('function');
-    expect(typeof h.flow.canRetry).toBe('function');
-    expect(typeof h.flow.lastTarget).toBe('function');
+    // The removed API. `canRetry`/`lastTarget` only existed to read the shared
+    // slot; with no slot there is nothing for them to mean.
+    expect((h.flow as unknown as Record<string, unknown>).canRetry).toBeUndefined();
+    expect((h.flow as unknown as Record<string, unknown>).lastTarget).toBeUndefined();
   });
 
-  it('has nothing to retry before any crosshair is pressed', () => {
-    expect(h.flow.canRetry()).toBe(false);
-    expect(h.flow.lastTarget()).toBeNull();
-    expect(h.flow.retry()).toBe(false);
+  it('does not depend on any prior pick — Retry works with a target of its own', async () => {
+    // No crosshair has ever been pressed, yet Retry runs: proof it reads its
+    // argument, not a remembered slot.
+    expect(h.calls.filter((c) => c.fn === 'targetingOptions')).toHaveLength(0);
+    const ok = await retry(h, { fieldKey: 'field1' });
+    expect(ok).toBe(true);
+    expect(askedFields(h)).toEqual(['nodeA/field1']);
   });
 
-  it('says so instead of pretending, when there is nothing to retry', () => {
-    // Returning false is what lets the button toast "target something first"
-    // rather than opening an empty dialog.
-    expect(h.flow.retry()).toBe(false);
-    expect(h.flow.isOpen()).toBe(false);
-  });
-
-  it('remembers the field whose crosshair was pressed', async () => {
-    await picker(h);
-    expect(h.flow.canRetry()).toBe(true);
-    expect(h.flow.lastTarget()).toEqual({ nodeId: 'nodeA', fieldKey: 'field3' });
-  });
-
-  it('RE-RUNS ONLY THAT FIELD — not the node\'s other fields', async () => {
-    // Node A has field1/field2/field3; the operator last pressed field3.
-    await picker(h, { fieldKey: 'field1', label: 'Click → field1' });
-    await picker(h, { fieldKey: 'field2', label: 'Click → field2' });
+  it('RUNS ITS OWN FIELD even when a DIFFERENT field was picked last', async () => {
+    // The defect this change exists to remove: the operator last pressed
+    // field3, but this Retry sits beside field1 — so it must run field1.
     await picker(h, { fieldKey: 'field3', label: 'Click → field3' });
-
     h.calls.length = 0;
-    await retry(h);
 
-    const asked = h.calls.filter((c) => c.fn === 'targetingOptions');
-    expect(asked).toHaveLength(1);
-    expect(asked[0].args[0]).toBe('nodeA');
-    expect(asked[0].args[1]).toBe('field3');
+    await retry(h, { fieldKey: 'field1', label: 'Click → field1' });
+
+    expect(askedFields(h)).toEqual(['nodeA/field1']);
   });
 
-  it('follows the crosshair to a NEW node when the operator moves on', async () => {
+  it('never re-runs the other fields of the node behind the operator back', async () => {
+    await picker(h, { fieldKey: 'field1' });
+    await picker(h, { fieldKey: 'field2' });
+    await picker(h, { fieldKey: 'field3' });
+    h.calls.length = 0;
+
+    await retry(h, { fieldKey: 'field2' });
+
+    // Exactly one field asked, and it is the one Retry was handed.
+    expect(askedFields(h)).toEqual(['nodeA/field2']);
+  });
+
+  it('follows each button independently across nodes', async () => {
     await picker(h, { nodeId: 'nodeA', fieldKey: 'field1' });
-    await picker(h, { nodeId: 'nodeB', fieldKey: 'field2' });
-    expect(h.flow.lastTarget()).toEqual({ nodeId: 'nodeB', fieldKey: 'field2' });
+    h.calls.length = 0;
+    await retry(h, { nodeId: 'nodeB', fieldKey: 'field2' });
+    expect(askedFields(h)).toEqual(['nodeB/field2']);
+  });
+
+  it('refuses, without opening anything, when handed no field identity', async () => {
+    expect(h.flow.retry({})).toBe(false);
+    expect(h.flow.retry({ nodeId: 'nodeA' })).toBe(false);
+    await h.settle();
+    expect(h.flow.isOpen()).toBe(false);
+    expect(h.calls.filter((c) => c.fn === 'targetingOptions')).toHaveLength(0);
   });
 
   it('never asks the operator which field again', async () => {
-    await picker(h);
-    h.calls.length = 0;
     await retry(h);
     // The chooser it opens is the ENVIRONMENT chooser (local/remote). No field
-    // picker appears, because the field is already known.
+    // picker appears, because the field came with the call.
     const p = h.panel();
     expect(p).toBeTruthy();
     expect((p as El).find('tgt-card').length).toBe(2);
@@ -398,35 +411,10 @@ describe('Retry re-runs the LAST picker target, and only that one', () => {
   it('keeps the ROW ADDRESS, so a retried condition-row pick lands in the row', async () => {
     // Without rowPath a retried pick delivers into the action's top-level
     // `selector` — the row-routing defect arriving through a new door.
-    await picker(h, { rowPath: 'p1/0/2' });
-    h.calls.length = 0;
-    await retry(h);
+    await retry(h, { rowPath: 'p1/0/2' });
     await chooseLocal(h);
     const begun = h.calls.filter((c) => c.fn === 'targetingBegin')[0];
     expect(begun).toBeTruthy();
-    expect(h.flow.lastTarget()).toEqual({ nodeId: 'nodeA', fieldKey: 'field3' });
-  });
-
-  it('hands out a COPY of the target, so a caller cannot steer Retry by accident', async () => {
-    await picker(h);
-    const first = h.flow.lastTarget() as { nodeId: string; fieldKey: string };
-    first.fieldKey = 'hijacked';
-    expect(h.flow.lastTarget()).toEqual({ nodeId: 'nodeA', fieldKey: 'field3' });
-  });
-
-  it('refuses to record a malformed pick over a good one', async () => {
-    await picker(h);
-    const ok = h.flow.start({ label: 'no ids at all' });
-    expect(ok).toBe(false);
-    expect(h.flow.lastTarget()).toEqual({ nodeId: 'nodeA', fieldKey: 'field3' });
-  });
-
-  it('records the target even when the operator abandons the Alert', async () => {
-    // The reason Retry exists is that the Alert was closed or mis-used, so
-    // recording only on success would disarm it in exactly those cases.
-    await picker(h);
-    h.flow.close();
-    expect(h.flow.canRetry()).toBe(true);
   });
 });
 
@@ -453,17 +441,11 @@ describe("Retry opens NO tab in the operator's own browser", () => {
   });
 
   it('launches NOTHING when the server browser is already live', async () => {
-    // Measured, and it is the stronger statement — so it is the one asserted.
-    //
     // With the browser up and `mayOpenTab:false`, no tab was claimed, so the
     // already-live branch has no tab to bring forward and deliberately has no
-    // `else`. The Alert this pick raised renders as an OVERLAY inside whatever
-    // page that browser is showing, so there is genuinely nothing to launch and
-    // nothing to display: «صفر Tab جدید / صفر navigation».
-    //
-    // Asserting "every call had noTab" here instead would pass over an EMPTY
-    // array and guard nothing. The launch-with-noTab case is real, and it is
-    // covered non-vacuously by the serverLive:false test below.
+    // `else`. The Alert this pick raised renders as an OVERLAY inside the page
+    // that browser is showing, so there is nothing to launch and nothing to
+    // display: «صفر Tab جدید / صفر navigation».
     await picker(h);
     await chooseLocal(h);
     h.realBrowser.length = 0;
@@ -578,6 +560,51 @@ describe('Picker and Retry are ONE flow — same Alert, same calls', () => {
     // one definition + one call from start + one call from retry
     expect(shown).toBe(3);
     expect(SRC).toMatch(/showPickerAlert\(c,\s*\{\s*mayOpenTab:\s*true\s*\}\)/);
-    expect(SRC).toMatch(/showPickerAlert\(lastPickerTarget,\s*\{\s*mayOpenTab:\s*false\s*\}\)/);
+    expect(SRC).toMatch(/showPickerAlert\(c,\s*\{\s*mayOpenTab:\s*false\s*\}\)/);
+  });
+
+  it('has NO shared last-pick slot left to steer Retry', () => {
+    // The architectural correction, pinned so it cannot quietly return:
+    // «Retry دیگر نباید بر مبنای lastPickerTarget باشد».
+    const code = SRC
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toContain('lastPickerTarget');
+    expect(code).not.toContain('rememberTarget');
+    expect(code).not.toContain('canRetry');
+    expect(code).not.toContain('lastTarget');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('the Retry button passes its OWN field into the shared flow', () => {
+  /**
+   * `retryBtn` is bound to UI().iconBtn and a live NDV column, so it is read as
+   * source rather than executed; the DECISION it makes — which context, which
+   * flow entry point — is a wiring property and that is what is asserted.
+   */
+  it('retryBtn takes the field factory and calls flow.retry with its context', () => {
+    const at = NDV.indexOf('function retryBtn(');
+    expect(at, 'retryBtn() must exist').toBeGreaterThan(-1);
+    const open = NDV.indexOf('{', at);
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < NDV.length; i++) {
+      if (NDV[i] === '{') depth++;
+      else if (NDV[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    const body = NDV.slice(at, end);
+    expect(body, 'Retry must be handed the field its crosshair uses').toContain('retryBtn(getOpts)');
+    expect(body, 'and build the same destination through pickContext()').toContain('pickContext(opts)');
+    expect(body, 'and drive the SAME flow entry point, not a remembered one').toContain('flow.retry(');
+    expect(body, 'with the field identity gate its crosshair uses').toContain('opts.nodeId');
+  });
+
+  it('both buttons beside a field share one context factory', () => {
+    // Every call site pairs `pickerBtn(..., X), retryBtn(X)`. If they ever take
+    // different factories the two buttons would target different destinations.
+    const pairs = NDV.match(/\},\s*([A-Za-z0-9_$]+)\),\s*retryBtn\(\1\)\]/g) || [];
+    expect(pairs.length, 'both the click-selector and the condition-row call site must '
+      + 'hand Picker and Retry the same factory').toBe(2);
   });
 });

@@ -98,53 +98,24 @@
   };
 
   /* ============================================================================
-     THE LAST PICKER TARGET — what Retry re-runs, and nothing else.
+     NO SHARED "LAST PICK" SLOT — Retry carries its OWN target.
 
-     WHY ONE SLOT AND NOT A NODE-LEVEL RECORD
-     ----------------------------------------
-     A node has several fields, each with its own crosshair:
+     A previous revision kept `lastPickerTarget`: one slot holding the field of
+     the most recent crosshair press, which `retry()` re-ran. That made Retry
+     mean «repeat the last Pick», and it made the button sitting beside Field 1
+     act on Field 3 whenever the operator had moved on — action at a distance
+     nobody asked for, and impossible to see from the button that took it.
 
-         Node A
-          ├── Field 1 → Picker
-          ├── Field 2 → Picker
-          └── Field 3 → Picker
+     Retry is now the SAME flow, handed the field it already sits beside:
 
-     and the requirement names the granularity precisely:
+         Picker -> showPickerAlert(ctx, { mayOpenTab: true  })
+         Retry  -> showPickerAlert(ctx, { mayOpenTab: false })
 
-       «اگر کاربر آخرین بار روی Picker مربوط به Field 2 کلیک کرده باشد، Retry
-        باید فقط همان Field 2 را هدف قرار دهد»
-       «نباید Retry برای تمام Fieldهای Node اجرا شود و نباید از کاربر بخواهد
-        دوباره Field را انتخاب کند»
-
-     So the unit is a FIELD, not a node: one slot holding the whole pick context
-     of the most recent crosshair press, overwritten by the next one. Keying by
-     node would make Retry ambiguous between three fields, and asking the
-     operator which one is the thing they must not be asked.
-
-     THE WHOLE CONTEXT IS KEPT, not just the ids. A pick needs `action`,
-     `workflowId`, `label`, `url` and `rowPath` to be registered and routed the
-     same way twice — a Retry that re-ran with the ids alone would lose the row
-     address and deliver into the action's top-level `selector`, which is the
-     row-routing defect fixed earlier arriving through a new door.
+     The target travels WITH each call (built once by ndv-nodes.js
+     `pickContext()`), so nothing is remembered between presses and there is no
+     shared slot left to go stale. `start()` and `retry()` differ in exactly one
+     thing — whether this press may put a viewer tab on the operator's screen.
      ========================================================================= */
-  var lastPickerTarget = null;
-
-  /** Record this crosshair as the one Retry will re-run. */
-  function rememberTarget(c) {
-    lastPickerTarget = {
-      nodeId: c.nodeId,
-      fieldKey: c.fieldKey,
-      action: c.action,
-      workflowId: c.workflowId,
-      label: c.label,
-      url: c.url || '',
-      rowPath: c.rowPath || '',
-      // `onArmed` belongs to the NDV render that created it. Kept so a Retry
-      // arms the field exactly as its Picker did; it is already called inside
-      // a try/catch (see armed()), so a stale closure cannot break the retry.
-      onArmed: c.onArmed,
-    };
-  }
 
   /* ============================================================================
      THE CHOOSER MUST APPEAR. THAT IS THE RULE, NOT A BEST EFFORT.
@@ -1202,7 +1173,7 @@
   }
 
   /**
-   * THE CROSSHAIR. Records this field as the Retry target, then runs the flow.
+   * THE CROSSHAIR. Runs the pick flow for THIS field, viewer tab allowed.
    *
    * `ensureLocalBrowserTab` in the required design is `mayOpenTab: true` here:
    * pressing the crosshair is a request to go and point at something, so
@@ -1210,64 +1181,55 @@
    * says so in as many words — «باز شدن Tab جدید در Browser اصلی فقط بخشی از
    * Flow خود Picker است و اشکالی ندارد».
    *
-   * The target is recorded BEFORE the flow runs and regardless of how the flow
-   * ends. That ordering is deliberate: the whole reason Retry exists is that the
-   * operator closed the Alert or picked the wrong element, so recording only on
-   * success would disarm Retry in exactly the cases it is for.
+   * It remembers nothing. The field it targets comes from its caller
+   * (ndv-nodes.js `pickContext()`), which is also what keeps the Retry beside
+   * it on exactly the same field rather than on whatever was pressed last.
    */
   function start(ctx) {
     var c = ctx || {};
-    // Guarded before recording so a malformed call cannot overwrite a good
-    // target with one Retry could never re-run.
+    // Guarded so a malformed call cannot run the flow against a half-built
+    // destination.
     if (!c.nodeId || !c.fieldKey) return false;
-    rememberTarget(c);
-    trace('Picker clicked: node=' + c.nodeId + ' field=' + c.fieldKey + ' -> lastPickerTarget updated; showing the browser chooser');
+    trace('Picker clicked: node=' + c.nodeId + ' field=' + c.fieldKey + ' -> showing the browser chooser');
     return showPickerAlert(c, { mayOpenTab: true });
   }
 
   /**
-   * RETRY. The same Alert, for the field the last crosshair named.
+   * RETRY. The SAME flow, for THIS field, without the viewer tab.
    *
    *   «Retry باید دقیقاً همان کاری را انجام دهد که Picker انجام می‌دهد، با این
    *    تفاوت که Tab جدیدی در Browser اصلی باز نمی‌کند»
    *
-   * WHAT IT DOES NOT DO, AND WHY EACH ABSENCE IS THE POINT
-   *   · It does not ask which field. The answer is already known — that is what
-   *     `lastPickerTarget` is for: «نباید از کاربر بخواهد دوباره Field را
-   *     انتخاب کند».
-   *   · It does not re-run the node's other fields. The slot holds ONE field,
-   *     so Field 3's Retry cannot touch Fields 1 and 2.
-   *   · It does not open a tab in the operator's browser — `mayOpenTab: false`,
-   *     threaded through `choose()` and `openRealBrowser({noTab})`, which is the
-   *     only behavioural difference between the two entry points.
+   * WHY IT IS HANDED A TARGET RATHER THAN REMEMBERING ONE
+   * ----------------------------------------------------
+   * Retry no longer means «repeat the last Pick». It is the button that sits
+   * beside one field, so it re-runs THAT field: ndv-nodes.js hands each Retry
+   * the same `pickContext()` its neighbouring crosshair uses. There is no
+   * `lastPickerTarget` and no shared slot, so the Retry next to Field 1 always
+   * re-runs Field 1 — never Field 3 because that happened to be pressed before.
    *
-   * The recorded context is passed through unchanged rather than rebuilt, so the
-   * retried pick registers and routes identically to the original — including
-   * its `rowPath`, without which a retried condition-row pick would deliver into
-   * the action's top-level selector instead of the row.
+   * The context is consumed unchanged (`rowPath` included), so a retried pick
+   * registers and routes exactly as the crosshair's did — without `rowPath` a
+   * retried condition-row pick would deliver into the action's top-level
+   * `selector` instead of the row.
    *
-   * Returns false when there is nothing to retry, so the caller can say so
-   * instead of appearing to do something.
+   * The ONE difference from Picker is `mayOpenTab:false`: threaded through
+   * `choose()` and `openRealBrowser({noTab})`, it is what keeps Retry from
+   * opening — or displaying — a viewer tab in the operator's own browser.
+   *
+   * Returns false when it is given nothing to run (no field identity), so the
+   * caller can say so instead of appearing to do something.
    */
-  function retry() {
-    if (!lastPickerTarget) { trace('Retry: nothing to retry (no lastPickerTarget)'); return false; }
-    trace('Retry: node=' + lastPickerTarget.nodeId + ' field=' + lastPickerTarget.fieldKey + ' -> same flow, NO viewer tab');
-    return showPickerAlert(lastPickerTarget, { mayOpenTab: false });
+  function retry(ctx) {
+    var c = ctx || {};
+    if (!c.nodeId || !c.fieldKey) { trace('Retry: no field identity supplied; nothing to run'); return false; }
+    trace('Retry: node=' + c.nodeId + ' field=' + c.fieldKey + ' -> same flow as Picker, NO viewer tab');
+    return showPickerAlert(c, { mayOpenTab: false });
   }
 
   window.TargetingFlow = {
     start: start,
     retry: retry,
-    /** Is there a field for Retry to re-run? Lets the button disable itself. */
-    canRetry: function () { return !!lastPickerTarget; },
-    /** The field Retry would re-run — read by the button's tooltip and by tests. */
-    lastTarget: function () {
-      if (!lastPickerTarget) return null;
-      // A COPY. Handing out the live object would let a caller mutate the
-      // retry target by accident, which is the kind of action-at-a-distance
-      // that makes "Retry went to the wrong field" impossible to trace.
-      return { nodeId: lastPickerTarget.nodeId, fieldKey: lastPickerTarget.fieldKey };
-    },
     close: closeDialog,
     isOpen: function () { return !!openDialog; },
   };

@@ -126,6 +126,41 @@
     return wrap;
   }
 
+  // The pick CONTEXT a field's crosshair and its Retry BOTH hand to
+  // TargetingFlow. Built at CLICK time from the field's current identity, so the
+  // two buttons beside one field always describe the same destination.
+  //
+  // Extracted so Picker and Retry cannot drift apart. If a future field has to
+  // carry one more property there is a single place to add it — two hand-copied
+  // object literals would drift, and they would drift in the direction that is
+  // hardest to see: a Retry quietly aimed at a different destination than the
+  // crosshair right beside it.
+  //
+  // `rowPath` travels WITH the pick, which is what keeps a retried
+  // condition-row pick landing in its row rather than on the action's top-level
+  // `selector` (see applyInspectorFields).
+  function pickContext(opts) {
+    var o = opts || {};
+    return {
+      nodeId: o.nodeId,
+      fieldKey: o.fieldKey,
+      action: o.action,
+      workflowId: o.workflowId,
+      label: o.label,
+      url: o.url || '',
+      // Carried through so a delivery can be routed to a row INSIDE the node's
+      // `groups` rather than to the action's top-level param. Empty for ordinary
+      // fields, which is what keeps their behaviour unchanged.
+      rowPath: o.rowPath || '',
+      // Arming does not deliver a value: the element still has to be picked, and
+      // it arrives asynchronously through the Inspector as a STRUCTURE
+      // (selector + xpath + text + …), which FlowEditor applies via
+      // applyInspectorFields. `onPicked` remains for the fallback path below,
+      // whose callback really is a single selector string.
+      onArmed: function () {},
+    };
+  }
+
   // A target-picker button — the 🎯 "Target This Field" control.
   //
   // `getOpts` is read at CLICK time, not at build time, so the picker always
@@ -159,24 +194,9 @@
 
       var flow = window.TargetingFlow;
       if (flow && typeof flow.start === 'function' && opts.nodeId && opts.fieldKey) {
-        var started = flow.start({
-          nodeId: opts.nodeId,
-          fieldKey: opts.fieldKey,
-          action: opts.action,
-          workflowId: opts.workflowId,
-          label: opts.label,
-          url: opts.url || '',
-          // Carried through so a delivery can be routed to a row INSIDE the
-          // node's `groups` rather than to the action's top-level param. Empty
-          // for ordinary fields, which is what keeps their behaviour unchanged.
-          rowPath: opts.rowPath || '',
-          // Arming does not deliver a value: the element still has to be
-          // picked, and it arrives asynchronously through the Inspector as a
-          // STRUCTURE (selector + xpath + text + …), which FlowEditor applies
-          // via applyInspectorFields. `onPicked` remains for the fallback path
-          // below, whose callback really is a single selector string.
-          onArmed: function () {},
-        });
+        // Through pickContext(), so this target is the exact one the Retry
+        // beside this crosshair hands to flow.retry().
+        var started = flow.start(pickContext(opts));
         if (started) return;
 
         // THE CHOOSER OWNS THIS CLICK, SO A CHOOSER THAT CANNOT RUN MUST SAY SO.
@@ -228,37 +248,43 @@
   //   «یک دکمه Retry کنار Picker اضافه شود … Retry هیچ Tab جدیدی در Browser
   //    اصلی ایجاد نمی‌کند و از Local Browser موجود استفاده می‌کند»
   //
-  // IT TAKES NO ARGUMENTS ON PURPOSE. The field it re-runs is not this
-  // button's to decide — it is whichever crosshair was pressed last, held by
-  // TargetingFlow in `lastPickerTarget`. Passing this row's identity in would
-  // quietly recreate the thing the spec rules out, because then the Retry
-  // rendered next to Field 1 would retry Field 1 even when the operator's last
-  // pick was Field 3. One shared target, read at click time, so every Retry in
-  // the panel means the same thing.
+  // WHICH FIELD IT RE-RUNS — THIS BUTTON'S OWN
+  // ------------------------------------------
+  // It re-runs the field IT sits beside, never "whatever was picked last". So
+  // it is given the SAME `getOpts` factory its neighbouring crosshair uses, and
+  // builds the same target through pickContext(). There is no shared "last
+  // pick" slot any more, so the Retry next to Field 1 acts on Field 1 and
+  // cannot be steered to Field 3 by an earlier press:
   //
-  // Its tooltip is read at click time too — see below — so it always names the
-  // field it will actually act on rather than a stale one from render time.
-  function retryBtn() {
+  //   Picker → flow.start(pickContext(opts))   // may open a viewer tab
+  //   Retry  → flow.retry(pickContext(opts))   // opens/claims NO tab
+  //
+  // Its tooltip is resolved at hover time from the same factory, so it names
+  // the field a press would actually act on.
+  function retryBtn(getOpts) {
     var b = UI().iconBtn('rotate-ccw', t('pick.retry'), 'is-retry', function () {
+      var opts = {};
+      try { opts = (typeof getOpts === 'function' ? getOpts() : null) || {}; } catch (e) {}
+
       var flow = window.TargetingFlow;
 
-      // Nothing has been targeted yet, so there is nothing to repeat. Said out
-      // loud rather than ignored: a button that does nothing when pressed is
-      // indistinguishable from a broken one, and "the Retry button doesn't
-      // work" is a report with no useful content.
-      if (!flow || typeof flow.retry !== 'function' || !flow.retry()) {
+      // Nothing to run without a field identity — the same identity its
+      // crosshair needs. Said out loud rather than ignored: a button that does
+      // nothing when pressed is indistinguishable from a broken one, and "the
+      // Retry button doesn't work" is a report with no useful content.
+      if (!flow || typeof flow.retry !== 'function' || !opts.nodeId || !opts.fieldKey
+          || !flow.retry(pickContext(opts))) {
         if (U() && U().toast) U().toast(t('pick.retryNone'), 'info');
       }
     });
 
-    // Name the target on hover, refreshed each time the pointer arrives. The
-    // last picker target changes as the operator works, and a title computed
-    // once at render would go stale the moment they pick a different field —
-    // promising a Retry of the wrong one.
+    // Name THIS button's field on hover, read at pointer time from the same
+    // factory the crosshair uses. A title computed once at render would go
+    // stale the moment the field changed, promising a Retry of the wrong one.
     b.addEventListener('mouseenter', function () {
-      var flow = window.TargetingFlow;
-      var last = flow && typeof flow.lastTarget === 'function' ? flow.lastTarget() : null;
-      b.title = last ? tf('pick.retryFor', { field: last.fieldKey }) : t('pick.retry');
+      var opts = {};
+      try { opts = (typeof getOpts === 'function' ? getOpts() : null) || {}; } catch (e) {}
+      b.title = opts.fieldKey ? tf('pick.retryFor', { field: opts.fieldKey }) : t('pick.retry');
     });
 
     return b;
@@ -458,6 +484,27 @@
     ));
     var selLabel = p.selectorType === 'xpath' ? t('click.selTypeXpath')
       : p.selectorType === 'text' ? t('click.selTypeText') : t('click.selTypeCss');
+    // ONE factory for the field, read by BOTH the crosshair and the Retry beside
+    // it, so the two are guaranteed to describe the same destination.
+    var selOpts = function () {
+      // `text` has no picker dialect (there is nothing to compute), so the
+      // panel falls back to CSS and the user can still switch to XPath.
+      return {
+        value: p.selector,
+        mode: p.selectorType === 'xpath' ? 'xpath' : 'css',
+        url: ctx.pageUrl || '',
+        // The FIELD's identity, which is what the Targeting flow pairs and
+        // delivers against. `fieldKey` must be a param the action really
+        // declares: the server checks it against the same catalogue and
+        // refuses anything else, because coerceParams() drops undeclared
+        // keys on save — a value written to one would vanish silently.
+        nodeId: node.id,
+        fieldKey: 'selector',
+        action: node.action,
+        workflowId: ctx.workflowId || '',
+        label: (node.name || node.action || node.id) + ' → selector',
+      };
+    };
     var selField = exprField({
       value: p.selector,
       placeholder: '#next-button',
@@ -466,25 +513,7 @@
       buttons: [pickerBtn(function (sel) {
         set('selector', sel);
         if (ctx.onStructureChange) ctx.onStructureChange();
-      }, function () {
-        // `text` has no picker dialect (there is nothing to compute), so the
-        // panel falls back to CSS and the user can still switch to XPath.
-        return {
-          value: p.selector,
-          mode: p.selectorType === 'xpath' ? 'xpath' : 'css',
-          url: ctx.pageUrl || '',
-          // The FIELD's identity, which is what the Targeting flow pairs and
-          // delivers against. `fieldKey` must be a param the action really
-          // declares: the server checks it against the same catalogue and
-          // refuses anything else, because coerceParams() drops undeclared
-          // keys on save — a value written to one would vanish silently.
-          nodeId: node.id,
-          fieldKey: 'selector',
-          action: node.action,
-          workflowId: ctx.workflowId || '',
-          label: (node.name || node.action || node.id) + ' → selector',
-        };
-      }), retryBtn()],
+      }, selOpts), retryBtn(selOpts)],
     });
     var selCell = ui.fieldCell(selLabel, selField, t('click.selectorHelp'));
     selCell.querySelector('.aria-cell-label').appendChild(ui.el('span', 'aria-microtag', p.selectorType.toUpperCase()));
@@ -1032,6 +1061,60 @@
       codeCell.className += ' cb-code-cell';
       l1.appendChild(codeCell);
     } else {
+      // ONE factory for this row's selector, read by BOTH the crosshair and the
+      // Retry beside it, so the two describe the same destination.
+      var rowSelOpts = function () {
+        // No `selectorType` param on this path ON PURPOSE: ConditionEngine
+        // calls page.locator(selector) directly, and Playwright already
+        // sniffs a leading `//` as XPath — so one field accepts both and an
+        // extra dropdown would be a control the backend never reads.
+        //
+        // THIS ROW NOW CARRIES A FULL FIELD IDENTITY, and the reason is a
+        // reported defect rather than a refactor.
+        //
+        // It used to pass NO nodeId/fieldKey deliberately, to keep the legacy
+        // callback picker: a row's selector lives inside the node's nested
+        // `groups`, so registering `fieldKey:'selector'` would have let the
+        // Inspector deliver into the action's TOP-LEVEL `selector` param —
+        // a pick landing somewhere the operator never pointed at.
+        //
+        // But omitting the identity had a worse consequence, which is what the
+        // operator actually hit. pickerBtn()'s chooser block is gated on
+        // `opts.nodeId && opts.fieldKey`, so a row pick skipped the chooser
+        // AND skipped the chooser-unavailable guard, falling through to
+        // BrowserView.requestPick(), whose tail opens the server's browser
+        // directly. MEASURED in a real browser (both pickers, same session):
+        //
+        //     top-level field  -> chooser ["local","remote"], consent raised
+        //     condition row    -> NO chooser, LOCAL opened, 0 consents
+        //
+        // Two reports, one cause: «اون باکسی که انتخاب می‌کردیم، اون بالا
+        // نمی‌اومد» and — because no consent is ever registered — «هیچ
+        // Alertی نیومد … احتمالاً نود قبلی رو هنوز set داشت». The extension
+        // kept the previous node because nothing re-pointed it.
+        //
+        // The standing rule is now explicit: EVERY picker icon, on every node
+        // and every field, must offer the choice. So the identity is supplied,
+        // and `rowPath` addresses THIS row so delivery cannot misroute — see
+        // applyInspectorFields, which writes `groups` when `rowPath` is
+        // present instead of touching the top-level param.
+        var v = String(row.selector || '');
+        return {
+          value: v,
+          mode: /^\s*(\/\/|\.\.|\()/.test(v) ? 'xpath' : 'css',
+          url: o.pageUrl || '',
+          nodeId: o.nodeId || '',
+          // `selector` IS declared by `if` and `while` (verified against
+          // ActionCatalog.declaredFields), so the server accepts the
+          // registration; `rowPath` is what keeps the VALUE off that param.
+          fieldKey: 'selector',
+          action: o.action || '',
+          workflowId: o.workflowId || '',
+          label: (o.nodeLabel || o.action || '') + ' → ' + t('cb.cssSelector')
+            + ' #' + String(o.index),
+          rowPath: o.rowPath || '',
+        };
+      };
       var selHost = exprField({
         value: row.selector,
         placeholder: '#login-status',
@@ -1039,58 +1122,7 @@
         onChange: function (v) { row.selector = v; o.onChange(); },
         buttons: [pickerBtn(function (sel) {
           row.selector = sel; o.onChange(); rebuild();
-        }, function () {
-          // No `selectorType` param on this path ON PURPOSE: ConditionEngine
-          // calls page.locator(selector) directly, and Playwright already
-          // sniffs a leading `//` as XPath — so one field accepts both and an
-          // extra dropdown would be a control the backend never reads.
-          //
-          // THIS ROW NOW CARRIES A FULL FIELD IDENTITY, and the reason is a
-          // reported defect rather than a refactor.
-          //
-          // It used to pass NO nodeId/fieldKey deliberately, to keep the legacy
-          // callback picker: a row's selector lives inside the node's nested
-          // `groups`, so registering `fieldKey:'selector'` would have let the
-          // Inspector deliver into the action's TOP-LEVEL `selector` param —
-          // a pick landing somewhere the operator never pointed at.
-          //
-          // But omitting the identity had a worse consequence, which is what the
-          // operator actually hit. pickerBtn()'s chooser block is gated on
-          // `opts.nodeId && opts.fieldKey`, so a row pick skipped the chooser
-          // AND skipped the chooser-unavailable guard, falling through to
-          // BrowserView.requestPick(), whose tail opens the server's browser
-          // directly. MEASURED in a real browser (both pickers, same session):
-          //
-          //     top-level field  -> chooser ["local","remote"], consent raised
-          //     condition row    -> NO chooser, LOCAL opened, 0 consents
-          //
-          // Two reports, one cause: «اون باکسی که انتخاب می‌کردیم، اون بالا
-          // نمی‌اومد» and — because no consent is ever registered — «هیچ
-          // Alertی نیومد … احتمالاً نود قبلی رو هنوز set داشت». The extension
-          // kept the previous node because nothing re-pointed it.
-          //
-          // The standing rule is now explicit: EVERY picker icon, on every node
-          // and every field, must offer the choice. So the identity is supplied,
-          // and `rowPath` addresses THIS row so delivery cannot misroute — see
-          // applyInspectorFields, which writes `groups` when `rowPath` is
-          // present instead of touching the top-level param.
-          var v = String(row.selector || '');
-          return {
-            value: v,
-            mode: /^\s*(\/\/|\.\.|\()/.test(v) ? 'xpath' : 'css',
-            url: o.pageUrl || '',
-            nodeId: o.nodeId || '',
-            // `selector` IS declared by `if` and `while` (verified against
-            // ActionCatalog.declaredFields), so the server accepts the
-            // registration; `rowPath` is what keeps the VALUE off that param.
-            fieldKey: 'selector',
-            action: o.action || '',
-            workflowId: o.workflowId || '',
-            label: (o.nodeLabel || o.action || '') + ' → ' + t('cb.cssSelector')
-              + ' #' + String(o.index),
-            rowPath: o.rowPath || '',
-          };
-        }), retryBtn()],
+        }, rowSelOpts), retryBtn(rowSelOpts)],
       });
       l1.appendChild(ui.fieldCell(t('cb.cssSelector'), selHost, null, null,
         { info: t('cb.cssSelectorHelp') }));
