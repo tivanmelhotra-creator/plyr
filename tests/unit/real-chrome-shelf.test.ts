@@ -3395,3 +3395,177 @@ describe('a view opened before the binding existed asks again', () => {
     expect(h.wfCalls().every((f) => f.url.includes('/wf_explicit'))).toBe(true);
   });
 });
+
+describe('Workflow Files Intent Model (T1-T8)', () => {
+  const WF = '?workflowId=wf_42&api_key=k';
+  const asking = (over: Record<string, unknown> = {}) => ({
+    id: 'fc_9z8y7x6w', multiple: false, accept: '', name: 'file', at: Date.now(), ...over,
+  });
+  const rowByPath = (h: Harness, path: string) =>
+    h.tree().find((li) => li.attrs['data-path'] === path);
+
+  it('T1: Hamburger -> select file has NORMAL intent, Select unavailable, no /use', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('dpick').hidden).toBe(true);
+
+    rowByPath(h, 'cookies.json')!.emit('click');
+    await settle();
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+  });
+
+  it('T2: Add File -> Choose from Workflow Files opens FILE_REQUEST with indicator', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    expect(h.el('dpick').hidden).toBe(false);
+    expect(h.el('addsub').textContent).toMatch(/asking for a file/);
+
+    h.click('addwf');
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(true);
+  });
+
+  it('T3: FILE_REQUEST -> select -> Select answers exact active chooser', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_t3_exact' }));
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+    rowByPath(h, 'cookies.json')!.emit('click');
+    expect(h.el('wfmselect').disabled).toBe(false);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    const body = JSON.parse(String(uses[0].init.body));
+    expect(body.chooserId).toBe('fc_t3_exact');
+    expect(body.path).toBe('cookies.json');
+  });
+
+  it('T4: FILE_REQUEST -> Upload -> select -> Select keeps same request alive', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_t4_upload' }));
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+
+    const up = h.el('wfmup');
+    up.files = [{ name: 'fresh.txt' }];
+    up.value = 'C:\\fakepath\\fresh.txt';
+    up.emit('change');
+    await new Promise((r) => setTimeout(r, 80));
+
+    rowByPath(h, 'cookies.json')!.emit('click');
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(false);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_t4_upload');
+  });
+
+  it('T5: FILE_REQUEST -> Refresh -> select -> Select keeps same request alive', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_t5_refresh' }));
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+    h.click('wfmrefresh');
+    await settle();
+    await settle();
+
+    rowByPath(h, 'cookies.json')!.emit('click');
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(false);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_t5_refresh');
+  });
+
+  it('T6: FILE_REQUEST -> Close/X cancels request; reopen via Hamburger is NORMAL', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_t6_close' }));
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+
+    h.click('dclose');
+    await settle();
+    expect(h.el('files').hidden).toBe(true);
+
+    // Reopen via hamburger
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    rowByPath(h, 'cookies.json')!.emit('click');
+    await settle();
+
+    // In NORMAL, Select is unavailable
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+  });
+
+  it('T7: page has active chooser -> Hamburger -> select is NORMAL, no /use', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_t7_active' }));
+    await h.ticks(2);
+    // Dismiss pick pane and open from burger
+    h.click('dclose');
+    h.click('burger');
+    await settle();
+    await settle();
+    rowByPath(h, 'cookies.json')!.emit('click');
+    await settle();
+
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+  });
+
+  it('T8: regression: page has active chooser -> Add File -> Choose from Workflow Files -> select -> Select answers original chooser', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_t8_regr' }));
+    await h.ticks(2);
+    expect(h.el('dpick').hidden).toBe(false);
+    h.click('addwf');
+    await settle();
+    await settle();
+    rowByPath(h, 'cookies.json')!.emit('click');
+    expect(h.el('wfmselect').disabled).toBe(false);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_t8_regr');
+  });
+});

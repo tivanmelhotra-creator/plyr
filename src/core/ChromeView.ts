@@ -1147,6 +1147,8 @@ function refreshDownloads() {
 // rows under the tree. The hamburger opens the drawer; the drawer's own Close
 // shuts it; the hamburger hides itself while it is open.
 let drawerPane = 'files';
+/** Intent behind the current Workflow Files view: 'NORMAL' (workspace browsing) vs 'FILE_REQUEST' (answering a file chooser). */
+let wfmIntent = 'NORMAL';
 
 /** Show the workspace, or the source chooser in its place. */
 function showPane(which) {
@@ -1185,6 +1187,12 @@ function closeDrawer() {
   drawer.hidden = true;
   if (burger) burger.hidden = false;
   wfmCloseMenu();
+  if (wfmIntent === 'FILE_REQUEST' && pendingId) {
+    const id = pendingId;
+    clearPending();
+    void cancelPending(id);
+  }
+  wfmIntent = 'NORMAL';
 }
 
 if (burger) {
@@ -1192,10 +1200,8 @@ if (burger) {
     // The hamburger is the WORKSPACE's button, always. The source chooser is
     // raised by the page's request (offerFile) and taken down with it
     // (clearPending); it is never what the operator gets for pressing this.
-    // REPORTED: the hamburger opened on "The page is asking for a file" and
-    // the operator, who wanted their files, had to press a second button to
-    // reach them. If a request IS outstanding while the tree is up, Select
-    // still answers it (wfmUse), so nothing is lost by showing the tree.
+    // Opening from the burger is always a NORMAL workspace browsing action.
+    wfmIntent = 'NORMAL';
     openDrawer('files');
   });
 }
@@ -1704,7 +1710,8 @@ if (addWf) {
   addWf.addEventListener('click', () => {
     // Choosing the second source IS the request to browse: the tree comes up
     // by itself, filtered by the page's own accept/multiple, and the operator
-    // presses nothing else first.
+    // enters in FILE_REQUEST intent.
+    wfmIntent = 'FILE_REQUEST';
     openDrawer('files');
   });
 }
@@ -1887,8 +1894,14 @@ function wfmSyncSelection() {
   });
   const n = wfmSelected.length;
   if (wfmSelect) {
-    wfmSelect.disabled = n === 0;
-    wfmSelect.textContent = n > 1 ? 'Select (' + n + ')' : 'Select';
+    if (wfmIntent !== 'FILE_REQUEST') {
+      wfmSelect.hidden = true;
+      wfmSelect.disabled = true;
+    } else {
+      wfmSelect.hidden = false;
+      wfmSelect.disabled = n === 0;
+      wfmSelect.textContent = n > 1 ? 'Select (' + n + ')' : 'Select';
+    }
   }
   if (wfmCount) wfmCount.textContent = n ? (n === 1 ? '1 selected' : n + ' selected') : '';
   if (wfmClear) wfmClear.hidden = n === 0;
@@ -2701,6 +2714,10 @@ function wfmOpenMenu(entry, x, y) {
  */
 function wfmUse() {
   if (!wfmSelected.length || !wfmRequire()) return;
+  if (wfmIntent !== 'FILE_REQUEST') {
+    wfmSay('Select is only available when answering a page request.', true);
+    return;
+  }
   if (!pendingId) {
     wfmSay('No page is asking for a file right now. Press the page\u2019s own Choose/Browse button first, then Select.', true);
     return;
