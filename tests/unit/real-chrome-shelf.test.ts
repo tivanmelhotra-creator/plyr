@@ -147,6 +147,8 @@ function viewScript(): string {
 interface Harness {
   /** Fire an event the page registered on window. */
   fire: (type: string, ev?: unknown) => void;
+  /** Press a key at the DOCUMENT level (what Escape is listened for on). */
+  key: (key: string) => void;
   /** Text pushed to the remote desktop via rfb.clipboardPasteFrom(). */
   pushed: string[];
   /** Text written to the LOCAL clipboard via navigator.clipboard.writeText(). */
@@ -229,6 +231,8 @@ interface Harness {
   /** Replace the fake workflow's tree. */
   setTree: (tree: Record<string, Array<{ name: string; path: string; type: string; size: number }>>) => void;
   /** What GET /browser/workflow-files-binding reports the Local Browser is bound to ('' = nothing). */
+  setFileContent: (p: string, content: string) => void;
+  fileContent: (p: string) => string | undefined;
   setBinding: (id: string) => void;
   /** What POST /browser/real/chooser reports it filed under uploads/ (workflow-relative paths). */
   setPersisted: (paths: string[]) => void;
@@ -453,6 +457,7 @@ async function runView(
   } = {},
 ): Promise<Harness> {
   const winListeners = new Map<string, Array<(ev: unknown) => void>>();
+  const docListeners = new Map<string, Array<(ev: unknown) => void>>();
   const rfbListeners = new Map<string, Array<(ev: unknown) => void>>();
   const pushed: string[] = [];
   const written: string[] = [];
@@ -872,7 +877,11 @@ async function runView(
         }
         return node;
       },
-      addEventListener: () => {},
+      // Recorded, so a document-level key (Escape) can be delivered by a test.
+      addEventListener: (type: string, fn: (ev: unknown) => void) => {
+        if (!docListeners.has(type)) docListeners.set(type, []);
+        docListeners.get(type)!.push(fn);
+      },
       // A real body, so appending to it is observable and an anchor's click can
       // be judged on whether it was attached at the time.
       body: body,
@@ -900,6 +909,7 @@ async function runView(
 
   return {
     fire: (type, ev) => (winListeners.get(type) || []).forEach((f) => f(ev)),
+    key: (key) => (docListeners.get('keydown') || []).forEach((f) => f({ key, preventDefault() {} })),
     pushed,
     written,
     remoteCopy: (text) =>
@@ -983,6 +993,8 @@ async function runView(
     setTree: (tree) => { state.wfTree = tree; },
     /** Seed the content the editor's read will return for a path. */
     setFileContent: (p: string, content: string) => { state.wfFileContent[p] = content; },
+    /** What the fake server holds for a path right now (undefined = never written). */
+    fileContent: (p: string) => state.wfFileContent[p],
     setBinding: (id) => { state.boundWorkflowId = id; },
     setPersisted: (paths) => { state.chooserPersisted = paths; },
     maxConcurrentUploads: () => conc.max,
@@ -991,6 +1003,33 @@ async function runView(
 
 /** Let the page's clipboard promises settle. */
 const settle = () => new Promise((r) => setTimeout(r, 0));
+
+/** The row for a workflow-relative path, as the tree draws it. */
+const rowByPath = (h: Harness, path: string) =>
+  h.tree().find((li) => li.attrs['data-path'] === path);
+
+/**
+ * Pick (or unpick) a file by its CHECKBOX. Selection is the checkbox's job
+ * (Issue 2): a click on the file's NAME opens the editor and leaves the
+ * selection alone, so a test that wants a file picked must go through the box.
+ * Modelled as a real browser does it: the box flips its own `checked`, then
+ * fires `change`; the view reads `box.checked`, never toggles blindly.
+ */
+const clickFileRow = (h: Harness, path: string) => {
+  const li = rowByPath(h, path);
+  if (!li) throw new Error('no row for ' + path);
+  const box = li.querySelector('.dcheck');
+  if (!box) throw new Error('no checkbox on ' + path);
+  box.checked = !box.checked;
+  box.emit('change');
+};
+
+/** Click the file's NAME: the editor's affordance, never the selection's. */
+const clickFileName = (h: Harness, path: string) => {
+  const li = rowByPath(h, path);
+  if (!li) throw new Error('no row for ' + path);
+  li.emit('click');
+};
 
 
 describe('remote clipboard: the desktop copies, the operator pastes locally', () => {
@@ -2349,8 +2388,6 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     await settle();
     await settle();
   }
-  const rowByPath = (h: Harness, path: string) =>
-    h.tree().find((li) => li.attrs['data-path'] === path);
   const fileRows = (h: Harness) => h.tree().filter((li) => li.attrs['data-type'] === 'file');
 
   /** The view's traffic to the workspace, minus the one-off binding POST. */
@@ -2434,16 +2471,46 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
   });
 
   it('Select is disabled until a file is picked; a folder cannot be picked', async () => {
+    // Since PR #33 the hand-over button exists only in FILE_REQUEST intent (a
+    // page is asking and the operator came in through "Choose from Workflow
+    // Files"); from the hamburger it is hidden AND disabled whatever is picked.
+    // So the enabled/disabled rule is asserted where the button can be seen.
     const h = await runView({ search: WF });
-    await openFiles(h);
+    h.connected();
+    h.setPendingChooser(asking());
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+    expect(h.el('wfmselect').hidden).toBe(false);
     expect(h.el('wfmselect').disabled).toBe(true);
+    // A folder click expands it; it never becomes a selection.
     rowByPath(h, 'docs')!.emit('click');
     await settle();
     expect(h.el('wfmselect').disabled).toBe(true);
+    expect(h.el('dcount').textContent).toBe('');
     clickFileRow(h, 'cookies.json');
     expect(h.el('wfmselect').disabled).toBe(false);
     expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
     expect(h.el('dcount').textContent).toBe('1 selected');
+    // And unpicking through the same box takes it back.
+    clickFileRow(h, 'cookies.json');
+    expect(h.el('wfmselect').disabled).toBe(true);
+    expect(rowByPath(h, 'cookies.json')!.className).not.toContain('sel');
+  });
+
+  it('from the hamburger (NORMAL), a picked file is a selection for Download/Delete, and Select is not offered', async () => {
+    const h = await runView({ search: WF });
+    await openFiles(h);
+    expect(h.el('wfmselect').hidden).toBe(true);
+    clickFileRow(h, 'cookies.json');
+    expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    expect(h.el('ddownsel').hidden).toBe(false);
+    expect(h.el('ddelsel').hidden).toBe(false);
+    // The selection is real; the hand-over is simply not on offer here.
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.el('wfmselect').disabled).toBe(true);
   });
 
   it('the selection is the drawer\u2019s OWN: any number, whatever the page takes, and Select All is always offered', async () => {
@@ -2451,6 +2518,11 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     // the first for a single-file input), which made the drawer behave
     // differently depending on which page was asking and left no way to
     // batch-delete or batch-download while a single-file input waited.
+    //
+    // Two pages of the same rule: from the hamburger (no page, NORMAL) two
+    // files are a selection for Download/Delete; from a SINGLE-file page's
+    // request (FILE_REQUEST) the same two files are still both picked, the
+    // button counts them, and only the press is refused (tested next).
     const h = await runView({ search: WF });
     await openFiles(h);
     expect(h.el('dall').hidden).toBe(false);
@@ -2458,11 +2530,26 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     clickFileRow(h, 'photo.png');
     expect(fileRows(h).filter((r) => r.className.indexOf('sel') >= 0).map((r) => r.attrs['data-name']))
       .toEqual(['cookies.json', 'photo.png']);
-    expect(h.el('wfmselect').textContent).toBe('Select (2)');
+    expect(h.el('dcount').textContent).toBe('2 selected');
     expect(h.el('ddownsel').hidden).toBe(false);
     expect(h.el('ddelsel').hidden).toBe(false);
-    // No page is asking: the Select button says so on itself.
-    expect(h.el('wfmselect').title).toMatch(/no page is asking/i);
+    // No page is asking and this is NORMAL intent: no hand-over button at all.
+    expect(h.el('wfmselect').hidden).toBe(true);
+
+    const h2 = await runView({ search: WF });
+    h2.connected();
+    h2.setPendingChooser(asking({ multiple: false }));
+    await h2.ticks(2);
+    h2.click('addwf');
+    await settle();
+    await settle();
+    expect(h2.el('dall').hidden).toBe(false);
+    clickFileRow(h2, 'cookies.json');
+    clickFileRow(h2, 'photo.png');
+    expect(h2.el('dcount').textContent).toBe('2 selected');
+    expect(h2.el('wfmselect').hidden).toBe(false);
+    expect(h2.el('wfmselect').textContent).toBe('Select (2)');
+    expect(h2.el('wfmselect').title).toMatch(/ONE file/);
   });
 
   it('SENDING several to a single-file page is refused in words, before any request, with the selection kept', async () => {
@@ -2668,13 +2755,37 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
   });
 
   it('explains when no page is asking, and sends nothing', async () => {
+    // From the hamburger there is no hand-over at all: the button is hidden and
+    // disabled, and even a press forced past that says so and sends nothing.
     const h = await runView({ search: WF });
     await openFiles(h);
     clickFileRow(h, 'cookies.json');
+    expect(h.el('wfmselect').hidden).toBe(true);
     h.click('wfmselect');
     await settle();
     expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
-    expect(h.el('wfmnote').textContent).toMatch(/No page is asking/);
+    expect(h.el('wfmnote').textContent).toMatch(/only available when answering a page request/);
+
+    // The "no page is asking" sentence belongs to FILE_REQUEST whose request
+    // went away underneath the operator (the page navigated): the button is
+    // still there, the press sends nothing, and the note names the cause.
+    const h2 = await runView({ search: WF });
+    h2.connected();
+    h2.setPendingChooser(asking());
+    await h2.ticks(2);
+    h2.click('addwf');
+    await settle();
+    await settle();
+    clickFileRow(h2, 'cookies.json');
+    h2.setPendingChooser(null);
+    await h2.ticks(2);
+    expect(h2.el('panefiles').hidden).toBe(false);
+    expect(h2.el('wfmselect').hidden).toBe(false);
+    expect(h2.el('wfmselect').title).toMatch(/no page is asking/i);
+    h2.click('wfmselect');
+    await settle();
+    expect(h2.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+    expect(h2.el('wfmnote').textContent).toMatch(/No page is asking/);
   });
 
   it('shows the server\u2019s own words when /use is refused, and lets the operator try again', async () => {
@@ -2786,7 +2897,13 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     rowByPath(h, 'cookies.json')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
     item('Select').emit('click', { stopPropagation() {} });
     expect(menu.hidden).toBe(true);
-    expect(h.el('wfmselect').disabled).toBe(false);
+    // The menu's Select is a SELECTION (the checkbox's job done from the menu),
+    // not a hand-over: the row is picked and the footer counts it. From the
+    // hamburger the hand-over button stays hidden, as everywhere in NORMAL.
+    expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
+    expect(rowByPath(h, 'cookies.json')!.querySelector('.dcheck')!.checked).toBe(true);
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    expect(h.el('wfmselect').hidden).toBe(true);
     rowByPath(h, 'docs')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
     item('Delete').emit('click', { stopPropagation() {} });
     expect(h.el('dconfirm').textContent).toMatch(/everything inside it\? docs/);
@@ -3441,16 +3558,6 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
   const asking = (over: Record<string, unknown> = {}) => ({
     id: 'fc_9z8y7x6w', multiple: false, accept: '', name: 'file', at: Date.now(), ...over,
   });
-  const rowByPath = (h: Harness, path: string) =>
-    h.tree().find((li) => li.attrs['data-path'] === path);
-  /** Pick a file by its checkbox: selection is the checkbox's job (Issue 2). */
-  const clickFileRow = (h: Harness, path: string) => {
-    const li = rowByPath(h, path)!;
-    const box = li.querySelector('.dcheck')!;
-    box.checked = !box.checked;
-    box.emit('change');
-  };
-
   it('T1: Hamburger -> select file has NORMAL intent, Select unavailable, no /use', async () => {
     const h = await runView({ search: WF });
     h.connected();
@@ -3614,5 +3721,526 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
     expect(uses).toHaveLength(1);
     expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_t8_regr');
+  });
+});
+
+/**
+ * The editor and its interaction model (Issue 2), the PR #33 intent
+ * regressions it must not disturb (E9–E12), and the Issue 1 latency rule.
+ *
+ * Persistence here is asserted against the FAKE server's store (what a PUT
+ * left behind, what a later GET answers): the view's half of the contract.
+ * The real WorkflowStorage half — bytes on disk under
+ * <root>/<user>/<workflowId>/<relativePath> — is in
+ * tests/integration/workflow-files-routes.test.ts ("the editor's content pair").
+ */
+describe('Workflow Files Editor (E1-E12) and the Issue 1 latency rule', () => {
+  const WF = '?workflowId=wf_42&api_key=k';
+  const asking = (over: Record<string, unknown> = {}) => ({
+    id: 'fc_9z8y7x6w', multiple: false, accept: '', name: 'file', at: Date.now(), ...over,
+  });
+  async function openFiles(h: Harness) {
+    h.connected();
+    h.click('burger');
+    await settle();
+    await settle();
+  }
+  async function openViaRequest(h: Harness, over: Record<string, unknown> = {}) {
+    h.connected();
+    h.setPendingChooser(asking(over));
+    await h.ticks(2);
+    h.click('addwf');
+    await settle();
+    await settle();
+  }
+  /** Type into the editor as a person does: the textarea's value, then 'input'. */
+  const type = (h: Harness, text: string) => {
+    h.el('edtext').value = text;
+    h.el('edtext').emit('input');
+  };
+  const fileReads = (h: Harness) => h.wfCalls().filter((f) =>
+    /\/file\?path=/.test(f.url) && String(f.init.method || 'GET').toUpperCase() === 'GET');
+  const filePuts = (h: Harness) => h.wfCalls().filter((f) =>
+    f.url.endsWith('/file') && String(f.init.method).toUpperCase() === 'PUT');
+
+  it('E1: clicking a file NAME opens the editor on that file, and reads it through GET .../file?path=', async () => {
+    const h = await runView({ search: WF });
+    h.setFileContent('cookies.json', '{"a":1}');
+    await openFiles(h);
+    expect(h.el('paneedit').hidden).toBe(true);
+    clickFileName(h, 'cookies.json');
+    // Same tick: the editor is up and says it is loading; the tree is behind it.
+    expect(h.el('paneedit').hidden).toBe(false);
+    expect(h.el('panefiles').hidden).toBe(true);
+    expect(h.el('edname').textContent).toBe('cookies.json');
+    expect(h.el('edname').title).toBe('cookies.json');
+    expect(h.el('edstatus').textContent).toMatch(/Loading/);
+    expect(h.el('edtext').disabled).toBe(true);
+    await settle();
+    await settle();
+    const reads = fileReads(h);
+    expect(reads).toHaveLength(1);
+    expect(reads[0].url).toBe('/browser/workflow-files/wf_42/file?path=cookies.json');
+    // The key travels in a header, never in the URL.
+    expect(reads[0].url).not.toMatch(/api_key/);
+    expect((reads[0].init.headers as Record<string, string>)['X-API-Key'] || (reads[0].init.headers as Record<string, string>)['x-api-key']).toBeTruthy();
+    expect(h.el('edtext').value).toBe('{"a":1}');
+    expect(h.el('edtext').disabled).toBe(false);
+    expect(h.el('edstatus').textContent).toBe('Ready');
+    expect(h.el('edmeta').textContent).toBe('7 chars');
+  });
+
+  it('E2: the checkbox is selection ONLY: it never opens the editor', async () => {
+    const h = await runView({ search: WF });
+    await openFiles(h);
+    clickFileRow(h, 'cookies.json');
+    expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(fileReads(h)).toHaveLength(0);
+    // The box's own click does not bubble to the row (which would open the editor).
+    const box = rowByPath(h, 'cookies.json')!.querySelector('.dcheck')!;
+    let stopped = false;
+    box.emit('click', { stopPropagation() { stopped = true; } });
+    expect(stopped).toBe(true);
+    expect(h.el('paneedit').hidden).toBe(true);
+  });
+
+  it('E3: clicking a file NAME does not toggle the selection: a picked file stays picked, an unpicked one stays unpicked', async () => {
+    const h = await runView({ search: WF });
+    await openFiles(h);
+    clickFileRow(h, 'photo.png');
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    // Open a DIFFERENT file: photo.png stays the one selection, cookies.json is not added.
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(h.el('paneedit').hidden).toBe(false);
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    h.click('edclose');
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(rowByPath(h, 'photo.png')!.className).toContain('sel');
+    expect(rowByPath(h, 'cookies.json')!.className).not.toContain('sel');
+    // Open the PICKED file itself: still picked afterwards, not toggled off.
+    h.setFileContent('docs/readme.txt', 'hi');
+    clickFileRow(h, 'photo.png');
+    clickFileRow(h, 'cookies.json');
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    h.click('edclose');
+    expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
+    expect(h.el('dcount').textContent).toBe('1 selected');
+  });
+
+  it('E4: the editor shows the file\u2019s EXISTING content, with a gutter line per line and a character count', async () => {
+    const h = await runView({ search: WF });
+    h.setFileContent('docs/readme.txt', 'line one\nline two\nline three');
+    await openFiles(h);
+    rowByPath(h, 'docs')!.emit('click');
+    await settle();
+    await settle();
+    clickFileName(h, 'docs/readme.txt');
+    await settle();
+    await settle();
+    expect(h.el('edtext').value).toBe('line one\nline two\nline three');
+    expect(h.el('edgutter').textContent).toBe('1\n2\n3\n');
+    expect(h.el('edmeta').textContent).toBe('28 chars');
+    expect(h.el('edname').title).toBe('docs/readme.txt');
+    expect(filePuts(h)).toHaveLength(0);
+  });
+
+  it('E5: edit + Save PUTs {path, content} to the SAME relative path; Close + reopen GETs the saved text', async () => {
+    const h = await runView({ search: WF });
+    h.setFileContent('cookies.json', 'old');
+    await openFiles(h);
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(h.el('edtext').value).toBe('old');
+    type(h, 'new text\nsecond line');
+    expect(h.el('edstatus').textContent).toBe('Unsaved changes');
+    expect(h.el('edstatus').className).toBe('dirty');
+    expect(h.el('edgutter').textContent).toBe('1\n2\n');
+    expect(h.fileContent('cookies.json')).toBe('old');
+    h.click('edsave');
+    await settle();
+    await settle();
+    const puts = filePuts(h);
+    expect(puts).toHaveLength(1);
+    expect(puts[0].url).toBe('/browser/workflow-files/wf_42/file');
+    expect(JSON.parse(String(puts[0].init.body))).toEqual({ path: 'cookies.json', content: 'new text\nsecond line' });
+    expect(String(puts[0].init.body)).not.toMatch(/\/home\/|[A-Z]:\\\\/);
+    expect(h.el('edstatus').textContent).toBe('Saved');
+    expect(h.el('edstatus').className).toBe('');
+    expect(h.fileContent('cookies.json')).toBe('new text\nsecond line');
+    h.click('edclose');
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('edtext').value).toBe('');
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(fileReads(h)).toHaveLength(2);
+    expect(h.el('edtext').value).toBe('new text\nsecond line');
+    expect(h.el('edstatus').textContent).toBe('Ready');
+  });
+
+  it('E5b: Ctrl+S saves too, and a failed save keeps the draft on screen with the server\u2019s words', async () => {
+    const h = await runView({
+      search: WF,
+      interceptFetch: (url) => (failNext && url.endsWith('/file'))
+        ? Promise.resolve({
+          ok: false, status: 507,
+          headers: { get: () => null },
+          text: () => Promise.resolve(JSON.stringify({ success: false, error: 'Disk is full.' })),
+          json: () => Promise.resolve({ success: false, error: 'Disk is full.' }),
+        } as unknown as Response)
+        : undefined,
+    });
+    let failNext = false;
+    h.setFileContent('cookies.json', 'a');
+    await openFiles(h);
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    type(h, 'b');
+    h.el('edtext').emit('keydown', { ctrlKey: true, key: 's', preventDefault() {} });
+    await settle();
+    await settle();
+    expect(filePuts(h)).toHaveLength(1);
+    expect(h.fileContent('cookies.json')).toBe('b');
+    expect(h.el('edstatus').textContent).toBe('Saved');
+    failNext = true;
+    type(h, 'c');
+    h.click('edsave');
+    await settle();
+    await settle();
+    expect(h.el('edstatus').textContent).toBe('Disk is full.');
+    expect(h.el('edstatus').className).toBe('dirty');
+    expect(h.el('edtext').value).toBe('c');
+    expect(h.el('edsave').disabled).toBe(false);
+    expect(h.fileContent('cookies.json')).toBe('b');
+  });
+
+  it('E6: New File creates through POST, OPENS the new file, and typing + Save + reopen round-trips', async () => {
+    const h = await runView({ search: WF, prompt: () => 'notes.md' });
+    await openFiles(h);
+    h.click('wfmnewfile');
+    await settle();
+    await settle();
+    await settle();
+    const posts = h.wfCalls().filter((f) => f.url.endsWith('/file') && String(f.init.method) === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0].init.body))).toEqual({ path: '', name: 'notes.md' });
+    // The row is on the tree AND the editor is open on it, empty.
+    expect(rowByPath(h, 'notes.md')).toBeTruthy();
+    expect(h.el('paneedit').hidden).toBe(false);
+    expect(h.el('edname').textContent).toBe('notes.md');
+    await settle();
+    expect(h.el('edtext').value).toBe('');
+    expect(h.el('edtext').disabled).toBe(false);
+    expect(h.fileContent('notes.md')).toBe('');
+    type(h, '# Notes\n\n- one');
+    h.click('edsave');
+    await settle();
+    await settle();
+    const puts = filePuts(h);
+    expect(puts).toHaveLength(1);
+    expect(JSON.parse(String(puts[0].init.body))).toEqual({ path: 'notes.md', content: '# Notes\n\n- one' });
+    expect(h.fileContent('notes.md')).toBe('# Notes\n\n- one');
+    h.click('edclose');
+    clickFileName(h, 'notes.md');
+    await settle();
+    await settle();
+    expect(h.el('edtext').value).toBe('# Notes\n\n- one');
+  });
+
+  it('E6b: New File INSIDE a folder opens at the nested relative path, and a binary name is created but not opened', async () => {
+    let name = 'todo.txt';
+    const h = await runView({ search: WF, prompt: () => name });
+    await openFiles(h);
+    rowByPath(h, 'docs')!.emit('dblclick');
+    await settle();
+    await settle();
+    h.click('wfmnewfile');
+    await settle();
+    await settle();
+    await settle();
+    expect(h.el('paneedit').hidden).toBe(false);
+    expect(h.el('edname').title).toBe('docs/todo.txt');
+    type(h, 'x');
+    h.click('edsave');
+    await settle();
+    expect(h.fileContent('docs/todo.txt')).toBe('x');
+    h.click('edclose');
+    name = 'raw.bin';
+    h.click('wfmnewfile');
+    await settle();
+    await settle();
+    await settle();
+    expect(rowByPath(h, 'docs/raw.bin')).toBeTruthy();
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+  });
+
+  it('E7: an EMPTY file opens as empty (not "undefined"), and saving empty text is a real write of nothing', async () => {
+    const h = await runView({ search: WF });
+    h.setFileContent('cookies.json', '');
+    await openFiles(h);
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(h.el('edtext').value).toBe('');
+    expect(h.el('edgutter').textContent).toBe('1\n');
+    expect(h.el('edmeta').textContent).toBe('0 chars');
+    expect(h.el('edstatus').textContent).toBe('Ready');
+    type(h, 'now something');
+    h.click('edsave');
+    await settle();
+    await settle();
+    expect(h.fileContent('cookies.json')).toBe('now something');
+    // And back to nothing: an emptied file is saved as empty, not skipped.
+    type(h, '');
+    h.click('edsave');
+    await settle();
+    await settle();
+    expect(filePuts(h)).toHaveLength(2);
+    expect(JSON.parse(String(filePuts(h)[1].init.body))).toEqual({ path: 'cookies.json', content: '' });
+    expect(h.fileContent('cookies.json')).toBe('');
+    expect(h.el('edmeta').textContent).toBe('0 chars');
+  });
+
+  it('E8: Close / Escape / the drawer\u2019s X drop the draft WITHOUT saving; a reopen reads the server\u2019s copy', async () => {
+    const h = await runView({ search: WF });
+    h.setFileContent('cookies.json', 'kept');
+    await openFiles(h);
+    // Close button.
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    type(h, 'draft 1');
+    h.click('edclose');
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('files').hidden).toBe(false);
+    expect(filePuts(h)).toHaveLength(0);
+    expect(h.fileContent('cookies.json')).toBe('kept');
+    // Escape backs out of the editor to the tree first, not out of the drawer.
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(h.el('edtext').value).toBe('kept');
+    type(h, 'draft 2');
+    h.key('Escape');
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(h.el('files').hidden).toBe(false);
+    expect(filePuts(h)).toHaveLength(0);
+    // The drawer's own X while the editor is up: editor AND drawer go, no save.
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    type(h, 'draft 3');
+    h.click('dclose');
+    expect(h.el('files').hidden).toBe(true);
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(filePuts(h)).toHaveLength(0);
+    expect(h.fileContent('cookies.json')).toBe('kept');
+    // Reopened from the hamburger: the tree, and the file reads as the server has it.
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('paneedit').hidden).toBe(true);
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(h.el('edtext').value).toBe('kept');
+  });
+
+  it('E8b: a binary file name is refused by the editor in words; the row stays a plain tree row', async () => {
+    const h = await runView({ search: WF });
+    await openFiles(h);
+    clickFileName(h, 'photo.png');
+    await settle();
+    expect(h.el('paneedit').hidden).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('wfmnote').textContent).toMatch(/cannot be opened in the text editor/);
+    expect(fileReads(h)).toHaveLength(0);
+    expect(rowByPath(h, 'photo.png')!.className).not.toContain('sel');
+  });
+
+  it('E9: FILE_REQUEST -> checkbox -> Select answers the chooser; the editor is never involved', async () => {
+    const h = await runView({ search: WF });
+    await openViaRequest(h, { id: 'fc_e9' });
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    clickFileRow(h, 'cookies.json');
+    expect(h.el('wfmselect').disabled).toBe(false);
+    expect(h.el('paneedit').hidden).toBe(true);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body))).toEqual({ path: 'cookies.json', chooserId: 'fc_e9' });
+    expect(fileReads(h)).toHaveLength(0);
+    expect(h.el('files').hidden).toBe(true);
+  });
+
+  it('E9b: in FILE_REQUEST a NAME click still opens the editor and leaves the request and Select alone', async () => {
+    const h = await runView({ search: WF });
+    h.setFileContent('cookies.json', 'c');
+    await openViaRequest(h, { id: 'fc_e9b' });
+    clickFileRow(h, 'cookies.json');
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    expect(h.el('paneedit').hidden).toBe(false);
+    expect(h.el('edtext').value).toBe('c');
+    // No hand-over happened, the request stands, the selection stands.
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+    expect(h.chooserCalls().filter((f) => String(f.init.method) === 'DELETE')).toHaveLength(0);
+    h.click('edclose');
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(false);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_e9b');
+  });
+
+  it('E10: NORMAL (hamburger) never offers the website Select, even with a page asking in the background and a file picked', async () => {
+    const h = await runView({ search: WF });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_bg' }));
+    await h.ticks(2);
+    // The request raised the source chooser; the operator ignores it and opens the workspace.
+    h.click('burger');
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    clickFileRow(h, 'cookies.json');
+    await settle();
+    expect(h.el('dcount').textContent).toBe('1 selected');
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    h.click('wfmselect');
+    await settle();
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+    // Opening the editor changes none of that.
+    clickFileName(h, 'cookies.json');
+    await settle();
+    await settle();
+    h.click('edclose');
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
+  });
+
+  it('E11: FILE_REQUEST -> Upload from the toolbar keeps the intent and the SAME chooser; Select still answers it', async () => {
+    const h = await runView({ search: WF });
+    await openViaRequest(h, { id: 'fc_e11' });
+    const up = h.el('wfmup');
+    up.files = [{ name: 'fresh.csv' }];
+    up.emit('change');
+    await new Promise((r) => setTimeout(r, 80));
+    await settle();
+    expect(h.wfCalls().some((f) => f.url.indexOf('/upload') >= 0)).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    clickFileRow(h, 'cookies.json');
+    expect(h.el('wfmselect').disabled).toBe(false);
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_e11');
+  });
+
+  it('E12: FILE_REQUEST -> Refresh keeps the intent and the SAME chooser; Select still answers it', async () => {
+    const h = await runView({ search: WF });
+    await openViaRequest(h, { id: 'fc_e12' });
+    clickFileRow(h, 'cookies.json');
+    h.click('wfmrefresh');
+    await settle();
+    await settle();
+    await settle();
+    expect(h.el('panefiles').hidden).toBe(false);
+    expect(h.el('wfmselect').hidden).toBe(false);
+    // The selection of a file that still exists survives the re-read.
+    expect(h.el('wfmselect').disabled).toBe(false);
+    expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
+    h.click('wfmselect');
+    await settle();
+    await settle();
+    const uses = h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0);
+    expect(uses).toHaveLength(1);
+    expect(JSON.parse(String(uses[0].init.body)).chooserId).toBe('fc_e12');
+  });
+
+  it('ISSUE 1 latency: the Select control reflects the new intent in the SAME tick as the entry click, while the workspace GET is still in flight', async () => {
+    // The listing is held open by hand: nothing the view awaits can have
+    // resolved when the assertions run, so a control that only repainted at
+    // the end of the load chain would still show the PREVIOUS intent here.
+    let release: (() => void) | null = null;
+    const held = new Promise<Response>((r) => { release = () => r({
+      ok: true, status: 200, headers: { get: () => null },
+      text: () => Promise.resolve(JSON.stringify({ success: true, path: '', parent: null, entries: [
+        { name: 'cookies.json', path: 'cookies.json', type: 'file', size: 12 },
+      ] })),
+      json: () => Promise.resolve({}),
+    } as unknown as Response); });
+    let hold = false;
+    const h = await runView({
+      search: WF,
+      interceptFetch: (url) => (hold && /\/workflow-files\/wf_42\?path=/.test(url)) ? held : undefined,
+    });
+    h.connected();
+    h.setPendingChooser(asking({ id: 'fc_lat' }));
+    await h.ticks(2);
+
+    // FILE_REQUEST entry: the button is visible immediately, with the GET unanswered.
+    hold = true;
+    const listsBefore = h.wfCalls().filter((f) => /\?path=/.test(f.url)).length;
+    h.click('addwf');
+    expect(h.wfCalls().filter((f) => /\?path=/.test(f.url)).length).toBeGreaterThanOrEqual(listsBefore);
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(h.el('wfmselect').disabled).toBe(true);
+    expect(h.el('panefiles').hidden).toBe(false);
+    // Now let the listing land: the state it paints agrees, it does not regress.
+    release!();
+    hold = false;
+    await settle();
+    await settle();
+    await settle();
+    expect(h.el('wfmselect').hidden).toBe(false);
+    expect(rowByPath(h, 'cookies.json')).toBeTruthy();
+
+    // Back to NORMAL through the X: the intent flips in the same tick as the
+    // click, before any network turn.
+    h.click('dclose');
+    expect(h.el('wfmselect').hidden).toBe(true);
+    expect(h.el('wfmselect').disabled).toBe(true);
+
+    // And the hamburger: still hidden in the same tick, whatever loads later.
+    h.setPendingChooser(asking({ id: 'fc_lat2' }));
+    await h.ticks(2);
+    h.click('addwf');
+    expect(h.el('wfmselect').hidden).toBe(false);
+    await settle();
+    await settle();
+    h.click('dclose');
+    h.click('burger');
+    expect(h.el('wfmselect').hidden).toBe(true);
+    await settle();
+    await settle();
+    await settle();
+    expect(h.el('wfmselect').hidden).toBe(true);
   });
 });
