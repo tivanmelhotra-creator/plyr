@@ -107,7 +107,9 @@ beforeAll(async () => {
   wfBob = (await svc.create('bob', { name: 'B', steps: [] })).id;
 
   app = express();
-  app.use(express.json());
+  // The same limit index.ts gives the real app (MAX_REQUEST_BODY_SIZE), so a
+  // 2 MB editor PUT reaches the ROUTE's own refusal rather than the parser's.
+  app.use(express.json({ limit: '20mb' }));
   app.use(asUser('alice'));
   app.use('/', createWorkflowFilesRoutes({ connection: connection as never }));
 });
@@ -311,6 +313,138 @@ describe('workflow files: the boundary over HTTP', () => {
       await fs.unlink(path.join(root, 'escape'));
       await fs.rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The editor's content pair — GET/PUT .../file — against the REAL storage.
+ *
+ * What the drawer's editor does is: open → GET → edit → PUT → close → reopen
+ * → GET. The unit harness proves the view sends those requests; this proves
+ * the bytes land where the contract says, `<root>/<user>/<workflowId>/<rel>`,
+ * and come back unchanged. Disk is read directly for the write, so a PUT that
+ * answered 200 and stored nothing would fail here.
+ */
+describe('workflow files: the editor\'s content pair (GET/PUT .../file) persists through WorkflowStorage', () => {
+  const onDisk = (rel: string) => path.join(tmpRoot, 'alice', wfAlice, rel);
+
+  it('open → GET (real content) → edit → PUT → reopen → GET: the text persisted, on disk and over HTTP', async () => {
+    // A file the operator already has: seeded THROUGH the storage's own upload
+    // route, not by hand, so the read is of a file the workspace knows. In a
+    // folder of its own so the sibling check below sees only this test's work.
+    let r = await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'ed' });
+    expect(r.status).toBe(201);
+    r = await request(app)
+      .post(`${base()}/upload?path=ed&name=${encodeURIComponent('notes.txt')}`)
+      .set('Content-Type', 'application/octet-stream')
+      .send(Buffer.from('first draft', 'utf8'));
+    expect(r.status).toBe(201);
+
+    // open → GET
+    r = await request(app).get(`${base()}/file?path=ed/notes.txt`);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ success: true, content: 'first draft' });
+    expect(r.body.entry).toMatchObject({ name: 'notes.txt', path: 'ed/notes.txt', type: 'file', size: 11 });
+    expect(JSON.stringify(r.body)).not.toContain(tmpRoot);
+
+    // edit → PUT
+    const edited = 'second draft\nwith a second line, and UTF-8: سلام — ✓';
+    r = await request(app).put(`${base()}/file`).send({ path: 'ed/notes.txt', content: edited });
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    expect(r.body.entry).toMatchObject({ name: 'notes.txt', path: 'ed/notes.txt', type: 'file' });
+    expect(r.body.entry.size).toBe(Buffer.byteLength(edited, 'utf8'));
+    // The bytes are on disk, at exactly <root>/<user>/<workflowId>/<relativePath>.
+    expect(await fs.readFile(onDisk('ed/notes.txt'), 'utf8')).toBe(edited);
+    // No sibling was made: overwrite is IN PLACE, not "notes (2).txt".
+    expect(await fs.readdir(onDisk('ed'))).toEqual(['notes.txt']);
+
+    // close → reopen → GET: what was written is what is read.
+    r = await request(app).get(`${base()}/file?path=ed/notes.txt`);
+    expect(r.status).toBe(200);
+    expect(r.body.content).toBe(edited);
+    // And the tree agrees about the size.
+    r = await request(app).get(`${base()}?path=ed`);
+    expect(r.body.entries.find((e: { name: string }) => e.name === 'notes.txt').size).toBe(Buffer.byteLength(edited, 'utf8'));
+
+    await request(app).delete(`${base()}?path=ed&recursive=1`);
+  });
+
+  it('New File → POST → open → GET (empty) → type → PUT → reopen → GET: a made file is a real, editable file', async () => {
+    let r = await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'docs' });
+    expect(r.status).toBe(201);
+    r = await request(app).post(`${base()}/file`).send({ path: 'docs', name: 'todo.md' });
+    expect(r.status).toBe(201);
+    expect(r.body.entry).toMatchObject({ name: 'todo.md', path: 'docs/todo.md', type: 'file', size: 0 });
+    // Genuinely empty on disk (not a one-byte newline).
+    expect((await fs.stat(onDisk('docs/todo.md'))).size).toBe(0);
+
+    r = await request(app).get(`${base()}/file?path=docs/todo.md`);
+    expect(r.status).toBe(200);
+    expect(r.body.content).toBe('');
+
+    r = await request(app).put(`${base()}/file`).send({ path: 'docs/todo.md', content: '# todo\n- [ ] one' });
+    expect(r.status).toBe(200);
+    expect(await fs.readFile(onDisk('docs/todo.md'), 'utf8')).toBe('# todo\n- [ ] one');
+
+    r = await request(app).get(`${base()}/file?path=docs/todo.md`);
+    expect(r.body.content).toBe('# todo\n- [ ] one');
+
+    // Saving EMPTY is a real write of nothing, not a refusal.
+    r = await request(app).put(`${base()}/file`).send({ path: 'docs/todo.md', content: '' });
+    expect(r.status).toBe(200);
+    expect((await fs.stat(onDisk('docs/todo.md'))).size).toBe(0);
+
+    await request(app).delete(`${base()}?path=docs&recursive=1`);
+  });
+
+  it('PUT to a path with no file yet CREATES it at that relative path (the editor never names an absolute path)', async () => {
+    const r = await request(app).put(`${base()}/file`).send({ path: 'fresh.txt', content: 'made by PUT' });
+    expect(r.status).toBe(200);
+    expect(await fs.readFile(onDisk('fresh.txt'), 'utf8')).toBe('made by PUT');
+    await request(app).delete(`${base()}?path=fresh.txt`);
+  });
+
+  it('refuses what every other verb refuses: traversal, absolute, a folder, a stranger\'s workflow, a missing name', async () => {
+    expect((await request(app).get(`${base()}/file?path=../secret`)).status).toBe(400);
+    expect((await request(app).put(`${base()}/file`).send({ path: '../secret', content: 'x' })).status).toBe(400);
+    expect((await request(app).put(`${base()}/file`).send({ path: '/etc/passwd', content: 'x' })).status).toBe(400);
+    expect((await request(app).put(`${base()}/file`).send({ content: 'x' })).status).toBe(400);
+    expect((await request(app).get(`${base()}/file?path=uploads`)).status).toBe(400); // a folder is not a file
+    expect((await request(app).get(`${base()}/file?path=nope.txt`)).status).toBe(404);
+    expect((await request(app).get(`/browser/workflow-files/${wfBob}/file?path=a.txt`)).status).toBe(404);
+    expect((await request(app).put(`/browser/workflow-files/${wfBob}/file`).send({ path: 'a.txt', content: 'x' })).status).toBe(404);
+    // Nothing of that landed anywhere.
+    expect(await fs.readdir(tmpRoot).then((d) => d.sort())).toEqual(['alice'].concat(
+      (await fs.readdir(tmpRoot)).includes('bob') ? ['bob'] : []).sort());
+  });
+
+  it('a symlink planted in the workspace is refused by both halves of the pair', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-outside-'));
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'top secret');
+    const root = onDisk('');
+    await fs.mkdir(root, { recursive: true });
+    await fs.symlink(path.join(outside, 'secret.txt'), path.join(root, 'leak.txt'), 'file');
+    try {
+      expect((await request(app).get(`${base()}/file?path=leak.txt`)).status).toBe(403);
+      expect((await request(app).put(`${base()}/file`).send({ path: 'leak.txt', content: 'overwritten' })).status).toBe(403);
+      expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('top secret');
+    } finally {
+      await fs.unlink(path.join(root, 'leak.txt'));
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('caps the editor at 2 MB in both directions, in words', async () => {
+    const big = 'x'.repeat(2 * 1024 * 1024 + 1);
+    let r = await request(app).put(`${base()}/file`).send({ path: 'big.txt', content: big });
+    expect(r.status).toBe(413);
+    expect(r.body.error).toMatch(/too much text/);
+    await fs.writeFile(onDisk('huge.log'), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
+    r = await request(app).get(`${base()}/file?path=huge.log`);
+    expect(r.status).toBe(413);
+    expect(r.body.error).toMatch(/too large to open/);
+    await fs.unlink(onDisk('huge.log'));
   });
 });
 
