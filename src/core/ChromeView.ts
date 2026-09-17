@@ -423,6 +423,44 @@ export function chromeViewHtml(): string {
   #dpick .sub { color: #8b8b98; font-size: 11px; padding: 0 2px 4px; }
   #dpick .why { color: #9fe0b0; padding: 0 2px 6px; }
   #up, #wfmup { display: none; }
+
+  /* ── The text editor pane ────────────────────────────────────────
+     A compact notepad INSIDE the drawer: dark charcoal, ONE restrained
+     orange accent, the same tokens as the tree it replaces. A page of the
+     drawer, not a floating modal — this page has exactly one surface. */
+  .dbar2 {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px; border-bottom: 1px solid #38383f; flex: none;
+  }
+  .dbar2 .edname {
+    direction: ltr; min-width: 0; font-size: 11.5px; color: #fff;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .edbody {
+    flex: 1 1 auto; min-height: 0; display: flex;
+    background: #101319; margin: 8px 10px 0; border: 1px solid #2b303b;
+    border-radius: 6px; overflow: hidden;
+  }
+  .edgutter {
+    flex: none; padding: 8px 6px 8px 8px; text-align: right;
+    font: 11px/1.55 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    color: #4a4f5c; background: #14171e; border-right: 1px solid #232733;
+    user-select: none; white-space: pre; overflow: hidden;
+  }
+  .edtext {
+    flex: 1 1 auto; min-width: 0; padding: 8px;
+    font: 11px/1.55 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    color: #e6e6ee; background: transparent; border: 0; resize: none;
+    outline: none; white-space: pre; overflow: auto; tab-size: 2;
+  }
+  .edtext:focus-visible { outline: none; }
+  .edtext::selection { background: rgba(232,115,26,.30); }
+  .edfoot {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px 9px; flex: none; font-size: 10.5px; color: #8b8b98;
+  }
+  .edfoot #edstatus.dirty { color: #f0862f; }
+  #edmeta { color: #6d7382; }
 </style>
 </head>
 <body>
@@ -505,6 +543,37 @@ export function chromeViewHtml(): string {
     <button class="fbtn accent" id="addpc" type="button">Upload from Computer</button>
     <button class="fbtn" id="addwf" type="button">Choose from Workflow Files</button>
     <span class="sub" id="addsub"></span>
+  </div>
+
+  <!-- ── The text editor: a notepad for ONE file ─────────────────────────
+       Opened by clicking a FILE's NAME. The checkbox is selection only and a
+       folder click navigates, both unchanged. It reads throughGET .../file and
+       saves through PUT .../file, both scoped to workflowId + the file's own
+       workflow-RELATIVE path — never an absolute path. Binary files never
+       reach it (the row refuses before any read). -->
+  <div class="dpane" id="paneedit" hidden>
+    <div class="dbar2">
+      <span class="wfm-ico" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+      </span>
+      <span class="edname" id="edname"></span>
+      <span class="dgrow"></span>
+      <button class="dtool" id="edsave" type="button" title="Save (Ctrl+S)" aria-label="Save">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+      </button>
+      <button class="dtool" id="edclose" type="button" title="Close" aria-label="Close">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m5 5 14 14"/><path d="m19 5-14 14"/></svg>
+      </button>
+    </div>
+    <div class="edbody">
+      <div class="edgutter" id="edgutter"></div>
+      <textarea class="edtext" id="edtext" spellcheck="false" wrap="off" aria-label="File contents"></textarea>
+    </div>
+    <div class="edfoot">
+      <span id="edstatus">Ready</span>
+      <span class="dgrow"></span>
+      <span id="edmeta"></span>
+    </div>
   </div>
 
   <input id="up" type="file" multiple>
@@ -1153,7 +1222,7 @@ let wfmIntent = 'NORMAL';
 /** Show the workspace, or the source chooser in its place. */
 function showPane(which) {
   drawerPane = which;
-  const panes = { files: 'panefiles', pick: 'dpick' };
+  const panes = { files: 'panefiles', pick: 'dpick', edit: 'paneedit' };
   Object.keys(panes).forEach((k) => {
     const el = document.getElementById(panes[k]);
     if (el) el.hidden = k !== which;
@@ -1187,12 +1256,22 @@ function closeDrawer() {
   drawer.hidden = true;
   if (burger) burger.hidden = false;
   wfmCloseMenu();
+  // Closing the drawer also closes the editor: the drawer is ONE surface, and a
+  // half-typed file must not be left behind the next time it is opened on the
+  // tree. The draft is dropped silently — the tree is where it lives.
+  if (drawerPane === 'edit') { wfmCloseEditor(); }
   if (wfmIntent === 'FILE_REQUEST' && pendingId) {
     const id = pendingId;
     clearPending();
     void cancelPending(id);
   }
   wfmIntent = 'NORMAL';
+  // ISSUE 1 — IMMEDIATE INTENT SYNC. The intent changed, so the Select control
+  // must reflect it NOW. Previously the only paint was at the END of the async
+  // chain (openDrawer -> wfmEnsureLoaded -> wfmRefresh -> wfmRender ->
+  // wfmSyncSelection), so #wfmselect showed the previous intent for the whole
+  // round trip. wfmRender() re-reads the live wfmIntent, so this cannot go stale.
+  wfmSyncSelection();
 }
 
 if (burger) {
@@ -1202,6 +1281,10 @@ if (burger) {
     // (clearPending); it is never what the operator gets for pressing this.
     // Opening from the burger is always a NORMAL workspace browsing action.
     wfmIntent = 'NORMAL';
+    // ISSUE 1 — sync the Select control in the SAME tick as the intent change;
+    // the async workspace load that follows re-reads wfmIntent, so it will not
+    // overwrite this correct state.
+    wfmSyncSelection();
     openDrawer('files');
   });
 }
@@ -1214,6 +1297,9 @@ document.addEventListener('keydown', (ev) => {
   if (!ev || ev.key !== 'Escape') return;
   const dm = document.getElementById('dmenu');
   if (dm && !dm.hidden) { wfmCloseMenu(); return; }
+  // The editor is IN the drawer: Escape backs out to the tree first, so one key
+  // does not throw away both the editor and the whole drawer.
+  if (drawerPane === 'edit') { wfmCloseEditor(); return; }
   if (drawerOpen()) closeDrawer();
 });
 
@@ -1623,9 +1709,7 @@ const NO_WORKFLOW_TEXT = 'This browser was not opened from a saved workflow, so 
 
 /**
  * Find the workflow when the URL did not name one: the server knows which
- * workflow the Local Browser is bound to right now. Resolves to the id, or ''.
- * An explicit URL id stays pinned. A server-derived id is re-read each time
- * the drawer opens: Retry can bind the shared browser to another workflow
+ * workflow the Local Browser is bound to right now. Re the drawer opens: Retry can bind the shared browser to another workflow
  * without opening a new viewer. Only an in-flight lookup is shared.
  */
 let workflowResolved = null;
@@ -1712,6 +1796,8 @@ if (addWf) {
     // by itself, filtered by the page's own accept/multiple, and the operator
     // enters in FILE_REQUEST intent.
     wfmIntent = 'FILE_REQUEST';
+    // ISSUE 1 — same immediate sync as the hamburger, for the FILE_REQUEST side.
+    wfmSyncSelection();
     openDrawer('files');
   });
 }
@@ -1741,6 +1827,13 @@ const wfmDownSel = document.getElementById('ddownsel');
 const wfmConfirm = document.getElementById('dconfirm');
 const wfmMenu    = document.getElementById('dmenu');
 const wfmCrumbs  = document.getElementById('dcrumbs');
+const wfmEdNameEl   = document.getElementById('edname');
+const wfmEdTextEl   = document.getElementById('edtext');
+const wfmEdGutterEl = document.getElementById('edgutter');
+const wfmEdStatusEl = document.getElementById('edstatus');
+const wfmEdMetaEl   = document.getElementById('edmeta');
+const wfmEdSaveBtn  = document.getElementById('edsave');
+const wfmEdCloseBtn = document.getElementById('edclose');
 
 /**
  * The tree, as the server has described it so far.
@@ -2218,14 +2311,18 @@ function wfmRow(entry, depth) {
 
   li.addEventListener('click', () => {
     if (isDir) { wfmToggleFolder(entry.path); return; }
-    // Only FILES can be selected: a folder cannot go into an input.
-    wfmPick(entry);
+    // ISSUE 2 — a FILE NAME opens the editor. Selection is the CHECKBOX's job
+    // (its own click stops propagation), so clicking a name must NOT toggle the
+    // selection, and opening the editor must leave an existing selection alone.
+    // A binary name is refused by the editor itself, so the tree behaviour for
+    // a file that cannot be edited is unchanged.
+    wfmOpenEditor(entry);
   });
   li.addEventListener('dblclick', () => {
-    // A folder opens INTO (the breadcrumb takes it), a file is handed over.
+    // A folder opens INTO (the breadcrumb takes it). A file's single click has
+    // already opened the editor, so a file keeps no separate double-click
+    // action here — hand-over to a page is the Select button's job.
     if (isDir) { void wfmGoTo(entry.path); return; }
-    wfmPick(entry, true);
-    wfmUse();
   });
   li.addEventListener('contextmenu', (ev) => {
     if (ev && ev.preventDefault) ev.preventDefault();
@@ -2333,8 +2430,151 @@ function wfmNewFile(inRel) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: into, name: name }),
   })
-    .then(() => { wfmOpen[into] = true; return wfmRefresh(); })
+    .then((d) => {
+      wfmOpen[into] = true;
+      return wfmRefresh().then(() => {
+        // New File must be genuinely usable: create, then OPEN it, so the
+        // operator types straight away. Binary names are left on the tree (the
+        // editor refuses them the same way a row click does).
+        const made = d && d.entry;
+        if (made && made.path && wfmIsTextName(made.name || name)) wfmOpenEditor(made);
+        return null;
+      });
+    })
     .catch((e) => wfmSay((e && e.message) || 'Could not create the file.', true));
+}
+
+// ── The text editor ──────────────────────────────────────────────────────────
+//
+// A notepad for ONE file, opened by clicking the FILE'S NAME — never the
+// checkbox (selection only) and never a folder (that navigates). It reads
+// through GET .../file and writes through PUT .../file, the dedicated content
+// pair, so a UTF-8 file is read and written as TEXT and never mangled through
+// the byte path (/download) or the raw transport (/upload). The path is always
+// workflowId + the file's own workflow-RELATIVE path; no absolute path crosses
+// this page.
+//
+// Text-capable only: a binary file never reaches the editor (wfmIsTextName),
+// which keeps the same "no viewer for a binary" stance the row menu takes.
+const TEXT_EXT = [
+  'txt', 'text', 'md', 'markdown', 'rst', 'json', 'jsonc', 'js', 'mjs', 'cjs',
+  'ts', 'tsx', 'jsx', 'css', 'scss', 'less', 'html', 'htm', 'xml', 'csv', 'tsv',
+  'yml', 'yaml', 'ini', 'cfg', 'conf', 'env', 'log', 'sh', 'bash', 'zsh', 'py',
+  'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cc', 'cs', 'php',
+  'sql', 'toml', 'properties', 'gradle', 'dockerfile', 'svg', 'gitignore', 'srt',
+];
+
+/** Does the editor handle this NAME? Extension-based, deliberately narrow. */
+function wfmIsTextName(name) {
+  const n = String(name || '').toLowerCase();
+  const dot = n.lastIndexOf('.');
+  if (dot < 0 || dot === n.length - 1) return false;
+  const ext = n.slice(dot + 1);
+  for (let i = 0; i < TEXT_EXT.length; i += 1) if (TEXT_EXT[i] === ext) return true;
+  return false;
+}
+
+/** The file the editor is showing right now ('' = none), and its dirty flag. */
+let wfmEditPath = '';
+let wfmEditName = '';
+let wfmEditDirty = false;
+
+function wfmEditorPaintGutter(text) {
+  if (!wfmEdGutterEl) return;
+  const lines = String(text == null ? '' : text).split('\\n').length;
+  let out = '';
+  for (let i = 1; i <= lines; i += 1) out += i + '\\n';
+  wfmEdGutterEl.textContent = out;
+}
+
+function wfmEditorPaintStats(text) {
+  if (!wfmEdMetaEl) return;
+  const chars = String(text == null ? '' : text).length;
+  wfmEdMetaEl.textContent = chars === 1 ? '1 char' : chars + ' chars';
+}
+
+function wfmEditorSetStatus(text, dirty) {
+  if (!wfmEdStatusEl) return;
+  wfmEdStatusEl.textContent = text || '';
+  wfmEdStatusEl.className = dirty ? 'dirty' : '';
+}
+
+/**
+ * Open the editor on a FILE, and read it.
+ *
+ * The read is asynchronous; a late answer for a file the operator has since
+ * closed (or replaced by another) must not overwrite what is on screen, so the
+ * callback re-checks wfmEditPath before painting.
+ */
+function wfmOpenEditor(entry) {
+  if (!entry || entry.type === 'dir') return;
+  if (!wfmRequire()) return;
+  if (!wfmIsTextName(entry.name)) {
+    wfmSay('That kind of file cannot be opened in the text editor. Use Download.', true);
+    return;
+  }
+  wfmEditPath = entry.path;
+  wfmEditName = entry.name;
+  wfmEditDirty = false;
+  if (wfmEdNameEl) { wfmEdNameEl.textContent = entry.name; wfmEdNameEl.title = entry.path; }
+  if (wfmEdTextEl) { wfmEdTextEl.value = ''; wfmEdTextEl.disabled = true; }
+  wfmEditorPaintGutter('');
+  wfmEditorPaintStats('');
+  wfmEditorSetStatus('Loading\u2026', false);
+  showPane('edit');
+  wfmFetch(wfmBase() + '/file?path=' + encodeURIComponent(entry.path))
+    .then((d) => {
+      if (wfmEditPath !== entry.path) return null;
+      const content = String((d && d.content) || '');
+      if (wfmEdTextEl) { wfmEdTextEl.value = content; wfmEdTextEl.disabled = false; }
+      wfmEditorPaintGutter(content);
+      wfmEditorPaintStats(content);
+      wfmEditorSetStatus('Ready', false);
+      return null;
+    })
+    .catch((e) => {
+      if (wfmEditPath !== entry.path) return;
+      wfmEditorSetStatus((e && e.message) || 'Could not read the file.', true);
+    });
+}
+
+/** Leave the editor, back to the tree. The draft is dropped silently. */
+function wfmCloseEditor() {
+  wfmEditPath = '';
+  wfmEditName = '';
+  wfmEditDirty = false;
+  if (wfmEdTextEl) { wfmEdTextEl.value = ''; wfmEdTextEl.disabled = false; }
+  if (wfmEdGutterEl) wfmEdGutterEl.textContent = '';
+  if (wfmEdMetaEl) wfmEdMetaEl.textContent = '';
+  wfmEditorSetStatus('Ready', false);
+  if (drawerPane === 'edit') showPane('files');
+}
+
+/** Save the editor's text back to the SAME relative path. */
+function wfmSaveEditor() {
+  if (!wfmEditPath) return;
+  const text = (wfmEdTextEl && wfmEdTextEl.value) || '';
+  if (wfmEdSaveBtn) wfmEdSaveBtn.disabled = true;
+  wfmEditorSetStatus('Saving\u2026', false);
+  wfmFetch(wfmBase() + '/file', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: wfmEditPath, content: text }),
+  })
+    .then(() => {
+      wfmEditDirty = false;
+      if (wfmEdSaveBtn) wfmEdSaveBtn.disabled = false;
+      wfmEditorPaintStats(text);
+      wfmEditorSetStatus('Saved', false);
+      // The tree's size for this row is now stale; re-read the open folders so
+      // it agrees with the disk (and so New File's row is the size it now is).
+      if (drawerPane !== 'edit') void wfmRefresh();
+      return null;
+    })
+    .catch((e) => {
+      if (wfmEdSaveBtn) wfmEdSaveBtn.disabled = false;
+      wfmEditorSetStatus((e && e.message) || 'Could not save the file.', true);
+    });
 }
 
 /**
@@ -2784,6 +3024,25 @@ if (wfmList) {
     void wfmUploadFiles(list);
   });
   wfmSelect.addEventListener('click', () => wfmUse());
+  // The editor's own controls. Save writes back to the SAME relative path the
+  // read used; Close returns to the tree. Typing marks the draft dirty so the
+  // operator can see there is something not yet on the server.
+  if (wfmEdSaveBtn) wfmEdSaveBtn.addEventListener('click', () => wfmSaveEditor());
+  if (wfmEdCloseBtn) wfmEdCloseBtn.addEventListener('click', () => wfmCloseEditor());
+  if (wfmEdTextEl) {
+    wfmEdTextEl.addEventListener('input', () => {
+      wfmEditDirty = true;
+      wfmEditorPaintGutter(wfmEdTextEl.value);
+      wfmEditorPaintStats(wfmEdTextEl.value);
+      wfmEditorSetStatus('Unsaved changes', true);
+    });
+    wfmEdTextEl.addEventListener('keydown', (ev) => {
+      if (ev && (ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
+        if (ev.preventDefault) ev.preventDefault();
+        wfmSaveEditor();
+      }
+    });
+  }
   if (wfmAll) wfmAll.addEventListener('click', () => wfmSelectAllVisible());
   if (wfmClear) wfmClear.addEventListener('click', () => wfmClearSelection());
   if (wfmDelSel) wfmDelSel.addEventListener('click', () => wfmDeleteSelected());

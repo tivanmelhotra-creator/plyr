@@ -266,6 +266,8 @@ interface FakeEl {
    */
   accept: string;
   multiple: boolean;
+  /** A checkbox's own state. The page sets it from the selection. */
+  checked: boolean;
   type: string;
   /**
    * Whether the control refuses input.
@@ -351,6 +353,7 @@ function makeEl(tag: string, hidden = false): FakeEl {
     download: '',
     accept: '',
     multiple: false,
+    checked: false,
     type: '',
     disabled: false,
     addEventListener(type, fn) {
@@ -499,6 +502,10 @@ async function runView(
         { name: 'readme.txt', path: 'docs/readme.txt', type: 'file', size: 7 },
       ],
     } as Record<string, Array<{ name: string; path: string; type: string; size: number }>>,
+    // The workflow's file CONTENTS, by workflow-relative path, as the content
+    // route (GET/PUT .../file) reports them. The editor's read and write land
+    // here so a save-then-reopen can be observed end to end.
+    wfFileContent: {} as Record<string, string>,
     // Which workflow the server says the Local Browser is bound to right now;
     // '' is the ordinary answer for a view opened outside any workflow.
     boundWorkflowId: '',
@@ -706,6 +713,37 @@ async function runView(
           return Promise.resolve(reply({ body: { success: true, name: 'cookies.json', size: 12, count: 1 } }));
         }
         return Promise.resolve(reply({ status: state.wfUseStatus, body: state.wfUseBody }));
+      }
+      // The editor's content pair, plus New File. Modelled like the real routes:
+      //   GET  .../file?path=<rel>   -> { entry, content }
+      //   PUT  .../file {path,content} -> { entry } and the store is updated
+      //   POST .../file {path,name}  -> 201 { entry } (New File, now usable: the
+      //                                 view opens the file it just made)
+      if (url.indexOf('/file') >= 0) {
+        if (method === 'PUT') {
+          const put = JSON.parse(String(init.body || '{}'));
+          state.wfFileContent[put.path] = String(put.content ?? '');
+          return Promise.resolve(reply({ body: { success: true, entry: {
+            name: String(put.path || '').split('/').pop(), path: put.path, type: 'file',
+            size: String(put.content ?? '').length,
+          } } }));
+        }
+        if (method === 'POST') {
+          const made = JSON.parse(String(init.body || '{}'));
+          const into = String(made.path || '');
+          const name = String(made.name || 'untitled.txt');
+          const rel = into ? into + '/' + name : name;
+          if (!(rel in state.wfFileContent)) state.wfFileContent[rel] = String(made.content ?? '');
+          const entry = { name, path: rel, type: 'file', size: (state.wfFileContent[rel] || '').length };
+          const bucket = state.wfTree[into] || (state.wfTree[into] = []);
+          if (!bucket.some((e) => e.path === rel)) bucket.push(entry);
+          return Promise.resolve(reply({ status: 201, body: { success: true, entry } }));
+        }
+        const rel = folder;
+        const content = state.wfFileContent[rel] ?? '';
+        return Promise.resolve(reply({ body: { success: true, content, entry: {
+          name: rel.split('/').pop(), path: rel, type: 'file', size: content.length,
+        } } }));
       }
       if (method === 'GET') {
         return Promise.resolve(reply({
@@ -943,6 +981,8 @@ async function runView(
     wfCalls: () => allFetches.filter((f) => f.url.indexOf('/browser/workflow-files/') >= 0),
     failUse: (status, errorBody) => { state.wfUseStatus = status; state.wfUseBody = errorBody; },
     setTree: (tree) => { state.wfTree = tree; },
+    /** Seed the content the editor's read will return for a path. */
+    setFileContent: (p: string, content: string) => { state.wfFileContent[p] = content; },
     setBinding: (id) => { state.boundWorkflowId = id; },
     setPersisted: (paths) => { state.chooserPersisted = paths; },
     maxConcurrentUploads: () => conc.max,
@@ -2400,7 +2440,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     rowByPath(h, 'docs')!.emit('click');
     await settle();
     expect(h.el('wfmselect').disabled).toBe(true);
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     expect(h.el('wfmselect').disabled).toBe(false);
     expect(rowByPath(h, 'cookies.json')!.className).toContain('sel');
     expect(h.el('dcount').textContent).toBe('1 selected');
@@ -2414,8 +2454,8 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     const h = await runView({ search: WF });
     await openFiles(h);
     expect(h.el('dall').hidden).toBe(false);
-    rowByPath(h, 'cookies.json')!.emit('click');
-    rowByPath(h, 'photo.png')!.emit('click');
+    clickFileRow(h, 'cookies.json');
+    clickFileRow(h, 'photo.png');
     expect(fileRows(h).filter((r) => r.className.indexOf('sel') >= 0).map((r) => r.attrs['data-name']))
       .toEqual(['cookies.json', 'photo.png']);
     expect(h.el('wfmselect').textContent).toBe('Select (2)');
@@ -2433,8 +2473,8 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
-    rowByPath(h, 'photo.png')!.emit('click');
+    clickFileRow(h, 'cookies.json');
+    clickFileRow(h, 'photo.png');
     expect(h.el('wfmselect').title).toMatch(/ONE file/);
     h.click('wfmselect');
     await settle();
@@ -2443,7 +2483,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     expect(h.el('wfmnote').textContent).toMatch(/downloaded or deleted/);
     expect(h.el('dcount').textContent).toBe('2 selected');
     // One, and it goes.
-    rowByPath(h, 'photo.png')!.emit('click');
+    clickFileRow(h, 'photo.png');
     h.click('wfmselect');
     await settle();
     await settle();
@@ -2466,8 +2506,8 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     await settle();
     expect(h.el('panefiles').hidden).toBe(false);
     expect(h.el('dall').hidden).toBe(false);
-    rowByPath(h, 'cookies.json')!.emit('click');
-    rowByPath(h, 'photo.png')!.emit('click');
+    clickFileRow(h, 'cookies.json');
+    clickFileRow(h, 'photo.png');
     expect(h.el('wfmselect').textContent).toBe('Select (2)');
     expect(h.el('dcount').textContent).toBe('2 selected');
     h.click('dclear');
@@ -2484,7 +2524,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     h.click('wfmselect');
     await settle();
     await settle();
@@ -2552,7 +2592,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
       const h = await runView({ search: WF });
       await openFiles(h);
       expect(h.el('ddownsel').hidden).toBe(true);
-      rowByPath(h, 'cookies.json')!.emit('click');
+      clickFileRow(h, 'cookies.json');
       expect(h.el('ddownsel').hidden).toBe(false);
       h.click('ddownsel');
       await settle();
@@ -2561,7 +2601,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
       expect(wfDownloads(h)[0].url).toContain('?path=cookies.json');
       expect(h.anchors()[0].download).toBe('cookies.json');
 
-      rowByPath(h, 'photo.png')!.emit('click');
+      clickFileRow(h, 'photo.png');
       h.click('ddownsel');
       await settle();
       await settle();
@@ -2597,8 +2637,8 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
-    rowByPath(h, 'photo.png')!.emit('click');
+    clickFileRow(h, 'cookies.json');
+    clickFileRow(h, 'photo.png');
     h.click('wfmselect');
     await settle();
     await settle();
@@ -2618,7 +2658,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'photo.png')!.emit('click');
+    clickFileRow(h, 'photo.png');
     h.click('wfmselect');
     await settle();
     expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
@@ -2630,7 +2670,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
   it('explains when no page is asking, and sends nothing', async () => {
     const h = await runView({ search: WF });
     await openFiles(h);
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     h.click('wfmselect');
     await settle();
     expect(h.wfCalls().filter((f) => f.url.indexOf('/use') >= 0)).toHaveLength(0);
@@ -2646,7 +2686,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     h.click('wfmselect');
     await settle();
     await settle();
@@ -2673,7 +2713,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     rowByPath(h, 'docs')!.emit('click');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     const before = h.wfCalls().length;
     h.click('wfmrefresh');
     await settle();
@@ -2687,7 +2727,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
   it('drops a selected file that the refresh shows is gone', async () => {
     const h = await runView({ search: WF });
     await openFiles(h);
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     h.setTree({ '': [{ name: 'photo.png', path: 'photo.png', type: 'file', size: 2048 }] });
     h.click('wfmrefresh');
     await settle();
@@ -2699,7 +2739,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
   it('Delete asks IN THE DRAWER, names the file, and only then sends the DELETE', async () => {
     const h = await runView({ search: WF });
     await openFiles(h);
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     h.click('ddelsel');
     await settle();
     expect(h.el('dconfirm').hidden).toBe(false);
@@ -2851,7 +2891,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     h.click('wfmnewfile');
     await settle();
     await settle();
-    const files = h.wfCalls().filter((f) => f.url.indexOf('/file') >= 0);
+    const files = h.wfCalls().filter((f) => f.url.indexOf('/file') >= 0 && String(f.init.method) === 'POST');
     expect(files).toHaveLength(1);
     expect(files[0].url).toBe('/browser/workflow-files/wf_42/file');
     expect(files[0].init.method).toBe('POST');
@@ -3003,7 +3043,7 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
       rowByPath(h, 'uploads')!.emit('dblclick');
       await settle();
       await settle();
-      rowByPath(h, 'uploads/in.csv')!.emit('click');
+      clickFileRow(h, 'uploads/in.csv');
       h.click('wfmselect');
       await settle();
       await settle();
@@ -3403,6 +3443,13 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
   });
   const rowByPath = (h: Harness, path: string) =>
     h.tree().find((li) => li.attrs['data-path'] === path);
+  /** Pick a file by its checkbox: selection is the checkbox's job (Issue 2). */
+  const clickFileRow = (h: Harness, path: string) => {
+    const li = rowByPath(h, path)!;
+    const box = li.querySelector('.dcheck')!;
+    box.checked = !box.checked;
+    box.emit('change');
+  };
 
   it('T1: Hamburger -> select file has NORMAL intent, Select unavailable, no /use', async () => {
     const h = await runView({ search: WF });
@@ -3413,7 +3460,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     expect(h.el('panefiles').hidden).toBe(false);
     expect(h.el('dpick').hidden).toBe(true);
 
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     await settle();
     expect(h.el('wfmselect').hidden).toBe(true);
     expect(h.el('wfmselect').disabled).toBe(true);
@@ -3444,7 +3491,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     expect(h.el('wfmselect').disabled).toBe(false);
     h.click('wfmselect');
     await settle();
@@ -3471,7 +3518,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     up.emit('change');
     await new Promise((r) => setTimeout(r, 80));
 
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     expect(h.el('wfmselect').hidden).toBe(false);
     expect(h.el('wfmselect').disabled).toBe(false);
     h.click('wfmselect');
@@ -3494,7 +3541,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     await settle();
     await settle();
 
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     expect(h.el('wfmselect').hidden).toBe(false);
     expect(h.el('wfmselect').disabled).toBe(false);
     h.click('wfmselect');
@@ -3523,7 +3570,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     await settle();
     await settle();
     expect(h.el('panefiles').hidden).toBe(false);
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     await settle();
 
     // In NORMAL, Select is unavailable
@@ -3542,7 +3589,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     h.click('burger');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     await settle();
 
     expect(h.el('wfmselect').hidden).toBe(true);
@@ -3559,7 +3606,7 @@ describe('Workflow Files Intent Model (T1-T8)', () => {
     h.click('addwf');
     await settle();
     await settle();
-    rowByPath(h, 'cookies.json')!.emit('click');
+    clickFileRow(h, 'cookies.json');
     expect(h.el('wfmselect').disabled).toBe(false);
     h.click('wfmselect');
     await settle();

@@ -70,6 +70,7 @@ import { Router, type Response } from 'express';
 import express from 'express';
 import type IORedis from 'ioredis';
 import { createReadStream } from 'fs';
+import { promises as fsAsync } from 'fs';
 import path from 'path';
 
 import { config } from '../config';
@@ -268,6 +269,70 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       const content = typeof body.content === 'string' ? body.content : '';
       const entry = await store.createFile(String(body.path ?? ''), String(body.name ?? ''), content);
       res.status(201).json({ success: true, entry });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── file CONTENTS: the editor's read and write ────────────────────────────
+  //
+  //   GET  /browser/workflow-files/:id/file?path=<file>   read the file's text
+  //   PUT  /browser/workflow-files/:id/file  { path, content }   write it back
+  //
+  // A DEDICATED pair, deliberately NOT /download and /upload. Those two keep
+  // their own meanings — `/download` is the operator's own copy (bytes as
+  // themselves, or a streamed ZIP) and `/upload` is the raw-body transport for
+  // "Upload from Computer". Neither is a text read, and an editor built on
+  // them would silently mangle a UTF-8 file through a byte path or a stream.
+  //
+  // Both name `workflowId + a workflow-RELATIVE path` and nothing else: the
+  // path is handed to WorkflowStorage, so the same traversal / symlink /
+  // absolute-path rules as every other verb apply here unchanged. Read uses
+  // `resolveForBrowser` (a real, non-symlink FILE — the same guard `/use` uses
+  // before a browser dialog) and writes through `writeFile(..., {overwrite:true})`,
+  // which is the storage's own atomic write-then-rename. No new storage, no new
+  // model: this is the same workspace the tree already lists.
+  //
+  // A read is capped (MAX_EDITOR_TEXT_BYTES): a notepad must not pull a 256 MB
+  // asset into memory as text. Over the cap the answer is a refusal in words,
+  // so the client can say why instead of hanging.
+  const MAX_EDITOR_TEXT_BYTES = 2 * 1024 * 1024;
+
+  router.get('/browser/workflow-files/:workflowId/file', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const rel = String(req.query.path ?? '');
+      const file = await store.resolveForBrowser(rel);
+      if (file.size > MAX_EDITOR_TEXT_BYTES) {
+        return fail(res, 413,
+          `That file is too large to open in the editor (${file.size} bytes).`,
+          `The editor reads at most ${MAX_EDITOR_TEXT_BYTES} bytes. Download it instead.`);
+      }
+      const content = await fsAsync.readFile(file.absolutePath, 'utf8');
+      const entry = await store.describe(file.relativePath);
+      res.json({ success: true, entry, content });
+    } catch (e) { sendError(res, e); }
+  });
+
+  router.put('/browser/workflow-files/:workflowId/file', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { path?: unknown; content?: unknown };
+      const rel = String(body.path ?? '');
+      // The write target is the SAME relative path the read used: split it into
+      // the parent the file lives in and its own leaf, exactly as the storage
+      // expects. A missing leaf is a 400 from the storage, not a silent no-op.
+      if (!rel) return fail(res, 400, 'No file was named.', 'Send { path: "notes.txt", content: "..." }.');
+      const leaf = path.posix.basename(rel);
+      const parentRel = rel.indexOf('/') >= 0 ? path.posix.dirname(rel) : '';
+      if (!leaf) return fail(res, 400, 'No file was named.');
+      if (String(body.content ?? '').length > MAX_EDITOR_TEXT_BYTES) {
+        return fail(res, 413, `That is too much text to save (${String(body.content).length} bytes).`,
+          `The editor writes at most ${MAX_EDITOR_TEXT_BYTES} bytes.`);
+      }
+      const bytes = Buffer.from(String(body.content ?? ''), 'utf8');
+      const entry = await store.writeFile(parentRel, leaf, bytes, { overwrite: true, allowEmpty: true });
+      res.json({ success: true, entry });
     } catch (e) { sendError(res, e); }
   });
 
