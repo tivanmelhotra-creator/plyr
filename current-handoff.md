@@ -2,11 +2,11 @@
 
 Points to the newest handoff. Read that file first; then the latest backup; then continue.
 
-LATEST HANDOFF: handoffs/2026-09-16_S18_viewer-follows-binding-pr32.md
-LATEST BACKUP:  backup20 (link in the S18b closing chat message; webapp_backup_2026-09-16_S18_pr32.tar.gz, tree == HEAD, includes .git). Previous: https://www.genspark.ai/api/files/s/GLYekxDZ (backup19, S18a end, == b0a331a PR #32 pre-squash).
-BRANCH / HEAD:  genspark_ai_developer @ 4eaf1e5 (+ continuity commit) on top of origin/main 2bbc299 (PR #31 merged). PUSHED. PR #32 OPEN: https://github.com/tivanmelhotra-creator/plyr/pull/32
+LATEST HANDOFF: handoffs/2026-09-17_S19_intent-model-pr33.md
+LATEST BACKUP:  backup21 (link generated in S19; webapp_backup_2026-09-17_S19_pr33.tar.gz). Previous: https://www.genspark.ai/api/files/s/bFTg2k6u (backup20).
+BRANCH / HEAD:  genspark_ai_developer @ ef2265c (+ continuity commit) on top of origin/main 2f243b7 (PR #32 merged). PUSHED. PR #33 OPEN: https://github.com/tivanmelhotra-creator/plyr/pull/33
 
-NEXT ACTION: user merges PR #32. Next session: `git fetch origin && git checkout -B genspark_ai_developer origin/main`, read handoffs/2026-09-16_S18_viewer-follows-binding-pr32.md, continue from what the user reports. Live proof for the drawer/binding contract: `node tools/probe-workflow-binding-rebind.js` (needs dist/, Redis, Xvfb, real Chrome).
+NEXT ACTION: user merges PR #33. Next session: `git fetch origin && git checkout -B genspark_ai_developer origin/main`, read handoffs/2026-09-17_S19_intent-model-pr33.md, continue from what the user reports.
 
 Layout:
 - current-handoff.md   → this pointer
