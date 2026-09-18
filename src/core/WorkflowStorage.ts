@@ -657,6 +657,7 @@ export class WorkflowStorage {
     type Pair = { srcRel: string; srcAbs: string; dstRel: string; dstAbs: string };
     const pairs: Pair[] = [];
     const seen = new Set<string>();
+    const reservedDestinations = new Set<string>();
     for (const rel of rels) {
       const src = await this.resolve(rel);
       if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be moved.', 400);
@@ -667,7 +668,11 @@ export class WorkflowStorage {
       seen.add(src.relative);
 
       const leaf = path.posix.basename(src.relative);
-      const dstRel = dest.relative ? `${dest.relative}/${leaf}` : leaf;
+      let dstRel = dest.relative ? `${dest.relative}/${leaf}` : leaf;
+      if (reservedDestinations.has(dstRel)) {
+        const nextLeaf = await this.freeLeaf(dest.relative, leaf, 'numbered', reservedDestinations);
+        dstRel = dest.relative ? `${dest.relative}/${nextLeaf}` : nextLeaf;
+      }
       if (dstRel === src.relative) {
         throw new WorkflowStorageError(`“${src.relative}” is already in that folder.`, 409);
       }
@@ -677,6 +682,7 @@ export class WorkflowStorage {
       }
       const dst = await this.resolve(dstRel, { mustExist: false });
       if (dst.stat) throw new WorkflowStorageError(`Something named “${leaf}” is already in that folder.`, 409);
+      reservedDestinations.add(dstRel);
       pairs.push({ srcRel: src.relative, srcAbs: src.absolute, dstRel, dstAbs: dst.absolute });
     }
     if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
@@ -719,6 +725,7 @@ export class WorkflowStorage {
     type Pair = { srcAbs: string; srcRel: string; dstRel: string; dstAbs: string; isDir: boolean };
     const pairs: Pair[] = [];
     const seen = new Set<string>();
+    const reservedDestinations = new Set<string>();
     for (const rel of rels) {
       const src = await this.resolve(rel);
       if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be copied.', 400);
@@ -730,9 +737,10 @@ export class WorkflowStorage {
         throw new WorkflowStorageError('A folder cannot be copied inside itself.', 400);
       }
       const leaf = path.posix.basename(src.relative);
-      const dstLeaf = await this.freeLeaf(dest.relative, leaf, style);
+      const dstLeaf = await this.freeLeaf(dest.relative, leaf, style, reservedDestinations);
       const dstRel = dest.relative ? `${dest.relative}/${dstLeaf}` : dstLeaf;
       const dst = await this.resolve(dstRel, { mustExist: false });
+      reservedDestinations.add(dstRel);
       pairs.push({ srcAbs: src.absolute, srcRel: src.relative, dstRel, dstAbs: dst.absolute, isDir });
     }
     if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
@@ -817,7 +825,12 @@ export class WorkflowStorage {
   }
 
   /** A leaf name that does not exist under `parentRel`, in the requested style. */
-  private async freeLeaf(parentRel: string, name: string, style: 'numbered' | 'copy'): Promise<string> {
+  private async freeLeaf(
+    parentRel: string,
+    name: string,
+    style: 'numbered' | 'copy',
+    reserved = new Set<string>(),
+  ): Promise<string> {
     const ext = path.extname(name);
     const stem = ext ? name.slice(0, -ext.length) : name;
     const candidate = (n: number): string => {
@@ -828,6 +841,7 @@ export class WorkflowStorage {
     for (let n = start; n <= 1000; n += 1) {
       const leaf = candidate(n);
       const rel = parentRel ? `${parentRel}/${leaf}` : leaf;
+      if (reserved.has(rel)) continue;
       const probe = await this.resolve(rel, { mustExist: false });
       if (!probe.stat) return leaf;
     }

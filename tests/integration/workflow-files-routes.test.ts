@@ -771,6 +771,21 @@ describe('workflow files: utility operation routes', () => {
     }
   });
 
+  it('resolves same-basename copy and move destinations without overwrite', async () => {
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-a' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-b' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-copy' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-move' });
+    await upload('collision-a', 'foo.txt', 'A'); await upload('collision-b', 'foo.txt', 'B');
+    let r = await request(app).post(`${base()}/copy`).send({ paths: ['collision-a/foo.txt', 'collision-b/foo.txt'], to: 'collision-copy' });
+    expect(r.status).toBe(200);
+    expect(r.body.entries.map((e: { path: string }) => e.path)).toEqual(['collision-copy/foo.txt', 'collision-copy/foo (2).txt']);
+    await upload('collision-a', 'bar.txt', 'A'); await upload('collision-b', 'bar.txt', 'B');
+    r = await request(app).post(`${base()}/move`).send({ paths: ['collision-a/bar.txt', 'collision-b/bar.txt'], to: 'collision-move' });
+    expect(r.status).toBe(200);
+    expect(r.body.entries.map((e: { path: string }) => e.path)).toEqual(['collision-move/bar.txt', 'collision-move/bar (2).txt']);
+  });
+
   it('cannot access another workflow through the utility routes', async () => {
     await upload('', 'isolation.txt', 'alice');
     expect((await request(app).post(`/browser/workflow-files/${wfBob}/copy`).send({ paths: ['isolation.txt'], to: '' })).status).toBe(404);

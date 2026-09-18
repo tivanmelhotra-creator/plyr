@@ -936,3 +936,36 @@ describe('WorkflowStorage: Extract <- ZIP', () => {
     expect((await s.list('copy-source')).entries.map((e) => e.name).sort()).toEqual(['a.txt', 'b.txt']);
   });
 });
+
+describe('WorkflowStorage: same-basename bulk collision planning', () => {
+  it('copies same-named files to distinct numbered destinations', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.mkdir('', 'source-a'); await s.mkdir('', 'source-b'); await s.mkdir('', 'copy-target');
+    await s.writeFile('source-a', 'foo.txt', Buffer.from('A'));
+    await s.writeFile('source-b', 'foo.txt', Buffer.from('B'));
+    const copied = await s.copyMany(['source-a/foo.txt', 'source-b/foo.txt'], 'copy-target');
+    expect(copied.map((e) => e.path)).toEqual(['copy-target/foo.txt', 'copy-target/foo (2).txt']);
+    expect(await fs.readFile(onDisk(s, 'copy-target/foo.txt'), 'utf8')).toBe('A');
+    expect(await fs.readFile(onDisk(s, 'copy-target/foo (2).txt'), 'utf8')).toBe('B');
+  });
+
+  it('moves same-named files to distinct destinations without overwriting', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.mkdir('', 'source-a'); await s.mkdir('', 'source-b'); await s.mkdir('', 'move-target');
+    await s.writeFile('source-a', 'foo.txt', Buffer.from('A'));
+    await s.writeFile('source-b', 'foo.txt', Buffer.from('B'));
+    const moved = await s.moveMany(['source-a/foo.txt', 'source-b/foo.txt'], 'move-target');
+    expect(moved.map((e) => e.path)).toEqual(['move-target/foo.txt', 'move-target/foo (2).txt']);
+    expect(await fs.readFile(onDisk(s, 'move-target/foo.txt'), 'utf8')).toBe('A');
+    expect(await fs.readFile(onDisk(s, 'move-target/foo (2).txt'), 'utf8')).toBe('B');
+  });
+
+  it('preserves all three same-named files in a bulk copy', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.mkdir('', 'a'); await s.mkdir('', 'b'); await s.mkdir('', 'c'); await s.mkdir('', 'target');
+    for (const dir of ['a', 'b', 'c']) await s.writeFile(dir, 'foo.txt', Buffer.from(dir));
+    const copied = await s.copyMany(['a/foo.txt', 'b/foo.txt', 'c/foo.txt'], 'target');
+    expect(copied.map((e) => e.name)).toEqual(['foo.txt', 'foo (2).txt', 'foo (3).txt']);
+    expect(await fs.readFile(onDisk(s, 'target/foo (3).txt'), 'utf8')).toBe('c');
+  });
+});
