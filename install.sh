@@ -313,7 +313,7 @@ require_node() {
     major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
     if [ "$major" -lt 20 ]; then
       warn "Node.js ${major}.x detected; the project targets Node >= 20."
-      install_node_offer || true
+      install_node_offer || return 1
     else
       ok "Node.js $(node -v) detected."
     fi
@@ -353,6 +353,8 @@ install_node_offer() {
       return 1 ;;
   esac
   has node || { err "Node.js still not available."; return 1; }
+  local major; major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  [ "$major" -ge 20 ] || { err "Node.js ${major}.x is still too old; Node >= 20 is required."; return 1; }
 }
 
 # ---------------------------------------------------------------------------
@@ -463,9 +465,11 @@ install_server_node() {
   [ -z "$port" ] && port="$(ask "Which port should the panel listen on?" "3000")"
   [ -z "$port" ] && port="3000"
 
-  # The Runtime Manager is the only Native installer. This wrapper keeps the
-  # legacy wizard/domain/Caddy UX without maintaining a second dependency path.
-  title "[1/3] Configuration (.env + port)"
+  # The Runtime Manager is the only Native lifecycle installer. This wrapper
+  # remains the bootstrap layer for prerequisites and keeps the legacy
+  # wizard/domain/Caddy UX without maintaining a second dependency path.
+  title "[1/3] Node bootstrap and configuration (.env + port)"
+  require_node || return 1
   ensure_env_file
   if [ -f .env ] && [ "$port" != "3000" ]; then
     if grep -q '^PORT=' .env; then sed_inplace "s|^PORT=.*|PORT=${port}|" .env; else printf "\nPORT=%s\n" "$port" >> .env; fi
