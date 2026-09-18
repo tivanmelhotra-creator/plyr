@@ -24,6 +24,13 @@ function redis(args: string[], port: number): string {
   }).trim();
 }
 
+function redisConfigValue(key: string, port: number): string {
+  const values = redis(['CONFIG', 'GET', key], port).split(/\s+/);
+  const index = values.indexOf(key);
+  if (index < 0 || !values[index + 1]) throw new Error(`Redis CONFIG GET ${key} returned no value`);
+  return values[index + 1];
+}
+
 function freePort(port: number): void {
   try {
     const listeners = execFileSync('sh', ['-c', `ss -ltnp '( sport = :${port} )' 2>/dev/null || true`], {
@@ -97,6 +104,7 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
     ].join('\n'));
 
     let workflowId = '';
+    let persistenceFile = '';
     try {
       run(['start', '--dev'], runtimeEnv);
       const created = await fetch(`http://127.0.0.1:${port}/workflows/local`, {
@@ -120,13 +128,15 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
 
       const lastSaveBefore = Number(redis(['LASTSAVE'], redisPort));
       expect(Number.isFinite(lastSaveBefore)).toBe(true);
+      const redisDir = redisConfigValue('dir', redisPort);
+      const redisDbfilename = redisConfigValue('dbfilename', redisPort);
+      persistenceFile = path.resolve(redisDir, redisDbfilename);
 
       run(['stop'], runtimeEnv);
       freePort(port);
 
-      const dump = path.join(root, 'dump.rdb');
-      expect(existsSync(dump)).toBe(true);
-      expect(statSync(dump).size).toBeGreaterThan(0);
+      expect(existsSync(persistenceFile)).toBe(true);
+      expect(statSync(persistenceFile).size).toBeGreaterThan(0);
 
       run(['start', '--dev'], runtimeEnv);
       const listed = await getWorkflows(port);
@@ -139,6 +149,7 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
       try { run(['stop'], runtimeEnv); } catch { /* runtime may already be down */ }
       freePort(port);
       try { redis(['shutdown', 'nosave'], redisPort); } catch { /* already down */ }
+      if (persistenceFile) rmSync(persistenceFile, { force: true });
       rmSync(testRoot, { recursive: true, force: true });
     }
   }, 120_000);
