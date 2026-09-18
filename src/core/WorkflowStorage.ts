@@ -57,11 +57,13 @@
  * Listings flag them with `system: true` so a UI can draw them apart.
  */
 
-import { promises as fs, type Dirent, type Stats } from 'fs';
+import { promises as fs, createReadStream, createWriteStream, type Dirent, type Stats } from 'fs';
 import path from 'path';
 
 import { config } from '../config';
 import { isValidWorkflowId } from '../utils/redis-keys';
+import { ZipStream } from './ZipStream';
+import { ZipArchiveError, readZipArchive, isZipFileName, archiveStem } from './ZipArchive';
 
 export class WorkflowStorageError extends Error {
   constructor(message: string, public readonly status = 400) {
@@ -631,4 +633,420 @@ export class WorkflowStorage {
       relativePath: rel,
     };
   }
+
+  // ── Organise: Move ─────────────────────────────────────────────────────────
+  //
+  // `destinationRelativePath` is always a FOLDER inside the SAME workflow. Every
+  // source is resolved by the same resolve() as everything else, so traversal,
+  // absolute paths and symlinks are refused before a rename is attempted, and a
+  // destination the resolve() would not accept is refused the same way. This is
+  // a real filesystem move (fs.rename), never a download+re-upload: the bytes
+  // never leave the disk.
+  //
+  // Conflicts are REFUSED, never overwritten: moving `a.txt` onto an existing
+  // `a.txt` is a 409 the operator can act on, not a silent data loss. All
+  // sources are validated before the first rename, so a bulk move that would
+  // conflict half-way changes nothing at all.
+
+  /** Move every path into `destDir` (a folder relative path; '' is the root). */
+  async moveMany(paths: unknown[], destDir: unknown): Promise<WorkflowEntry[]> {
+    const rels = this.cleanBulk(paths);
+    const dest = await this.resolve(destDir);
+    if (!dest.stat || !dest.stat.isDirectory()) throw new WorkflowStorageError('The destination is not a folder.', 400);
+
+    type Pair = { srcRel: string; srcAbs: string; dstRel: string; dstAbs: string };
+    const pairs: Pair[] = [];
+    const seen = new Set<string>();
+    for (const rel of rels) {
+      const src = await this.resolve(rel);
+      if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be moved.', 400);
+      if (isSystemFolder(src.relative)) {
+        throw new WorkflowStorageError(`The ${src.relative} folder is part of the workflow and cannot be moved.`, 400);
+      }
+      if (seen.has(src.relative)) continue;
+      seen.add(src.relative);
+
+      const leaf = path.posix.basename(src.relative);
+      const dstRel = dest.relative ? `${dest.relative}/${leaf}` : leaf;
+      if (dstRel === src.relative) {
+        throw new WorkflowStorageError(`“${src.relative}” is already in that folder.`, 409);
+      }
+      if (src.stat && src.stat.isDirectory()
+        && (dest.relative === src.relative || dest.relative.startsWith(`${src.relative}/`))) {
+        throw new WorkflowStorageError('A folder cannot be moved inside itself.', 400);
+      }
+      const dst = await this.resolve(dstRel, { mustExist: false });
+      if (dst.stat) throw new WorkflowStorageError(`Something named “${leaf}” is already in that folder.`, 409);
+      pairs.push({ srcRel: src.relative, srcAbs: src.absolute, dstRel, dstAbs: dst.absolute });
+    }
+    if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
+
+    const out: WorkflowEntry[] = [];
+    for (const p of pairs) {
+      await fs.rename(p.srcAbs, p.dstAbs);
+      out.push(await this.describe(p.dstRel));
+    }
+    return out;
+  }
+
+  // ── Organise: Copy / Duplicate ─────────────────────────────────────────────
+  //
+  // Server-side, inside WorkflowStorage: the client sends only relative paths,
+  // and the tree is walked HERE. Folders are copied recursively and their
+  // structure is preserved. A copied name NEVER overwrites an existing one:
+  //
+  //   Copy       `a.txt` into a folder that has one -> `a (2).txt`  (numbered,
+  //              the same convention an upload uses — see claimTarget)
+  //   Duplicate  `config.json` beside itself        -> `config copy.json`
+  //
+  // Symlinks are skipped as the listing skips them, so a copy cannot carry a
+  // link out of the workspace, and a copy into the source's own subtree is
+  // refused rather than allowed to recurse forever.
+
+  /**
+   * Copy each path into `destDir`. `style` decides the name when it is taken.
+   */
+  async copyMany(
+    paths: unknown[],
+    destDir: unknown,
+    opts: { style?: 'numbered' | 'copy' } = {},
+  ): Promise<WorkflowEntry[]> {
+    const rels = this.cleanBulk(paths);
+    const style = opts.style === 'copy' ? 'copy' : 'numbered';
+    const dest = await this.resolve(destDir);
+    if (!dest.stat || !dest.stat.isDirectory()) throw new WorkflowStorageError('The destination is not a folder.', 400);
+
+    type Pair = { srcAbs: string; srcRel: string; dstRel: string; dstAbs: string; isDir: boolean };
+    const pairs: Pair[] = [];
+    const seen = new Set<string>();
+    for (const rel of rels) {
+      const src = await this.resolve(rel);
+      if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be copied.', 400);
+      if (seen.has(src.relative)) continue;
+      seen.add(src.relative);
+
+      const isDir = !!(src.stat && src.stat.isDirectory());
+      if (isDir && (dest.relative === src.relative || dest.relative.startsWith(`${src.relative}/`))) {
+        throw new WorkflowStorageError('A folder cannot be copied inside itself.', 400);
+      }
+      const leaf = path.posix.basename(src.relative);
+      const dstLeaf = await this.freeLeaf(dest.relative, leaf, style);
+      const dstRel = dest.relative ? `${dest.relative}/${dstLeaf}` : dstLeaf;
+      const dst = await this.resolve(dstRel, { mustExist: false });
+      pairs.push({ srcAbs: src.absolute, srcRel: src.relative, dstRel, dstAbs: dst.absolute, isDir });
+    }
+    if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
+
+    const budget = { left: config.WORKFLOW_ZIP_MAX_ENTRIES };
+    const out: WorkflowEntry[] = [];
+    for (const p of pairs) {
+      if (p.isDir) {
+        await this.copyTree(p.srcAbs, p.dstAbs, budget);
+      } else {
+        await this.copyFile(p.srcAbs, p.dstAbs);
+      }
+      out.push(await this.describe(p.dstRel));
+    }
+    return out;
+  }
+
+  /**
+   * Duplicate ONE entry beside itself: `config.json` -> `config copy.json`,
+   * `config copy.json` if taken. Folders are copied recursively.
+   */
+  async duplicate(relative: unknown): Promise<WorkflowEntry> {
+    const src = await this.resolve(relative);
+    if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be duplicated.', 400);
+    const parentRel = path.posix.dirname(src.relative).replace(/^\.$/, '');
+    const leaf = path.posix.basename(src.relative);
+    const name = await this.freeLeaf(parentRel, leaf, 'copy');
+    const dstRel = parentRel ? `${parentRel}/${name}` : name;
+    const dst = await this.resolve(dstRel, { mustExist: false });
+    if (dst.stat) throw new WorkflowStorageError('Something with that name already exists.', 409);
+    if (src.stat && src.stat.isDirectory()) {
+      await this.copyTree(src.absolute, dst.absolute, { left: config.WORKFLOW_ZIP_MAX_ENTRIES });
+    } else {
+      await this.copyFile(src.absolute, dst.absolute);
+    }
+    return this.describe(dstRel);
+  }
+
+  /** Recursively copy a directory. Symlinks and specials are SKIPPED. */
+  private async copyTree(srcAbs: string, dstAbs: string, budget: { left: number }): Promise<void> {
+    await fs.mkdir(dstAbs, { mode: 0o700 });
+    const dirents = await fs.readdir(srcAbs, { withFileTypes: true });
+    for (const d of dirents) {
+      if (budget.left <= 0) {
+        throw new WorkflowStorageError(`The copy is larger than the ${config.WORKFLOW_ZIP_MAX_ENTRIES} entries allowed.`, 413);
+      }
+      budget.left -= 1;
+      const from = path.join(srcAbs, d.name);
+      const to = path.join(dstAbs, d.name);
+      let st: Stats;
+      try { st = await fs.lstat(from); } catch { continue; }
+      // A link the tree does not show must not appear in a copy either.
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) await this.copyTree(from, to, budget);
+      else if (st.isFile()) await this.copyFile(from, to);
+    }
+  }
+
+  /** One file, copied byte for byte with the workspace's own permissions. */
+  private async copyFile(srcAbs: string, dstAbs: string): Promise<void> {
+    const tmp = `${dstAbs}.${process.pid}.${Date.now()}.part`;
+    await fs.copyFile(srcAbs, tmp);
+    await fs.chmod(tmp, 0o600).catch(() => {});
+    await fs.rename(tmp, dstAbs);
+  }
+
+  /** A leaf name that does not exist under `parentRel`, in the requested style. */
+  private async freeLeaf(parentRel: string, name: string, style: 'numbered' | 'copy'): Promise<string> {
+    const ext = path.extname(name);
+    const stem = ext ? name.slice(0, -ext.length) : name;
+    const candidate = (n: number): string => {
+      if (style === 'copy') return `${stem} copy${n > 1 ? ` ${n}` : ''}${ext}`;
+      return n <= 1 ? name : `${stem} (${n})${ext}`;
+    };
+    const start = style === 'copy' ? 1 : 1;
+    for (let n = start; n <= 1000; n += 1) {
+      const leaf = candidate(n);
+      const rel = parentRel ? `${parentRel}/${leaf}` : leaf;
+      const probe = await this.resolve(rel, { mustExist: false });
+      if (!probe.stat) return leaf;
+    }
+    throw new WorkflowStorageError('Too many files with that name.', 409);
+  }
+
+  // ── Archive: Compress -> ZIP ───────────────────────────────────────────────
+  //
+  // Build ONE .zip FROM the selected workspace items, INTO the same workspace.
+  // The client sends relative paths only; every one is resolved here, and the
+  // output is created through the same resolve()+claim path as any other new
+  // file, so it cannot land outside the workflow root. Entry names are the
+  // selected paths relative to `base` (the folder on screen), exactly as the
+  // download ZIP names them, so an archive made here extracts to what was seen.
+  //
+  // Compression is streaming (core/ZipStream) and the archive is written to a
+  // `.part` file then RENAMED into place, so a crash mid-archive never leaves a
+  // half-written .zip the operator would later try to open.
+
+  /** Archive `paths` (relative to `base`) into `<destDir>/<name>.zip`. */
+  async compress(
+    paths: unknown[],
+    opts: { base?: unknown; destDir?: unknown; name?: unknown } = {},
+  ): Promise<WorkflowEntry> {
+    const rels = this.cleanBulk(paths);
+    const base = normalizeRelativePath(opts.base ?? '');
+    const destDir = opts.destDir === undefined ? base : normalizeRelativePath(opts.destDir);
+    const dest = await this.resolve(destDir);
+    if (!dest.stat || !dest.stat.isDirectory()) throw new WorkflowStorageError('The destination is not a folder.', 400);
+
+    // Collect every archive entry BEFORE anything is written: a bad path must
+    // be a clean 4xx, not a truncated archive with an error glued to its tail.
+    const strip = base ? `${base}/` : '';
+    const entryName = (rel: string) => (strip && rel.startsWith(strip) ? rel.slice(strip.length) : rel);
+
+    type Job = { name: string; isDir: boolean; abs: string; mtime: Date };
+    const jobs: Job[] = [];
+    const seen = new Set<string>();
+    for (const rel of rels) {
+      const r = await this.resolve(rel);
+      if (!r.stat) throw new WorkflowStorageError('No such file or folder.', 404);
+      if (seen.has(r.relative)) continue;
+      seen.add(r.relative);
+      if (r.stat.isDirectory()) {
+        if (r.relative && r.relative !== base) {
+          jobs.push({ name: entryName(r.relative), isDir: true, abs: '', mtime: r.stat.mtime });
+        }
+        for (const e of await this.walk(r.relative)) {
+          if (e.type === 'dir') {
+            jobs.push({ name: entryName(e.path), isDir: true, abs: '', mtime: new Date(e.modifiedAt) });
+          } else {
+            const rf = await this.resolveForBrowser(e.path);
+            jobs.push({ name: entryName(e.path), isDir: false, abs: rf.absolutePath, mtime: new Date(e.modifiedAt) });
+          }
+        }
+      } else {
+        const rf = await this.resolveForBrowser(r.relative);
+        jobs.push({ name: entryName(r.relative), isDir: false, abs: rf.absolutePath, mtime: r.stat.mtime });
+      }
+      if (jobs.length > config.WORKFLOW_ZIP_MAX_ENTRIES) {
+        throw new WorkflowStorageError(`At most ${config.WORKFLOW_ZIP_MAX_ENTRIES} entries per archive.`, 413);
+      }
+    }
+    if (!jobs.some((j) => !j.isDir)) {
+      throw new WorkflowStorageError('There is nothing to compress.', 400);
+    }
+
+    const fallback = `${base ? path.posix.basename(base) : this.workflowId}.zip`;
+    let wanted = String(opts.name ?? '').trim() || fallback;
+    if (!wanted.toLowerCase().endsWith('.zip')) wanted = `${wanted}.zip`;
+    const seg = assertSegment(wanted);
+    const leaf = await this.freeLeaf(dest.relative, seg, 'numbered');
+    const rel = dest.relative ? `${dest.relative}/${leaf}` : leaf;
+    const target = await this.resolve(rel, { mustExist: false });
+
+    await this.writeZip(target.absolute, jobs);
+    return this.describe(rel);
+  }
+
+  /** Stream `jobs` into a ZIP at `destAbs` via a `.part` file, then rename. */
+  private async writeZip(destAbs: string, jobs: Array<{ name: string; isDir: boolean; abs: string; mtime: Date }>): Promise<void> {
+    const tmp = `${destAbs}.${process.pid}.${Date.now()}.part`;
+    const out = createWriteStream(tmp, { mode: 0o600 });
+    try {
+      const zip = new ZipStream(out);
+      for (const j of jobs) {
+        if (j.isDir) await zip.addDirectory(j.name, { mtime: j.mtime });
+        else await zip.addFile(j.name, createReadStream(j.abs), { mtime: j.mtime });
+      }
+      await zip.finish();
+      await new Promise<void>((resolve, reject) => {
+        out.once('error', reject);
+        out.end(() => resolve());
+      });
+    } catch (e) {
+      out.destroy();
+      await fs.unlink(tmp).catch(() => {});
+      throw e;
+    }
+    await fs.rename(tmp, destAbs);
+  }
+
+  // ── Archive: Extract <- ZIP ────────────────────────────────────────────────
+  //
+  // Unpack a `.zip` that is IN the workspace into the workspace. The archive is
+  // parsed by core/ZipArchive, which refuses absolute names, backslash names and
+  // any `.`/`..` segment outright — a zip-slip cannot even be represented. Every
+  // surviving entry is then resolved by THIS class's resolve() before a byte is
+  // written, so the final destination is proven to be inside the workflow root,
+  // and an existing symlink in the way is refused. Nothing is ever created as a
+  // symlink.
+  //
+  // Pathological archives are bounded before decompression: config caps the
+  // input size, the declared total expansion and the entry count, and zlib is
+  // given a hard output cap per entry, so a header that understates its size
+  // cannot defeat the limit. Conflicts are REFUSED (409) and nothing is written
+  // when any destination file already exists, so an extract never clobbers.
+
+  /** Extract a `.zip` into `into`, or beside itself / into a new folder. */
+  async extractZip(
+    relative: unknown,
+    opts: { into?: unknown; mode?: 'here' | 'folder' } = {},
+  ): Promise<WorkflowExtractResult> {
+    const file = await this.resolveForBrowser(relative);
+    if (!isZipFileName(file.name)) {
+      throw new WorkflowStorageError('Only a .zip file can be extracted.', 400);
+    }
+    if (file.size > config.WORKFLOW_ZIP_MAX_INPUT_BYTES) {
+      throw new WorkflowStorageError(
+        `That archive is too large to extract (${file.size} bytes). The limit is ${config.WORKFLOW_ZIP_MAX_INPUT_BYTES} bytes.`,
+        413,
+      );
+    }
+
+    const buffer = await fs.readFile(file.absolutePath);
+    let entries;
+    try {
+      entries = readZipArchive(buffer, {
+        maxEntries: config.WORKFLOW_ZIP_MAX_ENTRIES,
+        maxTotalUncompressedBytes: config.WORKFLOW_ZIP_MAX_TOTAL_BYTES,
+        maxEntryUncompressedBytes: config.WORKFLOW_ZIP_MAX_TOTAL_BYTES,
+      });
+    } catch (e) {
+      if (e instanceof ZipArchiveError) throw new WorkflowStorageError(e.message, e.status);
+      throw e;
+    }
+    const filesIn = entries.filter((e) => !e.isDirectory && e.name).length;
+    if (filesIn > config.WORKFLOW_ZIP_MAX_FILES) {
+      throw new WorkflowStorageError(
+        `The archive holds ${filesIn} files, more than the ${config.WORKFLOW_ZIP_MAX_FILES} allowed.`, 413,
+      );
+    }
+
+    const parentRel = path.posix.dirname(file.relativePath).replace(/^\.$/, '');
+
+    // Where does it go?  `into` is explicit and wins; otherwise the mode picks
+    // "beside the archive" or "a new folder named after the archive".
+    let intoRel: string;
+    if (opts.into !== undefined && opts.into !== null && String(opts.into) !== '') {
+      intoRel = normalizeRelativePath(opts.into);
+      const probe = await this.resolve(intoRel, { mustExist: false });
+      if (probe.stat && !probe.stat.isDirectory()) {
+        throw new WorkflowStorageError('A file is in the way of that folder name.', 409);
+      }
+      if (!probe.stat) await fs.mkdir(probe.absolute, { recursive: true, mode: 0o700 });
+    } else if (opts.mode === 'folder') {
+      const stem = await this.freeLeaf(parentRel, archiveStem(file.name), 'numbered');
+      intoRel = parentRel ? `${parentRel}/${stem}` : stem;
+      const probe = await this.resolve(intoRel, { mustExist: false });
+      if (!probe.stat) await fs.mkdir(probe.absolute, { recursive: true, mode: 0o700 });
+    } else {
+      intoRel = parentRel;
+      const probe = await this.resolve(intoRel, { mustExist: false });
+      if (!probe.stat) await fs.mkdir(probe.absolute, { recursive: true, mode: 0o700 });
+    }
+
+    // Validate EVERY entry before writing anything: a conflict is a clean 4xx
+    // with the whole archive untouched, never a half-extracted folder.
+    type Plan = { dstRel: string; dstAbs: string; data: Buffer; isDir: boolean };
+    const plans: Plan[] = [];
+    let directories = 0;
+    for (const e of entries) {
+      if (!e.name) continue; // the archive's own root
+      const dstRel = intoRel ? `${intoRel}/${e.name}` : e.name;
+      const dst = await this.resolve(dstRel, { mustExist: false });
+      if (dst.stat) {
+        if (dst.stat.isDirectory() && e.isDirectory) { directories += 1; continue; }
+        throw new WorkflowStorageError(`“${e.name}” already exists in the destination.`, 409);
+      }
+      if (e.isDirectory) { directories += 1; plans.push({ dstRel, dstAbs: dst.absolute, data: Buffer.alloc(0), isDir: true }); continue; }
+      plans.push({ dstRel, dstAbs: dst.absolute, data: e.data, isDir: false });
+    }
+
+    let files = 0;
+    for (const p of plans) {
+      if (p.isDir) {
+        await fs.mkdir(p.dstAbs, { recursive: true, mode: 0o700 });
+        continue;
+      }
+      await fs.mkdir(path.dirname(p.dstAbs), { recursive: true, mode: 0o700 });
+      const tmp = `${p.dstAbs}.${process.pid}.${Date.now()}.part`;
+      await fs.writeFile(tmp, p.data, { mode: 0o600 });
+      await fs.rename(tmp, p.dstAbs);
+      files += 1;
+    }
+
+    return {
+      workflowId: this.workflowId,
+      folder: intoRel,
+      files,
+      directories,
+      skipped: entries.length - plans.length,
+    };
+  }
+
+  /** A bulk request's paths: non-empty, deduped later, and bounded in count. */
+  private cleanBulk(paths: unknown[]): string[] {
+    if (!Array.isArray(paths)) throw new WorkflowStorageError('Paths must be a list.', 400);
+    const rels = paths.map((p) => String(p ?? '')).filter((p) => p.length > 0);
+    if (!rels.length) throw new WorkflowStorageError('No paths were given.', 400);
+    if (rels.length > config.WORKFLOW_BULK_MAX_PATHS) {
+      throw new WorkflowStorageError(`At most ${config.WORKFLOW_BULK_MAX_PATHS} paths per request.`, 400);
+    }
+    return rels;
+  }
+}
+
+/** What extractZip produced. Paths are workflow-relative. */
+export interface WorkflowExtractResult {
+  workflowId: string;
+  /** The folder the archive was unpacked into ('' is the root). */
+  folder: string;
+  /** Files written. */
+  files: number;
+  /** Directories created or already present. */
+  directories: number;
+  /** Archive entries that were the archive's own root and so not written. */
+  skipped: number;
 }

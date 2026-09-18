@@ -2880,10 +2880,10 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
     rowByPath(h, 'cookies.json')!.emit('contextmenu', { clientX: 40, clientY: 50, preventDefault() {}, stopPropagation() {} });
     expect(menu.hidden).toBe(false);
     const labels = () => menu.children.filter((c) => c.className.indexOf('dmi') === 0 && c.className !== 'dmi-sep').map((c) => c.textContent);
-    expect(labels()).toEqual(['Select', 'Download', 'Rename', 'Delete']);
+    expect(labels()).toEqual(['Select', 'Download', 'Compress (.zip)', 'Move', 'Copy', 'Duplicate', 'Rename', 'Delete', 'Details']);
     // Open a second menu: it REPLACES the first rather than stacking.
     rowByPath(h, 'docs')!.emit('contextmenu', { clientX: 40, clientY: 50, preventDefault() {}, stopPropagation() {} });
-    expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete']);
+    expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete', 'Compress (.zip)', 'Move', 'Copy']);
     // Empty space: the root's own actions.
     h.el('wfmlist').emit('contextmenu', { clientX: 40, clientY: 50, preventDefault() {} });
     expect(labels()).toEqual(['New Folder', 'New File', 'Upload File', 'Select All', 'Download workspace (.zip)', 'Refresh']);

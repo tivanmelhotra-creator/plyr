@@ -6,6 +6,11 @@
  *   POST   /browser/workflow-files/:workflowId/file                  { path, name, content? }  (New File)
  *   POST   /browser/workflow-files/:workflowId/upload?path=&name=    raw bytes
  *   PATCH  /browser/workflow-files/:workflowId/rename                { path, name }
+ *   POST   /browser/workflow-files/:workflowId/move                  { paths, to }
+ *   POST   /browser/workflow-files/:workflowId/copy                  { paths, to, style? }
+ *   POST   /browser/workflow-files/:workflowId/duplicate             { path }
+ *   POST   /browser/workflow-files/:workflowId/compress              { paths, path, name, to? }
+ *   POST   /browser/workflow-files/:workflowId/extract               { path, into?, mode? }
  *   DELETE /browser/workflow-files/:workflowId?path=&recursive=1
  *   POST   /browser/workflow-files/:workflowId/use                   { path, paths?, chooserId?, userId? }
  *   POST   /browser/workflow-files/:workflowId/bind                  { target: 'local'|'live', userId? }
@@ -368,6 +373,113 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       const body = (req.body ?? {}) as { path?: unknown; name?: unknown };
       const entry = await store.rename(String(body.path ?? ''), String(body.name ?? ''));
       res.json({ success: true, entry });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── move: relocate one or many items INTO a folder of the same workflow ────
+  //
+  //   POST /browser/workflow-files/:id/move  { paths: ["a.txt"], to: "assets" }
+  //
+  // `paths` is the selection (one or many) and `to` is the DESTINATION FOLDER,
+  // both workflow-RELATIVE and both resolved by the store. The store refuses a
+  // move outside the workflow, a move that would overwrite an existing name
+  // (409), a move of a system folder, and a move of a folder into itself; and
+  // it validates every source before the first rename, so a bulk move is all or
+  // nothing. This is a real filesystem move, not a download + re-upload.
+  router.post('/browser/workflow-files/:workflowId/move', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { paths?: unknown; path?: unknown; to?: unknown };
+      const paths = Array.isArray(body.paths) && body.paths.length
+        ? body.paths
+        : [String(body.path ?? '')];
+      const entries = await store.moveMany(paths, String(body.to ?? ''));
+      res.json({ success: true, entries, count: entries.length });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── copy: duplicate one or many items INTO a folder of the same workflow ───
+  //
+  //   POST /browser/workflow-files/:id/copy  { paths: ["config.json"], to: "backup", style?: "copy" }
+  //
+  // Server-side inside WorkflowStorage: folders are copied recursively and the
+  // structure is preserved, symlinks are skipped, and a name that is already
+  // taken is numbered (`a (2).txt`) — or, with `style: 'copy'`, given the
+  // `a copy.txt` form the Duplicate action uses. Nothing is ever overwritten.
+  router.post('/browser/workflow-files/:workflowId/copy', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { paths?: unknown; path?: unknown; to?: unknown; style?: unknown };
+      const paths = Array.isArray(body.paths) && body.paths.length
+        ? body.paths
+        : [String(body.path ?? '')];
+      const style = String(body.style || '') === 'copy' ? 'copy' : 'numbered';
+      const entries = await store.copyMany(paths, String(body.to ?? ''), { style });
+      res.json({ success: true, entries, count: entries.length });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── duplicate: one item, beside itself ─────────────────────────────────────
+  //
+  //   POST /browser/workflow-files/:id/duplicate  { path: "config.json" }
+  //
+  // The quick per-file action: `config.json` -> `config copy.json`. Folders are
+  // copied recursively, exactly as /copy does.
+  router.post('/browser/workflow-files/:workflowId/duplicate', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { path?: unknown };
+      const entry = await store.duplicate(String(body.path ?? ''));
+      res.status(201).json({ success: true, entry });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── compress: build a .zip IN the workspace from the selection ─────────────
+  //
+  //   POST /browser/workflow-files/:id/compress
+  //        { paths: ["a.txt", "docs"], path: "docs", name: "archive", to: "docs" }
+  //
+  // `path` is the folder the selection is relative to (entry names are stripped
+  // of it, exactly as the download ZIP does), `name` is the archive's name (a
+  // `.zip` suffix is added when missing), and `to` is where the archive is
+  // created (defaults to `path`). Server-side, streamed, and written into the
+  // workflow root only. An existing archive name is never overwritten.
+  router.post('/browser/workflow-files/:workflowId/compress', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { paths?: unknown; path?: unknown; name?: unknown; to?: unknown };
+      const paths = Array.isArray(body.paths) ? body.paths : [];
+      const entry = await store.compress(paths, {
+        base: body.path,
+        destDir: body.to,
+        name: body.name,
+      });
+      res.status(201).json({ success: true, entry });
+    } catch (e) { sendError(res, e); }
+  });
+
+  // ── extract: unpack a .zip that is IN the workspace ────────────────────────
+  //
+  //   POST /browser/workflow-files/:id/extract  { path: "assets.zip", mode?: "here"|"folder", into? }
+  //
+  // `mode: 'here'` (default) unpacks beside the archive; `mode: 'folder'`
+  // makes a new folder named after the archive. `into` names an explicit
+  // destination folder and wins over `mode`. The store refuses traversal,
+  // absolute names, `..` segments and symlinks in the archive, bounds the
+  // declared expansion before decompressing, and refuses to overwrite an
+  // existing file (409).
+  router.post('/browser/workflow-files/:workflowId/extract', async (req: AuthenticatedRequest, res) => {
+    try {
+      const store = await open(req, res);
+      if (!store) return;
+      const body = (req.body ?? {}) as { path?: unknown; into?: unknown; mode?: unknown };
+      const mode = String(body.mode || '') === 'folder' ? 'folder' : 'here';
+      const result = await store.extractZip(String(body.path ?? ''), { into: body.into, mode });
+      res.json({ success: true, ...result });
     } catch (e) { sendError(res, e); }
   });
 

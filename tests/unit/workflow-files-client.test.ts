@@ -410,9 +410,9 @@ describe('WorkflowFiles: the panel and its requests', () => {
       // Download (.zip) is offered on EVERY folder -- a system folder is the
       // workflow's, but its contents are still the operator's to take a copy of.
       (b.stage.querySelector('li[data-path="uploads"]') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Compress (.zip)']);
       (b.stage.querySelector('li[data-path="docs"]') as HTMLElement).dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete', 'Compress (.zip)', 'Move', 'Copy']);
     });
   });
 
@@ -505,7 +505,7 @@ describe('WorkflowFiles: the panel and its requests', () => {
       b.w.WorkflowFiles.open({ host: b.stage });
       await b.tick();
       files()[0].dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
-      expect(menuLabels()).toEqual(['Select', 'Download', 'Rename', 'Delete']);
+      expect(menuLabels()).toEqual(['Select', 'Download', 'Compress (.zip)', 'Move', 'Copy', 'Duplicate', 'Rename', 'Delete', 'Details']);
     });
   });
 

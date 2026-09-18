@@ -6099,6 +6099,12 @@ body.route-fullbleed .fe-mm-restore {
  * Delete -- only once something is picked. */
 .wfm-downsel { display: none; }
 .wfm-foot.has-sel .wfm-downsel { display: inline-flex; }
+/* Batch Move / Copy / Compress: same "only with a selection" rule, so the
+ * footer never carries a permanent wall of buttons. */
+.wfm-compresssel, .wfm-movesel, .wfm-copysel { display: none; }
+.wfm-foot.has-sel .wfm-compresssel,
+.wfm-foot.has-sel .wfm-movesel,
+.wfm-foot.has-sel .wfm-copysel { display: inline-flex; }
 /* Hidden, not removed: the visible Upload buttons forward their click here. */
 .wfm-input { display: none; }
 
