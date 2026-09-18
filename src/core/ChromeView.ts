@@ -1706,6 +1706,10 @@ const WORKFLOW_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const workflowIdFromUrl = WORKFLOW_ID_RE.test(qs.get('workflowId') || '') ? qs.get('workflowId') : '';
 let workflowId = workflowIdFromUrl;
 const NO_WORKFLOW_TEXT = 'This browser was not opened from a saved workflow, so it has no workflow files. Save the workflow, then open the browser from it.';
+/** The URL names a workflow the server no longer has (404 on its listing). */
+const GONE_WORKFLOW_TEXT = 'This workflow no longer exists on the server, so it has no files. Go back to the editor, save the workflow again (it gets a new id), and open the browser from it.';
+/** True once the listing for workflowId came back 404; reset with the id. */
+let wfmGone = false;
 
 /**
  * Find the workflow when the URL did not name one: the server knows which
@@ -1723,6 +1727,7 @@ function resolveWorkflowId() {
       const nextId = WORKFLOW_ID_RE.test(id) ? id : '';
       if (nextId !== workflowId) {
         workflowId = nextId;
+        wfmGone = false;
         // Paths and selections belong to ONE workspace, not to the browser.
         // Never carry A's selected files, subfolders or pending delete into B.
         Object.keys(wfmFolders).forEach((k) => { delete wfmFolders[k]; });
@@ -1751,8 +1756,8 @@ function resolveWorkflowId() {
  * caller sends nothing. This is what makes an empty-id URL impossible.
  */
 function wfmRequire() {
-  if (workflowId) return true;
-  wfmSay(NO_WORKFLOW_TEXT, true);
+  if (workflowId && !wfmGone) return true;
+  wfmSay(wfmGone ? GONE_WORKFLOW_TEXT : NO_WORKFLOW_TEXT, true);
   return false;
 }
 
@@ -1885,11 +1890,16 @@ function wfmJson(r) {
   return r.text().then((txt) => {
     let d = null;
     try { d = JSON.parse(txt); } catch (e) { /* not JSON: the status decides */ }
+    // The status rides on the Error: a 404 for the WORKFLOW is a different
+    // situation from a refused rename, and the caller has to tell them apart.
     if (r.status === 401 || r.status === 403) {
-      throw new Error((d && d.error) || 'Not authorised.');
+      throw Object.assign(new Error((d && d.error) || 'Not authorised.'), { status: r.status });
     }
     if (!r.ok || !d || !d.success) {
-      throw new Error((d && d.error) || ('The server refused (HTTP ' + r.status + ').'));
+      throw Object.assign(
+        new Error((d && d.error) || ('The server refused (HTTP ' + r.status + ').')),
+        { status: r.status },
+      );
     }
     return d;
   });
@@ -2028,6 +2038,20 @@ function wfmFetchFolder(rel, force) {
     })
     .catch((e) => {
       if (workflowId !== requestedWorkflowId) return [];
+      // THE WORKFLOW ITSELF IS GONE (404): the id in this page's URL names a
+      // workflow the server does not have -- the editor remembered it across
+      // a Redis reset / restore / fresh install. MEASURED: this used to paint
+      // "This folder is empty. Upload a file or create a folder." with the
+      // 404 text in the note, i.e. a workspace that looks usable and refuses
+      // every action. There is no workspace; say exactly that, once, and do
+      // not offer a tree. The bind for it has already been refused, so the
+      // server's binding is untouched and a reopen follows the real one.
+      if (e && e.status === 404) {
+        wfmGone = true;
+        wfmSay(GONE_WORKFLOW_TEXT, true);
+        wfmFolders[key] = [];
+        return wfmFolders[key];
+      }
       wfmSay((e && e.message) || 'Could not read the workflow files.', true);
       // An empty array, not a missing key: the row then says "empty" rather
       // than spinning for a listing that is never coming.
@@ -2349,6 +2373,12 @@ function wfmPaint(rel, depth, into) {
     return;
   }
   if (!entries.length) {
+    // No tree for a workflow that does not exist: an "empty folder" invites
+    // an upload that can only be refused.
+    if (wfmGone && depth === 0) {
+      into.appendChild(wfmHintRow(GONE_WORKFLOW_TEXT, depth));
+      return;
+    }
     into.appendChild(wfmHintRow(
       depth === 0 ? 'This folder is empty. Upload a file or create a folder.' : 'Empty',
       depth,
