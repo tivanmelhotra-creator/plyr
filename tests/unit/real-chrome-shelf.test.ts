@@ -3142,10 +3142,10 @@ describe('the Files pane: this workflow\u2019s own files, as a tree', () => {
       const menu = h.el('dmenu');
       const labels = () => menu.children.filter((c) => c.className.indexOf('dmi') === 0 && c.className !== 'dmi-sep').map((c) => c.textContent);
       rowByPath(h, 'uploads')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Compress (.zip)']);
       // An ordinary folder still has the full set.
       rowByPath(h, 'docs')!.emit('contextmenu', { clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
-      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete']);
+      expect(labels()).toEqual(['Open', 'New File', 'New Folder', 'Upload Here', 'Download (.zip)', 'Rename', 'Delete', 'Compress (.zip)', 'Move', 'Copy']);
     });
 
     it('files INSIDE uploads/ can still be selected and handed to the page', async () => {

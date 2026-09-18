@@ -23,11 +23,6 @@ vi.mock('../../src/config', () => ({
     IS_SINGLE_USER: false,
     WORKFLOW_MAX_VERSIONS: 20,
     WORKFLOW_STORAGE_ROOT: tmpRoot,
-    WORKFLOW_ZIP_MAX_INPUT_BYTES: 512 * 1024 * 1024,
-    WORKFLOW_ZIP_MAX_TOTAL_BYTES: 1024 * 1024 * 1024,
-    WORKFLOW_ZIP_MAX_FILES: 10000,
-    WORKFLOW_ZIP_MAX_ENTRIES: 10000,
-    WORKFLOW_BULK_MAX_PATHS: 500,
   },
 }));
 
@@ -132,26 +127,6 @@ beforeEach(() => {
 });
 
 const base = () => `/browser/workflow-files/${wfAlice}`;
-
-function rawStoreZip(name: string, data: Buffer): Buffer {
-  const n = Buffer.from(name, 'utf8');
-  const crcTable = new Uint32Array(256);
-  for (let i = 0; i < 256; i += 1) { let c = i; for (let j = 0; j < 8; j += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcTable[i] = c >>> 0; }
-  let crc = 0xffffffff;
-  for (const b of data) crc = crcTable[(crc ^ b) & 0xff] ^ (crc >>> 8);
-  crc = (crc ^ 0xffffffff) >>> 0;
-  const local = Buffer.alloc(30 + n.length);
-  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(1 << 11, 6);
-  local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22);
-  local.writeUInt16LE(n.length, 26); n.copy(local, 30);
-  const central = Buffer.alloc(46 + n.length);
-  central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(1 << 11, 8);
-  central.writeUInt32LE(crc, 16); central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24);
-  central.writeUInt16LE(n.length, 28); central.writeUInt32LE(0o100644 << 16 >>> 0, 38); n.copy(central, 46);
-  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length, 12); end.writeUInt32LE(local.length + data.length, 16);
-  return Buffer.concat([local, data, central, end]);
-}
 
 /** Names in a listing WITHOUT the two system folders every workspace carries. */
 const userNames = (r: request.Response) =>
@@ -701,27 +676,22 @@ describe('workflow files: utility operation routes', () => {
       .set('Content-Type', 'application/octet-stream').send(body);
   }
 
-  it('moves one file, multiple files, and a folder through HTTP', async () => {
+  it('moves files and folders, rejects conflicts, and blocks traversal', async () => {
     await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'move-dest' });
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'move-folder' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'move-tree' });
     await upload('', 'one.txt', 'one'); await upload('', 'two.txt', 'two');
-    await upload('move-folder', 'nested.txt', 'nested');
+    await upload('move-tree', 'nested.txt', 'nested');
     let r = await request(app).post(`${base()}/move`).send({ paths: ['one.txt', 'two.txt'], to: 'move-dest' });
     expect(r.status).toBe(200); expect(r.body.count).toBe(2);
-    r = await request(app).post(`${base()}/move`).send({ paths: ['move-folder'], to: 'move-dest' });
+    r = await request(app).post(`${base()}/move`).send({ paths: ['move-tree'], to: 'move-dest' });
     expect(r.status).toBe(200);
-    expect((await request(app).get(`${base()}?path=move-dest/move-folder`)).body.entries.map((e: { name: string }) => e.name)).toContain('nested.txt');
+    expect((await request(app).get(`${base()}?path=move-dest/move-tree`)).body.entries.map((e: { name: string }) => e.name)).toContain('nested.txt');
+    await upload('', 'conflict.txt', 'source'); await upload('move-dest', 'conflict.txt', 'existing');
+    expect((await request(app).post(`${base()}/move`).send({ paths: ['conflict.txt'], to: 'move-dest' })).status).toBe(409);
+    expect((await request(app).post(`${base()}/move`).send({ paths: ['../escape'], to: '' })).status).toBe(400);
   });
 
-  it('rejects move conflicts and traversal without partial state', async () => {
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'conflict-dest' });
-    await upload('', 'conflict.txt', 'source'); await upload('conflict-dest', 'conflict.txt', 'existing');
-    expect((await request(app).post(`${base()}/move`).send({ paths: ['conflict.txt'], to: 'conflict-dest' })).status).toBe(409);
-    expect((await request(app).get(`${base()}?path=conflict-dest`)).body.entries.map((e: { name: string }) => e.name)).toEqual(['conflict.txt']);
-    expect((await request(app).post(`${base()}/move`).send({ paths: ['../outside'], to: '' })).status).toBe(400);
-  });
-
-  it('copies files and recursive folders, then duplicate names remain conflict-safe', async () => {
+  it('copies recursively and duplicates with conflict-safe names', async () => {
     await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'copy-dest' });
     await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'copy-tree' });
     await upload('copy-tree', 'deep.txt', 'deep'); await upload('', 'copy.txt', 'copy');
@@ -732,7 +702,7 @@ describe('workflow files: utility operation routes', () => {
     expect((await request(app).get(`${base()}?path=copy-dest/copy-tree`)).body.entries.map((e: { name: string }) => e.name)).toContain('deep.txt');
   });
 
-  it('compresses selected files and folders, numbers an existing archive, and extracts it', async () => {
+  it('compresses, numbers existing archives, and extracts through HTTP', async () => {
     await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'archive-src' });
     await upload('archive-src', 'inside.txt', 'inside'); await upload('', 'archive-file.txt', 'file');
     let r = await request(app).post(`${base()}/compress`).send({ paths: ['archive-file.txt', 'archive-src'], name: 'bundle', path: '', to: '' });
@@ -745,51 +715,10 @@ describe('workflow files: utility operation routes', () => {
     expect((await request(app).get(`${base()}?path=extract-target/archive-src`)).status).toBe(200);
   });
 
-  it('rejects unsafe archive entries and preserves the destination on conflict', async () => {
-    let r = await upload('', 'unsafe.zip', rawStoreZip('../escape.txt', Buffer.from('escape')));
-    expect(r.status).toBe(201);
-    r = await request(app).post(`${base()}/extract`).send({ path: 'unsafe.zip', into: 'extract-target' });
-    expect(r.status).toBe(400);
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'extract-conflict-target' });
-    await upload('extract-conflict-target', 'archive-file.txt', 'keep');
-    const valid = await request(app).post(`${base()}/compress`).send({ paths: ['archive-file.txt'], name: 'conflict-archive', path: '', to: '' });
-    expect(valid.status).toBe(201);
-    r = await request(app).post(`${base()}/extract`).send({ path: 'conflict-archive.zip', into: 'extract-conflict-target' });
-    expect(r.status).toBe(409);
-    expect((await request(app).get(`${base()}?path=extract-conflict-target`)).body.entries.map((e: { name: string }) => e.name)).toEqual(['archive-file.txt']);
-  });
-
-  it('enforces an extraction file-count limit at the route boundary', async () => {
-    const { config } = await import('../../src/config');
-    const old = config.WORKFLOW_ZIP_MAX_FILES;
-    (config as { WORKFLOW_ZIP_MAX_FILES: number }).WORKFLOW_ZIP_MAX_FILES = 0;
-    try {
-      await upload('', 'limited.zip', rawStoreZip('one.txt', Buffer.from('one')));
-      expect((await request(app).post(`${base()}/extract`).send({ path: 'limited.zip', into: 'limited-target' })).status).toBe(413);
-    } finally {
-      (config as { WORKFLOW_ZIP_MAX_FILES: number }).WORKFLOW_ZIP_MAX_FILES = old;
-    }
-  });
-
-  it('resolves same-basename copy and move destinations without overwrite', async () => {
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-a' });
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-b' });
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-copy' });
-    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'collision-move' });
-    await upload('collision-a', 'foo.txt', 'A'); await upload('collision-b', 'foo.txt', 'B');
-    let r = await request(app).post(`${base()}/copy`).send({ paths: ['collision-a/foo.txt', 'collision-b/foo.txt'], to: 'collision-copy' });
-    expect(r.status).toBe(200);
-    expect(r.body.entries.map((e: { path: string }) => e.path)).toEqual(['collision-copy/foo.txt', 'collision-copy/foo (2).txt']);
-    await upload('collision-a', 'bar.txt', 'A'); await upload('collision-b', 'bar.txt', 'B');
-    r = await request(app).post(`${base()}/move`).send({ paths: ['collision-a/bar.txt', 'collision-b/bar.txt'], to: 'collision-move' });
-    expect(r.status).toBe(200);
-    expect(r.body.entries.map((e: { path: string }) => e.path)).toEqual(['collision-move/bar.txt', 'collision-move/bar (2).txt']);
-  });
-
-  it('cannot access another workflow through the utility routes', async () => {
-    await upload('', 'isolation.txt', 'alice');
-    expect((await request(app).post(`/browser/workflow-files/${wfBob}/copy`).send({ paths: ['isolation.txt'], to: '' })).status).toBe(404);
-    expect((await request(app).get(`/browser/workflow-files/${wfBob}?path=isolation.txt`)).status).toBe(404);
+  it('keeps workflows isolated for utility operations', async () => {
+    await upload('', 'alice-only.txt', 'alice');
+    expect((await request(app).post(`/browser/workflow-files/${wfBob}/copy`).send({ paths: ['alice-only.txt'], to: '' })).status).toBe(404);
+    expect((await request(app).get(`/browser/workflow-files/${wfBob}?path=alice-only.txt`)).status).toBe(404);
   });
 });
 

@@ -657,7 +657,6 @@ export class WorkflowStorage {
     type Pair = { srcRel: string; srcAbs: string; dstRel: string; dstAbs: string };
     const pairs: Pair[] = [];
     const seen = new Set<string>();
-    const reservedDestinations = new Set<string>();
     for (const rel of rels) {
       const src = await this.resolve(rel);
       if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be moved.', 400);
@@ -668,11 +667,7 @@ export class WorkflowStorage {
       seen.add(src.relative);
 
       const leaf = path.posix.basename(src.relative);
-      let dstRel = dest.relative ? `${dest.relative}/${leaf}` : leaf;
-      if (reservedDestinations.has(dstRel)) {
-        const nextLeaf = await this.freeLeaf(dest.relative, leaf, 'numbered', reservedDestinations);
-        dstRel = dest.relative ? `${dest.relative}/${nextLeaf}` : nextLeaf;
-      }
+      const dstRel = dest.relative ? `${dest.relative}/${leaf}` : leaf;
       if (dstRel === src.relative) {
         throw new WorkflowStorageError(`“${src.relative}” is already in that folder.`, 409);
       }
@@ -682,7 +677,6 @@ export class WorkflowStorage {
       }
       const dst = await this.resolve(dstRel, { mustExist: false });
       if (dst.stat) throw new WorkflowStorageError(`Something named “${leaf}” is already in that folder.`, 409);
-      reservedDestinations.add(dstRel);
       pairs.push({ srcRel: src.relative, srcAbs: src.absolute, dstRel, dstAbs: dst.absolute });
     }
     if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
@@ -725,7 +719,6 @@ export class WorkflowStorage {
     type Pair = { srcAbs: string; srcRel: string; dstRel: string; dstAbs: string; isDir: boolean };
     const pairs: Pair[] = [];
     const seen = new Set<string>();
-    const reservedDestinations = new Set<string>();
     for (const rel of rels) {
       const src = await this.resolve(rel);
       if (!src.relative) throw new WorkflowStorageError('The workspace root cannot be copied.', 400);
@@ -737,37 +730,34 @@ export class WorkflowStorage {
         throw new WorkflowStorageError('A folder cannot be copied inside itself.', 400);
       }
       const leaf = path.posix.basename(src.relative);
-      const dstLeaf = await this.freeLeaf(dest.relative, leaf, style, reservedDestinations);
+      const dstLeaf = await this.freeLeaf(dest.relative, leaf, style);
       const dstRel = dest.relative ? `${dest.relative}/${dstLeaf}` : dstLeaf;
       const dst = await this.resolve(dstRel, { mustExist: false });
-      reservedDestinations.add(dstRel);
       pairs.push({ srcAbs: src.absolute, srcRel: src.relative, dstRel, dstAbs: dst.absolute, isDir });
     }
     if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
 
+    // Stage the complete operation outside the workspace tree. A failed walk,
+    // read, or entry budget can therefore never leave a partial destination.
     const stageRoot = await fs.mkdtemp(path.join(this.root, '.workflow-copy-'));
     const committed: string[] = [];
-    const out: WorkflowEntry[] = [];
     try {
       const budget = { left: config.WORKFLOW_ZIP_MAX_ENTRIES };
-      for (let i = 0; i < pairs.length; i += 1) {
-        const p = pairs[i];
-        const staged = path.join(stageRoot, String(i));
+      for (const p of pairs) {
+        const staged = path.join(stageRoot, path.posix.basename(p.dstRel));
         if (p.isDir) await this.copyTree(p.srcAbs, staged, budget);
         else await this.copyFile(p.srcAbs, staged);
       }
-      for (let i = 0; i < pairs.length; i += 1) {
-        const p = pairs[i];
-        const staged = path.join(stageRoot, String(i));
+      for (const p of pairs) {
+        const staged = path.join(stageRoot, path.posix.basename(p.dstRel));
         await fs.rename(staged, p.dstAbs);
         committed.push(p.dstAbs);
       }
+      const out: WorkflowEntry[] = [];
       for (const p of pairs) out.push(await this.describe(p.dstRel));
       await fs.rm(stageRoot, { recursive: true, force: true });
       return out;
     } catch (e) {
-      // Destinations did not exist during planning. Remove only artifacts this
-      // operation committed, then discard the uncommitted staging tree.
       for (const abs of committed.reverse()) await fs.rm(abs, { recursive: true, force: true }).catch(() => {});
       await fs.rm(stageRoot, { recursive: true, force: true }).catch(() => {});
       throw e;
@@ -787,8 +777,7 @@ export class WorkflowStorage {
     const dstRel = parentRel ? `${parentRel}/${name}` : name;
     const dst = await this.resolve(dstRel, { mustExist: false });
     if (dst.stat) throw new WorkflowStorageError('Something with that name already exists.', 409);
-    // Use the same staged, operation-level atomic copy path as bulk Copy.
-    // The precomputed name is preserved by the conflict-free destination.
+    // Duplicate uses the same staged, operation-level atomic path as Copy.
     const [entry] = await this.copyMany([src.relative], parentRel, { style: 'copy' });
     if (entry.path !== dstRel) {
       throw new WorkflowStorageError('The duplicate destination changed during the operation.', 409);
@@ -825,12 +814,7 @@ export class WorkflowStorage {
   }
 
   /** A leaf name that does not exist under `parentRel`, in the requested style. */
-  private async freeLeaf(
-    parentRel: string,
-    name: string,
-    style: 'numbered' | 'copy',
-    reserved = new Set<string>(),
-  ): Promise<string> {
+  private async freeLeaf(parentRel: string, name: string, style: 'numbered' | 'copy'): Promise<string> {
     const ext = path.extname(name);
     const stem = ext ? name.slice(0, -ext.length) : name;
     const candidate = (n: number): string => {
@@ -841,7 +825,6 @@ export class WorkflowStorage {
     for (let n = start; n <= 1000; n += 1) {
       const leaf = candidate(n);
       const rel = parentRel ? `${parentRel}/${leaf}` : leaf;
-      if (reserved.has(rel)) continue;
       const probe = await this.resolve(rel, { mustExist: false });
       if (!probe.stat) return leaf;
     }
@@ -976,14 +959,10 @@ export class WorkflowStorage {
       );
     }
 
-    // The reader is intentionally kept dependency-free for this pass. Read the
-    // bounded archive once, then release that backing Buffer immediately after
-    // parsing so the write/validation phase does not retain both the archive and
-    // its extracted entry buffers unnecessarily.
-    let archiveBytes = await fs.readFile(file.absolutePath);
+    const buffer = await fs.readFile(file.absolutePath);
     let entries;
     try {
-      entries = readZipArchive(archiveBytes, {
+      entries = readZipArchive(buffer, {
         maxEntries: config.WORKFLOW_ZIP_MAX_ENTRIES,
         maxTotalUncompressedBytes: config.WORKFLOW_ZIP_MAX_TOTAL_BYTES,
         maxEntryUncompressedBytes: config.WORKFLOW_ZIP_MAX_TOTAL_BYTES,
@@ -992,7 +971,6 @@ export class WorkflowStorage {
       if (e instanceof ZipArchiveError) throw new WorkflowStorageError(e.message, e.status);
       throw e;
     }
-    archiveBytes = Buffer.alloc(0);
     const filesIn = entries.filter((e) => !e.isDirectory && e.name).length;
     if (filesIn > config.WORKFLOW_ZIP_MAX_FILES) {
       throw new WorkflowStorageError(
@@ -1014,19 +992,25 @@ export class WorkflowStorage {
     } else if (opts.mode === 'folder') {
       const stem = await this.freeLeaf(parentRel, archiveStem(file.name), 'numbered');
       intoRel = parentRel ? `${parentRel}/${stem}` : stem;
-      await this.resolve(intoRel, { mustExist: false });
+      const probe = await this.resolve(intoRel, { mustExist: false });
+      if (probe.stat && !probe.stat.isDirectory()) {
+        throw new WorkflowStorageError('A file is in the way of that folder name.', 409);
+      }
     } else {
       intoRel = parentRel;
-      await this.resolve(intoRel, { mustExist: false });
+      const probe = await this.resolve(intoRel, { mustExist: false });
+      if (probe.stat && !probe.stat.isDirectory()) {
+        throw new WorkflowStorageError('A file is in the way of that folder name.', 409);
+      }
     }
 
-    // Validate EVERY entry before writing anything: a conflict is a clean 4xx
-    // with the whole archive untouched, never a half-extracted folder.
+    // Validate EVERY entry before writing anything. The archive bytes are still
+    // bounded by ZipArchive; only after validation do we stage the files.
     type Plan = { dstRel: string; dstAbs: string; data: Buffer; isDir: boolean };
     const plans: Plan[] = [];
     let directories = 0;
     for (const e of entries) {
-      if (!e.name) continue; // the archive's own root
+      if (!e.name) continue;
       const dstRel = intoRel ? `${intoRel}/${e.name}` : e.name;
       const dst = await this.resolve(dstRel, { mustExist: false });
       if (dst.stat) {
@@ -1037,23 +1021,53 @@ export class WorkflowStorage {
       plans.push({ dstRel, dstAbs: dst.absolute, data: e.data, isDir: false });
     }
 
-    let files = 0;
-    for (const p of plans) {
-      if (p.isDir) {
-        await fs.mkdir(p.dstAbs, { recursive: true, mode: 0o700 });
-        continue;
+    const stageRoot = await fs.mkdtemp(path.join(this.root, '.workflow-extract-'));
+    const committedFiles: string[] = [];
+    const createdDirs: string[] = [];
+    const ensureParent = async (abs: string): Promise<void> => {
+      const parts: string[] = [];
+      let cursor = path.dirname(abs);
+      while (cursor !== this.root && cursor.startsWith(`${this.root}${path.sep}`)) {
+        parts.unshift(cursor);
+        cursor = path.dirname(cursor);
       }
-      await fs.mkdir(path.dirname(p.dstAbs), { recursive: true, mode: 0o700 });
-      const tmp = `${p.dstAbs}.${process.pid}.${Date.now()}.part`;
-      await fs.writeFile(tmp, p.data, { mode: 0o600 });
-      await fs.rename(tmp, p.dstAbs);
-      files += 1;
+      for (const dir of parts) {
+        try { await fs.lstat(dir); }
+        catch { await fs.mkdir(dir, { mode: 0o700 }); createdDirs.push(dir); }
+      }
+    };
+    try {
+      for (const p of plans) {
+        if (p.isDir) await fs.mkdir(path.join(stageRoot, p.dstRel), { recursive: true, mode: 0o700 });
+        else {
+          const staged = path.join(stageRoot, p.dstRel);
+          await fs.mkdir(path.dirname(staged), { recursive: true, mode: 0o700 });
+          await fs.writeFile(staged, p.data, { mode: 0o600 });
+        }
+      }
+      for (const p of plans) {
+        const staged = path.join(stageRoot, p.dstRel);
+        if (p.isDir) {
+          await ensureParent(p.dstAbs);
+          try { await fs.lstat(p.dstAbs); } catch { await fs.mkdir(p.dstAbs, { mode: 0o700 }); createdDirs.push(p.dstAbs); }
+        } else {
+          await ensureParent(p.dstAbs);
+          await fs.rename(staged, p.dstAbs);
+          committedFiles.push(p.dstAbs);
+        }
+      }
+      await fs.rm(stageRoot, { recursive: true, force: true });
+    } catch (e) {
+      for (const abs of committedFiles.reverse()) await fs.rm(abs, { force: true }).catch(() => {});
+      for (const abs of createdDirs.reverse()) await fs.rm(abs, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(stageRoot, { recursive: true, force: true }).catch(() => {});
+      throw e;
     }
 
     return {
       workflowId: this.workflowId,
       folder: intoRel,
-      files,
+      files: plans.filter((p) => !p.isDir).length,
       directories,
       skipped: entries.length - plans.length,
     };

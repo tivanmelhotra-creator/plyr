@@ -2727,8 +2727,9 @@ function wfmDeleteSelected() {
 // (409) or numbered for a copy — never overwritten.
 
 /** The operator's typed destination folder, reduced to a relative path.
- *  Deliberately regex-free because this script lives inside a template literal;
- *  split/filter/join avoids escaping hazards in the emitted HTML. */
+ *  Deliberately regex-free: this script lives inside a TEMPLATE LITERAL in
+ *  ChromeView.ts, where an escaped slash collapses to slash and would corrupt a
+ *  regex literal in the emitted HTML. split/filter/join needs no escaping. */
 function wfmDestInput(v) {
   return String(v == null ? '' : v).trim().split('/').filter((s) => s !== '').join('/');
 }
