@@ -737,17 +737,33 @@ export class WorkflowStorage {
     }
     if (!pairs.length) throw new WorkflowStorageError('No paths were given.', 400);
 
-    const budget = { left: config.WORKFLOW_ZIP_MAX_ENTRIES };
+    const stageRoot = await fs.mkdtemp(path.join(this.root, '.workflow-copy-'));
+    const committed: string[] = [];
     const out: WorkflowEntry[] = [];
-    for (const p of pairs) {
-      if (p.isDir) {
-        await this.copyTree(p.srcAbs, p.dstAbs, budget);
-      } else {
-        await this.copyFile(p.srcAbs, p.dstAbs);
+    try {
+      const budget = { left: config.WORKFLOW_ZIP_MAX_ENTRIES };
+      for (let i = 0; i < pairs.length; i += 1) {
+        const p = pairs[i];
+        const staged = path.join(stageRoot, String(i));
+        if (p.isDir) await this.copyTree(p.srcAbs, staged, budget);
+        else await this.copyFile(p.srcAbs, staged);
       }
-      out.push(await this.describe(p.dstRel));
+      for (let i = 0; i < pairs.length; i += 1) {
+        const p = pairs[i];
+        const staged = path.join(stageRoot, String(i));
+        await fs.rename(staged, p.dstAbs);
+        committed.push(p.dstAbs);
+      }
+      for (const p of pairs) out.push(await this.describe(p.dstRel));
+      await fs.rm(stageRoot, { recursive: true, force: true });
+      return out;
+    } catch (e) {
+      // Destinations did not exist during planning. Remove only artifacts this
+      // operation committed, then discard the uncommitted staging tree.
+      for (const abs of committed.reverse()) await fs.rm(abs, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(stageRoot, { recursive: true, force: true }).catch(() => {});
+      throw e;
     }
-    return out;
   }
 
   /**
@@ -763,12 +779,13 @@ export class WorkflowStorage {
     const dstRel = parentRel ? `${parentRel}/${name}` : name;
     const dst = await this.resolve(dstRel, { mustExist: false });
     if (dst.stat) throw new WorkflowStorageError('Something with that name already exists.', 409);
-    if (src.stat && src.stat.isDirectory()) {
-      await this.copyTree(src.absolute, dst.absolute, { left: config.WORKFLOW_ZIP_MAX_ENTRIES });
-    } else {
-      await this.copyFile(src.absolute, dst.absolute);
+    // Use the same staged, operation-level atomic copy path as bulk Copy.
+    // The precomputed name is preserved by the conflict-free destination.
+    const [entry] = await this.copyMany([src.relative], parentRel, { style: 'copy' });
+    if (entry.path !== dstRel) {
+      throw new WorkflowStorageError('The duplicate destination changed during the operation.', 409);
     }
-    return this.describe(dstRel);
+    return entry;
   }
 
   /** Recursively copy a directory. Symlinks and specials are SKIPPED. */
@@ -945,10 +962,14 @@ export class WorkflowStorage {
       );
     }
 
-    const buffer = await fs.readFile(file.absolutePath);
+    // The reader is intentionally kept dependency-free for this pass. Read the
+    // bounded archive once, then release that backing Buffer immediately after
+    // parsing so the write/validation phase does not retain both the archive and
+    // its extracted entry buffers unnecessarily.
+    let archiveBytes = await fs.readFile(file.absolutePath);
     let entries;
     try {
-      entries = readZipArchive(buffer, {
+      entries = readZipArchive(archiveBytes, {
         maxEntries: config.WORKFLOW_ZIP_MAX_ENTRIES,
         maxTotalUncompressedBytes: config.WORKFLOW_ZIP_MAX_TOTAL_BYTES,
         maxEntryUncompressedBytes: config.WORKFLOW_ZIP_MAX_TOTAL_BYTES,
@@ -957,6 +978,7 @@ export class WorkflowStorage {
       if (e instanceof ZipArchiveError) throw new WorkflowStorageError(e.message, e.status);
       throw e;
     }
+    archiveBytes = Buffer.alloc(0);
     const filesIn = entries.filter((e) => !e.isDirectory && e.name).length;
     if (filesIn > config.WORKFLOW_ZIP_MAX_FILES) {
       throw new WorkflowStorageError(
@@ -975,16 +997,13 @@ export class WorkflowStorage {
       if (probe.stat && !probe.stat.isDirectory()) {
         throw new WorkflowStorageError('A file is in the way of that folder name.', 409);
       }
-      if (!probe.stat) await fs.mkdir(probe.absolute, { recursive: true, mode: 0o700 });
     } else if (opts.mode === 'folder') {
       const stem = await this.freeLeaf(parentRel, archiveStem(file.name), 'numbered');
       intoRel = parentRel ? `${parentRel}/${stem}` : stem;
-      const probe = await this.resolve(intoRel, { mustExist: false });
-      if (!probe.stat) await fs.mkdir(probe.absolute, { recursive: true, mode: 0o700 });
+      await this.resolve(intoRel, { mustExist: false });
     } else {
       intoRel = parentRel;
-      const probe = await this.resolve(intoRel, { mustExist: false });
-      if (!probe.stat) await fs.mkdir(probe.absolute, { recursive: true, mode: 0o700 });
+      await this.resolve(intoRel, { mustExist: false });
     }
 
     // Validate EVERY entry before writing anything: a conflict is a clean 4xx

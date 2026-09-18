@@ -918,4 +918,21 @@ describe('WorkflowStorage: Extract <- ZIP', () => {
       (config as { WORKFLOW_ZIP_MAX_INPUT_BYTES: number }).WORKFLOW_ZIP_MAX_INPUT_BYTES = old;
     }
   });
+
+  it('copy failure leaves no partial destination tree', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.mkdir('', 'copy-source');
+    await s.writeFile('copy-source', 'a.txt', Buffer.from('a'));
+    await s.writeFile('copy-source', 'b.txt', Buffer.from('b'));
+    await s.mkdir('', 'copy-destination');
+    const old = config.WORKFLOW_ZIP_MAX_ENTRIES;
+    (config as { WORKFLOW_ZIP_MAX_ENTRIES: number }).WORKFLOW_ZIP_MAX_ENTRIES = 1;
+    try {
+      await rejects(s.copyMany(['copy-source'], 'copy-destination'), 413);
+    } finally {
+      (config as { WORKFLOW_ZIP_MAX_ENTRIES: number }).WORKFLOW_ZIP_MAX_ENTRIES = old;
+    }
+    expect((await s.list('copy-destination')).entries).toEqual([]);
+    expect((await s.list('copy-source')).entries.map((e) => e.name).sort()).toEqual(['a.txt', 'b.txt']);
+  });
 });
