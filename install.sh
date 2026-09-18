@@ -560,27 +560,12 @@ install_server_node() {
     PANEL_URL="http://localhost:${port}"
   fi
 
-  # [6/6] Run under PM2
-  title "[6/6] Run the server (PM2, auto-restart)"
-  if confirm "Start the server under PM2 (cluster mode, auto-restart)?"; then
-    if ! has pm2; then
-      if confirm "PM2 is not installed. Install it globally (npm i -g pm2)?"; then
-        npm install -g pm2 || maybe_sudo npm install -g pm2
-      fi
-    fi
-    if has pm2; then
-      pm2 start ecosystem.config.js
-      pm2 save || true
-      ok "Server started under PM2."
-      info "Status: pm2 status   |   Logs: pm2 logs Hybrid-Automation --nostream"
-      if confirm "Make PM2 start on boot (systemd unit)?"; then
-        pm2 startup || warn "Run the command PM2 printed above (it needs sudo) to finish."
-      fi
-    else
-      warn "PM2 unavailable. You can run the server directly with: npm start"
-    fi
+  # [6/6] Run through the canonical Plyr runtime manager.
+  title "[6/6] Run the server (Plyr Runtime Manager)"
+  if confirm "Start the server with ./plyr start --build now?"; then
+    ./plyr start --build || { err "Runtime start failed; required services are not ready. Run ./plyr doctor for the exact blocker."; return 1; }
   else
-    info "Start it later with:  pm2 start ecosystem.config.js   (or  npm start )"
+    info "Start it later with: ./plyr start --build"
   fi
 
   print_server_summary "$port"
