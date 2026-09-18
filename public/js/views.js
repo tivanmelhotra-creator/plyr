@@ -1037,6 +1037,58 @@
     if (pendingWorkflowToOpen) {
       FE.openWorkflow(pendingWorkflowToOpen, pendingWorkflowToOpen.steps || []);
       pendingWorkflowToOpen = null;
+    } else {
+      // THE RESTORED IDENTITY IS A CLAIM, NOT A FACT. loadLocal() brings the
+      // saved-workflow id back from localStorage so a reload does not turn a
+      // saved workflow into an untitled draft. But localStorage outlives the
+      // server's data: after a Redis reset, a restore from backup, or a fresh
+      // machine, the browser still "remembers" wf_xxx while the server has
+      // never heard of it.
+      //
+      // MEASURED (probe, stale id in localStorage, fresh server): the editor
+      // showed "v3 · Workflow ID wf_e6f57f…", Save Changes said "Workflow
+      // saved." (it is a localStorage write), the picker handed that id to
+      // the Local Browser, POST /browser/workflow-files/<id>/bind answered
+      // 404 "Workflow not found." and the drawer said so — and nothing ever
+      // told the EDITOR, so the same dead id came back on every reload. That
+      // is the loop the operator kept landing in each time the project was
+      // brought up.
+      //
+      // So: ask the server ONCE, here, whether the restored id still exists.
+      // 404 -> forget the identity (the graph stays; the next Save creates a
+      // new workflow and a fresh id). Any other failure (offline, 5xx) is not
+      // evidence of anything and changes nothing.
+      verifyRestoredWorkflow();
+    }
+
+    function verifyRestoredWorkflow() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!cur || !cur.id || typeof API.getWorkflow !== 'function') return;
+      var uid = effectiveUserId();
+      if (!uid) return;
+      var claimed = String(cur.id);
+      API.getWorkflow(uid, claimed)
+        .then(function () { /* it exists: the restored identity stands */ })
+        .catch(function (err) {
+          if (!err || err.status !== 404) return;
+          forgetDeadWorkflow(claimed);
+        });
+    }
+
+    /**
+     * The server said 404 for the workflow this editor claims to be editing.
+     * Drop the claim (graph untouched) so every consumer of
+     * FE.getCurrentWorkflow() -- the picker's workflowId, the viewer URL, the
+     * bind, the status bar, the next Save -- stops carrying a dead id.
+     * Guarded on the id so a workflow opened meanwhile is never dropped.
+     */
+    function forgetDeadWorkflow(deadId) {
+      var now = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!now || String(now.id) !== String(deadId)) return false;
+      FE.setCurrentWorkflow(null);
+      refreshWfLabel();
+      U().toast(t('fe.workflowGone'), 'info');
+      return true;
     }
 
     // Step 26: mount the collapsible bottom run/log drawer and restore the
@@ -1140,7 +1192,14 @@
             U().toast(t('wf.saved') + ' (v' + data.workflow.version + ')', 'success');
             refreshWfLabel();
           })
-          .catch(function (err) { U().toast(err.message, 'error'); })
+          .catch(function (err) {
+            // The id this editor remembers no longer exists on the server
+            // (see verifyRestoredWorkflow). Keeping it would make every
+            // following Save fail the same way; dropping it makes the next
+            // Save a create, which is the only thing that can succeed.
+            if (err && err.status === 404 && forgetDeadWorkflow(cur.id)) return;
+            U().toast(err.message, 'error');
+          })
           .then(function () { btn.disabled = false; });
       } else {
         // New workflow → ask for a name, then create (version 1).
