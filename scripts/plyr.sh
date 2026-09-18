@@ -197,7 +197,11 @@ install_native() {
   if [[ -f "$ROOT_DIR/scripts/ask-domain.sh" ]]; then
     # shellcheck disable=SC1090
     source "$ROOT_DIR/scripts/ask-domain.sh"
-    ask_public_domain || true
+    if [[ -z "${AB_NO_PROMPT:-}" ]]; then
+      ask_public_domain || true
+    else
+      info "AB_NO_PROMPT is set; install will not ask for a public domain."
+    fi
   fi
   say "[1/5] checking Node and npm"
   have node || fail "Node.js >=20 is required"
