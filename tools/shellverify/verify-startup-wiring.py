@@ -80,8 +80,10 @@ def make_sandbox():
     os.makedirs(os.path.join(d, "scripts"), exist_ok=True)
     os.makedirs(os.path.join(d, "bin"), exist_ok=True)
     shutil.copy(os.path.join(REPO, "dev.sh"), os.path.join(d, "dev.sh"))
+    shutil.copy(os.path.join(REPO, "plyr"), os.path.join(d, "plyr"))
     os.chmod(os.path.join(d, "dev.sh"), 0o755)
-    for f in ("ask-domain.sh", "dev-server.sh"):
+    os.chmod(os.path.join(d, "plyr"), 0o755)
+    for f in ("ask-domain.sh", "dev-server.sh", "plyr.sh"):
         src = os.path.join(REPO, "scripts", f)
         if os.path.exists(src):
             shutil.copy(src, os.path.join(d, "scripts", f))
@@ -220,12 +222,8 @@ chk("dev.sh persists the answer", r["stored"], "PUBLIC_DOMAIN=https://dev-sh.exa
 
 print("\n== scripts/dev-server.sh ==")
 r2 = run_until_prompt(["scripts/dev-server.sh"], seed_env=True)
-chk("dev-server.sh asks for a domain", r2["reached"], True)
-chk("it asks BEFORE anything boots the server", started_server(r2["calls"]), False)
-r2 = run_until_prompt(["scripts/dev-server.sh"], seed_env=True,
-                      answer=("y", "https://dev-server.example.com"))
-chk("dev-server.sh persists the answer", r2["stored"],
-    "PUBLIC_DOMAIN=https://dev-server.example.com")
+chk("dev-server.sh does not duplicate the domain prompt", r2["reached"], False)
+chk("dev-server.sh does not boot before its canonical start path", started_server(r2["calls"]), False)
 
 print("\n== non-interactive startup must not stall ==")
 # A startup script that blocks on a prompt under nohup or CI hangs a deployment,

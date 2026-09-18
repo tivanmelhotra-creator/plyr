@@ -19,7 +19,7 @@ Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript**
 | اتوماسیون | Playwright + stealth |
 | ذخیره‌سازی | Redis + JSON روی دیسک |
 | رابط کاربری | Vanilla JS (بدون build)، i18n (فا/EN، RTL/LTR)، CSP سخت |
-| Production | PM2 cluster |
+| Production | Plyr Runtime Manager (`./plyr`) |
 
 - **Hybrid Browser:** کاربران VIP مرورگر persistent اختصاصی، کاربران Free مرورگر مشترک با context ایزوله.
 - **Flow Engine:** پشتیبانی از `if/else`, `while`, `try/catch/finally`, `switch`, متغیر و ماژول افزونه‌ای.
@@ -66,7 +66,7 @@ docker run -d --name redis -p 6379:6379 redis:7-alpine
 روی سرور فقط همین یک دستور را بزنید؛ اسکریپت خودش ریپو را می‌گیرد و یک **ویزارد تعاملی** را اجرا می‌کند:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tivanmelhotra-creator/plyr/main/install.sh | bash
 ```
 
 > اگر ریپو را قبلاً clone کرده‌اید، می‌توانید مستقیم `chmod +x install.sh && ./install.sh` را اجرا کنید.
@@ -75,12 +75,12 @@ curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.s
 
 | گزینه | چه‌کار می‌کند |
 |-------|----------------|
-| **۱) Server (Node)** | نصب بومی روی سرور: Node 20+ (در صورت نبود نصب می‌شود) + Redis + Playwright Chromium + build + اجرا با PM2. اگر **دامنه** بدهید، خودش **Caddy** را نصب و کانفیگ می‌کند تا پنل با **HTTPS خودکار (Let's Encrypt)** روی دامنه‌تان بالا بیاید. |
+| **۱) Server (Node)** | نصب بومی از مسیر canonical `./plyr`: Node 20+ + Redis + Playwright Chromium + وابستگی‌های display + build + readiness واقعی. اگر **دامنه** بدهید، `install.sh` Caddy را تنظیم می‌کند. |
 | **۲) Server (Docker)** | استک کامل (app + redis) با `docker compose` — Chromium و وابستگی‌های سیستمی داخل image هستند |
 | **۳) Server (Coolify)** | راهنمای استقرار ایزوله روی [Coolify](https://coolify.io) با فایل آمادهٔ `docker-compose.coolify.yml` (دامنه و TLS را خود Coolify هندل می‌کند) |
 | **۴) Client (Chrome)** | راهنمای بارگذاری افزونهٔ Chrome (Load unpacked) روی PC شما |
 
-مراحل مسیر **Server (Node)**: `[1/6]` وابستگی‌ها → `[2/6]` مرورگر → `[3/6]` ساخت `.env` و تولید `API_TOKEN` تصادفی → `[4/6]` build → `[5/6]` دامنه + HTTPS (اختیاری) → `[6/6]` اجرا با PM2. در پایان **آدرس پنل و توکن** را چاپ می‌کند.
+مراحل مسیر **Server (Node)**: تنظیم `.env` و پورت → اجرای `./plyr install` برای نصب و verification واقعی → دامنه + HTTPS اختیاری → `./plyr start --build`. در پایان وضعیت readiness و آدرس پنل گزارش می‌شود.
 
 #### 🌐 دامنه و Cloudflare (برای HTTPS)
 
@@ -245,7 +245,7 @@ npm run dev
 # build مستقل
 npm run build
 
-# production cluster قدیمی، فقط برای API/queue بدون Remote Browser
+# PM2 legacy/API-only (برای Remote Browser از instances:1 استفاده کنید)
 pm2 start ecosystem.config.js
 ```
 
