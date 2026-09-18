@@ -282,6 +282,11 @@
       : '';
     els.clear.hidden = n === 0;
     els.foot.classList.toggle('has-sel', n > 0);
+    // The drawer may be built without the batch buttons (a caller that supplies
+    // its own footer); guard every lookup so the tree keeps working regardless.
+    if (els.compressSel) els.compressSel.hidden = n === 0;
+    if (els.moveSel) els.moveSel.hidden = n === 0;
+    if (els.copySel) els.copySel.hidden = n === 0;
     // Select is the hand-over to a page; a single-file page takes exactly one.
     // Said on the button before it is pressed, and again in the note if it is.
     els.select.title = (n > 1 && !state.multiple)
@@ -794,6 +799,156 @@
     );
   }
 
+  // ── Organise: Move / Copy / Duplicate, and Archive: Compress / Extract ──
+  //
+  // Every one names workflow-RELATIVE paths the server itself returned, and
+  // every one leaves the workspace's own tree as the single source of truth by
+  // ending in refresh(). The DESTINATION is typed by the operator as a
+  // workflow-relative folder path — the server normalises it and refuses
+  // anything that is not a plain relative path inside the same workflow, so
+  // nothing here ever names an absolute location, and a move/copy is a real
+  // server-side filesystem operation, never a download + re-upload.
+  //
+  // A taken name is never overwritten: the server answers 409 (move/extract)
+  // or numbers the copy, and the sentence it sends is shown verbatim.
+
+  /** The operator's typed destination folder, reduced to a relative path. */
+  function destInput(v) {
+    return String(v == null ? '' : v).trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  }
+
+  /** POST /move for a set of paths into a typed folder. */
+  function movePaths(paths) {
+    if (!state || !paths.length) return Promise.resolve();
+    var to = ask(t('wfm.movePrompt', 'Destination folder (relative to the workspace):'), state.root || '');
+    if (to === null) return Promise.resolve();
+    var s = state;
+    say(t('wfm.moving', 'Moving\u2026'), false);
+    return call(base() + '/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths, to: destInput(to) })
+    })
+      .then(function (d) {
+        if (state !== s) return;
+        // The paths changed, so any selection keyed on them is stale.
+        s.selected = [];
+        say(t('wfm.moveDone', 'Moved:') + ' ' + ((d && d.count) || paths.length), false);
+        return refresh();
+      })
+      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true); });
+  }
+
+  /** POST /copy for a set of paths into a typed folder. */
+  function copyPaths(paths, style) {
+    if (!state || !paths.length) return Promise.resolve();
+    var to = ask(t('wfm.copyPrompt', 'Destination folder to copy into (relative to the workspace):'), state.root || '');
+    if (to === null) return Promise.resolve();
+    var s = state;
+    say(t('wfm.copying', 'Copying\u2026'), false);
+    return call(base() + '/copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths, to: destInput(to), style: style || 'numbered' })
+    })
+      .then(function (d) {
+        if (state !== s) return;
+        s.selected = [];
+        say(t('wfm.copyDone', 'Copied:') + ' ' + ((d && d.count) || paths.length), false);
+        return refresh();
+      })
+      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true); });
+  }
+
+  /** POST /duplicate for ONE entry — `config.json` -> `config copy.json`. */
+  function duplicateEntry(entry) {
+    if (!state) return Promise.resolve();
+    var s = state;
+    say(t('wfm.copying', 'Copying\u2026'), false);
+    return call(base() + '/duplicate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: entry.path })
+    })
+      .then(function (d) {
+        if (state !== s) return;
+        say(t('wfm.duplicated', 'Duplicated:') + ' ' + ((d && d.entry && d.entry.name) || ''), false);
+        return refresh();
+      })
+      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.duplicateFailed', 'Could not duplicate.'), true); });
+  }
+
+  /** POST /compress: the selection -> ONE .zip created in the current folder. */
+  function compressPaths(paths) {
+    if (!state || !paths.length) return Promise.resolve();
+    var leaf = state.root ? state.root.split('/').pop() : state.workflowId;
+    var name = ask(t('wfm.compressPrompt', 'Archive name:'), (leaf || 'archive') + '.zip');
+    if (!name) return Promise.resolve();
+    var s = state;
+    say(t('wfm.compressing', 'Building the archive\u2026'), false);
+    return call(base() + '/compress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths, path: state.root, name: name, to: state.root })
+    })
+      .then(function (d) {
+        if (state !== s) return;
+        s.selected = [];
+        say(t('wfm.compressDone', 'Archive created:') + ' ' + ((d && d.entry && d.entry.name) || name), false);
+        return refresh();
+      })
+      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.compressFailed', 'Could not compress.'), true); });
+  }
+
+  /** POST /extract: unpack ONE .zip, beside itself or into a new folder. */
+  function extractEntry(entry, mode) {
+    if (!state) return Promise.resolve();
+    var s = state;
+    say(t('wfm.extracting', 'Extracting\u2026'), false);
+    return call(base() + '/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: entry.path, mode: mode })
+    })
+      .then(function (d) {
+        if (state !== s) return;
+        s.selected = [];
+        say(t('wfm.extractDone', 'Extracted:') + ' ' + ((d && d.folder) || ''), false);
+        return refresh();
+      })
+      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.extractFailed', 'Could not extract.'), true); });
+  }
+
+  /** Is this a `.zip`, the only archive format this pass supports? */
+  function isZipName(name) {
+    return /\.zip$/i.test(String(name || '').trim());
+  }
+
+  /** The paths of the current selection, in the order they were picked. */
+  function selectedPaths() {
+    if (!state) return [];
+    return state.selected.map(function (c) { return c.path; });
+  }
+
+  /**
+   * Details for ONE entry: name, kind, size, modified, and its workflow-relative
+   * path. Shown in the drawer's own note line — never a native dialog, which
+   * would steal focus from the page waiting behind the remote stage — and never
+   * an absolute location, which this client is not given.
+   */
+  function showDetails(entry) {
+    if (!state) return;
+    var kind = entry.type === 'dir' ? t('wfm.folderKind', 'Folder') : t('wfm.fileKind', 'File');
+    var parts = [entry.name, kind];
+    if (entry.type !== 'dir') parts.push(humanSize(entry.size) || '0 B');
+    if (entry.modifiedAt) {
+      var when = new Date(entry.modifiedAt);
+      if (!isNaN(when.getTime())) parts.push(when.toLocaleString());
+    }
+    parts.push(entry.path);
+    say(parts.join('  ·  '), false);
+  }
+
   // ── Download: the operator's own copy ──────────────────────────────────
   //
   // One file is served as itself; a folder, the workspace, or a picked SET
@@ -968,17 +1123,22 @@
   /**
    * The menu for a row, or for the empty space when `entry` is null.
    *
-   *   Folder: Open · New File · New Folder · Upload Here · Rename · Delete
-   *   System: Open · New File · New Folder · Upload Here      (uploads/, downloads/)
-   *   File:   Select · Rename · Delete
-   *   Root:   New Folder · New File · Upload File · Refresh   (into the CURRENT folder)
+   *   Folder: Open · New File · New Folder · Upload Here · Download (.zip)
+   *           · Compress · Move · Copy · Rename · Delete
+   *   System: Open · New File · New Folder · Upload Here · Download (.zip)
+   *           · Compress                                (uploads/, downloads/)
+   *   File:   Select · Download · Compress · Move · Copy · Duplicate · Extract (.zip)
+   *           · Rename · Delete · Details
+   *   Root:   New Folder · New File · Upload File · Select All
+   *           · Download workspace · Compress · Refresh
    *
    * "Open" on a folder roots the tree THERE (the breadcrumb is the way back);
    * the chevron on the row expands it in place instead.
    *
    * "Open / Preview" is deliberately NOT offered for a file: this client has
-   * no viewer and no download route for a workflow file, and a menu entry that
-   * does nothing is worse than one that is absent.
+   * no viewer, and a menu entry that does nothing is worse than one that is
+   * absent. Extract is offered only for a `.zip` — the one format this pass
+   * supports.
    */
   function openMenu(entry, x, y) {
     if (!state) return;
@@ -1010,16 +1170,31 @@
       menuItem(menu, t('wfm.downloadZip', 'Download (.zip)'), 'download', function () { void downloadEntry(entry); });
       if (!entry.system) {
         // uploads/ and downloads/ are part of the workflow: no Rename, no Delete.
-        menuSep(menu);
         menuItem(menu, t('wfm.rename', 'Rename'), 'pencil', function () { renameEntry(entry); });
         menuItem(menu, t('wfm.delete', 'Delete'), 'trash', function () { deleteEntry(entry); }, true);
+      }
+      menuSep(menu);
+      menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () { void compressPaths([entry.path]); });
+      if (!entry.system) {
+        menuItem(menu, t('wfm.move', 'Move'), 'move', function () { void movePaths([entry.path]); });
+        menuItem(menu, t('wfm.copy', 'Copy'), 'copy', function () { void copyPaths([entry.path]); });
       }
     } else {
       menuItem(menu, t('wfm.pick', 'Select'), 'check', function () { pick(entry, true); });
       menuItem(menu, t('wfm.download', 'Download'), 'download', function () { void downloadEntry(entry); });
       menuSep(menu);
+      menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () { void compressPaths([entry.path]); });
+      menuItem(menu, t('wfm.move', 'Move'), 'move', function () { void movePaths([entry.path]); });
+      menuItem(menu, t('wfm.copy', 'Copy'), 'copy', function () { void copyPaths([entry.path]); });
+      menuItem(menu, t('wfm.duplicate', 'Duplicate'), 'copy', function () { void duplicateEntry(entry); });
+      if (isZipName(entry.name)) {
+        menuItem(menu, t('wfm.extractHere', 'Extract here'), 'extract', function () { void extractEntry(entry, 'here'); });
+        menuItem(menu, t('wfm.extractFolder', 'Extract to new folder'), 'folder-open', function () { void extractEntry(entry, 'folder'); });
+      }
+      menuSep(menu);
       menuItem(menu, t('wfm.rename', 'Rename'), 'pencil', function () { renameEntry(entry); });
       menuItem(menu, t('wfm.delete', 'Delete'), 'trash', function () { deleteEntry(entry); }, true);
+      menuItem(menu, t('wfm.details', 'Details'), 'info', function () { showDetails(entry); });
     }
 
     // Positioned relative to the DRAWER, so the menu travels with it and stays
@@ -1255,6 +1430,28 @@
     var grow2 = document.createElement('span');
     grow2.className = 'wfm-grow';
     foot.appendChild(grow2);
+    // Context-sensitive batch actions: hidden until something is picked (the
+    // same `has-sel` rule Download/Delete use), so the footer never grows a
+    // permanent wall of buttons. Move / Copy / Compress act on the whole set.
+    var footCompress = document.createElement('button');
+    footCompress.type = 'button';
+    footCompress.className = 'btn btn-ghost btn-sm wfm-compresssel';
+    footCompress.textContent = t('wfm.compress', 'Compress (.zip)');
+    footCompress.title = t('wfm.compressSelTitle', 'Make one .zip from the selected items');
+    footCompress.addEventListener('click', function () { void compressPaths(selectedPaths()); });
+    foot.appendChild(footCompress);
+    var footMove = document.createElement('button');
+    footMove.type = 'button';
+    footMove.className = 'btn btn-ghost btn-sm wfm-movesel';
+    footMove.textContent = t('wfm.move', 'Move');
+    footMove.addEventListener('click', function () { void movePaths(selectedPaths()); });
+    foot.appendChild(footMove);
+    var footCopy = document.createElement('button');
+    footCopy.type = 'button';
+    footCopy.className = 'btn btn-ghost btn-sm wfm-copysel';
+    footCopy.textContent = t('wfm.copy', 'Copy');
+    footCopy.addEventListener('click', function () { void copyPaths(selectedPaths()); });
+    foot.appendChild(footCopy);
     var down = document.createElement('button');
     down.type = 'button';
     down.className = 'btn btn-ghost btn-sm wfm-downsel';
@@ -1307,7 +1504,8 @@
     return {
       root: root, list: list, note: note, select: select, input: input,
       total: total, count: count, clear: clear, foot: foot,
-      confirm: confirmHost, selectAll: all, crumbs: crumbs
+      confirm: confirmHost, selectAll: all, crumbs: crumbs,
+      compressSel: footCompress, moveSel: footMove, copySel: footCopy
     };
   }
 

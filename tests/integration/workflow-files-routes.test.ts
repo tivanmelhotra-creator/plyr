@@ -670,6 +670,58 @@ describe('workflow files: /download gives the operator their own copy', () => {
   });
 });
 
+describe('workflow files: utility operation routes', () => {
+  async function upload(pathname: string, name: string, body: string | Buffer) {
+    return request(app).post(`${base()}/upload?path=${encodeURIComponent(pathname)}&name=${encodeURIComponent(name)}`)
+      .set('Content-Type', 'application/octet-stream').send(body);
+  }
+
+  it('moves files and folders, rejects conflicts, and blocks traversal', async () => {
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'move-dest' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'move-tree' });
+    await upload('', 'one.txt', 'one'); await upload('', 'two.txt', 'two');
+    await upload('move-tree', 'nested.txt', 'nested');
+    let r = await request(app).post(`${base()}/move`).send({ paths: ['one.txt', 'two.txt'], to: 'move-dest' });
+    expect(r.status).toBe(200); expect(r.body.count).toBe(2);
+    r = await request(app).post(`${base()}/move`).send({ paths: ['move-tree'], to: 'move-dest' });
+    expect(r.status).toBe(200);
+    expect((await request(app).get(`${base()}?path=move-dest/move-tree`)).body.entries.map((e: { name: string }) => e.name)).toContain('nested.txt');
+    await upload('', 'conflict.txt', 'source'); await upload('move-dest', 'conflict.txt', 'existing');
+    expect((await request(app).post(`${base()}/move`).send({ paths: ['conflict.txt'], to: 'move-dest' })).status).toBe(409);
+    expect((await request(app).post(`${base()}/move`).send({ paths: ['../escape'], to: '' })).status).toBe(400);
+  });
+
+  it('copies recursively and duplicates with conflict-safe names', async () => {
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'copy-dest' });
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'copy-tree' });
+    await upload('copy-tree', 'deep.txt', 'deep'); await upload('', 'copy.txt', 'copy');
+    let r = await request(app).post(`${base()}/copy`).send({ paths: ['copy-tree', 'copy.txt'], to: 'copy-dest' });
+    expect(r.status).toBe(200); expect(r.body.count).toBe(2);
+    r = await request(app).post(`${base()}/duplicate`).send({ path: 'copy.txt' });
+    expect(r.status).toBe(201); expect(r.body.entry.name).toBe('copy copy.txt');
+    expect((await request(app).get(`${base()}?path=copy-dest/copy-tree`)).body.entries.map((e: { name: string }) => e.name)).toContain('deep.txt');
+  });
+
+  it('compresses, numbers existing archives, and extracts through HTTP', async () => {
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'archive-src' });
+    await upload('archive-src', 'inside.txt', 'inside'); await upload('', 'archive-file.txt', 'file');
+    let r = await request(app).post(`${base()}/compress`).send({ paths: ['archive-file.txt', 'archive-src'], name: 'bundle', path: '', to: '' });
+    expect(r.status).toBe(201); expect(r.body.entry.path).toBe('bundle.zip');
+    r = await request(app).post(`${base()}/compress`).send({ paths: ['archive-file.txt'], name: 'bundle', path: '', to: '' });
+    expect(r.status).toBe(201); expect(r.body.entry.path).toBe('bundle (2).zip');
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'extract-target' });
+    r = await request(app).post(`${base()}/extract`).send({ path: 'bundle.zip', into: 'extract-target' });
+    expect(r.status).toBe(200); expect(r.body.files).toBeGreaterThan(0);
+    expect((await request(app).get(`${base()}?path=extract-target/archive-src`)).status).toBe(200);
+  });
+
+  it('keeps workflows isolated for utility operations', async () => {
+    await upload('', 'alice-only.txt', 'alice');
+    expect((await request(app).post(`/browser/workflow-files/${wfBob}/copy`).send({ paths: ['alice-only.txt'], to: '' })).status).toBe(404);
+    expect((await request(app).get(`/browser/workflow-files/${wfBob}?path=alice-only.txt`)).status).toBe(404);
+  });
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // THE LOCAL BROWSER'S BINDING LIVES IN REDIS, NOT IN THE PROCESS (S16)
 //

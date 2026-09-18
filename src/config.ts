@@ -233,6 +233,41 @@ export const config = {
     cleanEnv(process.env.WORKFLOW_STORAGE_ROOT) || './workflow-files'
   ),
 
+  // ── Archive guards: Compress / Extract in the Workflow File Workspace ──
+  // "Compress" and "Extract" are the only operations that can turn a small
+  // request into a very large amount of disk. Every cap below is a
+  // conservative constant, not a tuning knob: they are high enough for a real
+  // asset bundle and low enough that a pathological archive cannot fill the
+  // volume. Extraction refuses an archive whose DECLARED expansion crosses
+  // these BEFORE inflating anything (see core/ZipArchive).
+  //
+  // Largest .zip an operator may extract, in bytes (default 512 MiB).
+  WORKFLOW_ZIP_MAX_INPUT_BYTES: Math.max(
+    1024 * 1024,
+    parseInt(cleanEnv(process.env.WORKFLOW_ZIP_MAX_INPUT_BYTES) || String(512 * 1024 * 1024), 10) || 512 * 1024 * 1024,
+  ),
+  // Total uncompressed bytes one extraction may produce (default 1 GiB).
+  WORKFLOW_ZIP_MAX_TOTAL_BYTES: Math.max(
+    1024 * 1024,
+    parseInt(cleanEnv(process.env.WORKFLOW_ZIP_MAX_TOTAL_BYTES) || String(1024 * 1024 * 1024), 10) || 1024 * 1024 * 1024,
+  ),
+  // Most files one extraction may produce (default 10000).
+  WORKFLOW_ZIP_MAX_FILES: Math.max(
+    1,
+    parseInt(cleanEnv(process.env.WORKFLOW_ZIP_MAX_FILES) || '10000', 10) || 10000,
+  ),
+  // Most entries one archive may hold, read or written (default 10000).
+  WORKFLOW_ZIP_MAX_ENTRIES: Math.max(
+    1,
+    parseInt(cleanEnv(process.env.WORKFLOW_ZIP_MAX_ENTRIES) || '10000', 10) || 10000,
+  ),
+  // Most relative paths one bulk request (move / copy / compress) may name.
+  WORKFLOW_BULK_MAX_PATHS: Math.max(
+    1,
+    parseInt(cleanEnv(process.env.WORKFLOW_BULK_MAX_PATHS) || '500', 10) || 500,
+  ),
+
+
   // ── Remote downloads: TEMPORARY by default ────────────────────────────
   // The owner's requirement, verbatim: «ایا این فایل ها توی سرور موقت هستند یا
   // ذخیره میشن؟ … وقت باشن یعنی tmp باشند خوبه تا دائمی چون کاربردش فقط همون

@@ -2718,6 +2718,110 @@ function wfmDeleteSelected() {
   });
 }
 
+// ── Organise: Move / Copy / Duplicate, and Archive: Compress / Extract ───────
+//
+// The same utility actions the canvas drawer offers, spoken to the same API.
+// Every request names workflow-RELATIVE paths and a workflow-relative
+// destination the server normalises; a destination is typed by the operator and
+// never becomes an absolute path here. A taken name is refused by the server
+// (409) or numbered for a copy — never overwritten.
+
+/** The operator's typed destination folder, reduced to a relative path.
+ *  Deliberately regex-free: this script lives inside a TEMPLATE LITERAL in
+ *  ChromeView.ts, where an escaped slash collapses to slash and would corrupt a
+ *  regex literal in the emitted HTML. split/filter/join needs no escaping. */
+function wfmDestInput(v) {
+  return String(v == null ? '' : v).trim().split('/').filter((s) => s !== '').join('/');
+}
+
+function wfmSelectedPaths() {
+  return wfmSelected.map((c) => c.path);
+}
+
+function wfmIsZipName(name) {
+  return /\.zip$/i.test(String(name || '').trim());
+}
+
+function wfmMovePaths(paths) {
+  if (!paths.length || !wfmRequire()) return;
+  const to = ask('Destination folder (relative to the workspace):', wfmRoot || '');
+  if (to === null) return;
+  wfmSay('Moving\u2026', false);
+  wfmFetch(wfmBase() + '/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths: paths, to: wfmDestInput(to) }),
+  })
+    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Moved: ' + ((d && d.count) || paths.length), false)); })
+    .catch((e) => wfmSay((e && e.message) || 'Could not move.', true));
+}
+
+function wfmCopyPaths(paths, style) {
+  if (!paths.length || !wfmRequire()) return;
+  const to = ask('Destination folder to copy into (relative to the workspace):', wfmRoot || '');
+  if (to === null) return;
+  wfmSay('Copying\u2026', false);
+  wfmFetch(wfmBase() + '/copy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths: paths, to: wfmDestInput(to), style: style || 'numbered' }),
+  })
+    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Copied: ' + ((d && d.count) || paths.length), false)); })
+    .catch((e) => wfmSay((e && e.message) || 'Could not copy.', true));
+}
+
+function wfmDuplicate(entry) {
+  if (!wfmRequire()) return;
+  wfmSay('Copying\u2026', false);
+  wfmFetch(wfmBase() + '/duplicate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: entry.path }),
+  })
+    .then((d) => wfmRefresh().then(() => wfmSay('Duplicated: ' + ((d && d.entry && d.entry.name) || ''), false)))
+    .catch((e) => wfmSay((e && e.message) || 'Could not duplicate.', true));
+}
+
+function wfmCompressPaths(paths) {
+  if (!paths.length || !wfmRequire()) return;
+  const leaf = wfmRoot ? wfmRoot.split('/').pop() : workflowId;
+  const name = ask('Archive name:', (leaf || 'archive') + '.zip');
+  if (!name) return;
+  wfmSay('Building the archive\u2026', false);
+  wfmFetch(wfmBase() + '/compress', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths: paths, path: wfmRoot, name: name, to: wfmRoot }),
+  })
+    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Archive created: ' + ((d && d.entry && d.entry.name) || name), false)); })
+    .catch((e) => wfmSay((e && e.message) || 'Could not compress.', true));
+}
+
+function wfmExtract(entry, mode) {
+  if (!wfmRequire()) return;
+  wfmSay('Extracting\u2026', false);
+  wfmFetch(wfmBase() + '/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: entry.path, mode: mode }),
+  })
+    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Extracted: ' + ((d && d.folder) || ''), false)); })
+    .catch((e) => wfmSay((e && e.message) || 'Could not extract.', true));
+}
+
+/** Details for ONE entry, in the drawer's own note line. No absolute path. */
+function wfmShowDetails(entry) {
+  const kind = entry.type === 'dir' ? 'Folder' : 'File';
+  const parts = [entry.name, kind];
+  if (entry.type !== 'dir') parts.push(humanSize(entry.size) || '0 B');
+  if (entry.modifiedAt) {
+    const when = new Date(entry.modifiedAt);
+    if (!isNaN(when.getTime())) parts.push(when.toLocaleString());
+  }
+  parts.push(entry.path);
+  wfmSay(parts.join('  \u00b7  '), false);
+}
+
 // ── Download: the operator's own copy ────────────────────────────────────────
 //
 // «کلیک روی Download → فایل مستقیماً روی Windows کاربر ذخیره شود» -- the same
@@ -2916,16 +3020,31 @@ function wfmOpenMenu(entry, x, y) {
     wfmMenuSep();
     wfmMenuItem('Download (.zip)', 'download', () => { void wfmDownload(entry); });
     if (!entry.system) {
-      wfmMenuSep();
       wfmMenuItem('Rename', 'pencil', () => wfmRename(entry));
       wfmMenuItem('Delete', 'trash', () => wfmDelete(entry), true);
+    }
+    wfmMenuSep();
+    wfmMenuItem('Compress (.zip)', 'layers', () => { void wfmCompressPaths([entry.path]); });
+    if (!entry.system) {
+      wfmMenuItem('Move', 'move', () => wfmMovePaths([entry.path]));
+      wfmMenuItem('Copy', 'copy', () => wfmCopyPaths([entry.path]));
     }
   } else {
     wfmMenuItem('Select', 'check', () => wfmPick(entry, true));
     wfmMenuItem('Download', 'download', () => { void wfmDownload(entry); });
     wfmMenuSep();
+    wfmMenuItem('Compress (.zip)', 'layers', () => { void wfmCompressPaths([entry.path]); });
+    wfmMenuItem('Move', 'move', () => wfmMovePaths([entry.path]));
+    wfmMenuItem('Copy', 'copy', () => wfmCopyPaths([entry.path]));
+    wfmMenuItem('Duplicate', 'copy', () => wfmDuplicate(entry));
+    if (wfmIsZipName(entry.name)) {
+      wfmMenuItem('Extract here', 'extract', () => wfmExtract(entry, 'here'));
+      wfmMenuItem('Extract to new folder', 'folder-open', () => wfmExtract(entry, 'folder'));
+    }
+    wfmMenuSep();
     wfmMenuItem('Rename', 'pencil', () => wfmRename(entry));
     wfmMenuItem('Delete', 'trash', () => wfmDelete(entry), true);
+    wfmMenuItem('Details', 'info', () => wfmShowDetails(entry));
   }
   // Kept inside the viewport: a menu that opens off the bottom edge is a menu
   // the operator cannot press.
