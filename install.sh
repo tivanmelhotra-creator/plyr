@@ -11,7 +11,7 @@
 # A guided, confirmation-driven wizard. Every step that changes the system
 # asks for confirmation (default = Yes, just press Enter) and prints exactly
 # what it is about to do. Targets:
-#   1) Server (Node)     native Node + Redis + Playwright + PM2 (+ Caddy/HTTPS)
+#   1) Server (Node)     bootstrap + canonical Plyr Runtime Manager (+ Caddy/HTTPS)
 #   2) Server (Docker)   app + redis via docker compose
 #   3) Server (Coolify)  guidance + files for an isolated Coolify deploy
 #   4) Client (Chrome)   load the MV3 browser extension
@@ -34,7 +34,7 @@ set -euo pipefail
 # pipe (so `read` can't reach the keyboard). We clone the repo into a temp dir
 # and re-exec ourselves from there with stdin reconnected to the terminal.
 # ---------------------------------------------------------------------------
-REPO_URL_DEFAULT="https://github.com/Saeedkhoshafsar/plyr.git"
+REPO_URL_DEFAULT="https://github.com/tivanmelhotra-creator/plyr.git"
 REPO_BRANCH_DEFAULT="main"
 
 bootstrap_from_curl() {
@@ -101,7 +101,7 @@ print_help() {
 ${BOLD}automation-backend installer${RESET}
 
 ${BOLD}Targets${RESET}
-  ${GREEN}server (node)${RESET}    Native Node + Redis + Playwright + PM2 (+ optional
+  ${GREEN}server (node)${RESET}    Bootstrap the canonical Plyr Runtime Manager (+ optional
                    Caddy reverse proxy with automatic HTTPS for your domain).
   ${GREEN}server (docker)${RESET}  Run the full stack (app + redis) with Docker Compose.
   ${GREEN}server (coolify)${RESET} Print guidance + ensure files for an isolated
@@ -313,7 +313,7 @@ require_node() {
     major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
     if [ "$major" -lt 20 ]; then
       warn "Node.js ${major}.x detected; the project targets Node >= 20."
-      install_node_offer || true
+      install_node_offer || return 1
     else
       ok "Node.js $(node -v) detected."
     fi
@@ -353,6 +353,8 @@ install_node_offer() {
       return 1 ;;
   esac
   has node || { err "Node.js still not available."; return 1; }
+  local major; major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  [ "$major" -ge 20 ] || { err "Node.js ${major}.x is still too old; Node >= 20 is required."; return 1; }
 }
 
 # ---------------------------------------------------------------------------
@@ -454,133 +456,45 @@ EOF
 # ---------------------------------------------------------------------------
 # SERVER — native Node path
 # ---------------------------------------------------------------------------
-install_redis_native() {
-  if has redis-server || has redis-cli; then
-    ok "Redis appears to be installed."
-    return 0
-  fi
-  warn "Redis is not installed."
-  local pm; pm="$(detect_pkg_mgr)"
-  case "$pm" in
-    apt)
-      if confirm "Install redis-server via apt-get (needs sudo)?"; then
-        maybe_sudo apt-get update
-        maybe_sudo apt-get install -y redis-server
-        maybe_sudo systemctl enable --now redis-server 2>/dev/null || true
-        ok "Redis installed."
-      fi ;;
-    dnf|yum)
-      if confirm "Install redis via ${pm} (needs sudo)?"; then
-        maybe_sudo "$pm" install -y redis
-        maybe_sudo systemctl enable --now redis 2>/dev/null || true
-        ok "Redis installed."
-      fi ;;
-    pacman)
-      if confirm "Install redis via pacman (needs sudo)?"; then
-        maybe_sudo pacman -S --noconfirm redis
-        maybe_sudo systemctl enable --now redis 2>/dev/null || true
-        ok "Redis installed."
-      fi ;;
-    brew)
-      if confirm "Install redis via Homebrew?"; then
-        brew install redis
-        brew services start redis 2>/dev/null || true
-        ok "Redis installed."
-      fi ;;
-    *)
-      warn "Could not detect a package manager. Install Redis manually, or run it with Docker:"
-      printf "    docker run -d --name redis -p 6379:6379 redis:7-alpine\n" ;;
-  esac
-}
-
 PANEL_URL=""
 install_server_node() {
-  title "Server install — native Node.js + PM2"
+  title "Server install — canonical Plyr Runtime Manager"
   PANEL_URL=""
 
   local port="${OPT_PORT:-}"
   [ -z "$port" ] && port="$(ask "Which port should the panel listen on?" "3000")"
   [ -z "$port" ] && port="3000"
 
-  # [1/6] Dependencies
-  title "[1/6] System dependencies (Node 20+, Redis, Playwright)"
+  # The Runtime Manager is the only Native lifecycle installer. This wrapper
+  # remains the bootstrap layer for prerequisites and keeps the legacy
+  # wizard/domain/Caddy UX without maintaining a second dependency path.
+  title "[1/3] Node bootstrap and configuration (.env + port)"
   require_node || return 1
-  install_redis_native
-
-  info "About to install npm dependencies (npm install)."
-  if confirm "Install project dependencies now?"; then
-    npm install
-    ok "Dependencies installed."
-  else
-    warn "Skipped npm install — the server cannot run without it."
-  fi
-
-  # [2/6] Playwright browser
-  title "[2/6] Browser engine (Playwright Chromium)"
-  if confirm "Install the Playwright Chromium browser now?"; then
-    if confirm "Also install system libraries for Chromium (needs sudo, recommended on a fresh server)?"; then
-      npm run install:browser:deps
-    else
-      npm run install:browser
-    fi
-    ok "Browser ready."
-  fi
-
-  # [3/6] .env + token
-  title "[3/6] Configuration (.env + API token)"
   ensure_env_file
-  # Honour chosen port in .env
   if [ -f .env ] && [ "$port" != "3000" ]; then
     if grep -q '^PORT=' .env; then sed_inplace "s|^PORT=.*|PORT=${port}|" .env; else printf "\nPORT=%s\n" "$port" >> .env; fi
   fi
 
-  # [4/6] Build
-  title "[4/6] Build the project"
-  if confirm "Build now (compile TypeScript -> dist/)?"; then
-    npm run build
-    ok "Build complete."
-  fi
+  title "[2/3] Canonical dependency installation and verification"
+  AB_NO_PROMPT=1 ./plyr install || { err "Runtime installation failed. Run ./plyr doctor for the exact blocker."; return 1; }
 
-  # [5/6] Domain + HTTPS (optional)
-  title "[5/6] Public domain + HTTPS (optional)"
+  title "[3/3] Public domain + HTTPS (optional), then start"
   local domain="${OPT_DOMAIN:-}"
   if [ -z "$domain" ]; then
     domain="$(ask "Your domain for the panel (e.g. panel.example.com) — leave empty for IP:port only" "")"
   fi
   if [ -n "$domain" ]; then
-    # Recorded BEFORE setup_caddy, which can bail out (declined DNS record, no
-    # package manager for Caddy). The domain is still the address the operator
-    # wants advertised at pairing time even if the reverse proxy is set up later
-    # by hand, so persisting it must not depend on Caddy succeeding.
     persist_public_domain "$domain"
     setup_caddy "$domain" "$port"
   else
     info "No domain given — the panel will be reachable on http://<server-ip>:${port}"
-    info "The panel detects that address itself and shows it beside the Authorization Code."
     PANEL_URL="http://localhost:${port}"
   fi
 
-  # [6/6] Run under PM2
-  title "[6/6] Run the server (PM2, auto-restart)"
-  if confirm "Start the server under PM2 (cluster mode, auto-restart)?"; then
-    if ! has pm2; then
-      if confirm "PM2 is not installed. Install it globally (npm i -g pm2)?"; then
-        npm install -g pm2 || maybe_sudo npm install -g pm2
-      fi
-    fi
-    if has pm2; then
-      pm2 start ecosystem.config.js
-      pm2 save || true
-      ok "Server started under PM2."
-      info "Status: pm2 status   |   Logs: pm2 logs Hybrid-Automation --nostream"
-      if confirm "Make PM2 start on boot (systemd unit)?"; then
-        pm2 startup || warn "Run the command PM2 printed above (it needs sudo) to finish."
-      fi
-    else
-      warn "PM2 unavailable. You can run the server directly with: npm start"
-    fi
+  if confirm "Start the verified runtime with ./plyr start --build now?"; then
+    ./plyr start --build || { err "Runtime start failed; required services are not ready. Run ./plyr doctor for the exact blocker."; return 1; }
   else
-    info "Start it later with:  pm2 start ecosystem.config.js   (or  npm start )"
+    info "Start it later with: ./plyr start --build"
   fi
 
   print_server_summary "$port"
@@ -627,13 +541,14 @@ install_server_docker() {
     info "No domain set — the server will detect an address."
   fi
 
-  info "About to build and start the stack:  ${COMPOSE} up -d --build"
+  info "About to build and start the stack through the canonical Plyr Runtime Manager."
   if ! confirm "Build and start the Docker stack now?"; then
-    warn "Aborted. Run later with: ${COMPOSE} up -d --build"
+    warn "Aborted. Run later with: ./plyr install --docker && ./plyr start --docker"
     return 0
   fi
-  $COMPOSE up -d --build
-  ok "Stack started."
+  ./plyr install --docker || { err "Docker image build failed."; return 1; }
+  ./plyr start --docker || { err "Docker runtime failed readiness checks. Run ./plyr doctor."; return 1; }
+  ok "Stack is functionally ready."
 
   if [ -n "$dk_domain" ]; then
     PANEL_URL="$(domain_to_url "$dk_domain")"
@@ -644,8 +559,8 @@ install_server_docker() {
     warn "API_TOKEN is empty in .env — a random one is generated at boot."
     info "Reveal it with: ${COMPOSE} logs app | grep API_TOKEN"
   fi
-  info "Follow logs:    ${COMPOSE} logs -f app"
-  info "Stop the stack: ${COMPOSE} down"
+  info "Follow logs:    ./plyr logs"
+  info "Stop the stack: ./plyr stop --docker"
   print_server_summary "3000"
 }
 
@@ -748,7 +663,7 @@ menu() {
   cat <<EOF
 What are you installing on ${BOLD}this machine${RESET}?
 
-  ${BOLD}1)${RESET} Server (Node)     ${DIM}— native Node + Redis + Playwright + PM2 (+ HTTPS)${RESET}
+  ${BOLD}1)${RESET} Server (Node)     ${DIM}— canonical Plyr Runtime Manager (+ HTTPS)${RESET}
   ${BOLD}2)${RESET} Server (Docker)   ${DIM}— app + redis via docker compose${RESET}
   ${BOLD}3)${RESET} Server (Coolify)  ${DIM}— isolated deploy guidance + files${RESET}
   ${BOLD}4)${RESET} Client (Chrome)   ${DIM}— load the browser extension on this PC${RESET}

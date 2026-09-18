@@ -1,117 +1,82 @@
 @echo off
-title HYBRID FRAMEWORK - MASTER LAUNCHER 🚀
-color 0B
+setlocal
+ title PLYR Runtime Manager
+ color 0B
 
 :MENU
 cls
 echo ===================================================
-echo        HYBRID FRAMEWORK - CONTROL CENTER
+echo              PLYR RUNTIME MANAGER
 echo ===================================================
 echo.
-echo  [1] CLEAN & START DEVELOPMENT (Hot Reload)
-echo  [2] CLEAN & START PRODUCTION CLUSTER (4 Workers)
-echo  [3] CLEAN ONLY (Kill Processes & Delete dist)
-echo  [4] EXIT
-echo.
-set /p choice="Select an option (1-4): "
+echo  [1] Start development mode
+ echo  [2] Start built/native mode
+ echo  [3] Stop active managed runtime
+ echo  [4] Restart active managed runtime
+ echo  [5] Status
+ echo  [6] Doctor
+ echo  [7] Exit
+ echo.
+set /p choice="Select an option (1-7): "
 
 if "%choice%"=="1" goto DEV
-if "%choice%"=="2" goto PROD
-if "%choice%"=="3" goto CLEAN_ONLY
-if "%choice%"=="4" exit
+if "%choice%"=="2" goto BUILD
+if "%choice%"=="3" goto STOP
+if "%choice%"=="4" goto RESTART
+if "%choice%"=="5" goto STATUS
+if "%choice%"=="6" goto DOCTOR
+if "%choice%"=="7" exit /b 0
 goto MENU
 
-:: --- SUBROUTINES (توابع کمکی) ---
-
-:CLEAN_ALL
-echo.
-echo [1/3] Killing all running processes...
-echo -------------------------------------
-:: بستن نرم PM2
-call pm2 stop all >nul 2>&1
-call pm2 delete all >nul 2>&1
-call pm2 kill >nul 2>&1
-
-:: بستن اجباری Node.js و PM2 (بی‌صدا)
-taskkill /F /IM node.exe /T >nul 2>&1
-taskkill /F /IM pm2.exe /T >nul 2>&1
-:: نکته: بستن Redis اختیاری است. اگر می‌خواهید کش بماند، این خط را غیرفعال نگه دارید.
-:: taskkill /F /IM redis-server.exe /T >nul 2>&1
-
-echo [OK] Processes terminated.
-
-echo.
-echo [2/3] Cleaning temporary files...
-echo -------------------------------------
-if exist dist (
-    rmdir /s /q dist
-    echo [OK] 'dist' folder cleaned.
-) else (
-    echo [INFO] No 'dist' folder found.
+:CHECK_BASH
+where bash >nul 2>&1
+if not "%ERRORLEVEL%"=="0" (
+  echo.
+  echo ERROR: Bash is required for the canonical ./plyr manager.
+  echo Install Git for Windows or use WSL, then run this launcher again.
+  pause
+  exit /b 1
 )
-goto :eof
-
-:START_REDIS
-:: چک کردن اینکه آیا Redis باز است یا نه
-tasklist /FI "IMAGENAME eq redis-server.exe" 2>NUL | find /I /N "redis-server.exe">NUL
-if "%ERRORLEVEL%"=="1" (
-    echo [INFO] Starting Redis...
-    :: اجرای Redis در پنجره جدید و کوچک
-    start "Redis Server" /MIN cmd /k "cd /d %~dp0Redis && redis-server.exe redis.conf"
-    timeout /t 2 >nul
-) else (
-    echo [INFO] Redis is already running.
-)
-goto :eof
-
-:: --- MAIN MODES ---
-
-:CLEAN_ONLY
-call :CLEAN_ALL
-echo.
-echo [SUCCESS] Cleanup Complete.
-pause
-goto MENU
+exit /b 0
 
 :DEV
-call :CLEAN_ALL
-echo.
-echo [3/3] Starting DEVELOPMENT Mode...
-echo -------------------------------------
-:: تنظیم متغیر محیطی (مستقیم، بدون start)
-set NODE_ENV=development
-echo [INFO] Environment set to: DEVELOPMENT
-
-call :START_REDIS
-
-echo [INFO] Starting App with Hot-Reload...
-echo [TIP]  Save any file to auto-restart!
-echo.
-:: اجرای مستقیم npm run dev
-call npm run dev
+call :CHECK_BASH
+if errorlevel 1 exit /b 1
+call bash "%~dp0plyr" start --dev
 pause
 goto MENU
 
-:PROD
-call :CLEAN_ALL
-echo.
-echo [3/3] Starting PRODUCTION CLUSTER...
-echo -------------------------------------
-set NODE_ENV=production
-echo [INFO] Environment set to: PRODUCTION
+:BUILD
+call :CHECK_BASH
+if errorlevel 1 exit /b 1
+call bash "%~dp0plyr" start --build
+pause
+goto MENU
 
-echo [BUILD] Compiling TypeScript...
-call npm run build
+:STOP
+call :CHECK_BASH
+if errorlevel 1 exit /b 1
+call bash "%~dp0plyr" stop
+pause
+goto MENU
 
-call :START_REDIS
+:RESTART
+call :CHECK_BASH
+if errorlevel 1 exit /b 1
+call bash "%~dp0plyr" restart
+pause
+goto MENU
 
-echo [INFO] Launching PM2 Cluster...
-call pm2 start ecosystem.config.js
-echo.
-echo ===================================================
-echo  CLUSTER IS READY!
-echo  Monitor logs using:  pm2 logs
-echo  Dashboard:           pm2 monit
-echo ===================================================
+:STATUS
+call :CHECK_BASH
+if errorlevel 1 exit /b 1
+call bash "%~dp0plyr" status
+pause
+goto MENU
+
+:DOCTOR
+call :CHECK_BASH
+if errorlevel 1 exit /b 1
+call bash "%~dp0plyr" doctor --deep
 pause
 goto MENU

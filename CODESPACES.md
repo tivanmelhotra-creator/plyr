@@ -4,17 +4,28 @@
 
 ## شروع سریع
 
-۱. در Codespace ترمینال این دستور رو اجرا کن:
+مسیر canonical چرخه‌عمر Plyr این است:
+
+```bash
+./plyr install
+./plyr start --dev
+```
+
+`dev.sh` همچنان برای سازگاری وجود دارد و همین مسیر canonical را صدا می‌زند:
+
 ```bash
 bash dev.sh
 ```
 
-این اسکریپت همه چیز رو نصب و راه‌اندازی میکنه:
-- ✅ npm install
-- ✅ ساختن .env از .env.example
-- ✅ راه‌اندازی Redis
-- ✅ TypeScript build
-- ✅ اجرای سرور روی پورت 3000
+برای بررسی وضعیت و عیب‌یابی از این‌ها استفاده کنید:
+
+```bash
+./plyr status
+./plyr doctor --deep
+```
+
+Runtime Manager به‌صورت صریح بررسی می‌کند که Node/npm، Redis، Playwright/Chromium،
+نمایشگر و سرویس viewer آماده باشند؛ در صورت نبود وابستگی، نصب موفق اعلام نمی‌شود.
 
 ## دسترسی عمومی
 

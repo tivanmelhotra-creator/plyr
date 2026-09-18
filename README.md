@@ -19,7 +19,7 @@ Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript**
 | اتوماسیون | Playwright + stealth |
 | ذخیره‌سازی | Redis + JSON روی دیسک |
 | رابط کاربری | Vanilla JS (بدون build)، i18n (فا/EN، RTL/LTR)، CSP سخت |
-| Production | PM2 cluster |
+| Production | Plyr Runtime Manager (`./plyr`) |
 
 - **Hybrid Browser:** کاربران VIP مرورگر persistent اختصاصی، کاربران Free مرورگر مشترک با context ایزوله.
 - **Flow Engine:** پشتیبانی از `if/else`, `while`, `try/catch/finally`, `switch`, متغیر و ماژول افزونه‌ای.
@@ -66,7 +66,7 @@ docker run -d --name redis -p 6379:6379 redis:7-alpine
 روی سرور فقط همین یک دستور را بزنید؛ اسکریپت خودش ریپو را می‌گیرد و یک **ویزارد تعاملی** را اجرا می‌کند:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tivanmelhotra-creator/plyr/main/install.sh | bash
 ```
 
 > اگر ریپو را قبلاً clone کرده‌اید، می‌توانید مستقیم `chmod +x install.sh && ./install.sh` را اجرا کنید.
@@ -75,12 +75,12 @@ curl -fsSL https://raw.githubusercontent.com/Saeedkhoshafsar/plyr/main/install.s
 
 | گزینه | چه‌کار می‌کند |
 |-------|----------------|
-| **۱) Server (Node)** | نصب بومی روی سرور: Node 20+ (در صورت نبود نصب می‌شود) + Redis + Playwright Chromium + build + اجرا با PM2. اگر **دامنه** بدهید، خودش **Caddy** را نصب و کانفیگ می‌کند تا پنل با **HTTPS خودکار (Let's Encrypt)** روی دامنه‌تان بالا بیاید. |
+| **۱) Server (Node)** | نصب بومی از مسیر canonical `./plyr`: Node 20+ + Redis + Playwright Chromium + وابستگی‌های display + build + readiness واقعی. اگر **دامنه** بدهید، `install.sh` Caddy را تنظیم می‌کند. |
 | **۲) Server (Docker)** | استک کامل (app + redis) با `docker compose` — Chromium و وابستگی‌های سیستمی داخل image هستند |
 | **۳) Server (Coolify)** | راهنمای استقرار ایزوله روی [Coolify](https://coolify.io) با فایل آمادهٔ `docker-compose.coolify.yml` (دامنه و TLS را خود Coolify هندل می‌کند) |
 | **۴) Client (Chrome)** | راهنمای بارگذاری افزونهٔ Chrome (Load unpacked) روی PC شما |
 
-مراحل مسیر **Server (Node)**: `[1/6]` وابستگی‌ها → `[2/6]` مرورگر → `[3/6]` ساخت `.env` و تولید `API_TOKEN` تصادفی → `[4/6]` build → `[5/6]` دامنه + HTTPS (اختیاری) → `[6/6]` اجرا با PM2. در پایان **آدرس پنل و توکن** را چاپ می‌کند.
+مراحل مسیر **Server (Node)**: تنظیم `.env` و پورت → اجرای `./plyr install` برای نصب و verification واقعی → دامنه + HTTPS اختیاری → `./plyr start --build`. در پایان وضعیت readiness و آدرس پنل گزارش می‌شود.
 
 #### 🌐 دامنه و Cloudflare (برای HTTPS)
 
@@ -190,20 +190,64 @@ npm run build          # = build:server (tsc) + build:extension
 
 ## اجرا
 
+### مسیر canonical: Plyr Runtime Manager
+
+برای نصب و اجرای کامل Native، دیگر لازم نیست Redis، نمایشگر، viewer یا Node را جداگانه مدیریت کنید:
+
 ```bash
-# توسعه (hot reload)
-npm run dev
-
-# build + production
-npm run build
-npm start
-
-# production cluster با PM2
-pm2 start ecosystem.config.js
+./plyr install
+./plyr start
+./plyr status
+./plyr doctor
+./plyr doctor --deep
+./plyr restart
+./plyr stop
 ```
 
-> ⚠️ **PM2 و `instances`:** فایل `ecosystem.config.js` روی حالت cluster تنظیم است. Real Chrome یک دایرکتوری profile واحد دارد و
-> با `SingletonLock` قفل می‌شود، پس اگر Remote Browser می‌خواهید `instances` را روی `1` بگذارید.
+`start` به‌صورت deterministic در حالت `auto` عمل می‌کند: اگر Docker و Compose قابل استفاده باشند مسیر Docker را انتخاب می‌کند؛ در غیر این صورت Native. انتخاب صریح:
+
+```bash
+./plyr start --native
+./plyr start --dev
+./plyr start --build
+./plyr start --docker
+```
+
+وضعیت‌ها از هم جدا هستند:
+
+- `RUNNING`: پردازش‌ها اجرا شده‌اند.
+- `READY`: Redis، HTTP، Playwright/Chrome و زیرساخت display لازم آماده‌اند.
+- `NOT READY`: بخشی از زنجیره کم است؛ `./plyr doctor` دلیل و راه‌حل را چاپ می‌کند.
+
+دستورهای قدیمی همچنان کار می‌کنند و به مسیر canonical متصل شده‌اند:
+
+```bash
+./dev.sh
+npm run install:runtime
+npm run start:runtime
+npm run status:runtime
+npm run doctor:runtime
+npm start                 # build + canonical start
+```
+
+`install` و `start` هیچ‌وقت Redis را flush نمی‌کنند، workflowها را حذف نمی‌کنند یا browser profile را reset نمی‌کنند. لاگ‌های runtime در `.plyr/runtime/logs/` نگه‌داری می‌شوند.
+
+> ⚠️ **PM2 و `instances`:** برای Remote Browser از چند instance همزمان روی یک profile استفاده نکنید؛ `SingletonLock` باعث رقابت می‌شود. Runtime Manager مالکیت processهای خودش را با PID نگه می‌دارد و processهای unrelated را kill نمی‌کند.
+
+### مسیرهای legacy
+
+`scripts/desktop.sh` همچنان helper زیرساخت display است و توسط Runtime Manager استفاده می‌شود؛ startup کامل دیگر در آن انجام نمی‌شود. `install.sh` نیز برای compatibility و wizard قدیمی باقی مانده، اما مرحله‌ی اجرای Native را به `./plyr start --build` واگذار می‌کند.
+
+```bash
+# توسعه (hot reload) — compatibility command
+npm run dev
+
+# build مستقل
+npm run build
+
+# PM2 legacy/API-only (برای Remote Browser از instances:1 استفاده کنید)
+pm2 start ecosystem.config.js
+```
 
 ### از صفر تا یک سرورِ کارکُن
 

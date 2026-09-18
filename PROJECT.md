@@ -363,31 +363,37 @@ annotated reference — copy it to `.env`. Highlights:
 
 ## 12. Development
 
+The canonical lifecycle is the Plyr Runtime Manager:
+
 ```bash
-npm install                    # postinstall runs scripts/postinstall.js
-cp .env.example .env
-npm run install:browser:deps   # Playwright Chromium + OS deps
-npm run dev                    # tsx watch src/index.ts
+./plyr install
+./plyr start --dev
+./plyr status
+./plyr doctor --deep
 ```
 
 | Script | Does |
 | --- | --- |
-| `npm run dev` | Watch-mode server via `tsx` |
+| `./plyr install` | Verifies/installs Node, npm, Redis, desktop dependencies, Chromium and builds the app |
+| `./plyr start --dev` | Starts the development server through the canonical manager |
+| `./plyr start --build` | Starts the built application through the canonical manager |
+| `./plyr stop` / `./plyr restart` | Stops/restarts only the manager-owned active runtime |
+| `npm run dev` | Compatibility alias for `./plyr start --dev` |
 | `npm run build` | `build:server` (tsc) + `build:extension` |
 | `npm run check` | `tsc --noEmit` |
 | `npm test` | `vitest run` |
-| `npm run doctor` | Environment self-check |
-| `npm start` | `node dist/index.js` (runs `prestart` build) |
+| `npm run doctor` | Runtime Manager deep self-check |
+| `npm start` | Compatibility alias for `./plyr start --build` |
 | `npm run clean` | Remove `dist/` and `artifacts/` |
 
-**One-shot setup:** `bash dev.sh` installs dependencies, creates `.env`, starts
-Redis, builds and runs the server — this is also the GitHub Codespaces path
-(forward port 3000 and set its visibility to Public). See
+**One-shot setup:** `bash dev.sh` is a compatibility wrapper for
+`./plyr install-and-start-dev`; the canonical Codespaces path is documented in
 [`CODESPACES.md`](CODESPACES.md).
 
-**Installer:** `./install.sh` offers server (node), server (docker), client
-(Chrome extension) and Coolify targets, interactively or via flags
-(`--server-node`, `--server-docker`, `--client`, `--coolify`).
+**Installer:** `./install.sh` remains the bootstrap/wizard for server (node),
+server (docker), client (Chrome extension) and Coolify targets. Its Native path
+delegates dependency installation and lifecycle readiness to `./plyr` rather
+than maintaining a second installer.
 
 **Testing:** Vitest with `environment: node`, `pool: 'forks'` and
 `singleFork: true` — suites run serially so integration tests cannot collide on
@@ -418,11 +424,11 @@ originally held them have been removed.
 
 | Method | Files |
 | --- | --- |
-| **PM2** | `ecosystem.config.js` (runs `./dist/index.js`) |
+| **Runtime Manager** | `./plyr` — canonical install/start/stop/restart/status/doctor lifecycle |
 | **Docker** | `Dockerfile` + `docker-compose.yml` (app + Redis) |
 | **Coolify** | `docker-compose.coolify.yml` — see [`docs/COOLIFY.md`](docs/COOLIFY.md) |
 | **Caddy** | `Caddyfile.example` for automatic HTTPS in front of the app |
-| **Codespaces** | `bash dev.sh`, then make port 3000 public |
+| **Codespaces** | `./plyr install && ./plyr start --dev` (or compatibility `bash dev.sh`) |
 | **Windows** | `Control_Center.cmd` |
 
 The `Dockerfile` is multi-stage: it builds with dev dependencies, then copies
