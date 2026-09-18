@@ -63,4 +63,15 @@ describe('canonical Plyr runtime manager', () => {
     expect(script).toContain('active_mode');
     expect(script).toContain('npm ci');
   });
+
+  it('has one explicit non-interactive install contract and a fresh-machine Node bootstrap', () => {
+    const manager = require('fs').readFileSync(path.join(root, 'scripts/plyr.sh'), 'utf8');
+    const installer = require('fs').readFileSync(path.join(root, 'install.sh'), 'utf8');
+    expect(manager).toContain('if [[ -z "${AB_NO_PROMPT:-}" ]]');
+    expect(manager).toContain('ask_public_domain || true');
+    expect(installer).toContain('AB_NO_PROMPT=1 ./plyr install');
+    expect(installer).toContain('require_node || return 1');
+    expect(installer).toContain('install_node_offer');
+    expect(installer).not.toContain('install_redis_native');
+  });
 });
