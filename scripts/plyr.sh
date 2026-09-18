@@ -271,7 +271,7 @@ cleanup_startup() {
   [[ -n "$STARTED_APP_PID" ]] && kill "$STARTED_APP_PID" 2>/dev/null || true
   clear_pid app
   if (( REDIS_STARTED_THIS_RUN == 1 )) && have redis-cli; then
-    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown save >/dev/null 2>&1 || true
     rm -f "$STATE_DIR/redis-owned"
   fi
   if (( DESKTOP_STARTED_THIS_RUN == 1 )) && [[ -x "$ROOT_DIR/scripts/desktop.sh" ]]; then
@@ -365,7 +365,7 @@ stop_native() {
   clear_pid app
   # Only stop Redis/display processes explicitly owned by this manager.
   if [[ -f "$STATE_DIR/redis-owned" ]] && have redis-cli; then
-    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown save >/dev/null 2>&1 || true
     rm -f "$STATE_DIR/redis-owned"
   fi
   if [[ -x "$ROOT_DIR/scripts/desktop.sh" && -f "$STATE_DIR/desktop-owned" ]]; then
