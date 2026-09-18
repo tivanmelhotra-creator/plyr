@@ -190,20 +190,64 @@ npm run build          # = build:server (tsc) + build:extension
 
 ## اجرا
 
+### مسیر canonical: Plyr Runtime Manager
+
+برای نصب و اجرای کامل Native، دیگر لازم نیست Redis، نمایشگر، viewer یا Node را جداگانه مدیریت کنید:
+
 ```bash
-# توسعه (hot reload)
-npm run dev
-
-# build + production
-npm run build
-npm start
-
-# production cluster با PM2
-pm2 start ecosystem.config.js
+./plyr install
+./plyr start
+./plyr status
+./plyr doctor
+./plyr doctor --deep
+./plyr restart
+./plyr stop
 ```
 
-> ⚠️ **PM2 و `instances`:** فایل `ecosystem.config.js` روی حالت cluster تنظیم است. Real Chrome یک دایرکتوری profile واحد دارد و
-> با `SingletonLock` قفل می‌شود، پس اگر Remote Browser می‌خواهید `instances` را روی `1` بگذارید.
+`start` به‌صورت deterministic در حالت `auto` عمل می‌کند: اگر Docker و Compose قابل استفاده باشند مسیر Docker را انتخاب می‌کند؛ در غیر این صورت Native. انتخاب صریح:
+
+```bash
+./plyr start --native
+./plyr start --dev
+./plyr start --build
+./plyr start --docker
+```
+
+وضعیت‌ها از هم جدا هستند:
+
+- `RUNNING`: پردازش‌ها اجرا شده‌اند.
+- `READY`: Redis، HTTP، Playwright/Chrome و زیرساخت display لازم آماده‌اند.
+- `NOT READY`: بخشی از زنجیره کم است؛ `./plyr doctor` دلیل و راه‌حل را چاپ می‌کند.
+
+دستورهای قدیمی همچنان کار می‌کنند و به مسیر canonical متصل شده‌اند:
+
+```bash
+./dev.sh
+npm run install:runtime
+npm run start:runtime
+npm run status:runtime
+npm run doctor:runtime
+npm start                 # build + canonical start
+```
+
+`install` و `start` هیچ‌وقت Redis را flush نمی‌کنند، workflowها را حذف نمی‌کنند یا browser profile را reset نمی‌کنند. لاگ‌های runtime در `.plyr/runtime/logs/` نگه‌داری می‌شوند.
+
+> ⚠️ **PM2 و `instances`:** برای Remote Browser از چند instance همزمان روی یک profile استفاده نکنید؛ `SingletonLock` باعث رقابت می‌شود. Runtime Manager مالکیت processهای خودش را با PID نگه می‌دارد و processهای unrelated را kill نمی‌کند.
+
+### مسیرهای legacy
+
+`scripts/desktop.sh` همچنان helper زیرساخت display است و توسط Runtime Manager استفاده می‌شود؛ startup کامل دیگر در آن انجام نمی‌شود. `install.sh` نیز برای compatibility و wizard قدیمی باقی مانده، اما مرحله‌ی اجرای Native را به `./plyr start --build` واگذار می‌کند.
+
+```bash
+# توسعه (hot reload) — compatibility command
+npm run dev
+
+# build مستقل
+npm run build
+
+# production cluster قدیمی، فقط برای API/queue بدون Remote Browser
+pm2 start ecosystem.config.js
+```
 
 ### از صفر تا یک سرورِ کارکُن
 
