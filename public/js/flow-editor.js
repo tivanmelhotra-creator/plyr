@@ -161,6 +161,110 @@
   // When null, the editor is editing an unsaved/local graph.
   var currentWorkflow = null;
 
+  // Server persistence is the document lifecycle. localStorage remains a recovery
+  // cache, never the authority for identity or graph data.
+  var autosave = { timer: null, inFlight: false, queued: false, dirty: false,
+    status: 'draft', lastPersisted: '', delay: 700,
+    changeListeners: [], statusListeners: [] };
+  function notifyAutosaveStatus() {
+    autosave.statusListeners.slice().forEach(function (fn) {
+      try { fn(autosave.status); } catch (e) { /* status UI must not break editing */ }
+    });
+  }
+  function setAutosaveStatus(status) {
+    if (autosave.status === status) return;
+    autosave.status = status;
+    notifyAutosaveStatus();
+  }
+  function currentDocument() {
+    var cur = currentWorkflow || {};
+    return { name: cur.name || 'Untitled workflow', description: cur.description || null,
+      steps: toSteps(), headless: cur.headless == null ? true : cur.headless,
+      webhookUrl: cur.webhookUrl || null };
+  }
+  function markPersisted(meta, persistedSnapshot) {
+    currentWorkflow = meta || null;
+    autosave.lastPersisted = persistedSnapshot || serialize();
+    autosave.dirty = false;
+    autosave.queued = false;
+    saveWorkflowIdentity();
+    lastSavedAt = meta ? clockLabel(new Date()) : null;
+    setAutosaveStatus(meta ? 'saved' : 'draft');
+  }
+  function autosaveRequest() {
+    if (!autosave.dirty || !state || !window.API) return Promise.resolve(null);
+    var uid = window.API.getUserId && window.API.getUserId();
+    if (!uid) { setAutosaveStatus('pending'); return Promise.resolve(null); }
+    var requestSnapshot = serialize();
+    var doc = currentDocument();
+    var cur = currentWorkflow;
+    setAutosaveStatus('saving');
+    autosave.inFlight = true;
+    var request = cur && cur.id
+      ? window.API.updateWorkflow(uid, cur.id, doc)
+      : window.API.createWorkflow(uid, doc);
+    return request.then(function (data) {
+      var wf = data && data.workflow ? data.workflow : data;
+      if (!wf || !wf.id) throw new Error('Server did not return a workflow identity');
+
+      // The response acknowledges requestSnapshot, not necessarily the graph
+      // that exists now. A mutation may have happened while the request was in
+      // flight; never let that newer state be cleared by markPersisted().
+      var currentSnapshot = serialize();
+      if (currentSnapshot === requestSnapshot) {
+        markPersisted(wf, requestSnapshot);
+      } else {
+        currentWorkflow = wf;
+        autosave.lastPersisted = requestSnapshot;
+        autosave.dirty = true;
+        autosave.queued = true;
+        saveWorkflowIdentity();
+        lastSavedAt = clockLabel(new Date());
+        setAutosaveStatus('pending');
+      }
+      saveLocal();
+      return wf;
+    }).catch(function (err) {
+      if (err && err.status === 404 && cur && cur.id && currentWorkflow && currentWorkflow.id === cur.id) {
+        currentWorkflow = null;
+        saveWorkflowIdentity();
+        // Recreate the identity immediately from the same preserved graph.
+        autosave.queued = true;
+      }
+      setAutosaveStatus('pending');
+      throw err;
+    }).finally(function () {
+      autosave.inFlight = false;
+      if (autosave.queued) { autosave.queued = false; scheduleAutosave(0); }
+    });
+  }
+  function scheduleAutosave(delay) {
+    if (!autosave.dirty) return;
+    if (autosave.timer) clearTimeout(autosave.timer);
+    autosave.timer = setTimeout(function () {
+      autosave.timer = null;
+      if (autosave.inFlight) { autosave.queued = true; return; }
+      autosaveRequest().catch(function () {});
+    }, delay == null ? autosave.delay : delay);
+  }
+  function onDocumentChanged() {
+    if (!state || serialize() === autosave.lastPersisted) return;
+    autosave.dirty = true;
+    setAutosaveStatus(currentWorkflow && currentWorkflow.id ? 'pending' : 'draft');
+    scheduleAutosave();
+  }
+  function startAutosave() {
+    if (autosave.changeListeners.indexOf(onDocumentChanged) < 0) {
+      autosave.changeListeners.push(onDocumentChanged);
+    }
+  }
+  function stopAutosave() {
+    if (autosave.timer) clearTimeout(autosave.timer);
+    autosave.timer = null; autosave.inFlight = false; autosave.queued = false;
+    autosave.changeListeners = [];
+    autosave.statusListeners = [];
+  }
+
   function uid(prefix) {
     state.nextId += 1;
     return (prefix || 'n') + state.nextId;
@@ -357,6 +461,9 @@
       // belongs to a saved workflow is that workflow again, so Save does a
       // PUT and the browser's Workflow Files find their workflow.
       currentWorkflow = loadWorkflowIdentity();
+      autosave.lastPersisted = serialize();
+      autosave.dirty = false;
+      setAutosaveStatus(currentWorkflow && currentWorkflow.id ? 'pending' : 'draft');
       return true;
     } catch (e) { return false; }
   }
@@ -390,6 +497,12 @@
   function emitChange() {
     for (var i = 0; i < chromeListeners.length; i++) {
       try { chromeListeners[i](); } catch (e) { /* a bad subscriber must not break the editor */ }
+    }
+    // One document boundary for every meaningful graph mutation. Autosave is
+    // deliberately downstream from this channel; status notifications never
+    // call back into it.
+    for (var j = 0; j < autosave.changeListeners.length; j++) {
+      try { autosave.changeListeners[j](); } catch (e2) { /* persistence must not break editing */ }
     }
   }
 
@@ -4709,6 +4822,7 @@
     renderAll();
     fitToScreen();
     saveLocal();
+    onDocumentChanged();
   }
 
   // Focus Mode collapses the palette + inspector so the graph gets the full
@@ -4784,9 +4898,11 @@
     syncChrome();
     setMinimapOpen(minimapOpen);
     renderAll();
+    startAutosave();
   }
 
   function unmount() {
+    stopAutosave();
     closeNdv();
     closeNodeMenu();
     offAll();
@@ -4991,8 +5107,10 @@
           }
         : null;
       loadSteps(steps || []);
-      // Written to localStorage WITH the graph, so a reload comes back as
-      // this workflow and not as an untitled draft of the same nodes.
+      autosave.lastPersisted = serialize();
+      autosave.dirty = false;
+      setAutosaveStatus(currentWorkflow && currentWorkflow.id ? 'saved' : 'draft');
+      // Written to localStorage as recovery cache only; server remains authoritative.
       saveLocal();
       if (dom) renderAll();
     },
@@ -5000,19 +5118,27 @@
     newWorkflow: function () {
       currentWorkflow = null;
       state = newGraph();
+      autosave.lastPersisted = serialize();
+      autosave.dirty = false;
+      setAutosaveStatus('draft');
       saveLocal();
       if (dom) renderAll();
     },
     getCurrentWorkflow: function () { return currentWorkflow; },
-    setCurrentWorkflow: function (meta) {
-      currentWorkflow = meta || null;
-      // The identity just saved to the server is the one a reload must come
-      // back with -- a new workflow's FIRST save is exactly when the id is
-      // born, and forgetting it on reload would make the next save a create.
-      saveWorkflowIdentity();
-      // Any successful save stamps the status bar's "Last saved" cell.
-      lastSavedAt = meta ? clockLabel(new Date()) : null;
+    setCurrentWorkflow: function (meta) { markPersisted(meta); },
+    autosaveNow: function () { return autosaveRequest(); },
+    onAutosaveStatus: function (fn) {
+      if (typeof fn !== 'function') return function () {};
+      autosave.statusListeners.push(fn);
+      return function () {
+        autosave.statusListeners = autosave.statusListeners.filter(function (x) { return x !== fn; });
+      };
     },
+    getAutosaveStatus: function () { return autosave.status; },
+    // Exposes the same document boundary used by emitChange() for hermetic
+    // persistence tests and non-DOM integrations. UI mutations do not need to
+    // call this directly; renderAll() reaches it through emitChange().
+    notifyDocumentChanged: function () { onDocumentChanged(); },
     // `HH:MM:SS` of the last successful save, or null if nothing saved yet.
     getLastSavedAt: function () { return lastSavedAt; },
   };

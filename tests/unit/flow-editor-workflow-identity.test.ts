@@ -33,6 +33,8 @@ interface FE {
   loadLocal: () => boolean;
   reset: () => void;
   toSteps: () => unknown[];
+  loadSteps: (steps: unknown[]) => void;
+  notifyDocumentChanged: () => void;
 }
 
 /** A localStorage that survives "reloads": the store is shared, the page is not. */
@@ -45,9 +47,10 @@ function fakeStorage(store: Map<string, string>) {
 }
 
 /** Boot a fresh page (fresh window, same localStorage) and return FlowEditor. */
-function boot(store: Map<string, string>): FE {
+function boot(store: Map<string, string>, api?: Record<string, unknown>): FE {
   const win: Record<string, unknown> = {};
   win.localStorage = fakeStorage(store);
+  if (api) win.API = api;
   win.addEventListener = () => undefined;
   // The editor registers one global Escape handler at load; nothing is mounted.
   const document = { addEventListener: () => undefined };
@@ -127,6 +130,70 @@ describe('the saved workflow\u2019s identity survives a reload with its graph', 
     fe2 = boot(store);
     fe2.loadLocal();
     expect(fe2.getCurrentWorkflow()).toBeNull();
+  });
+
+  it('does not lose a mutation made while a POST is in flight', async () => {
+    let resolveCreate!: (value: unknown) => void;
+    let resolveUpdate!: (value: unknown) => void;
+    const creates: unknown[] = [];
+    const updates: unknown[] = [];
+    const api = {
+      getUserId: () => 'user-1',
+      createWorkflow: (_uid: string, body: unknown) => {
+        creates.push(body);
+        return new Promise((resolve) => { resolveCreate = resolve; });
+      },
+      updateWorkflow: (_uid: string, _id: string, body: unknown) => {
+        updates.push(body);
+        return new Promise((resolve) => { resolveUpdate = resolve; });
+      },
+    };
+    const fe = boot(store, api);
+    fe.newWorkflow();
+    fe.loadSteps(STEPS);
+    fe.notifyDocumentChanged();
+    await new Promise((r) => setTimeout(r, 750));
+    expect(creates).toHaveLength(1);
+
+    fe.loadSteps([{ action: 'goto', params: { url: 'https://draft-b.example' } }]);
+    fe.notifyDocumentChanged();
+    resolveCreate({ workflow: { ...META, id: 'wf_post' } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(updates).toHaveLength(1);
+    expect((updates[0] as { steps: unknown[] }).steps).toEqual([
+      { action: 'goto', params: { url: 'https://draft-b.example' } },
+    ]);
+    resolveUpdate({ workflow: { ...META, id: 'wf_post', version: 2 } });
+  });
+
+  it('does not lose a mutation made while a PUT is in flight', async () => {
+    let resolveUpdate!: (value: unknown) => void;
+    const updates: unknown[] = [];
+    const api = {
+      getUserId: () => 'user-1',
+      updateWorkflow: (_uid: string, _id: string, body: unknown) => {
+        updates.push(body);
+        return new Promise((resolve) => { resolveUpdate = resolve; });
+      },
+    };
+    const fe = boot(store, api);
+    fe.openWorkflow(META, STEPS);
+    fe.loadSteps([{ action: 'goto', params: { url: 'https://draft-a.example' } }]);
+    fe.notifyDocumentChanged();
+    await new Promise((r) => setTimeout(r, 750));
+    expect(updates).toHaveLength(1);
+
+    fe.loadSteps([{ action: 'goto', params: { url: 'https://draft-b.example' } }]);
+    fe.notifyDocumentChanged();
+    fe.loadSteps([{ action: 'goto', params: { url: 'https://draft-c.example' } }]);
+    fe.notifyDocumentChanged();
+    resolveUpdate({ workflow: { ...META, version: 4 } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(updates).toHaveLength(2);
+    expect((updates[1] as { steps: unknown[] }).steps).toEqual([
+      { action: 'goto', params: { url: 'https://draft-c.example' } },
+    ]);
+    resolveUpdate({ workflow: { ...META, version: 5 } });
   });
 
   it('a corrupt or id-less identity record is ignored, not thrown', () => {

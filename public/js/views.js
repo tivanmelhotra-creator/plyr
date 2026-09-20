@@ -931,12 +931,8 @@
                 IC('download', 14) + '<span>' + esc(t('sh.export')) + '</span>' + IC('chevron-down', 13) + '</button>' +
               '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
             '</div>' +
-            // Save ▾ — two actions + Version History list + Auto Save toggle.
-            '<div class="fe-split" id="fe-save-wrap">' +
-              '<button class="fe-splitbtn" id="fe-save-btn" aria-haspopup="menu" aria-expanded="false">' +
-                IC('save', 14) + '<span>' + esc(t('sh.save')) + '</span>' + IC('chevron-down', 13) + '</button>' +
-              '<div class="fe-menu fe-menu-wide" id="fe-save-menu" role="menu" hidden></div>' +
-            '</div>' +
+            // Workflow persistence is automatic; there is intentionally no Save control.
+            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
             // ONE slot, TWO states: orange ▶ Test Workflow while idle, solid
             // red ■ Stop while a run is live (that is why the two reference
             // images disagree about this button — they show the two states).
@@ -979,10 +975,14 @@
               '<button id="fe-from-run" title="' + t('fe.fromRun') + '"></button>' +
               '<button id="fe-load" title="' + t('fe.load') + '"></button>' +
               '<button id="fe-json" title="' + t('fe.toJson') + '"></button>' +
-              '<button id="fe-clear" title="' + t('fe.clear') + '"></button>' +
-              '<button id="fe-save">' + t('fe.save') + '</button>' +
-              '<button id="fe-save-server">' + t('fe.saveServer') + '</button>' +
-            '</span>' +
+               '<button id="fe-clear" title="' + t('fe.clear') + '"></button>' +
+               // Compatibility hooks for older integrations; hidden and unwired.
+               '<button id="fe-save" hidden></button>' +
+               '<button id="fe-save-server" hidden></button>' +
+               '<button id="fe-save-btn" hidden></button>' +
+               '<div id="fe-save-menu" hidden></div>' +
+
+             '</span>' +
           '</div>' +
         '</div>' +
         '<div class="fe-layout">' +
@@ -1068,7 +1068,15 @@
       if (!uid) return;
       var claimed = String(cur.id);
       API.getWorkflow(uid, claimed)
-        .then(function () { /* it exists: the restored identity stands */ })
+        .then(function (data) {
+          // Server wins on reload. localStorage is only a crash-recovery cache.
+          var serverWorkflow = data && data.workflow;
+          var now = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          if (serverWorkflow && now && String(now.id) === claimed) {
+            FE.openWorkflow(serverWorkflow, serverWorkflow.steps || []);
+            refreshWfLabel();
+          }
+        })
         .catch(function (err) {
           if (!err || err.status !== 404) return;
           forgetDeadWorkflow(claimed);
@@ -1170,58 +1178,24 @@
     }
     refreshWfLabel();
 
-    // Save (or create) the current graph as a server-side saved workflow.
-    root.querySelector('#fe-save-server').addEventListener('click', function () {
-      var uid = effectiveUserId();
-      if (!uid) { U().toast(t('fe.needUserId'), 'error'); return; }
-      var steps = FE.toSteps();
-      if (!steps.length) { U().toast(t('fe.noSteps'), 'error'); return; }
-
+    // No manual save path exists. FlowEditor owns the debounced server queue.
+    var removeAutosaveStatus = FE.onAutosaveStatus ? FE.onAutosaveStatus(function () {
+      refreshWfLabel();
+      var statusEl = root.querySelector('#fe-autosave-status');
+      if (!statusEl) return;
+      var status = FE.getAutosaveStatus ? FE.getAutosaveStatus() : 'draft';
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
-      var btn = root.querySelector('#fe-save-server');
-      btn.disabled = true;
+      statusEl.textContent = status === 'saving' ? t('sb.saving') :
+        status === 'pending' ? t('sb.pending') :
+        status === 'saved' && cur && cur.id ? t('sb.saved') + ' · ' + cur.id : t('sb.draft');
+    }) : function () {};
+    if (FE.getAutosaveStatus) {
+      var initialStatus = FE.getAutosaveStatus();
+      var initialCur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      root.querySelector('#fe-autosave-status').textContent = initialStatus === 'saved' && initialCur && initialCur.id
+        ? t('sb.saved') + ' · ' + initialCur.id : t('sb.draft');
+    }
 
-      if (cur && cur.id) {
-        // Existing workflow → PUT (bumps version + snapshots history).
-        API.updateWorkflow(uid, cur.id, {
-          name: cur.name, description: cur.description || null,
-          steps: steps, headless: cur.headless, webhookUrl: cur.webhookUrl
-        })
-          .then(function (data) {
-            FE.setCurrentWorkflow(data.workflow);
-            U().toast(t('wf.saved') + ' (v' + data.workflow.version + ')', 'success');
-            refreshWfLabel();
-          })
-          .catch(function (err) {
-            // The id this editor remembers no longer exists on the server
-            // (see verifyRestoredWorkflow). Keeping it would make every
-            // following Save fail the same way; dropping it makes the next
-            // Save a create, which is the only thing that can succeed.
-            if (err && err.status === 404 && forgetDeadWorkflow(cur.id)) return;
-            U().toast(err.message, 'error');
-          })
-          .then(function () { btn.disabled = false; });
-      } else {
-        // New workflow → ask for a name, then create (version 1).
-        var name = prompt(t('wf.namePrompt'), t('wf.defaultName'));
-        if (name == null) { btn.disabled = false; return; }
-        name = String(name).trim();
-        if (!name) { U().toast(t('wf.nameRequired'), 'error'); btn.disabled = false; return; }
-        API.createWorkflow(uid, { name: name, steps: steps, headless: true })
-          .then(function (data) {
-            FE.setCurrentWorkflow(data.workflow);
-            U().toast(t('wf.created'), 'success');
-            refreshWfLabel();
-          })
-          .catch(function (err) { U().toast(err.message, 'error'); })
-          .then(function () { btn.disabled = false; });
-      }
-    });
-
-    root.querySelector('#fe-save').addEventListener('click', function () {
-      var ok = FE.saveLocal();
-      U().toast(ok ? t('fe.saved') : 'error', ok ? 'ok' : 'error');
-    });
     root.querySelector('#fe-load').addEventListener('click', function () {
       FE.loadLocal();
       U().toast(t('fe.loaded'), 'ok');

@@ -64,11 +64,27 @@ describe('editor: a restored workflow identity is verified against the server', 
     expect(forget).toMatch(/t\('fe\.workflowGone'\)/);
   });
 
-  it('a version-bumping PUT that 404s also forgets the dead id instead of failing forever', () => {
-    const i = VIEWS.indexOf("root.querySelector('#fe-save-server').addEventListener");
-    const save = VIEWS.slice(i, i + 2500);
+  it('autosave PUT 404 invalidates identity, preserves graph, and queues recreation', () => {
+    const editor = read('public/js/flow-editor.js');
+    const start = editor.indexOf('function autosaveRequest()');
+    const save = editor.slice(start, start + 2500);
     expect(save).toMatch(/API\.updateWorkflow\(uid,\s*cur\.id/);
-    expect(save).toMatch(/err\.status === 404 && forgetDeadWorkflow\(cur\.id\)\) return;/);
+    expect(save).toMatch(/err\.status === 404/);
+    expect(save).toMatch(/currentWorkflow = null/);
+    expect(save).toMatch(/saveWorkflowIdentity\(\)/);
+    expect(save).toMatch(/autosave\.queued = true/);
+    expect(save).toMatch(/scheduleAutosave\(0\)/);
+    // The replacement request uses the same preserved document and POST path.
+    expect(save).toMatch(/API\.createWorkflow\(uid,\s*doc/);
+  });
+
+  it('separates document mutation listeners from status listeners', () => {
+    const editor = read('public/js/flow-editor.js');
+    expect(editor).toMatch(/changeListeners: \[\], statusListeners: \[\]/);
+    expect(editor).toMatch(/notifyAutosaveStatus\(\)/);
+    expect(editor).toMatch(/autosave\.changeListeners\.push\(onDocumentChanged\)/);
+    expect(editor).toMatch(/autosave\.statusListeners\.push\(fn\)/);
+    expect(editor).not.toMatch(/notifyAutosaveStatus[\s\S]{0,500}onDocumentChanged/);
   });
 
   it('the toast key exists in BOTH dictionaries (t() falls back to English silently)', () => {
