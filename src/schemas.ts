@@ -82,6 +82,7 @@ export const workflowBodySchema = z.object({
   steps: stepsEnvelope,
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
+  profileId: z.string().trim().min(1).max(128).optional().nullable(),
 });
 
 // [Workspace] PATCH /workflows/:userId/:workflowId/state - the two row switches

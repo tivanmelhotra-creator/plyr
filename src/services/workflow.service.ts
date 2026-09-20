@@ -27,7 +27,10 @@ export interface WorkflowInput {
   steps: unknown[];
   headless?: boolean | string | number | null;
   webhookUrl?: string | null;
+  /** Stable default profile; runtime is resolved per execution. */
+  profileId?: string | null;
   // Optional on create (defaults below). On UPDATE they are ignored: the
+
   // Workspace switches are owned by setState(), so saving a new design in the
   // editor can never silently re-enable a workflow the user disabled.
   active?: boolean | null;
@@ -67,7 +70,9 @@ export class WorkflowService {
       steps: wf.steps,
       headless: wf.headless,
       webhookUrl: wf.webhookUrl,
+      profileId: wf.profileId,
       savedAt: wf.updatedAt,
+
       active: wf.active,
       liveBrowser: wf.liveBrowser,
     };
@@ -130,7 +135,9 @@ export class WorkflowService {
       steps: input.steps,
       headless: input.headless ?? undefined,
       webhookUrl: input.webhookUrl ?? undefined,
+      profileId: input.profileId ?? undefined,
       version: 1,
+
       createdAt: ts,
       updatedAt: ts,
       active: typeof input.active === 'boolean' ? input.active : DEFAULT_ACTIVE,
@@ -184,7 +191,9 @@ export class WorkflowService {
       steps: input.steps,
       headless: input.headless ?? undefined,
       webhookUrl: input.webhookUrl ?? undefined,
+      profileId: input.profileId ?? existing.profileId,
       version: existing.version + 1,
+
       updatedAt: nowIso(),
       // Design edits never touch the Workspace switches (see WorkflowInput).
       active: existing.active,
