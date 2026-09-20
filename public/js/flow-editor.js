@@ -161,6 +161,86 @@
   // When null, the editor is editing an unsaved/local graph.
   var currentWorkflow = null;
 
+  // Server persistence is the document lifecycle. localStorage remains a recovery
+  // cache, never the authority for identity or graph data.
+  var autosave = { timer: null, inFlight: false, queued: false, dirty: false,
+    status: 'draft', lastPersisted: '', delay: 700, listeners: [] };
+  function notifyAutosave() {
+    autosave.listeners.slice().forEach(function (fn) {
+      try { fn(autosave.status); } catch (e) { /* status UI must not break editing */ }
+    });
+  }
+  function setAutosaveStatus(status) { autosave.status = status; notifyAutosave(); }
+  function currentDocument() {
+    var cur = currentWorkflow || {};
+    return { name: cur.name || 'Untitled workflow', description: cur.description || null,
+      steps: toSteps(), headless: cur.headless == null ? true : cur.headless,
+      webhookUrl: cur.webhookUrl || null };
+  }
+  function markPersisted(meta) {
+    currentWorkflow = meta || null;
+    autosave.lastPersisted = serialize();
+    autosave.dirty = false;
+    autosave.queued = false;
+    saveWorkflowIdentity();
+    lastSavedAt = meta ? clockLabel(new Date()) : null;
+    setAutosaveStatus(meta ? 'saved' : 'draft');
+  }
+  function autosaveRequest() {
+    if (!autosave.dirty || !state || !window.API) return Promise.resolve(null);
+    var uid = window.API.getUserId && window.API.getUserId();
+    if (!uid) { setAutosaveStatus('pending'); return Promise.resolve(null); }
+    var doc = currentDocument();
+    var cur = currentWorkflow;
+    setAutosaveStatus('saving');
+    autosave.inFlight = true;
+    var request = cur && cur.id
+      ? window.API.updateWorkflow(uid, cur.id, doc)
+      : window.API.createWorkflow(uid, doc);
+    return request.then(function (data) {
+      var wf = data && data.workflow ? data.workflow : data;
+      if (!wf || !wf.id) throw new Error('Server did not return a workflow identity');
+      markPersisted(wf);
+      saveLocal();
+      return wf;
+    }).catch(function (err) {
+      if (err && err.status === 404 && cur && cur.id && currentWorkflow && currentWorkflow.id === cur.id) {
+        currentWorkflow = null;
+        saveWorkflowIdentity();
+        // Recreate the identity immediately from the same preserved graph.
+        autosave.queued = true;
+      }
+      setAutosaveStatus('pending');
+      throw err;
+    }).finally(function () {
+      autosave.inFlight = false;
+      if (autosave.queued) { autosave.queued = false; scheduleAutosave(0); }
+    });
+  }
+  function scheduleAutosave(delay) {
+    if (!autosave.dirty) return;
+    if (autosave.timer) clearTimeout(autosave.timer);
+    autosave.timer = setTimeout(function () {
+      autosave.timer = null;
+      if (autosave.inFlight) { autosave.queued = true; return; }
+      autosaveRequest().catch(function () {});
+    }, delay == null ? autosave.delay : delay);
+  }
+  function onDocumentChanged() {
+    if (!state || serialize() === autosave.lastPersisted) return;
+    autosave.dirty = true;
+    setAutosaveStatus(currentWorkflow && currentWorkflow.id ? 'pending' : 'draft');
+    scheduleAutosave();
+  }
+  function startAutosave() {
+    if (autosave.listeners.indexOf(onDocumentChanged) < 0) autosave.listeners.push(onDocumentChanged);
+  }
+  function stopAutosave() {
+    if (autosave.timer) clearTimeout(autosave.timer);
+    autosave.timer = null; autosave.inFlight = false; autosave.queued = false;
+    autosave.listeners = [];
+  }
+
   function uid(prefix) {
     state.nextId += 1;
     return (prefix || 'n') + state.nextId;
@@ -357,6 +437,9 @@
       // belongs to a saved workflow is that workflow again, so Save does a
       // PUT and the browser's Workflow Files find their workflow.
       currentWorkflow = loadWorkflowIdentity();
+      autosave.lastPersisted = serialize();
+      autosave.dirty = false;
+      setAutosaveStatus(currentWorkflow && currentWorkflow.id ? 'pending' : 'draft');
       return true;
     } catch (e) { return false; }
   }
@@ -4709,6 +4792,7 @@
     renderAll();
     fitToScreen();
     saveLocal();
+    onDocumentChanged();
   }
 
   // Focus Mode collapses the palette + inspector so the graph gets the full
@@ -4784,9 +4868,11 @@
     syncChrome();
     setMinimapOpen(minimapOpen);
     renderAll();
+    startAutosave();
   }
 
   function unmount() {
+    stopAutosave();
     closeNdv();
     closeNodeMenu();
     offAll();
@@ -4991,8 +5077,10 @@
           }
         : null;
       loadSteps(steps || []);
-      // Written to localStorage WITH the graph, so a reload comes back as
-      // this workflow and not as an untitled draft of the same nodes.
+      autosave.lastPersisted = serialize();
+      autosave.dirty = false;
+      setAutosaveStatus(currentWorkflow && currentWorkflow.id ? 'saved' : 'draft');
+      // Written to localStorage as recovery cache only; server remains authoritative.
       saveLocal();
       if (dom) renderAll();
     },
@@ -5000,19 +5088,21 @@
     newWorkflow: function () {
       currentWorkflow = null;
       state = newGraph();
+      autosave.lastPersisted = serialize();
+      autosave.dirty = false;
+      setAutosaveStatus('draft');
       saveLocal();
       if (dom) renderAll();
     },
     getCurrentWorkflow: function () { return currentWorkflow; },
-    setCurrentWorkflow: function (meta) {
-      currentWorkflow = meta || null;
-      // The identity just saved to the server is the one a reload must come
-      // back with -- a new workflow's FIRST save is exactly when the id is
-      // born, and forgetting it on reload would make the next save a create.
-      saveWorkflowIdentity();
-      // Any successful save stamps the status bar's "Last saved" cell.
-      lastSavedAt = meta ? clockLabel(new Date()) : null;
+    setCurrentWorkflow: function (meta) { markPersisted(meta); },
+    autosaveNow: function () { return autosaveRequest(); },
+    onAutosaveStatus: function (fn) {
+      if (typeof fn !== 'function') return function () {};
+      autosave.listeners.push(fn);
+      return function () { autosave.listeners = autosave.listeners.filter(function (x) { return x !== fn; }); };
     },
+    getAutosaveStatus: function () { return autosave.status; },
     // `HH:MM:SS` of the last successful save, or null if nothing saved yet.
     getLastSavedAt: function () { return lastSavedAt; },
   };

@@ -643,6 +643,22 @@
     // different launcher to keep in step. So the loop stays shared and only the
     // viewer is optional.
     var o = opts || {};
+    var workflowId = workflowIdFor(o);
+    // The dashboard's editor context is the authoritative launch surface. Keep
+    // the low-level browser helper usable for standalone/legacy callers that do
+    // not load the editor at all, but never allow an editor launch without a
+    // server-backed identity.
+    var hasWorkflowContext = Object.prototype.hasOwnProperty.call(o, 'workflowId') && o.workflowId != null;
+    if (hasWorkflowContext && !workflowId) {
+      toast('This Local Browser requires a server-backed workflow. Edit the workflow first so it can be autosaved.', 'info');
+      return Promise.reject(Object.assign(new Error('workflow_not_server_backed'), { code: 'workflow_not_server_backed' }));
+    }
+    var userId = API.getUserId ? API.getUserId() : '';
+    var canValidateIdentity = !!(hasWorkflowContext && userId && API.getWorkflow);
+    // Do not launch against a cached/dead identity when the normal API client is
+    // available. Tiny embedded clients used by the handoff page may not expose
+    // the workflow CRUD helper; the server-side browser route remains the final
+    // authorization boundary for those legacy surfaces.
     var tab = o.noTab ? null : (target || window.open('', '_blank'));
     // Write to it NOW, in the same gesture, so the operator is never looking at
     // an unexplained about:blank while Chrome boots.
@@ -657,7 +673,11 @@
      * right shape here instead of a progress subscription.
      */
     function attempt(n) {
-      return API.post('/browser/real/open', { url: url || '' })
+      var identityCheck = n === 1 && canValidateIdentity
+        ? API.getWorkflow(userId, workflowId) : Promise.resolve(null);
+      return identityCheck.then(function () {
+        return API.post('/browser/real/open', { url: url || '' });
+      })
         .then(function (r) {
           if (r && r.success) return r;
 
