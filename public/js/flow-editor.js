@@ -182,9 +182,9 @@
       steps: toSteps(), headless: cur.headless == null ? true : cur.headless,
       webhookUrl: cur.webhookUrl || null };
   }
-  function markPersisted(meta) {
+  function markPersisted(meta, persistedSnapshot) {
     currentWorkflow = meta || null;
-    autosave.lastPersisted = serialize();
+    autosave.lastPersisted = persistedSnapshot || serialize();
     autosave.dirty = false;
     autosave.queued = false;
     saveWorkflowIdentity();
@@ -195,6 +195,7 @@
     if (!autosave.dirty || !state || !window.API) return Promise.resolve(null);
     var uid = window.API.getUserId && window.API.getUserId();
     if (!uid) { setAutosaveStatus('pending'); return Promise.resolve(null); }
+    var requestSnapshot = serialize();
     var doc = currentDocument();
     var cur = currentWorkflow;
     setAutosaveStatus('saving');
@@ -205,7 +206,22 @@
     return request.then(function (data) {
       var wf = data && data.workflow ? data.workflow : data;
       if (!wf || !wf.id) throw new Error('Server did not return a workflow identity');
-      markPersisted(wf);
+
+      // The response acknowledges requestSnapshot, not necessarily the graph
+      // that exists now. A mutation may have happened while the request was in
+      // flight; never let that newer state be cleared by markPersisted().
+      var currentSnapshot = serialize();
+      if (currentSnapshot === requestSnapshot) {
+        markPersisted(wf, requestSnapshot);
+      } else {
+        currentWorkflow = wf;
+        autosave.lastPersisted = requestSnapshot;
+        autosave.dirty = true;
+        autosave.queued = true;
+        saveWorkflowIdentity();
+        lastSavedAt = clockLabel(new Date());
+        setAutosaveStatus('pending');
+      }
       saveLocal();
       return wf;
     }).catch(function (err) {
@@ -5119,6 +5135,10 @@
       };
     },
     getAutosaveStatus: function () { return autosave.status; },
+    // Exposes the same document boundary used by emitChange() for hermetic
+    // persistence tests and non-DOM integrations. UI mutations do not need to
+    // call this directly; renderAll() reaches it through emitChange().
+    notifyDocumentChanged: function () { onDocumentChanged(); },
     // `HH:MM:SS` of the last successful save, or null if nothing saved yet.
     getLastSavedAt: function () { return lastSavedAt; },
   };
