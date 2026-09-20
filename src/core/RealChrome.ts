@@ -38,7 +38,7 @@
 
 import { chromium } from 'playwright-extra';
 import type { BrowserContext, Page } from 'playwright';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import http from 'http';
@@ -222,6 +222,8 @@ export function pageId(p: Page): string {
 }
 
 export interface RealChromeStatus {
+  /** Replaceable identity of this Chromium process incarnation. */
+  runtimeId: string;
   enabled: boolean;
   running: boolean;
   /** Extensions Chrome was launched with (a restart is needed to change them). */
@@ -618,6 +620,9 @@ function fetchDebugVersion(
 
 export class RealChrome {
   private static context: BrowserContext | null = null;
+  /** Stable only for one launch; a restart/recovery receives a new id. */
+  private static runtimeIncarnation = '';
+
   private static starting: Promise<BrowserContext> | null = null;
   private static loaded: InstalledExtension[] = [];
   private static lastError = '';
@@ -1066,6 +1071,9 @@ export class RealChrome {
 
     const ua = realisticUserAgent(null);
 
+    const runtimeIncarnation = `realchrome:${randomUUID()}`;
+    this.runtimeIncarnation = runtimeIncarnation;
+
     try {
       const context = await chromium.launchPersistentContext(userDataDir, {
         headless,
@@ -1474,6 +1482,7 @@ export class RealChrome {
     const debugPort = config.REAL_CHROME_DEBUG_PORT;
 
     return {
+      runtimeId: this.runtimeIncarnation,
       enabled: this.isEnabled(),
       running: this.isRunning(),
       extensions: loaded,
