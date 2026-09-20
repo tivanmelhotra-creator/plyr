@@ -258,6 +258,10 @@ async function runRequestPick(
 ): Promise<Recorder> {
   const rec = newRecorder();
   const sandbox = sandboxFor(rec, postResult);
+  // The picker is workflow-aware. Existing launch-behaviour cases use a valid
+  // canonical fixture unless they explicitly test missing/malformed identity.
+  const context = (opts && typeof opts === 'object' && !Object.prototype.hasOwnProperty.call(opts as object, 'workflowId'))
+    ? { ...(opts as Record<string, unknown>), workflowId: 'wf_42' } : opts;
 
   const body = `
     ${openRealBrowserSource()}
@@ -267,7 +271,7 @@ async function runRequestPick(
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const fn = new Function('window', 'API', 't', 'toast', 'OPTS', body);
   try {
-    await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, opts);
+    await fn(sandbox.window, sandbox.API, sandbox.t, sandbox.toast, context);
   } catch { /* the failure path rethrows on purpose; the recorder is what matters */ }
   // Let the promise chain settle.
   await new Promise((r) => setTimeout(r, 0));
@@ -287,7 +291,7 @@ describe('clicking the crosshair', () => {
     // appears to do nothing. Asserting the ORDER is what pins this — the tab
     // must already exist by the time the POST goes out.
     const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
-    expect(rec.order.filter((s) => s === 'open' || s === 'post')).toEqual(['open', 'post']);
+    expect(rec.order.filter((s) => s === 'open' || s === 'post')).toEqual(['open', 'post', 'post']);
   });
 
   it('writes the placeholder into that tab BEFORE the server is asked', async () => {
@@ -306,12 +310,12 @@ describe('clicking the crosshair', () => {
     // the operator must still have a way in, with the api_key a freshly opened
     // tab cannot send as a header.
     const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
-    expect(rec.links.direct).toBe('/desktop/chrome?api_key=THE-KEY');
+    expect(rec.links.direct).toBe('/desktop/chrome?api_key=THE-KEY&workflowId=wf_42');
   });
 
   it('navigates that tab to the BARE Chromium view, with the api key', async () => {
     const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
-    expect(rec.navigated).toEqual(['/desktop/chrome?api_key=THE-KEY']);
+    expect(rec.navigated).toEqual(['/desktop/chrome?api_key=THE-KEY&workflowId=wf_42']);
   });
 
   it('THE INCIDENT: the waiting tab\u2019s own links carry the workflow id too, or its Workflow Files have no workflow', async () => {
@@ -327,12 +331,12 @@ describe('clicking the crosshair', () => {
     expect(failed.links.again).toBe('/desktop/chrome?api_key=THE-KEY&workflowId=wf_42');
   });
 
-  it('a workflow id that is not a saved-workflow id is NOT put on the links', async () => {
-    // The view ignores a malformed id rather than sending it to the server;
-    // the placeholder must not hand it one in the first place.
+  it('a malformed workflow id blocks the workflow-aware browser launch', async () => {
     const rec = await runRequestPick({ workflowId: '../etc' }, { ok: true, viewPath: '/desktop/chrome' });
-    expect(rec.links.direct).toBe('/desktop/chrome?api_key=THE-KEY');
-    expect(rec.navigated).toEqual(['/desktop/chrome?api_key=THE-KEY']);
+    expect(rec.opened).toEqual([]);
+    expect(rec.navigated).toEqual([]);
+    expect(rec.posted).toEqual([]);
+    expect(rec.toasts.join(' ')).toContain('server-backed workflow');
   });
 
   it('never sends the operator to a noVNC client', async () => {
@@ -344,9 +348,11 @@ describe('clicking the crosshair', () => {
     }
   });
 
-  it('asks the server to bring the real browser up', async () => {
+  it('asks the server to bring the real browser up and bind its workflow', async () => {
     const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
-    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
+    expect(rec.posted.map((p) => p.path)).toEqual([
+      '/browser/real/open', '/browser/workflow-files/wf_42/bind'
+    ]);
   });
 
   it('carries the URL the caller seeded, so the tab lands on the right page', async () => {
@@ -366,7 +372,7 @@ describe('clicking the crosshair', () => {
 
   it('respects a viewPath that already has a query string', async () => {
     const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome?x=1' });
-    expect(rec.navigated).toEqual(['/desktop/chrome?x=1&api_key=THE-KEY']);
+    expect(rec.navigated).toEqual(['/desktop/chrome?x=1&api_key=THE-KEY&workflowId=wf_42']);
   });
 
   it('KEEPS the tab on failure and explains itself inside it', async () => {
@@ -384,7 +390,7 @@ describe('clicking the crosshair', () => {
     // error page is exactly that).
     expect(rec.errors).toEqual(['desktop_not_running']);
     // And a Retry the operator can press from the tab they are looking at.
-    expect(rec.links.again).toBe('/desktop/chrome?api_key=THE-KEY');
+    expect(rec.links.again).toBe('/desktop/chrome?api_key=THE-KEY&workflowId=wf_42');
   });
 
   it('still tells the operator via a toast as well', async () => {
@@ -452,7 +458,7 @@ describe('a failure the operator can actually act on', () => {
     // The view is the correct target ONLY because it now starts the stack on
     // load. If this ever points at something inert again, the operator is back
     // to a Retry that cannot recover.
-    expect(rec.links.again).toBe('/desktop/chrome?api_key=THE-KEY');
+    expect(rec.links.again).toBe('/desktop/chrome?api_key=THE-KEY&workflowId=wf_42');
   });
 
   it('no longer claims a retry is all that is needed', async () => {
@@ -472,7 +478,7 @@ describe('the canvas simulator is no longer the crosshair destination', () => {
     // nothing was appended anywhere.
     const rec = await runRequestPick({}, { ok: true, viewPath: '/desktop/chrome' });
     expect(rec.opened.length).toBe(1); // it opened a tab...
-    expect(rec.posted.length).toBe(1); // ...and called the server, nothing else
+    expect(rec.posted.length).toBe(2); // launch plus workflow binding, nothing else
   });
 
   it('requestPick contains no canvas/WebSocket streaming machinery', () => {
@@ -560,15 +566,11 @@ describe('requestPick defers to the LOCAL / REMOTE chooser', () => {
     });
   });
 
-  it('still opens the Remote Browser when there is no field to pair against', async () => {
-    // The canvas-level picker has no declared field, so there is nothing a
-    // pairing could be filed under and REMOTE is the only possible answer.
-    // Preserved deliberately — the requirement was to ADD the choice in front
-    // of the flow, not to delete the Remote Browser path.
-    const { rec, started } = await runWithFlow({ url: 'https://example.com' }, true);
+  it('blocks a workflow-aware picker when no workflow identity is supplied', async () => {
+    const { rec, started } = await runWithFlow({ url: 'https://example.com', workflowId: '' }, true);
     expect(started).toEqual([]);
-    expect(rec.opened.length).toBe(1);
-    expect(rec.posted[0].path).toBe('/browser/real/open');
+    expect(rec.opened).toEqual([]);
+    expect(rec.posted).toEqual([]);
   });
 
   it('opens NOTHING when the chooser declines — it must not choose for the user', async () => {
@@ -1292,9 +1294,11 @@ describe('openRealBrowser binds the workflow after a successful launch', () => {
     expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
   });
 
-  it('a malformed workflow id is not sent to the server', async () => {
+  it('a malformed workflow id blocks launch before either browser endpoint', async () => {
     const rec = await run({ noTab: true, workflowId: '../etc' });
-    expect(rec.posted.map((p) => p.path)).toEqual(['/browser/real/open']);
+    expect(rec.opened).toEqual([]);
+    expect(rec.navigated).toEqual([]);
+    expect(rec.posted).toEqual([]);
   });
 
   it('does not bind when the launch failed -- there is no browser to bind', async () => {

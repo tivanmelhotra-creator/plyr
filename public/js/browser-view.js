@@ -648,7 +648,7 @@
     // the low-level browser helper usable for standalone/legacy callers that do
     // not load the editor at all, but never allow an editor launch without a
     // server-backed identity.
-    var hasWorkflowContext = Object.prototype.hasOwnProperty.call(o, 'workflowId') && o.workflowId != null;
+    var hasWorkflowContext = Object.prototype.hasOwnProperty.call(o, 'workflowId');
     if (hasWorkflowContext && !workflowId) {
       toast('This Local Browser requires a server-backed workflow. Edit the workflow first so it can be autosaved.', 'info');
       return Promise.reject(Object.assign(new Error('workflow_not_server_backed'), { code: 'workflow_not_server_backed' }));

@@ -164,13 +164,18 @@
   // Server persistence is the document lifecycle. localStorage remains a recovery
   // cache, never the authority for identity or graph data.
   var autosave = { timer: null, inFlight: false, queued: false, dirty: false,
-    status: 'draft', lastPersisted: '', delay: 700, listeners: [] };
-  function notifyAutosave() {
-    autosave.listeners.slice().forEach(function (fn) {
+    status: 'draft', lastPersisted: '', delay: 700,
+    changeListeners: [], statusListeners: [] };
+  function notifyAutosaveStatus() {
+    autosave.statusListeners.slice().forEach(function (fn) {
       try { fn(autosave.status); } catch (e) { /* status UI must not break editing */ }
     });
   }
-  function setAutosaveStatus(status) { autosave.status = status; notifyAutosave(); }
+  function setAutosaveStatus(status) {
+    if (autosave.status === status) return;
+    autosave.status = status;
+    notifyAutosaveStatus();
+  }
   function currentDocument() {
     var cur = currentWorkflow || {};
     return { name: cur.name || 'Untitled workflow', description: cur.description || null,
@@ -233,12 +238,15 @@
     scheduleAutosave();
   }
   function startAutosave() {
-    if (autosave.listeners.indexOf(onDocumentChanged) < 0) autosave.listeners.push(onDocumentChanged);
+    if (autosave.changeListeners.indexOf(onDocumentChanged) < 0) {
+      autosave.changeListeners.push(onDocumentChanged);
+    }
   }
   function stopAutosave() {
     if (autosave.timer) clearTimeout(autosave.timer);
     autosave.timer = null; autosave.inFlight = false; autosave.queued = false;
-    autosave.listeners = [];
+    autosave.changeListeners = [];
+    autosave.statusListeners = [];
   }
 
   function uid(prefix) {
@@ -473,6 +481,12 @@
   function emitChange() {
     for (var i = 0; i < chromeListeners.length; i++) {
       try { chromeListeners[i](); } catch (e) { /* a bad subscriber must not break the editor */ }
+    }
+    // One document boundary for every meaningful graph mutation. Autosave is
+    // deliberately downstream from this channel; status notifications never
+    // call back into it.
+    for (var j = 0; j < autosave.changeListeners.length; j++) {
+      try { autosave.changeListeners[j](); } catch (e2) { /* persistence must not break editing */ }
     }
   }
 
@@ -5099,8 +5113,10 @@
     autosaveNow: function () { return autosaveRequest(); },
     onAutosaveStatus: function (fn) {
       if (typeof fn !== 'function') return function () {};
-      autosave.listeners.push(fn);
-      return function () { autosave.listeners = autosave.listeners.filter(function (x) { return x !== fn; }); };
+      autosave.statusListeners.push(fn);
+      return function () {
+        autosave.statusListeners = autosave.statusListeners.filter(function (x) { return x !== fn; });
+      };
     },
     getAutosaveStatus: function () { return autosave.status; },
     // `HH:MM:SS` of the last successful save, or null if nothing saved yet.
