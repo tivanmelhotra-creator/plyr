@@ -5,6 +5,7 @@ import path from 'path';
 import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
 import { config } from '../config';
 import { GlobalBrowser } from './GlobalBrowser';
+import type { BrowserProfileRuntime } from './BrowserProfileRuntime';
 import {
   installConsentAutoDismiss,
   hasSavedSession,
@@ -684,6 +685,8 @@ interface LiveTab {
 export class LiveBrowserSession {
   public readonly id: string;
   private context: BrowserContext | null = null;
+  /** Presentation attaches to a Runtime; closing this session never stops it. */
+  private runtime: BrowserProfileRuntime | null = null;
   /**
    * The ACTIVE tab's page. Every input command already went through `this.page`,
    * so keeping this field as "whatever is in front" is what let tabs be added
@@ -935,6 +938,14 @@ export class LiveBrowserSession {
 
   activeTabId(): string { return this.activeId; }
 
+  /** The current Runtime incarnation, if this view is attached to one. */
+  runtimeId(): string { return this.runtime?.runtimeId || ''; }
+
+  /** View liveness is intentionally separate from Runtime liveness. */
+  async runtimeAlive(): Promise<boolean> {
+    return this.runtime ? this.runtime.isResponsive() : !!this.context && !isContextDead(this.context);
+  }
+
   /**
    * Everything the OTHER browser needs to look like this one — the capture half
    * of the Remote ⇄ Local handoff.
@@ -988,7 +999,14 @@ export class LiveBrowserSession {
     // stays logged in instead of greeting them with a login wall every open
     // (HANDOFF 15 AUTH-GAP). The fingerprint is stable for the same reason.
     this.hadSavedSession = await hasSavedSession(this.userId);
-    this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+    if (config.REAL_CHROME_ENABLED === true) {
+      this.runtime = GlobalBrowser.getInteractiveRuntime();
+      await this.runtime.start();
+      this.context = await this.runtime.context();
+    } else {
+      this.runtime = null;
+      this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+    }
 
     // Start remembering what websites call their files BEFORE anything can
     // navigate. Attaching after the first navigation is the measured way to miss
@@ -2163,7 +2181,12 @@ export class LiveBrowserSession {
         if (!this.context || isContextDead(this.context)) {
           // The whole context went with it (a Chrome restart, or the shared
           // real-Chrome profile being restarted from the panel). Rebuild.
-          this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+          if (this.runtime) {
+            await this.runtime.start();
+            this.context = await this.runtime.context();
+          } else {
+            this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+          }
           // A NEW context has none of the old one's listeners. Re-attach, or
           // every download after a Chrome restart silently reverts to the 50%
           // naming path with nothing in the logs to say why.
@@ -3827,6 +3850,9 @@ export class LiveBrowserSession {
     } catch { /* ignore */ }
     this.cdp = null; this.cdpPage = null; this.page = null; this.context = null;
     this.owned.clear();
+    // The Runtime is deliberately not stopped here. This object owns only the
+    // presentation/control session; explicit Runtime lifecycle controls do that.
+    this.runtime = null;
   }
 }
 
