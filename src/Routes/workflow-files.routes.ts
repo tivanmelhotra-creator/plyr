@@ -680,7 +680,7 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
     try {
       const store = await open(req, res);
       if (!store) return;
-      const body = (req.body ?? {}) as { path?: unknown; paths?: unknown; chooserId?: unknown; userId?: unknown };
+      const body = (req.body ?? {}) as { path?: unknown; paths?: unknown; chooserId?: unknown; userId?: unknown; pageId?: unknown };
       // ONE request, however many files. Both chooser bridges answer a dialog
       // once and then forget it, so a client that wants a `multiple` input to
       // receive several files has to name them all here: `path` is the first
@@ -706,30 +706,35 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       const chooserId = body.chooserId === undefined || body.chooserId === null
         ? ''
         : String(body.chooserId);
+      const pageId = typeof body.pageId === 'string' && body.pageId ? body.pageId : undefined;
       if (chooserId) {
         if (absolute.length > 1) {
-          const pending = RealChrome.pendingChooser();
-          if (pending && pending.id === chooserId && !pending.multiple) {
+          const pending = RealChrome.pendingChooser(pageId);
+          if (pending && (!chooserId || pending.id === chooserId) && !pending.multiple) {
             return fail(res, 409, ONE_ONLY, ONE_HINT);
           }
         }
-        const done = await RealChrome.acceptChooserPaths(chooserId, absolute);
+        const done = await RealChrome.acceptChooserPaths(chooserId, absolute, pageId);
         return res.json({ success: true, name: file.name, size: file.size, ...done });
       }
 
       const sessionUser = String(body.userId || req.apiKeyUserId || SINGLE_USER_ID);
       const session = liveBrowserSessions.forUser(sessionUser);
       if (!session) {
+        if (pageId) {
+          const done = await RealChrome.acceptChooserPaths('', absolute, pageId);
+          return res.json({ success: true, name: file.name, size: file.size, ...done });
+        }
         return fail(res, 409, 'No live browser is open for this user.',
           "Open the browser view first, then press the page's own Choose file button.");
       }
-      if (!session.hasPendingFileChooser()) {
+      if (!session.hasPendingFileChooser(pageId)) {
         return fail(res, 409, 'The page is not asking for a file any more.');
       }
-      if (absolute.length > 1 && session.pendingFileChooserMultiple() === false) {
+      if (absolute.length > 1 && session.pendingFileChooserMultiple(pageId) === false) {
         return fail(res, 409, ONE_ONLY, ONE_HINT);
       }
-      const done = await session.acceptFilePaths(absolute);
+      const done = await session.acceptFilePaths(absolute, pageId);
       res.json({ success: true, name: file.name, size: file.size, ...done });
     } catch (e) { sendError(res, e); }
   });

@@ -13,6 +13,8 @@ export interface FileChooserNotice extends PendingChooser {
   pageId: string;
   profileId: string;
   runtimeId: string;
+  kind?: BrowserPageKind;
+  extensionId?: string;
 }
 
 export type FileChooserListener = (event: {
@@ -28,6 +30,16 @@ function kindFor(page: Page): BrowserPageKind {
   if (url.startsWith('https://accounts.') || url.includes('/oauth')) return 'oauth';
   if (url.startsWith('http://') || url.startsWith('https://')) return 'tab';
   return 'other';
+}
+
+function extensionIdFor(page: Page): string | undefined {
+  try {
+    const url = page.url();
+    const match = url.match(/^chrome-extension:\/\/([^/]+)/);
+    return match ? match[1] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -117,10 +129,24 @@ export class FileChooserService {
   }
 
   private watchPage(page: Page): void {
+    const extId = extensionIdFor(page);
+    const initialKind = kindFor(page);
     const ref = this.pages.idFor(page)
       ? this.pages.get(this.pages.idFor(page)!)
-      : this.pages.register(page, { kind: kindFor(page) });
+      : this.pages.register(page, { kind: initialKind, ...(extId ? { extensionId: extId } : {}) });
     if (!ref || this.choosers.has(ref.pageId)) return;
+
+    const updateKind = () => {
+      const currentRef = this.pages.get(ref.pageId);
+      if (currentRef) {
+        const k = kindFor(page);
+        if (k !== 'other' || currentRef.kind === 'other') currentRef.kind = k;
+        const eid = extensionIdFor(page);
+        if (eid) currentRef.extensionId = eid;
+      }
+    };
+    page.on('domcontentloaded', updateKind);
+    page.on('framenavigated', updateKind);
 
     const chooser = new RemoteFileChooser(
       this.userId,
@@ -148,12 +174,15 @@ export class FileChooserService {
   }
 
   private notice(pageId: string, pending: PendingChooser): FileChooserNotice {
+    const pageRef = this.pages.get(pageId);
     return {
       ...pending,
       id: `${pageId}:${pending.id}`,
       pageId,
       profileId: this.profileId,
       runtimeId: this.runtimeId,
+      ...(pageRef?.kind ? { kind: pageRef.kind } : {}),
+      ...(pageRef?.extensionId ? { extensionId: pageRef.extensionId } : {}),
     };
   }
 

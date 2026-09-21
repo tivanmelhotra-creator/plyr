@@ -3095,12 +3095,13 @@ export class LiveBrowserSession {
    * dropped rather than passed through, so a crafted token cannot make Chrome
    * read a file the uploader never uploaded.
    */
-  async acceptFiles(tokens: string[]): Promise<void> {
+  async acceptFiles(tokens: string[], pageId?: string): Promise<void> {
     this.touch();
-    const runtimePending = this.runtimePendingChooser();
+    const runtimePending = this.runtimePendingChooser(pageId);
     if (runtimePending && this.runtimeChooser) {
       try {
-        const done = await this.runtimeChooser.accept(runtimePending.pageId, runtimePending.id, tokens);
+        const targetPageId = pageId || runtimePending.pageId;
+        const done = await this.runtimeChooser.accept(targetPageId, runtimePending.id, tokens);
         this.emit('fileChooserDone', { ok: true, count: done.count });
       } catch (e) { this.emit('fileChooserDone', { ok: false, reason: (e as Error).message }); }
       return;
@@ -3145,8 +3146,8 @@ export class LiveBrowserSession {
   }
 
   /** Is a page in this session waiting on a file dialog right now? */
-  hasPendingFileChooser(): boolean {
-    return !!this.runtimePendingChooser() || !!this.pendingChooser;
+  hasPendingFileChooser(pageId?: string): boolean {
+    return !!this.runtimePendingChooser(pageId) || !!this.pendingChooser;
   }
 
   /**
@@ -3155,8 +3156,8 @@ export class LiveBrowserSession {
    * single-file input is refused with a sentence instead of being handed the
    * first of five and the operator believing all five arrived.
    */
-  pendingFileChooserMultiple(): boolean | null {
-    const runtimePending = this.runtimePendingChooser();
+  pendingFileChooserMultiple(pageId?: string): boolean | null {
+    const runtimePending = this.runtimePendingChooser(pageId);
     if (runtimePending) return runtimePending.multiple;
     const chooser = this.pendingChooser;
     if (!chooser) return null;
@@ -3175,11 +3176,12 @@ export class LiveBrowserSession {
    * decides what that is. Same discipline as acceptFiles (tokens, never paths),
    * one layer up.
    */
-  async acceptFilePaths(paths: string[]): Promise<{ count: number }> {
+  async acceptFilePaths(paths: string[], pageId?: string): Promise<{ count: number }> {
     this.touch();
-    const runtimePending = this.runtimePendingChooser();
+    const runtimePending = this.runtimePendingChooser(pageId);
     if (runtimePending && this.runtimeChooser) {
-      const done = await this.runtimeChooser.acceptPaths(runtimePending.pageId, runtimePending.id, paths);
+      const targetPageId = pageId || runtimePending.pageId;
+      const done = await this.runtimeChooser.acceptPaths(targetPageId, runtimePending.id, paths);
       this.emit('fileChooserDone', { ok: true, count: done.count });
       return done;
     }
@@ -3724,11 +3726,12 @@ export class LiveBrowserSession {
   }
 
   /** Dismiss the dialog. `setFiles([])` is what "Cancel" means to the page. */
-  async cancelFileChooser(): Promise<void> {
+  async cancelFileChooser(pageId?: string): Promise<void> {
     this.touch();
-    const runtimePending = this.runtimePendingChooser();
+    const runtimePending = this.runtimePendingChooser(pageId);
     if (runtimePending && this.runtimeChooser) {
-      await this.runtimeChooser.cancel(runtimePending.pageId, runtimePending.id);
+      const targetPageId = pageId || runtimePending.pageId;
+      await this.runtimeChooser.cancel(targetPageId, runtimePending.id);
       return;
     }
     const chooser = this.pendingChooser;
@@ -3739,10 +3742,17 @@ export class LiveBrowserSession {
     this.emit('fileChooserDone', { ok: false, reason: 'cancelled' });
   }
 
-  private runtimePendingChooser(): FileChooserNotice | null {
-    if (!this.runtimeChooser || !this.page) return null;
-    const pageId = this.runtimeChooser.registry().idFor(this.page);
-    return pageId ? this.runtimeChooser.pendingForPage(pageId) : null;
+  private runtimePendingChooser(pageId?: string): FileChooserNotice | null {
+    if (!this.runtimeChooser) return null;
+    if (pageId) return this.runtimeChooser.pendingForPage(pageId);
+    if (this.page) {
+      const currentId = this.runtimeChooser.registry().idFor(this.page);
+      if (currentId) {
+        const pending = this.runtimeChooser.pendingForPage(currentId);
+        if (pending) return pending;
+      }
+    }
+    return this.runtimeChooser.pendingAny();
   }
 
   private async injectPicker(): Promise<void> {
