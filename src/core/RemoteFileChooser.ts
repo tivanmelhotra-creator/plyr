@@ -120,6 +120,11 @@ export class FileChooserError extends Error {
  * resolves in, and answering a chooser with another user's upload is the same
  * arbitrary read this module exists to prevent.
  */
+export interface RemoteFileChooserHooks {
+  onPending?: (pending: PendingChooser) => void;
+  onDone?: (pending: PendingChooser, reason?: string) => void;
+}
+
 export class RemoteFileChooser {
   private chooser: FileChooser | null = null;
   private page: Page | null = null;
@@ -139,7 +144,10 @@ export class RemoteFileChooser {
    */
   private consumed: string[] = [];
 
-  constructor(private readonly userId: string) {}
+  constructor(
+    private readonly userId: string,
+    private readonly hooks: RemoteFileChooserHooks = {},
+  ) {}
 
   /** Uploads that have been handed to a page. For diagnostics and cleanup. */
   consumedTokens(): string[] {
@@ -159,7 +167,7 @@ export class RemoteFileChooser {
     ctx.on('page', (p) => this.watchPage(p));
   }
 
-  private watchPage(page: Page): void {
+  watchPage(page: Page): void {
     // A context can emit 'page' for something already in pages(); attaching
     // twice would make the second listener see a slot the first just filled and
     // release the dialog as though it were a hijack attempt.
@@ -171,7 +179,10 @@ export class RemoteFileChooser {
     // A tab closed while its dialog is outstanding would leave a pending row the
     // view keeps prompting for. There is nothing left to answer, so drop it.
     page.on('close', () => {
-      if (this.page === page) this.forget();
+      if (this.page !== page) return;
+      const pending = this.info;
+      this.forget();
+      if (pending) this.hooks.onDone?.({ ...pending }, 'cancelled');
     });
   }
 
@@ -214,6 +225,7 @@ export class RemoteFileChooser {
       name,
       at: Date.now(),
     };
+    this.hooks.onPending?.({ ...this.info });
 
     this.arm(chooser);
   }
@@ -223,7 +235,9 @@ export class RemoteFileChooser {
     this.disarm();
     const timer = setTimeout(() => {
       if (this.chooser !== chooser) return;
+      const pending = this.info;
       this.forget();
+      if (pending) this.hooks.onDone?.({ ...pending }, 'expired');
       void chooser.setFiles([]).catch(() => { /* the page moved on */ });
     }, CHOOSER_TTL_MS);
     // Never hold the process open for a dialog nobody is waiting for.
@@ -272,7 +286,8 @@ export class RemoteFileChooser {
     // stale owner makes the next dialog from a different tab look like a hijack
     // attempt and get refused, which is the original silent-import bug wearing
     // a new hat.
-    const multiple = this.info.multiple;
+    const pending = { ...this.info };
+    const multiple = pending.multiple;
     this.forget();
 
     const paths: string[] = [];
@@ -290,11 +305,13 @@ export class RemoteFileChooser {
       // Release the page rather than leave it waiting on a dialog that can no
       // longer be answered.
       await chooser.setFiles([]).catch(() => {});
+      this.hooks.onDone?.(pending, 'no_valid_files');
       throw new FileChooserError('None of those uploads are still available.');
     }
 
     const use = multiple ? paths : [paths[0]];
     await chooser.setFiles(use);
+    this.hooks.onDone?.(pending);
     this.consumed.push(...(Array.isArray(tokens) ? tokens : []).map(String));
     if (this.consumed.length > MAX_CONSUMED) {
       this.consumed.splice(0, this.consumed.length - MAX_CONSUMED);
@@ -343,7 +360,8 @@ export class RemoteFileChooser {
     if (String(id || '') !== this.id) {
       throw new FileChooserError('That file request is no longer the current one.');
     }
-    const multiple = this.info.multiple;
+    const pending = { ...this.info };
+    const multiple = pending.multiple;
     this.forget();
 
     const list = (Array.isArray(paths) ? paths : [])
@@ -351,10 +369,12 @@ export class RemoteFileChooser {
       .slice(0, MAX_FILES);
     if (!list.length) {
       await chooser.setFiles([]).catch(() => {});
+      this.hooks.onDone?.(pending, 'no_valid_files');
       throw new FileChooserError('No file was selected.');
     }
     const use = multiple ? list : [list[0]];
     await chooser.setFiles(use);
+    this.hooks.onDone?.(pending);
     return { count: use.length };
   }
 
@@ -369,7 +389,9 @@ export class RemoteFileChooser {
     const chooser = this.chooser;
     if (!chooser) return false;
     if (id && String(id) !== this.id) return false;
+    const pending = this.info;
     this.forget();
+    if (pending) this.hooks.onDone?.({ ...pending }, 'cancelled');
     await chooser.setFiles([]).catch(() => { /* the page moved on */ });
     return true;
   }

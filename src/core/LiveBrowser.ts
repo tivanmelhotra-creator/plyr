@@ -2,9 +2,11 @@
 
 import { promises as fsp } from 'fs';
 import path from 'path';
-import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
+import type { BrowserContext, Page, CDPSession } from 'playwright';
 import { config } from '../config';
 import { GlobalBrowser } from './GlobalBrowser';
+import { RealChrome } from './RealChrome';
+import { FileChooserService, type FileChooserNotice } from './FileChooserService';
 import type { BrowserProfileRuntime } from './BrowserProfileRuntime';
 import {
   installConsentAutoDismiss,
@@ -710,7 +712,9 @@ export class LiveBrowserSession {
    * first is up, and holding a list would only create the question of which one
    * a user's file was meant for.
    */
-  private pendingChooser: FileChooser | null = null;
+  private pendingChooser: import('playwright').FileChooser | null = null;
+  private runtimeChooser: FileChooserService | null = null;
+  private runtimeChooserUnsubscribe: (() => void) | null = null;
   /**
    * WHICH page opened `pendingChooser`.
    *
@@ -1003,6 +1007,14 @@ export class LiveBrowserSession {
       this.runtime = GlobalBrowser.getInteractiveRuntime();
       await this.runtime.start();
       this.context = await this.runtime.context();
+      this.runtimeChooser = RealChrome.getFileChooserService();
+      this.runtimeChooserUnsubscribe = this.runtimeChooser?.subscribe((event) => {
+        const tab = this.tabs.find((candidate) => candidate.page
+          && this.runtimeChooser?.registry().idFor(candidate.page) === event.notice.pageId);
+        if (!tab) return;
+        if (event.type === 'pending') this.emit('filechooser', event.notice as unknown as Record<string, unknown>);
+        else this.emit('fileChooserDone', { ok: !event.reason, reason: event.reason });
+      }) || null;
     } else {
       this.runtime = null;
       this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
@@ -1300,6 +1312,10 @@ export class LiveBrowserSession {
     // Widening the guard without addressing this would have traded a silent
     // failure for a file going somewhere the user did not choose, which is worse.
     //
+    // RealChrome owns chooser interception through FileChooserService. A second
+    // listener here would create two independent owners for one page.
+    if (this.runtime) return;
+
     // So the slot is FIRST-COME: whoever asked first keeps it until it is
     // answered or cancelled. A later dialog is released immediately rather than
     // being allowed to clobber the outstanding one. `pendingChooserPage` records
@@ -3081,6 +3097,14 @@ export class LiveBrowserSession {
    */
   async acceptFiles(tokens: string[]): Promise<void> {
     this.touch();
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending && this.runtimeChooser) {
+      try {
+        const done = await this.runtimeChooser.accept(runtimePending.pageId, runtimePending.id, tokens);
+        this.emit('fileChooserDone', { ok: true, count: done.count });
+      } catch (e) { this.emit('fileChooserDone', { ok: false, reason: (e as Error).message }); }
+      return;
+    }
     const chooser = this.pendingChooser;
     if (!chooser) {
       this.emit('fileChooserDone', { ok: false, reason: 'no_pending_chooser' });
@@ -3122,7 +3146,7 @@ export class LiveBrowserSession {
 
   /** Is a page in this session waiting on a file dialog right now? */
   hasPendingFileChooser(): boolean {
-    return !!this.pendingChooser;
+    return !!this.runtimePendingChooser() || !!this.pendingChooser;
   }
 
   /**
@@ -3132,6 +3156,8 @@ export class LiveBrowserSession {
    * first of five and the operator believing all five arrived.
    */
   pendingFileChooserMultiple(): boolean | null {
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending) return runtimePending.multiple;
     const chooser = this.pendingChooser;
     if (!chooser) return null;
     try { return !!chooser.isMultiple(); } catch { return false; }
@@ -3151,6 +3177,12 @@ export class LiveBrowserSession {
    */
   async acceptFilePaths(paths: string[]): Promise<{ count: number }> {
     this.touch();
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending && this.runtimeChooser) {
+      const done = await this.runtimeChooser.acceptPaths(runtimePending.pageId, runtimePending.id, paths);
+      this.emit('fileChooserDone', { ok: true, count: done.count });
+      return done;
+    }
     const chooser = this.pendingChooser;
     if (!chooser) {
       throw new Error('The page is not asking for a file any more.');
@@ -3694,12 +3726,23 @@ export class LiveBrowserSession {
   /** Dismiss the dialog. `setFiles([])` is what "Cancel" means to the page. */
   async cancelFileChooser(): Promise<void> {
     this.touch();
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending && this.runtimeChooser) {
+      await this.runtimeChooser.cancel(runtimePending.pageId, runtimePending.id);
+      return;
+    }
     const chooser = this.pendingChooser;
     this.pendingChooser = null;
     this.pendingChooserPage = null;
     if (!chooser) return;
     await chooser.setFiles([]).catch(() => {});
     this.emit('fileChooserDone', { ok: false, reason: 'cancelled' });
+  }
+
+  private runtimePendingChooser(): FileChooserNotice | null {
+    if (!this.runtimeChooser || !this.page) return null;
+    const pageId = this.runtimeChooser.registry().idFor(this.page);
+    return pageId ? this.runtimeChooser.pendingForPage(pageId) : null;
   }
 
   private async injectPicker(): Promise<void> {

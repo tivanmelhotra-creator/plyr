@@ -62,7 +62,8 @@ import {
   REAL_CHROME_SHELF_USER,
   type ShelfEntry,
 } from './RealChromeShelf';
-import { RemoteFileChooser, type PendingChooser } from './RemoteFileChooser';
+import { type PendingChooser } from './RemoteFileChooser';
+import { FileChooserService } from './FileChooserService';
 import {
   parseCookieFile,
   type CookieImportResult,
@@ -648,7 +649,7 @@ export class RealChrome {
    * what makes «کاربر نباید مجبور باشد ابتدا فایل را دستی روی سرور Upload کند»
    * achievable. See core/RemoteFileChooser.
    */
-  private static chooser: RemoteFileChooser | null = null;
+  private static chooserService: FileChooserService | null = null;
 
   /**
    * THE ALERT HAS NO PAGE OF ITS OWN, AND THAT IS NOW STRUCTURAL.
@@ -724,15 +725,15 @@ export class RealChrome {
    * prompt for a file nothing can receive.
    */
   static pendingChooser(): PendingChooser | null {
-    return this.chooser ? this.chooser.pending() : null;
+    return this.chooserService ? this.chooserService.pendingAny() : null;
   }
 
   /** Answer that dialog with files already uploaded under `downloadOwner()`. */
   static async acceptChooserFiles(id: string, tokens: string[]): Promise<{ count: number; persisted: string[] }> {
-    if (!this.chooser) {
+    if (!this.chooserService) {
       throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
     }
-    return this.chooser.accept(id, tokens);
+    return this.chooserService.acceptAny(id, tokens);
   }
 
   /**
@@ -742,15 +743,15 @@ export class RealChrome {
    * client; see RemoteFileChooser.acceptPaths.
    */
   static async acceptChooserPaths(id: string, paths: string[]): Promise<{ count: number }> {
-    if (!this.chooser) {
+    if (!this.chooserService) {
       throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
     }
-    return this.chooser.acceptPaths(id, paths);
+    return this.chooserService.acceptPathsAny(id, paths);
   }
 
   /** Dismiss it. An empty id cancels whatever is pending. */
   static async cancelChooser(id = ''): Promise<boolean> {
-    return this.chooser ? this.chooser.cancel(id) : false;
+    return this.chooserService ? this.chooserService.cancelAny(id) : false;
   }
 
   /**
@@ -779,6 +780,10 @@ export class RealChrome {
    */
   static async forgetDownload(token: string): Promise<boolean> {
     return this.shelf ? this.shelf.forget(token) : false;
+  }
+
+  static getFileChooserService(): FileChooserService | null {
+    return this.chooserService;
   }
 
   static isRunning(): boolean {
@@ -1133,8 +1138,12 @@ export class RealChrome {
       // the shelf's identity is deliberate — the bytes are written under
       // REAL_CHROME_SHELF_USER by /browser/uploads and must be looked for under
       // the same id, which is the documented ENOENT hand-over bug.
-      this.chooser = new RemoteFileChooser(REAL_CHROME_SHELF_USER);
-      this.chooser.watch(context);
+      this.chooserService = new FileChooserService(
+        REAL_CHROME_SHELF_USER,
+        'default',
+        runtimeIncarnation,
+      );
+      this.chooserService.watch(context);
 
       context.on('close', () => {
         this.context = null;
@@ -1147,7 +1156,7 @@ export class RealChrome {
         // A pending dialog, by contrast, cannot outlive its browser: the page
         // that asked is gone, so keeping the row would have the view prompting
         // for a file with nowhere to put it.
-        this.chooser = null;
+        this.chooserService = null;
         // There used to be a third line here, dropping the claimed Alert Tab.
         // It is gone with the claim itself: `alertSurface()` now reads
         // `ctx.pages()` fresh on every call and holds nothing between them, so

@@ -89,7 +89,10 @@ export class RealChromeRuntimeAdapter implements BrowserProfileRuntime {
     }
     this.currentRuntimeId = status.runtimeId;
     this.contextRef = context;
-    if (!this.registry || this.registry.list().some((ref) => ref.runtimeId !== this.currentRuntimeId)) {
+    const chooserRegistry = RealChrome.getFileChooserService()?.registry();
+    if (chooserRegistry && chooserRegistry.list().every((ref) => ref.runtimeId === this.currentRuntimeId)) {
+      this.registry = chooserRegistry;
+    } else if (!this.registry || this.registry.list().some((ref) => ref.runtimeId !== this.currentRuntimeId)) {
       this.registry = new BrowserPageRegistry(this.profileId, this.currentRuntimeId);
     }
     for (const page of context.pages()) {
