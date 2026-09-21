@@ -30,6 +30,7 @@ vi.mock('../../src/config', () => ({
 const realChrome = {
   pathsGiven: [] as string[][],
   idsGiven: [] as string[],
+  pagesGiven: [] as (string | undefined)[],
   pending: true,
   /** What GET /browser/real/chooser would report: the waiting dialog, if any. */
   chooser: null as null | { id: string; multiple: boolean },
@@ -39,13 +40,14 @@ vi.mock('../../src/core/RealChrome', () => {
   return {
     RealChromeError,
     RealChrome: {
-      pendingChooser: vi.fn(() => (realChrome.chooser
+      pendingChooser: vi.fn((pageId?: string) => (realChrome.chooser
         ? { id: realChrome.chooser.id, multiple: realChrome.chooser.multiple, accept: '', name: '', at: Date.now() }
         : null)),
-      acceptChooserPaths: vi.fn(async (id: string, paths: string[]) => {
+      acceptChooserPaths: vi.fn(async (id: string, paths: string[], pageId?: string) => {
         if (!realChrome.pending) throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
         realChrome.idsGiven.push(id);
         realChrome.pathsGiven.push(paths);
+        realChrome.pagesGiven.push(pageId);
         return { count: paths.length };
       }),
     },
@@ -54,7 +56,7 @@ vi.mock('../../src/core/RealChrome', () => {
 
 // The canvas bridge: one fake live session per user.
 const live = {
-  sessions: new Map<string, { pending: boolean; given: string[][]; multiple?: boolean }>(),
+  sessions: new Map<string, { pending: boolean; given: string[][]; pagesGiven?: (string | undefined)[]; multiple?: boolean }>(),
 };
 vi.mock('../../src/core/LiveSessions', () => ({
   liveBrowserSessions: {
@@ -62,9 +64,15 @@ vi.mock('../../src/core/LiveSessions', () => ({
       const s = live.sessions.get(userId);
       if (!s) return null;
       return {
-        hasPendingFileChooser: () => s.pending,
-        pendingFileChooserMultiple: () => (s.pending ? !!s.multiple : null),
-        acceptFilePaths: async (paths: string[]) => { s.given.push(paths); s.pending = false; return { count: paths.length }; },
+        hasPendingFileChooser: (pageId?: string) => s.pending,
+        pendingFileChooserMultiple: (pageId?: string) => (s.pending ? !!s.multiple : null),
+        acceptFilePaths: async (paths: string[], pageId?: string) => {
+          s.given.push(paths);
+          if (!s.pagesGiven) s.pagesGiven = [];
+          s.pagesGiven.push(pageId);
+          s.pending = false;
+          return { count: paths.length };
+        },
       };
     },
   },
@@ -484,6 +492,21 @@ describe('workflow files: /use hands the SERVER-resolved file to the chooser', (
     expect(r.status).toBe(200);
     expect(live.sessions.get('alice')!.given[0][0]).toContain(path.join('alice', wfAlice, 'doc.pdf'));
     expect(realChrome.pathsGiven).toEqual([]);
+  });
+
+  it('Local Browser view: routes with explicit pageId to RealChrome', async () => {
+    const r = await request(app).post(`${base()}/use`).send({ path: 'doc.pdf', pageId: 'runtime-1:p2', chooserId: 'fc8' });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ success: true, name: 'doc.pdf', count: 1 });
+    expect(realChrome.idsGiven).toContain('fc8');
+    expect(realChrome.pagesGiven).toContain('runtime-1:p2');
+  });
+
+  it('canvas view: passes pageId to live session acceptFilePaths', async () => {
+    live.sessions.set('alice', { pending: true, given: [] });
+    const r = await request(app).post(`${base()}/use`).send({ path: 'doc.pdf', pageId: 'p-custom-99' });
+    expect(r.status).toBe(200);
+    expect(live.sessions.get('alice')!.pagesGiven).toContain('p-custom-99');
   });
 
   it('canvas view: 409 when there is no live session or no pending dialog', async () => {

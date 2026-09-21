@@ -1157,22 +1157,24 @@ export const createBrowserRoutes = (): Router => {
   // it uploads to the right place.
   // ─────────────────────────────────────────────────────────────────────────
 
-  router.get('/browser/real/chooser', async (_req, res) => {
+  router.get('/browser/real/chooser', async (req, res) => {
     try {
+      const pageId = typeof req.query.pageId === 'string' && req.query.pageId ? req.query.pageId : undefined;
       res.json({
         success: true,
         owner: RealChrome.downloadOwner(),
         // null, not an error, when nothing is pending: the view polls this, and
         // "no dialog" is the ordinary answer, not a fault.
-        chooser: RealChrome.pendingChooser(),
+        chooser: RealChrome.pendingChooser(pageId),
       });
     } catch (e) { sendError(res, e); }
   });
 
   router.post('/browser/real/chooser', async (req: AuthenticatedRequest, res) => {
     try {
-      const body = (req.body ?? {}) as { id?: unknown; tokens?: unknown };
+      const body = (req.body ?? {}) as { id?: unknown; tokens?: unknown; pageId?: unknown };
       const id = String(body.id || '');
+      const pageId = typeof body.pageId === 'string' && body.pageId ? body.pageId : undefined;
       // Strings only, and the chooser re-validates every one of them against the
       // token pattern before it resolves it. A path sent here resolves to
       // nothing rather than to a file: that is the whole point of tokens (see
@@ -1188,7 +1190,7 @@ export const createBrowserRoutes = (): Router => {
         return fail(res, 400, 'No uploads were named.',
           'Upload the file to POST /browser/uploads first, then send its token here.');
       }
-      const done = await RealChrome.acceptChooserFiles(id, tokens);
+      const done = await RealChrome.acceptChooserFiles(id, tokens, pageId);
       res.json({ success: true, ...done });
     } catch (e) { sendError(res, e); }
   });
@@ -1198,7 +1200,11 @@ export const createBrowserRoutes = (): Router => {
       // An id is optional: cancelling "whatever is pending" is what the view
       // needs when the operator closed their own picker without choosing, and a
       // dialog left open blocks the page that opened it.
-      const cancelled = await RealChrome.cancelChooser(String(req.query.id || ''));
+      const id = String(req.query.id || (req.body ?? {}).id || '');
+      const pageId = typeof req.query.pageId === 'string' && req.query.pageId
+        ? req.query.pageId
+        : (typeof (req.body ?? {}).pageId === 'string' && (req.body ?? {}).pageId ? (req.body ?? {}).pageId : undefined);
+      const cancelled = await RealChrome.cancelChooser(id, pageId);
       res.json({ success: true, cancelled });
     } catch (e) { sendError(res, e); }
   });

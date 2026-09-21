@@ -724,14 +724,18 @@ export class RealChrome {
    * page: reporting one for a browser that no longer exists would make the view
    * prompt for a file nothing can receive.
    */
-  static pendingChooser(): PendingChooser | null {
-    return this.chooserService ? this.chooserService.pendingAny() : null;
+  static pendingChooser(pageId?: string): PendingChooser | null {
+    if (!this.chooserService) return null;
+    return pageId ? this.chooserService.pendingForPage(pageId) : this.chooserService.pendingAny();
   }
 
   /** Answer that dialog with files already uploaded under `downloadOwner()`. */
-  static async acceptChooserFiles(id: string, tokens: string[]): Promise<{ count: number; persisted: string[] }> {
+  static async acceptChooserFiles(id: string, tokens: string[], pageId?: string): Promise<{ count: number; persisted: string[] }> {
     if (!this.chooserService) {
       throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
+    }
+    if (pageId) {
+      return this.chooserService.accept(pageId, id, tokens);
     }
     return this.chooserService.acceptAny(id, tokens);
   }
@@ -742,16 +746,23 @@ export class RealChrome {
    * /browser/workflow-files/:workflowId/use route). Paths never come from a
    * client; see RemoteFileChooser.acceptPaths.
    */
-  static async acceptChooserPaths(id: string, paths: string[]): Promise<{ count: number }> {
+  static async acceptChooserPaths(id: string, paths: string[], pageId?: string): Promise<{ count: number }> {
     if (!this.chooserService) {
       throw new RealChromeError('The remote browser is not running, so no page is asking for a file.');
+    }
+    if (pageId) {
+      return this.chooserService.acceptPaths(pageId, id, paths);
     }
     return this.chooserService.acceptPathsAny(id, paths);
   }
 
   /** Dismiss it. An empty id cancels whatever is pending. */
-  static async cancelChooser(id = ''): Promise<boolean> {
-    return this.chooserService ? this.chooserService.cancelAny(id) : false;
+  static async cancelChooser(id = '', pageId?: string): Promise<boolean> {
+    if (!this.chooserService) return false;
+    if (pageId) {
+      return this.chooserService.cancel(pageId, id);
+    }
+    return this.chooserService.cancelAny(id);
   }
 
   /**
