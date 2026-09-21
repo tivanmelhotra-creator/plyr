@@ -47,6 +47,42 @@ export function tabsStatePath(userId: string): string {
   return path.join(config.PROFILES_DIR, 'sessions', `${safe}.tabs.json`);
 }
 
+/**
+ * Profile-scoped tab state for concurrent runtimes. The legacy user-only path
+ * remains the default so existing single-profile sessions keep working.
+ */
+export function tabsStatePathForProfile(userId: string, profileId?: string): string {
+  if (!profileId) return tabsStatePath(userId);
+  const safeUser = String(userId || 'anon').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'anon';
+  const safeProfile = String(profileId || 'default').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'default';
+  return path.join(config.PROFILES_DIR, 'sessions', safeUser, `${safeProfile}.tabs.json`);
+}
+
+export async function loadTabsForProfile(userId: string, profileId?: string): Promise<SavedTab[]> {
+  try {
+    const raw = await fs.readFile(tabsStatePathForProfile(userId, profileId), 'utf8');
+    const parsed = JSON.parse(raw);
+    return sanitizeTabs(parsed && parsed.tabs ? parsed.tabs : parsed);
+  } catch { return []; }
+}
+
+export async function saveTabsForProfile(userId: string, profileId: string, tabs: SavedTab[]): Promise<boolean> {
+  try {
+    const list = sanitizeTabs(tabs);
+    const file = tabsStatePathForProfile(userId, profileId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify({ v: 2, savedAt: Date.now(), profileId, tabs: list }), 'utf8');
+    await fs.rename(tmp, file);
+    return true;
+  } catch { return false; }
+}
+
+export async function clearTabsForProfile(userId: string, profileId: string): Promise<boolean> {
+  try { await fs.unlink(tabsStatePathForProfile(userId, profileId)); return true; }
+  catch { return false; }
+}
+
 /** Drop anything we would refuse to reopen, and cap the list. */
 export function sanitizeTabs(input: unknown): SavedTab[] {
   if (!Array.isArray(input)) return [];

@@ -2,9 +2,12 @@
 
 import { promises as fsp } from 'fs';
 import path from 'path';
-import type { BrowserContext, Page, CDPSession, FileChooser } from 'playwright';
+import type { BrowserContext, Page, CDPSession } from 'playwright';
 import { config } from '../config';
 import { GlobalBrowser } from './GlobalBrowser';
+import { RealChrome } from './RealChrome';
+import { FileChooserService, type FileChooserNotice } from './FileChooserService';
+import type { BrowserProfileRuntime } from './BrowserProfileRuntime';
 import {
   installConsentAutoDismiss,
   hasSavedSession,
@@ -684,6 +687,8 @@ interface LiveTab {
 export class LiveBrowserSession {
   public readonly id: string;
   private context: BrowserContext | null = null;
+  /** Presentation attaches to a Runtime; closing this session never stops it. */
+  private runtime: BrowserProfileRuntime | null = null;
   /**
    * The ACTIVE tab's page. Every input command already went through `this.page`,
    * so keeping this field as "whatever is in front" is what let tabs be added
@@ -707,7 +712,9 @@ export class LiveBrowserSession {
    * first is up, and holding a list would only create the question of which one
    * a user's file was meant for.
    */
-  private pendingChooser: FileChooser | null = null;
+  private pendingChooser: import('playwright').FileChooser | null = null;
+  private runtimeChooser: FileChooserService | null = null;
+  private runtimeChooserUnsubscribe: (() => void) | null = null;
   /**
    * WHICH page opened `pendingChooser`.
    *
@@ -935,6 +942,14 @@ export class LiveBrowserSession {
 
   activeTabId(): string { return this.activeId; }
 
+  /** The current Runtime incarnation, if this view is attached to one. */
+  runtimeId(): string { return this.runtime?.runtimeId || ''; }
+
+  /** View liveness is intentionally separate from Runtime liveness. */
+  async runtimeAlive(): Promise<boolean> {
+    return this.runtime ? this.runtime.isResponsive() : !!this.context && !isContextDead(this.context);
+  }
+
   /**
    * Everything the OTHER browser needs to look like this one — the capture half
    * of the Remote ⇄ Local handoff.
@@ -988,7 +1003,22 @@ export class LiveBrowserSession {
     // stays logged in instead of greeting them with a login wall every open
     // (HANDOFF 15 AUTH-GAP). The fingerprint is stable for the same reason.
     this.hadSavedSession = await hasSavedSession(this.userId);
-    this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+    if (config.REAL_CHROME_ENABLED === true) {
+      this.runtime = GlobalBrowser.getInteractiveRuntime();
+      await this.runtime.start();
+      this.context = await this.runtime.context();
+      this.runtimeChooser = RealChrome.getFileChooserService();
+      this.runtimeChooserUnsubscribe = this.runtimeChooser?.subscribe((event) => {
+        const tab = this.tabs.find((candidate) => candidate.page
+          && this.runtimeChooser?.registry().idFor(candidate.page) === event.notice.pageId);
+        if (!tab) return;
+        if (event.type === 'pending') this.emit('filechooser', event.notice as unknown as Record<string, unknown>);
+        else this.emit('fileChooserDone', { ok: !event.reason, reason: event.reason });
+      }) || null;
+    } else {
+      this.runtime = null;
+      this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+    }
 
     // Start remembering what websites call their files BEFORE anything can
     // navigate. Attaching after the first navigation is the measured way to miss
@@ -1282,6 +1312,10 @@ export class LiveBrowserSession {
     // Widening the guard without addressing this would have traded a silent
     // failure for a file going somewhere the user did not choose, which is worse.
     //
+    // RealChrome owns chooser interception through FileChooserService. A second
+    // listener here would create two independent owners for one page.
+    if (this.runtime) return;
+
     // So the slot is FIRST-COME: whoever asked first keeps it until it is
     // answered or cancelled. A later dialog is released immediately rather than
     // being allowed to clobber the outstanding one. `pendingChooserPage` records
@@ -2163,7 +2197,12 @@ export class LiveBrowserSession {
         if (!this.context || isContextDead(this.context)) {
           // The whole context went with it (a Chrome restart, or the shared
           // real-Chrome profile being restarted from the panel). Rebuild.
-          this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+          if (this.runtime) {
+            await this.runtime.start();
+            this.context = await this.runtime.context();
+          } else {
+            this.context = await GlobalBrowser.getInteractiveContext(this.userId, this.vp);
+          }
           // A NEW context has none of the old one's listeners. Re-attach, or
           // every download after a Chrome restart silently reverts to the 50%
           // naming path with nothing in the logs to say why.
@@ -3058,6 +3097,14 @@ export class LiveBrowserSession {
    */
   async acceptFiles(tokens: string[]): Promise<void> {
     this.touch();
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending && this.runtimeChooser) {
+      try {
+        const done = await this.runtimeChooser.accept(runtimePending.pageId, runtimePending.id, tokens);
+        this.emit('fileChooserDone', { ok: true, count: done.count });
+      } catch (e) { this.emit('fileChooserDone', { ok: false, reason: (e as Error).message }); }
+      return;
+    }
     const chooser = this.pendingChooser;
     if (!chooser) {
       this.emit('fileChooserDone', { ok: false, reason: 'no_pending_chooser' });
@@ -3099,7 +3146,7 @@ export class LiveBrowserSession {
 
   /** Is a page in this session waiting on a file dialog right now? */
   hasPendingFileChooser(): boolean {
-    return !!this.pendingChooser;
+    return !!this.runtimePendingChooser() || !!this.pendingChooser;
   }
 
   /**
@@ -3109,6 +3156,8 @@ export class LiveBrowserSession {
    * first of five and the operator believing all five arrived.
    */
   pendingFileChooserMultiple(): boolean | null {
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending) return runtimePending.multiple;
     const chooser = this.pendingChooser;
     if (!chooser) return null;
     try { return !!chooser.isMultiple(); } catch { return false; }
@@ -3128,6 +3177,12 @@ export class LiveBrowserSession {
    */
   async acceptFilePaths(paths: string[]): Promise<{ count: number }> {
     this.touch();
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending && this.runtimeChooser) {
+      const done = await this.runtimeChooser.acceptPaths(runtimePending.pageId, runtimePending.id, paths);
+      this.emit('fileChooserDone', { ok: true, count: done.count });
+      return done;
+    }
     const chooser = this.pendingChooser;
     if (!chooser) {
       throw new Error('The page is not asking for a file any more.');
@@ -3671,12 +3726,23 @@ export class LiveBrowserSession {
   /** Dismiss the dialog. `setFiles([])` is what "Cancel" means to the page. */
   async cancelFileChooser(): Promise<void> {
     this.touch();
+    const runtimePending = this.runtimePendingChooser();
+    if (runtimePending && this.runtimeChooser) {
+      await this.runtimeChooser.cancel(runtimePending.pageId, runtimePending.id);
+      return;
+    }
     const chooser = this.pendingChooser;
     this.pendingChooser = null;
     this.pendingChooserPage = null;
     if (!chooser) return;
     await chooser.setFiles([]).catch(() => {});
     this.emit('fileChooserDone', { ok: false, reason: 'cancelled' });
+  }
+
+  private runtimePendingChooser(): FileChooserNotice | null {
+    if (!this.runtimeChooser || !this.page) return null;
+    const pageId = this.runtimeChooser.registry().idFor(this.page);
+    return pageId ? this.runtimeChooser.pendingForPage(pageId) : null;
   }
 
   private async injectPicker(): Promise<void> {
@@ -3827,6 +3893,9 @@ export class LiveBrowserSession {
     } catch { /* ignore */ }
     this.cdp = null; this.cdpPage = null; this.page = null; this.context = null;
     this.owned.clear();
+    // The Runtime is deliberately not stopped here. This object owns only the
+    // presentation/control session; explicit Runtime lifecycle controls do that.
+    this.runtime = null;
   }
 }
 

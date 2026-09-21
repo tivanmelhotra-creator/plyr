@@ -9,6 +9,8 @@ import {
   withUtf8Locale,
 } from './BrowserProfile';
 import { RealChrome } from './RealChrome';
+import type { BrowserProfileRuntime } from './BrowserProfileRuntime';
+import { RealChromeRuntimeAdapter } from './RealChromeRuntimeAdapter';
 
 // Apply stealth plugin
 chromium.use(stealth());
@@ -33,6 +35,9 @@ export class GlobalBrowser {
   // ✅ NEW: Track last healthy state
   private static lastHealthyTime = 0;
   private static consecutiveFailures = 0;
+  /** RealChrome-backed runtime boundary for interactive callers. */
+  private static readonly interactiveRuntime = new RealChromeRuntimeAdapter('default');
+
 
   /**
    * Initialize the Global Browser (Singleton)
@@ -199,6 +204,13 @@ export class GlobalBrowser {
    * which is right for a run, is actively harmful here: it makes a site treat
    * every session as a brand-new stranger and challenge it.
    */
+  static getInteractiveRuntime(): BrowserProfileRuntime {
+    if (!RealChrome.isEnabled()) {
+      throw new Error('The RealChrome interactive runtime is disabled.');
+    }
+    return this.interactiveRuntime;
+  }
+
   static async getInteractiveContext(
     userId: string,
     viewport?: { width: number; height: number },

@@ -340,6 +340,8 @@ export interface Workflow {
   steps: unknown[];
   headless?: boolean | string | number | null;
   webhookUrl?: string | null;
+  /** Optional default profile; executions may select other profiles/scopes. */
+  profileId?: string;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -365,6 +367,7 @@ export interface WorkflowVersionSnapshot {
   steps: unknown[];
   headless?: boolean | string | number | null;
   webhookUrl?: string | null;
+  profileId?: string;
   savedAt: string;
   // Recorded for auditability. Restoring a snapshot restores the design; the
   // live switches are deliberately re-applied from the current record.
