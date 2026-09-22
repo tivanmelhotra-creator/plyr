@@ -1341,9 +1341,11 @@ export class LiveBrowserSession {
     // being allowed to clobber the outstanding one. `pendingChooserPage` records
     // the owner so acceptFiles can be sure it is answering the page that asked.
     page.on('filechooser', (chooser) => {
-      if (!this.tabs.some((t) => t.page === page)) {
-        // Not one of our tabs. Do not leave the dialog pending: an unanswered
-        // chooser is an input the page thinks is still waiting.
+      const isExt = (() => { try { return page.url().startsWith('chrome-extension://'); } catch { return false; } })();
+      const isOurTab = this.tabs.some((t) => t.page === page);
+      if (!isOurTab && !isExt) {
+        // Not one of our tabs or extension views. Do not leave the dialog pending:
+        // an unanswered chooser is an input the page thinks is still waiting.
         void chooser.setFiles([]).catch(() => {});
         return;
       }

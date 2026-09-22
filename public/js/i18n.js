@@ -776,6 +776,7 @@
       'wfm.moveHere': 'انتقال به اینجا',
       'wfm.copyHere': 'کپی به اینجا',
       'wfm.downloading': 'در حال دانلود…',
+      'wfm.confirm': 'تأیید',
       // ── Real Chrome panel ────────────────────────────────────────────
       'rc.title': 'کروم واقعی (افزونه‌ها و کوکی‌ها)',
       'rc.browser': 'مرورگر',
@@ -2495,6 +2496,7 @@
       'wfm.moveHere': 'Move Here',
       'wfm.copyHere': 'Copy Here',
       'wfm.downloading': 'Downloading\u2026',
+      'wfm.confirm': 'OK',
       // ── Real Chrome panel ────────────────────────────────────────────
       'rc.title': 'Real Chrome (extensions & cookies)',
       'rc.browser': 'Browser',

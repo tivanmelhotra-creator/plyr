@@ -42,6 +42,7 @@ import { createHash, randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import http from 'http';
+import net from 'net';
 
 import { config } from '../config';
 import {
@@ -619,10 +620,37 @@ function fetchDebugVersion(
   });
 }
 
+/** Find a usable local debug port so CDP chooser interception is always active. */
+async function resolveDebugPort(configuredPort: number): Promise<number> {
+  if (configuredPort > 0) return configuredPort;
+  const isPortAvailable = (port: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const server = net.createServer();
+      server.unref();
+      server.on('error', () => resolve(false));
+      server.listen(port, '127.0.0.1', () => {
+        server.close(() => resolve(true));
+      });
+    });
+
+  if (await isPortAvailable(9222)) return 9222;
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', () => resolve(9222));
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 9222;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
 export class RealChrome {
   private static context: BrowserContext | null = null;
   /** Stable only for one launch; a restart/recovery receives a new id. */
   private static runtimeIncarnation = '';
+  private static activeDebugPort = 0;
 
   private static starting: Promise<BrowserContext> | null = null;
   private static loaded: InstalledExtension[] = [];
@@ -1068,13 +1096,13 @@ export class RealChrome {
       ...extensionLaunchArgs(extensions),
     ];
 
-    if (config.REAL_CHROME_DEBUG_PORT > 0) {
-      args.push(`--remote-debugging-port=${config.REAL_CHROME_DEBUG_PORT}`);
-      args.push(`--remote-debugging-address=${config.REAL_CHROME_DEBUG_BIND}`);
-      // Without this, a DevTools client connecting from any other origin is
-      // rejected by Chrome's origin check and the port looks broken.
-      args.push('--remote-allow-origins=*');
-    }
+    const debugPort = await resolveDebugPort(config.REAL_CHROME_DEBUG_PORT);
+    RealChrome.activeDebugPort = debugPort;
+    args.push(`--remote-debugging-port=${debugPort}`);
+    args.push(`--remote-debugging-address=${config.REAL_CHROME_DEBUG_BIND || '127.0.0.1'}`);
+    // Without this, a DevTools client connecting from any other origin is
+    // rejected by Chrome's origin check and the port looks broken.
+    args.push('--remote-allow-origins=*');
 
     // Xvfb display. An explicit DISPLAY in the environment wins, because the
     // operator who exported it knows better than a default.
@@ -1176,10 +1204,10 @@ export class RealChrome {
         // to remember at teardown is the point, not a side effect.
       });
 
-      if (config.REAL_CHROME_DEBUG_PORT > 0) {
+      if (debugPort > 0) {
         const info = await fetchDebugVersion(
-          config.REAL_CHROME_DEBUG_BIND,
-          config.REAL_CHROME_DEBUG_PORT,
+          config.REAL_CHROME_DEBUG_BIND || '127.0.0.1',
+          debugPort,
         );
         this.debugInfo = {
           version: info?.Browser || '',
@@ -1503,7 +1531,7 @@ export class RealChrome {
   static async status(): Promise<RealChromeStatus> {
     const installed = await listExtensions(config.REAL_CHROME_EXTENSIONS_DIR).catch(() => []);
     const loaded = this.loadedExtensions();
-    const debugPort = config.REAL_CHROME_DEBUG_PORT;
+    const debugPort = this.activeDebugPort || config.REAL_CHROME_DEBUG_PORT;
 
     return {
       runtimeId: this.runtimeIncarnation,

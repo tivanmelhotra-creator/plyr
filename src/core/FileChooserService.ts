@@ -91,11 +91,19 @@ export class FileChooserService {
       ws.on('open', () => {
         ws.send(JSON.stringify({ id: nextId++, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true } }));
         ws.send(JSON.stringify({ id: nextId++, method: 'Target.setDiscoverTargets', params: { discover: true } }));
+        ws.send(JSON.stringify({ id: nextId++, method: 'Target.getTargets' }));
       });
 
       ws.on('message', (data: WebSocket.Data) => {
         try {
           const msg = JSON.parse(String(data));
+          if (msg.result && Array.isArray(msg.result.targetInfos)) {
+            for (const t of msg.result.targetInfos) {
+              if (t.type === 'page' || t.type === 'other' || t.type === 'service_worker' || t.type === 'background_page') {
+                ws.send(JSON.stringify({ id: nextId++, method: 'Target.attachToTarget', params: { targetId: t.targetId, flatten: true } }));
+              }
+            }
+          }
           if (msg.method === 'Target.attachedToTarget') {
             const { sessionId, targetInfo } = msg.params;
             targetSessions.set(sessionId, { sessionId, targetInfo });

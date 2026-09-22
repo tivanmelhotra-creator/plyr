@@ -2891,13 +2891,14 @@ function wfmRename(entry) {
   let li = null;
   wfmEachRow((row) => { if (!li && row.getAttribute('data-path') === entry.path) li = row; });
   const nameEl = li ? li.querySelector('.wfm-name') : null;
-  if (!li || !nameEl || !li.replaceChild) {
-    // No row on screen (a stale menu): fall back to a prompt rather than
-    // silently doing nothing.
-    const typed = ask('Rename to:', entry.name);
-    if (typed && typed !== entry.name) wfmCommitRename(entry, typed);
-    return;
-  }
+    if (!li || !nameEl || !li.replaceChild) {
+      // No row on screen (a stale menu): fall back to a prompt modal rather than
+      // silently doing nothing.
+      wfmPrompt('Rename to:', entry.name, (typed) => {
+        if (typed && typed !== entry.name) wfmCommitRename(entry, typed);
+      });
+      return;
+    }
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'drename';
