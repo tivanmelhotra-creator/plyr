@@ -6036,6 +6036,20 @@ body.route-fullbleed .fe-mm-restore {
   flex: 0 0 auto;
 }
 .wfm-note.err { color: var(--danger); }
+.wfm-note.is-loading {
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.wfm-drawer.is-busy {
+  cursor: wait;
+}
+.wfm-drawer.is-busy .wfm-toolbar button,
+.wfm-drawer.is-busy .wfm-foot button:not(.wfm-close) {
+  pointer-events: none;
+  opacity: 0.6;
+}
 /* NOT window.confirm: a native dialog over the remote stage steals focus from
  * the page that is waiting for the file. The question and the button that
  * answers it are in the drawer, together. */

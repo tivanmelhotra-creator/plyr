@@ -200,6 +200,43 @@
     state.els.note.className = 'wfm-note' + (isErr ? ' err' : '');
   }
 
+  function setBusy(isBusy, text) {
+    if (!state) return;
+    var els = state.els;
+    if (isBusy) {
+      els.root.classList.add('is-busy');
+      els.note.className = 'wfm-note is-loading';
+      els.note.textContent = '';
+      var spin = document.createElement('span');
+      spin.className = 'spinner';
+      spin.style.width = '12px';
+      spin.style.height = '12px';
+      spin.style.marginInlineEnd = '6px';
+      spin.style.verticalAlign = 'middle';
+      spin.setAttribute('aria-hidden', 'true');
+      els.note.appendChild(spin);
+      var msg = document.createElement('span');
+      msg.textContent = text || t('wfm.loading', 'Loading\u2026');
+      els.note.appendChild(msg);
+    } else {
+      els.root.classList.remove('is-busy');
+      if (text) say(text, false);
+      syncSelection();
+    }
+  }
+
+  function computeHighestBranch(paths) {
+    if (!paths || !paths.length) return '';
+    var branches = paths.map(function (p) {
+      var norm = String(p || '').replace(/^\/+|\/+$/g, '');
+      var idx = norm.indexOf('/');
+      return idx === -1 ? '' : norm.slice(0, idx);
+    });
+    if (branches.some(function (b) { return b === ''; })) return '';
+    var first = branches[0];
+    return branches.every(function (b) { return b === first; }) ? first : '';
+  }
+
   function close(reason) {
     if (!panel) return;
     var s = state;
@@ -247,7 +284,7 @@
     for (var i = 0; i < state.selected.length; i++) {
       if (state.selected[i].path !== entry.path) next.push(state.selected[i]);
     }
-    if (want) next.push({ path: entry.path, name: entry.name, size: entry.size });
+    if (want) next.push({ path: entry.path, name: entry.name, size: entry.size, type: entry.type });
     state.selected = next;
     syncSelection();
   }
@@ -262,11 +299,13 @@
   function syncSelection() {
     if (!state) return;
     var els = state.els;
-    var rows = els.list.querySelectorAll('li.wfm-file');
+    var rows = els.list.querySelectorAll('li.wfm-file, li.wfm-dir');
     for (var i = 0; i < rows.length; i++) {
       var li = rows[i];
       var on = isPicked(li.getAttribute('data-path'));
-      if (on) li.classList.add('sel'); else li.classList.remove('sel');
+      var isDir = li.getAttribute('data-type') === 'dir';
+      var isSys = isDir && li.getAttribute('data-system') === 'true';
+      li.className = isDir ? ('wfm-dir' + (isSys ? ' wfm-sys' : '') + (on ? ' sel' : '')) : ('wfm-file' + (on ? ' sel' : ''));
       li.setAttribute('aria-selected', on ? 'true' : 'false');
       var box = li.querySelector('.wfm-check');
       if (box) box.checked = on;
@@ -365,7 +404,7 @@
       Object.keys(s.folders).forEach(function (k) {
         (s.folders[k] || []).forEach(function (e) { live[e.path] = e.type; });
       });
-      s.selected = s.selected.filter(function (x) { return live[x.path] === 'file'; });
+      s.selected = s.selected.filter(function (x) { return live[x.path] === 'file' || live[x.path] === 'dir'; });
       render();
     });
   }
@@ -406,6 +445,15 @@
         toggleFolder(entry.path);
       });
       li.appendChild(chev);
+
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'wfm-check';
+      box.checked = isPicked(entry.path);
+      box.setAttribute('aria-label', t('wfm.pickFolder', 'Select this folder'));
+      box.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      box.addEventListener('change', function () { pick(entry, box.checked); });
+      li.appendChild(box);
     } else {
       // The checkbox is the multi-select affordance from the reference UI. It
       // exists for a single-file input too, where it behaves as a radio.
@@ -785,6 +833,7 @@
       t('wfm.deleteManyAsk', 'Delete the selected files?') + ' (' + victims.length + ')',
       function () {
         var s = state;
+        setBusy(true, t('wfm.delete', 'Delete') + '\u2026');
         victims.reduce(function (chain, v) {
           return chain.then(function () {
             return call(base() + '?path=' + encodeURIComponent(v.path), { method: 'DELETE' })
@@ -793,7 +842,10 @@
         }, Promise.resolve()).then(function () {
           if (state !== s) return;
           s.selected = [];
+          setBusy(false);
           return refresh();
+        }).catch(function () {
+          if (state === s) setBusy(false);
         });
       },
     );
@@ -823,7 +875,7 @@
     var to = ask(t('wfm.movePrompt', 'Destination folder (relative to the workspace):'), state.root || '');
     if (to === null) return Promise.resolve();
     var s = state;
-    say(t('wfm.moving', 'Moving\u2026'), false);
+    setBusy(true, t('wfm.moving', 'Moving\u2026'));
     return call(base() + '/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -833,10 +885,15 @@
         if (state !== s) return;
         // The paths changed, so any selection keyed on them is stale.
         s.selected = [];
-        say(t('wfm.moveDone', 'Moved:') + ' ' + ((d && d.count) || paths.length), false);
+        setBusy(false, t('wfm.moveDone', 'Moved:') + ' ' + ((d && d.count) || paths.length));
         return refresh();
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true); });
+      .catch(function (e) {
+        if (state === s) {
+          setBusy(false);
+          say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true);
+        }
+      });
   }
 
   /** POST /copy for a set of paths into a typed folder. */
@@ -845,7 +902,7 @@
     var to = ask(t('wfm.copyPrompt', 'Destination folder to copy into (relative to the workspace):'), state.root || '');
     if (to === null) return Promise.resolve();
     var s = state;
-    say(t('wfm.copying', 'Copying\u2026'), false);
+    setBusy(true, t('wfm.copying', 'Copying\u2026'));
     return call(base() + '/copy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -854,17 +911,22 @@
       .then(function (d) {
         if (state !== s) return;
         s.selected = [];
-        say(t('wfm.copyDone', 'Copied:') + ' ' + ((d && d.count) || paths.length), false);
+        setBusy(false, t('wfm.copyDone', 'Copied:') + ' ' + ((d && d.count) || paths.length));
         return refresh();
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true); });
+      .catch(function (e) {
+        if (state === s) {
+          setBusy(false);
+          say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true);
+        }
+      });
   }
 
   /** POST /duplicate for ONE entry — `config.json` -> `config copy.json`. */
   function duplicateEntry(entry) {
     if (!state) return Promise.resolve();
     var s = state;
-    say(t('wfm.copying', 'Copying\u2026'), false);
+    setBusy(true, t('wfm.copying', 'Copying\u2026'));
     return call(base() + '/duplicate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -872,39 +934,57 @@
     })
       .then(function (d) {
         if (state !== s) return;
-        say(t('wfm.duplicated', 'Duplicated:') + ' ' + ((d && d.entry && d.entry.name) || ''), false);
+        setBusy(false, t('wfm.duplicated', 'Duplicated:') + ' ' + ((d && d.entry && d.entry.name) || ''));
         return refresh();
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.duplicateFailed', 'Could not duplicate.'), true); });
+      .catch(function (e) {
+        if (state === s) {
+          setBusy(false);
+          say((e && e.message) || t('wfm.duplicateFailed', 'Could not duplicate.'), true);
+        }
+      });
   }
 
-  /** POST /compress: the selection -> ONE .zip created in the current folder. */
+  /** POST /compress: the selection -> ONE .zip created in the highest branch of the selection. */
   function compressPaths(paths) {
     if (!state || !paths.length) return Promise.resolve();
-    var leaf = state.root ? state.root.split('/').pop() : state.workflowId;
-    var name = ask(t('wfm.compressPrompt', 'Archive name:'), (leaf || 'archive') + '.zip');
+    var destDir = computeHighestBranch(paths);
+    var defaultName = '';
+    if (paths.length === 1) {
+      var fileName = paths[0].split('/').pop();
+      defaultName = fileName.replace(/\.[^.]+$/, '') + '.zip';
+    } else {
+      var leaf = destDir ? destDir.split('/').pop() : (state.root ? state.root.split('/').pop() : state.workflowId);
+      defaultName = (leaf || 'archive') + '.zip';
+    }
+    var name = ask(t('wfm.compressPrompt', 'Archive name:'), defaultName);
     if (!name) return Promise.resolve();
     var s = state;
-    say(t('wfm.compressing', 'Building the archive\u2026'), false);
+    setBusy(true, t('wfm.compressing', 'Building the archive\u2026'));
     return call(base() + '/compress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paths: paths, path: state.root, name: name, to: state.root })
+      body: JSON.stringify({ paths: paths, path: destDir, name: name, to: destDir })
     })
       .then(function (d) {
         if (state !== s) return;
         s.selected = [];
-        say(t('wfm.compressDone', 'Archive created:') + ' ' + ((d && d.entry && d.entry.name) || name), false);
+        setBusy(false, t('wfm.compressDone', 'Archive created:') + ' ' + ((d && d.entry && d.entry.name) || name));
         return refresh();
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.compressFailed', 'Could not compress.'), true); });
+      .catch(function (e) {
+        if (state === s) {
+          setBusy(false);
+          say((e && e.message) || t('wfm.compressFailed', 'Could not compress.'), true);
+        }
+      });
   }
 
   /** POST /extract: unpack ONE .zip, beside itself or into a new folder. */
   function extractEntry(entry, mode) {
     if (!state) return Promise.resolve();
     var s = state;
-    say(t('wfm.extracting', 'Extracting\u2026'), false);
+    setBusy(true, t('wfm.extracting', 'Extracting\u2026'));
     return call(base() + '/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -913,10 +993,15 @@
       .then(function (d) {
         if (state !== s) return;
         s.selected = [];
-        say(t('wfm.extractDone', 'Extracted:') + ' ' + ((d && d.folder) || ''), false);
+        setBusy(false, t('wfm.extractDone', 'Extracted:') + ' ' + ((d && d.folder) || ''));
         return refresh();
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.extractFailed', 'Could not extract.'), true); });
+      .catch(function (e) {
+        if (state === s) {
+          setBusy(false);
+          say((e && e.message) || t('wfm.extractFailed', 'Could not extract.'), true);
+        }
+      });
   }
 
   /** Is this a `.zip`, the only archive format this pass supports? */
@@ -1046,7 +1131,7 @@
     var s = state;
     var into = state.uploadInto || '';
     state.uploadInto = '';
-    say(t('wfm.uploading', 'Uploading\u2026'), false);
+    setBusy(true, t('wfm.uploading', 'Uploading\u2026'));
     return list.reduce(function (chain, file) {
       return chain.then(function () {
         return call(
@@ -1057,12 +1142,13 @@
     }, Promise.resolve())
       .then(function () {
         if (state !== s) return;
-        say(t('wfm.uploaded', 'Uploaded.'), false);
         s.open[into] = true;
+        setBusy(false, t('wfm.uploaded', 'Uploaded.'));
         return refresh();
       })
       .catch(function (e) {
         if (state !== s) return;
+        setBusy(false);
         say((e && e.message) || t('wfm.uploadFailed', 'The upload failed.'), true);
         return refresh();
       });
@@ -1174,18 +1260,36 @@
         menuItem(menu, t('wfm.delete', 'Delete'), 'trash', function () { deleteEntry(entry); }, true);
       }
       menuSep(menu);
-      menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () { void compressPaths([entry.path]); });
+      menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () {
+        var p = isPicked(entry.path) && selectedPaths().length > 1 ? selectedPaths() : [entry.path];
+        void compressPaths(p);
+      });
       if (!entry.system) {
-        menuItem(menu, t('wfm.move', 'Move'), 'move', function () { void movePaths([entry.path]); });
-        menuItem(menu, t('wfm.copy', 'Copy'), 'copy', function () { void copyPaths([entry.path]); });
+        menuItem(menu, t('wfm.move', 'Move'), 'move', function () {
+          var p = isPicked(entry.path) && selectedPaths().length > 1 ? selectedPaths() : [entry.path];
+          void movePaths(p);
+        });
+        menuItem(menu, t('wfm.copy', 'Copy'), 'copy', function () {
+          var p = isPicked(entry.path) && selectedPaths().length > 1 ? selectedPaths() : [entry.path];
+          void copyPaths(p);
+        });
       }
     } else {
       menuItem(menu, t('wfm.pick', 'Select'), 'check', function () { pick(entry, true); });
       menuItem(menu, t('wfm.download', 'Download'), 'download', function () { void downloadEntry(entry); });
       menuSep(menu);
-      menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () { void compressPaths([entry.path]); });
-      menuItem(menu, t('wfm.move', 'Move'), 'move', function () { void movePaths([entry.path]); });
-      menuItem(menu, t('wfm.copy', 'Copy'), 'copy', function () { void copyPaths([entry.path]); });
+      menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () {
+        var p = isPicked(entry.path) && selectedPaths().length > 1 ? selectedPaths() : [entry.path];
+        void compressPaths(p);
+      });
+      menuItem(menu, t('wfm.move', 'Move'), 'move', function () {
+        var p = isPicked(entry.path) && selectedPaths().length > 1 ? selectedPaths() : [entry.path];
+        void movePaths(p);
+      });
+      menuItem(menu, t('wfm.copy', 'Copy'), 'copy', function () {
+        var p = isPicked(entry.path) && selectedPaths().length > 1 ? selectedPaths() : [entry.path];
+        void copyPaths(p);
+      });
       menuItem(menu, t('wfm.duplicate', 'Duplicate'), 'copy', function () { void duplicateEntry(entry); });
       if (isZipName(entry.name)) {
         menuItem(menu, t('wfm.extractHere', 'Extract here'), 'extract', function () { void extractEntry(entry, 'here'); });
@@ -1257,6 +1361,11 @@
     if (!state || !state.selected.length) return;
     var s = state;
     var chosen = s.selected.slice();
+    var hasFolder = chosen.some(function (c) { return c.type === 'dir'; });
+    if (hasFolder) {
+      say(t('wfm.noFolderInInput', 'Folders cannot be handed to a web page file input; please select files.'), true);
+      return;
+    }
     if (chosen.length > 1 && !s.multiple) {
       // The server refuses this too (409); saying it here keeps the selection
       // intact for Download / Delete and costs no request.

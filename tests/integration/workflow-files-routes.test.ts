@@ -738,6 +738,15 @@ describe('workflow files: utility operation routes', () => {
     expect((await request(app).get(`${base()}?path=extract-target/archive-src`)).status).toBe(200);
   });
 
+  it('compresses items using highest branch and strips common prefix for single file', async () => {
+    await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'BranchFolder' });
+    await request(app).post(`${base()}/mkdir`).send({ path: 'BranchFolder', name: 'Sub' });
+    await upload('BranchFolder/Sub', 'leaf.txt', 'leaf');
+    const r = await request(app).post(`${base()}/compress`).send({ paths: ['BranchFolder/Sub/leaf.txt'], name: 'leafarchive' });
+    expect(r.status).toBe(201);
+    expect(r.body.entry.path).toBe('BranchFolder/leafarchive.zip');
+  });
+
   it('keeps workflows isolated for utility operations', async () => {
     await upload('', 'alice-only.txt', 'alice');
     expect((await request(app).post(`/browser/workflow-files/${wfBob}/copy`).send({ paths: ['alice-only.txt'], to: '' })).status).toBe(404);

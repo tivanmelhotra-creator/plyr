@@ -194,6 +194,23 @@ export function normalizeRelativePath(input: unknown): string {
 }
 
 /**
+ * Compute the highest branch directory for a list of workflow-relative paths.
+ * If all paths share a non-root first branch (e.g. "Folder A/..."), that branch is returned.
+ * If any path is in root or branches differ, "" (root) is returned.
+ */
+export function computeHighestBranch(paths: string[]): string {
+  if (!paths || !paths.length) return '';
+  const branches = paths.map((p) => {
+    const norm = String(p || '').replace(/^\/+|\/+$/g, '');
+    const idx = norm.indexOf('/');
+    return idx === -1 ? '' : norm.slice(0, idx);
+  });
+  if (branches.some((b) => b === '')) return '';
+  const first = branches[0];
+  return branches.every((b) => b === first) ? first : '';
+}
+
+/**
  * Reduce a filename the BROWSER reported (`file.name`) to a segment we accept.
  *
  * Uploads are the one place a name arrives without the operator typing it, so
@@ -850,27 +867,58 @@ export class WorkflowStorage {
     opts: { base?: unknown; destDir?: unknown; name?: unknown } = {},
   ): Promise<WorkflowEntry> {
     const rels = this.cleanBulk(paths);
-    const base = normalizeRelativePath(opts.base ?? '');
-    const destDir = opts.destDir === undefined ? base : normalizeRelativePath(opts.destDir);
+    const highest = computeHighestBranch(rels);
+    const base = normalizeRelativePath(opts.base ?? highest);
+    const destDir = opts.destDir === undefined ? (highest || base) : normalizeRelativePath(opts.destDir);
     const dest = await this.resolve(destDir);
     if (!dest.stat || !dest.stat.isDirectory()) throw new WorkflowStorageError('The destination is not a folder.', 400);
 
-    // Collect every archive entry BEFORE anything is written: a bad path must
-    // be a clean 4xx, not a truncated archive with an error glued to its tail.
-    const strip = base ? `${base}/` : '';
-    const entryName = (rel: string) => (strip && rel.startsWith(strip) ? rel.slice(strip.length) : rel);
-
-    type Job = { name: string; isDir: boolean; abs: string; mtime: Date };
-    const jobs: Job[] = [];
+    // Resolve all targets first to validate existence and determine if selection is files-only
+    const resolvedEntries: Array<{ relative: string; stat: import('fs').Stats }> = [];
     const seen = new Set<string>();
     for (const rel of rels) {
       const r = await this.resolve(rel);
       if (!r.stat) throw new WorkflowStorageError('No such file or folder.', 404);
       if (seen.has(r.relative)) continue;
       seen.add(r.relative);
+      resolvedEntries.push({ relative: r.relative, stat: r.stat });
+    }
+
+    const hasDirectory = resolvedEntries.some((e) => e.stat.isDirectory());
+    let strip = base ? `${base}/` : '';
+    if (!hasDirectory && rels.length > 0) {
+      if (rels.length === 1) {
+        const lastSlash = rels[0].lastIndexOf('/');
+        strip = lastSlash === -1 ? '' : rels[0].slice(0, lastSlash + 1);
+      } else {
+        const dirPaths = rels.map((p) => {
+          const idx = p.lastIndexOf('/');
+          return idx === -1 ? '' : p.slice(0, idx + 1);
+        });
+        let common = dirPaths[0];
+        for (let i = 1; i < dirPaths.length; i++) {
+          while (!dirPaths[i].startsWith(common)) {
+            const prev = common.slice(0, -1);
+            const nextSlash = prev.lastIndexOf('/');
+            common = nextSlash === -1 ? '' : prev.slice(0, nextSlash + 1);
+            if (!common) break;
+          }
+        }
+        if (common) strip = common;
+      }
+    }
+
+    // Collect every archive entry BEFORE anything is written: a bad path must
+    // be a clean 4xx, not a truncated archive with an error glued to its tail.
+    const entryName = (rel: string) => (strip && rel.startsWith(strip) ? rel.slice(strip.length) : rel);
+
+    type Job = { name: string; isDir: boolean; abs: string; mtime: Date };
+    const jobs: Job[] = [];
+    for (const r of resolvedEntries) {
       if (r.stat.isDirectory()) {
-        if (r.relative && r.relative !== base) {
-          jobs.push({ name: entryName(r.relative), isDir: true, abs: '', mtime: r.stat.mtime });
+        const dirName = entryName(r.relative);
+        if (dirName) {
+          jobs.push({ name: dirName, isDir: true, abs: '', mtime: r.stat.mtime });
         }
         for (const e of await this.walk(r.relative)) {
           if (e.type === 'dir') {
@@ -892,7 +940,7 @@ export class WorkflowStorage {
       throw new WorkflowStorageError('There is nothing to compress.', 400);
     }
 
-    const fallback = `${base ? path.posix.basename(base) : this.workflowId}.zip`;
+    const fallback = `${(destDir || base) ? path.posix.basename(destDir || base) : this.workflowId}.zip`;
     let wanted = String(opts.name ?? '').trim() || fallback;
     if (!wanted.toLowerCase().endsWith('.zip')) wanted = `${wanted}.zip`;
     const seg = assertSegment(wanted);
