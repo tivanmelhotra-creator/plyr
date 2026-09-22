@@ -264,4 +264,14 @@ describe('the workflow files drawer in ChromeView', () => {
     expect(html).toContain('#wfmnote.is-loading');
     expect(html).toContain('.spinner');
   });
+
+  it('includes in-drawer prompt modal, folder tree modal, and custom dpick pane', () => {
+    const html = chromeViewHtml();
+    expect(idsIn(html)).toContain('dprompt');
+    expect(idsIn(html)).toContain('dpick');
+    expect(startsHidden(html, 'dprompt')).toBe(true);
+    expect(startsHidden(html, 'dpick')).toBe(true);
+    expect(html).toContain('wfmIntent');
+    expect(html).toContain('FILE_REQUEST');
+  });
 });

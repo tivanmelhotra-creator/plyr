@@ -1167,6 +1167,7 @@ export class RealChrome {
         // A pending dialog, by contrast, cannot outlive its browser: the page
         // that asked is gone, so keeping the row would have the view prompting
         // for a file with nowhere to put it.
+        this.chooserService?.dispose();
         this.chooserService = null;
         // There used to be a third line here, dropping the claimed Alert Tab.
         // It is gone with the claim itself: `alertSurface()` now reads
@@ -1184,6 +1185,9 @@ export class RealChrome {
           version: info?.Browser || '',
           ws: info?.webSocketDebuggerUrl || '',
         };
+        if (this.debugInfo.ws && this.chooserService) {
+          this.chooserService.attachCDP(this.debugInfo.ws);
+        }
       }
 
       // SWEEP THE PAGES A PREVIOUS RELEASE LEAKED INTO THIS PROFILE.

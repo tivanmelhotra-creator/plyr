@@ -771,6 +771,11 @@
       'wfm.extracting': 'در حال استخراج…',
       'wfm.extractDone': 'استخراج شد:',
       'wfm.extractFailed': 'استخراج ممکن نشد.',
+      'wfm.targetLabel': 'مقصد:',
+      'wfm.rootWorkspace': 'ریشه فضای کاری (/)',
+      'wfm.moveHere': 'انتقال به اینجا',
+      'wfm.copyHere': 'کپی به اینجا',
+      'wfm.downloading': 'در حال دانلود…',
       // ── Real Chrome panel ────────────────────────────────────────────
       'rc.title': 'کروم واقعی (افزونه‌ها و کوکی‌ها)',
       'rc.browser': 'مرورگر',
@@ -2485,6 +2490,11 @@
       'wfm.extracting': 'Extracting\u2026',
       'wfm.extractDone': 'Extracted:',
       'wfm.extractFailed': 'Could not extract.',
+      'wfm.targetLabel': 'Target:',
+      'wfm.rootWorkspace': 'Workspace Root (/)',
+      'wfm.moveHere': 'Move Here',
+      'wfm.copyHere': 'Copy Here',
+      'wfm.downloading': 'Downloading\u2026',
       // ── Real Chrome panel ────────────────────────────────────────────
       'rc.title': 'Real Chrome (extensions & cookies)',
       'rc.browser': 'Browser',
