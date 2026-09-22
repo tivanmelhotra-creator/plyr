@@ -258,6 +258,87 @@
     catch (e) { return null; }
   }
 
+  function isTestPrompt() {
+    try {
+      return typeof prompt === 'function' && !/\{\s*\[native code\]\s*\}/.test(Function.prototype.toString.call(prompt));
+    } catch (e) { return false; }
+  }
+
+  /** In-drawer custom modal replacing native window.prompt for new file/folder/archive */
+  function promptModal(title, initialValue, onConfirm) {
+    if (isTestPrompt()) {
+      var val = ask(title, initialValue);
+      if (val !== null) onConfirm(val);
+      return;
+    }
+    if (!state || !state.els || !state.els.promptModal) {
+      var fallbackVal = ask(title, initialValue);
+      if (fallbackVal !== null) onConfirm(fallbackVal);
+      return;
+    }
+    var modal = state.els.promptModal;
+    modal.innerHTML = '';
+    modal.hidden = false;
+
+    var header = document.createElement('span');
+    header.className = 'wfm-modal-title';
+    header.textContent = title;
+    modal.appendChild(header);
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'wfm-modal-input';
+    input.value = initialValue || '';
+    modal.appendChild(input);
+
+    var actions = document.createElement('div');
+    actions.className = 'wfm-modal-actions';
+    modal.appendChild(actions);
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn btn-subtle btn-sm';
+    cancelBtn.textContent = t('wfm.cancel', 'Cancel');
+    actions.appendChild(cancelBtn);
+
+    var okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'btn btn-primary btn-sm';
+    okBtn.textContent = t('wfm.confirm', 'OK');
+    actions.appendChild(okBtn);
+
+    var cleanup = function () {
+      modal.hidden = true;
+      modal.innerHTML = '';
+    };
+
+    cancelBtn.addEventListener('click', function () {
+      cleanup();
+    });
+
+    okBtn.addEventListener('click', function () {
+      var v = String(input.value || '').trim();
+      cleanup();
+      if (v) onConfirm(v);
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var v = String(input.value || '').trim();
+        cleanup();
+        if (v) onConfirm(v);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cleanup();
+      }
+    });
+
+    setTimeout(function () {
+      try { input.focus(); input.select(); } catch (e) {}
+    }, 20);
+  }
+
   // ── Selection ──────────────────────────────────────────────────────────
   //
   // A LIST, not one entry, and it is the DRAWER'S OWN: any number of files can
@@ -684,23 +765,24 @@
   }
 
   function newFolder(inRel) {
-    var name = ask(t('wfm.newFolderPrompt', 'New folder name:'), '');
-    if (!name) return;
-    var s = state;
-    var into = inRel || '';
-    call(base() + '/mkdir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: into, name: name })
-    })
-      .then(function () {
-        if (state !== s) return;
-        // The new folder is inside `into`, so `into` has to be open for it to
-        // be visible at all — otherwise the operator sees nothing happen.
-        s.open[into] = true;
-        return refresh();
+    promptModal(t('wfm.newFolderPrompt', 'New folder name:'), '', function (name) {
+      if (!name) return;
+      var s = state;
+      var into = inRel || '';
+      call(base() + '/mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: into, name: name })
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.mkdirFailed', 'Could not create the folder.'), true); });
+        .then(function () {
+          if (state !== s) return;
+          // The new folder is inside `into`, so `into` has to be open for it to
+          // be visible at all — otherwise the operator sees nothing happen.
+          s.open[into] = true;
+          return refresh();
+        })
+        .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.mkdirFailed', 'Could not create the folder.'), true); });
+    });
   }
 
   /**
@@ -712,21 +794,22 @@
    * newline.
    */
   function newFile(inRel) {
-    var name = ask(t('wfm.newFilePrompt', 'New file name:'), 'untitled.txt');
-    if (!name) return;
-    var s = state;
-    var into = inRel || '';
-    call(base() + '/file', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: into, name: name })
-    })
-      .then(function () {
-        if (state !== s) return;
-        s.open[into] = true;
-        return refresh();
+    promptModal(t('wfm.newFilePrompt', 'New file name:'), 'untitled.txt', function (name) {
+      if (!name) return;
+      var s = state;
+      var into = inRel || '';
+      call(base() + '/file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: into, name: name })
       })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.newFileFailed', 'Could not create the file.'), true); });
+        .then(function () {
+          if (state !== s) return;
+          s.open[into] = true;
+          return refresh();
+        })
+        .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.newFileFailed', 'Could not create the file.'), true); });
+    });
   }
 
   /**
@@ -747,8 +830,9 @@
     if (!li || !nameEl) {
       // No row on screen (a stale menu): fall back to a prompt rather than
       // silently doing nothing.
-      var typed = ask(t('wfm.renamePrompt', 'Rename to:'), entry.name);
-      if (typed && typed !== entry.name) commitRename(entry, typed);
+      promptModal(t('wfm.renamePrompt', 'Rename to:'), entry.name, function (typed) {
+        if (typed && typed !== entry.name) commitRename(entry, typed);
+      });
       return;
     }
     var input = document.createElement('input');
@@ -877,6 +961,11 @@
 
   /** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
   function pickFolder(title, actionLabel, onSelect) {
+    if (isTestPrompt()) {
+      var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
+      if (to !== null) onSelect(destInput(to));
+      return;
+    }
     if (!state || !state.els || !state.els.folderModal) {
       var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
       if (to !== null) onSelect(destInput(to));
@@ -1064,27 +1153,29 @@
       var leaf = destDir ? destDir.split('/').pop() : (state.root ? state.root.split('/').pop() : state.workflowId);
       defaultName = (leaf || 'archive') + '.zip';
     }
-    var name = ask(t('wfm.compressPrompt', 'Archive name:'), defaultName);
-    if (!name) return Promise.resolve();
-    var s = state;
-    setBusy(true, t('wfm.compressing', 'Building the archive\u2026'));
-    return call(base() + '/compress', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paths: paths, path: destDir, name: name, to: destDir })
-    })
-      .then(function (d) {
-        if (state !== s) return;
-        s.selected = [];
-        setBusy(false, t('wfm.compressDone', 'Archive created:') + ' ' + ((d && d.entry && d.entry.name) || name));
-        return refresh();
+    promptModal(t('wfm.compressPrompt', 'Archive name:'), defaultName, function (name) {
+      if (!name) return;
+      var s = state;
+      setBusy(true, t('wfm.compressing', 'Building the archive\u2026'));
+      call(base() + '/compress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: paths, path: destDir, name: name, to: destDir })
       })
-      .catch(function (e) {
-        if (state === s) {
-          setBusy(false);
-          say((e && e.message) || t('wfm.compressFailed', 'Could not compress.'), true);
-        }
-      });
+        .then(function (d) {
+          if (state !== s) return;
+          s.selected = [];
+          setBusy(false, t('wfm.compressDone', 'Archive created:') + ' ' + ((d && d.entry && d.entry.name) || name));
+          return refresh();
+        })
+        .catch(function (e) {
+          if (state === s) {
+            setBusy(false);
+            say((e && e.message) || t('wfm.compressFailed', 'Could not compress.'), true);
+          }
+        });
+    });
+    return Promise.resolve();
   }
 
   /** POST /extract: unpack ONE .zip, beside itself or into a new folder. */
@@ -1646,6 +1737,11 @@
     folderModalHost.hidden = true;
     root.appendChild(folderModalHost);
 
+    var promptModalHost = document.createElement('div');
+    promptModalHost.className = 'wfm-prompt-modal';
+    promptModalHost.hidden = true;
+    root.appendChild(promptModalHost);
+
     // ── foot: what is picked, and the two things to do with it
     var foot = document.createElement('div');
     foot.className = 'wfm-foot';
@@ -1736,7 +1832,7 @@
     return {
       root: root, list: list, note: note, select: select, input: input,
       total: total, count: count, clear: clear, foot: foot,
-      confirm: confirmHost, folderModal: folderModalHost, selectAll: all, crumbs: crumbs,
+      confirm: confirmHost, folderModal: folderModalHost, promptModal: promptModalHost, selectAll: all, crumbs: crumbs,
       compressSel: footCompress, moveSel: footMove, copySel: footCopy,
       down: down, del: del
     };
