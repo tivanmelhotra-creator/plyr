@@ -322,6 +322,29 @@ export function chromeViewHtml(): string {
   /* notes, and the in-drawer confirmation */
   #wfmnote { color: #8b8b98; padding: 0 10px; min-height: 1.2em; flex: none; }
   #wfmnote.err { color: #ff9d9d; }
+  #wfmnote.is-loading {
+    color: #f0862f;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  #panefiles.is-busy {
+    cursor: wait;
+  }
+  #panefiles.is-busy .dbar button,
+  #panefiles.is-busy .dfoot button:not(#dclear) {
+    pointer-events: none;
+    opacity: 0.6;
+  }
+  .spinner {
+    width: 12px; height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-top-color: #f0862f;
+    border-radius: 50%;
+    animation: wfmSpin 0.8s linear infinite;
+    display: inline-block;
+  }
+  @keyframes wfmSpin { to { transform: rotate(360deg); } }
   /* NOT window.confirm: a native dialog on this page steals focus from the
      remote screen, and the page waiting for a file is BEHIND that screen. The
      question and the button that answers it are in the drawer, together. */
@@ -526,6 +549,9 @@ export function chromeViewHtml(): string {
       <span id="dcount"></span>
       <button id="dclear" type="button" hidden>Clear</button>
       <span class="dgrow"></span>
+      <button class="fbtn" id="dcompresssel" type="button" hidden title="Make one .zip from the selected items">Compress</button>
+      <button class="fbtn" id="dmovesel" type="button" hidden title="Move the selected items">Move</button>
+      <button class="fbtn" id="dcopysel" type="button" hidden title="Copy the selected items">Copy</button>
       <button class="fbtn" id="ddownsel" type="button" hidden title="Download the selected files (several become one .zip)">Download</button>
       <button class="fbtn" id="ddelsel" type="button" hidden title="Delete the selected files">Delete</button>
       <button class="fbtn accent" id="wfmselect" type="button" disabled title="Hand the selected file to the page">Select</button>
@@ -1829,6 +1855,9 @@ const wfmCount   = document.getElementById('dcount');
 const wfmClear   = document.getElementById('dclear');
 const wfmDelSel  = document.getElementById('ddelsel');
 const wfmDownSel = document.getElementById('ddownsel');
+const wfmCompressSel = document.getElementById('dcompresssel');
+const wfmMoveSel     = document.getElementById('dmovesel');
+const wfmCopySel     = document.getElementById('dcopysel');
 const wfmConfirm = document.getElementById('dconfirm');
 const wfmMenu    = document.getElementById('dmenu');
 const wfmCrumbs  = document.getElementById('dcrumbs');
@@ -1883,6 +1912,50 @@ function wfmSay(text, isErr) {
   if (!wfmNote) return;
   wfmNote.textContent = text || '';
   wfmNote.className = isErr ? 'err' : '';
+}
+
+function wfmSetBusy(isBusy, text) {
+  const root = document.getElementById('panefiles');
+  if (root) {
+    if (root.classList) {
+      if (isBusy) root.classList.add('is-busy');
+      else root.classList.remove('is-busy');
+    } else {
+      const cls = (root.className || '').replace(/\bis-busy\b/g, '').trim();
+      root.className = isBusy ? (cls ? cls + ' is-busy' : 'is-busy') : cls;
+    }
+  }
+  if (!wfmNote) return;
+  if (isBusy) {
+    wfmNote.className = 'is-loading';
+    wfmNote.textContent = '';
+    const spin = document.createElement('span');
+    spin.className = 'spinner';
+    spin.style.width = '12px';
+    spin.style.height = '12px';
+    spin.style.marginInlineEnd = '6px';
+    spin.style.verticalAlign = 'middle';
+    spin.setAttribute('aria-hidden', 'true');
+    wfmNote.appendChild(spin);
+    const msg = document.createElement('span');
+    msg.textContent = text || 'Loading\u2026';
+    wfmNote.appendChild(msg);
+  } else {
+    if (text) wfmSay(text, false);
+    wfmSyncSelection();
+  }
+}
+
+function wfmComputeHighestBranch(paths) {
+  if (!paths || !paths.length) return '';
+  const branches = paths.map((p) => {
+    const norm = String(p || '').split('/').filter((s) => s !== '').join('/');
+    const idx = norm.indexOf('/');
+    return idx === -1 ? '' : norm.slice(0, idx);
+  });
+  if (branches.some((b) => b === '')) return '';
+  const first = branches[0];
+  return branches.every((b) => b === first) ? first : '';
 }
 
 /** Read a JSON answer, and turn a refusal into an Error with the server's words. */
@@ -1950,7 +2023,7 @@ function wfmIsPicked(rel) {
 function wfmPick(entry, on) {
   const want = (on === undefined) ? !wfmIsPicked(entry.path) : !!on;
   const next = wfmSelected.filter((x) => x.path !== entry.path);
-  if (want) next.push({ path: entry.path, name: entry.name, size: entry.size });
+  if (want) next.push({ path: entry.path, name: entry.name, size: entry.size, type: entry.type });
   wfmSelected = next;
   wfmSyncSelection();
 }
@@ -1988,9 +2061,10 @@ function wfmEachRow(fn) {
 /** Paint the selected rows and the footer, without rebuilding the tree. */
 function wfmSyncSelection() {
   wfmEachRow((li) => {
-    if (li.getAttribute('data-type') !== 'file') return;
+    const isDir = li.getAttribute('data-type') === 'dir';
+    const isSys = isDir && li.getAttribute('data-system') === 'true';
     const on = wfmIsPicked(li.getAttribute('data-path'));
-    li.className = 'wfm-file' + (on ? ' sel' : '');
+    li.className = isDir ? ('wfm-dir' + (isSys ? ' wfm-sys' : '') + (on ? ' sel' : '')) : ('wfm-file' + (on ? ' sel' : ''));
     li.setAttribute('aria-selected', on ? 'true' : 'false');
     const box = li.querySelector('.dcheck');
     if (box) box.checked = on;
@@ -2010,6 +2084,9 @@ function wfmSyncSelection() {
   if (wfmClear) wfmClear.hidden = n === 0;
   if (wfmDelSel) wfmDelSel.hidden = n === 0;
   if (wfmDownSel) wfmDownSel.hidden = n === 0;
+  if (wfmCompressSel) wfmCompressSel.hidden = n === 0;
+  if (wfmMoveSel) wfmMoveSel.hidden = n === 0;
+  if (wfmCopySel) wfmCopySel.hidden = n === 0;
   // Select is the hand-over to a page, so it needs a page that is asking,
   // and a single-file page can take exactly one. Said on the button itself
   // (title) so the operator learns the rule before pressing, and again in
@@ -2095,7 +2172,7 @@ function wfmRefresh() {
     Object.keys(wfmFolders).forEach((k) => {
       (wfmFolders[k] || []).forEach((e) => { live[e.path] = e.type; });
     });
-    wfmSelected = wfmSelected.filter((x) => live[x.path] === 'file');
+    wfmSelected = wfmSelected.filter((x) => live[x.path] === 'file' || live[x.path] === 'dir');
     wfmRender();
   });
 }
@@ -2270,6 +2347,15 @@ function wfmRow(entry, depth) {
       wfmToggleFolder(entry.path);
     });
     li.appendChild(chev);
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'dcheck';
+    box.checked = wfmIsPicked(entry.path);
+    box.setAttribute('aria-label', 'Select this folder');
+    box.addEventListener('click', (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); });
+    box.addEventListener('change', () => wfmPick(entry, box.checked));
+    li.appendChild(box);
   } else {
     // The checkbox is the multi-select affordance from the reference UI. It
     // exists for a single-file input too, where it behaves as a radio.
@@ -2735,16 +2821,21 @@ function wfmDelete(entry) {
   );
 }
 
-/** Delete every picked file, behind one confirmation naming the count. */
+/** Delete every picked file or folder, behind one confirmation naming the count. */
 function wfmDeleteSelected() {
   if (!wfmSelected.length || !wfmRequire()) return;
   const victims = wfmSelected.slice();
   wfmConfirmStrip('Delete the selected files? (' + victims.length + ')', () => {
+    wfmSetBusy(true, 'Deleting\u2026');
     victims.reduce(
-      (chain, v) => chain.then(() => wfmFetch(wfmBase() + '?path=' + encodeURIComponent(v.path), { method: 'DELETE' })
+      (chain, v) => chain.then(() => wfmFetch(wfmBase() + '?path=' + encodeURIComponent(v.path) + (v.type === 'dir' ? '&recursive=1' : ''), { method: 'DELETE' })
         .catch((e) => wfmSay((e && e.message) || 'Could not delete.', true))),
       Promise.resolve(),
-    ).then(() => { wfmSelected = []; return wfmRefresh(); });
+    ).then(() => {
+      wfmSelected = [];
+      wfmSetBusy(false);
+      return wfmRefresh();
+    });
   });
 }
 
@@ -2776,67 +2867,109 @@ function wfmMovePaths(paths) {
   if (!paths.length || !wfmRequire()) return;
   const to = ask('Destination folder (relative to the workspace):', wfmRoot || '');
   if (to === null) return;
-  wfmSay('Moving\u2026', false);
+  wfmSetBusy(true, 'Moving\u2026');
   wfmFetch(wfmBase() + '/move', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paths: paths, to: wfmDestInput(to) }),
   })
-    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Moved: ' + ((d && d.count) || paths.length), false)); })
-    .catch((e) => wfmSay((e && e.message) || 'Could not move.', true));
+    .then((d) => {
+      wfmSelected = [];
+      wfmSetBusy(false, 'Moved: ' + ((d && d.count) || paths.length));
+      return wfmRefresh();
+    })
+    .catch((e) => {
+      wfmSetBusy(false);
+      wfmSay((e && e.message) || 'Could not move.', true);
+    });
 }
 
 function wfmCopyPaths(paths, style) {
   if (!paths.length || !wfmRequire()) return;
   const to = ask('Destination folder to copy into (relative to the workspace):', wfmRoot || '');
   if (to === null) return;
-  wfmSay('Copying\u2026', false);
+  wfmSetBusy(true, 'Copying\u2026');
   wfmFetch(wfmBase() + '/copy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paths: paths, to: wfmDestInput(to), style: style || 'numbered' }),
   })
-    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Copied: ' + ((d && d.count) || paths.length), false)); })
-    .catch((e) => wfmSay((e && e.message) || 'Could not copy.', true));
+    .then((d) => {
+      wfmSelected = [];
+      wfmSetBusy(false, 'Copied: ' + ((d && d.count) || paths.length));
+      return wfmRefresh();
+    })
+    .catch((e) => {
+      wfmSetBusy(false);
+      wfmSay((e && e.message) || 'Could not copy.', true);
+    });
 }
 
 function wfmDuplicate(entry) {
   if (!wfmRequire()) return;
-  wfmSay('Copying\u2026', false);
+  wfmSetBusy(true, 'Copying\u2026');
   wfmFetch(wfmBase() + '/duplicate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: entry.path }),
   })
-    .then((d) => wfmRefresh().then(() => wfmSay('Duplicated: ' + ((d && d.entry && d.entry.name) || ''), false)))
-    .catch((e) => wfmSay((e && e.message) || 'Could not duplicate.', true));
+    .then((d) => {
+      wfmSetBusy(false, 'Duplicated: ' + ((d && d.entry && d.entry.name) || ''));
+      return wfmRefresh();
+    })
+    .catch((e) => {
+      wfmSetBusy(false);
+      wfmSay((e && e.message) || 'Could not duplicate.', true);
+    });
 }
 
 function wfmCompressPaths(paths) {
   if (!paths.length || !wfmRequire()) return;
-  const leaf = wfmRoot ? wfmRoot.split('/').pop() : workflowId;
-  const name = ask('Archive name:', (leaf || 'archive') + '.zip');
+  const destDir = wfmComputeHighestBranch(paths);
+  let defaultName = '';
+  if (paths.length === 1) {
+    const fileName = paths[0].split('/').pop();
+    defaultName = fileName.replace(/\.[^.]+$/, '') + '.zip';
+  } else {
+    const leaf = destDir ? destDir.split('/').pop() : (wfmRoot ? wfmRoot.split('/').pop() : workflowId);
+    defaultName = (leaf || 'archive') + '.zip';
+  }
+  const name = ask('Archive name:', defaultName);
   if (!name) return;
-  wfmSay('Building the archive\u2026', false);
+  wfmSetBusy(true, 'Building the archive\u2026');
   wfmFetch(wfmBase() + '/compress', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paths: paths, path: wfmRoot, name: name, to: wfmRoot }),
+    body: JSON.stringify({ paths: paths, path: destDir, name: name, to: destDir }),
   })
-    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Archive created: ' + ((d && d.entry && d.entry.name) || name), false)); })
-    .catch((e) => wfmSay((e && e.message) || 'Could not compress.', true));
+    .then((d) => {
+      wfmSelected = [];
+      wfmSetBusy(false, 'Archive created: ' + ((d && d.entry && d.entry.name) || name));
+      return wfmRefresh();
+    })
+    .catch((e) => {
+      wfmSetBusy(false);
+      wfmSay((e && e.message) || 'Could not compress.', true);
+    });
 }
 
 function wfmExtract(entry, mode) {
   if (!wfmRequire()) return;
-  wfmSay('Extracting\u2026', false);
+  wfmSetBusy(true, 'Extracting\u2026');
   wfmFetch(wfmBase() + '/extract', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: entry.path, mode: mode }),
   })
-    .then((d) => { wfmSelected = []; return wfmRefresh().then(() => wfmSay('Extracted: ' + ((d && d.folder) || ''), false)); })
-    .catch((e) => wfmSay((e && e.message) || 'Could not extract.', true));
+    .then((d) => {
+      wfmSelected = [];
+      wfmSetBusy(false, 'Extracted: ' + ((d && d.folder) || ''));
+      return wfmRefresh();
+    })
+    .catch((e) => {
+      wfmSetBusy(false);
+      wfmSay((e && e.message) || 'Could not extract.', true);
+    });
 }
 
 /** Details for ONE entry, in the drawer's own note line. No absolute path. */
@@ -3054,18 +3187,36 @@ function wfmOpenMenu(entry, x, y) {
       wfmMenuItem('Delete', 'trash', () => wfmDelete(entry), true);
     }
     wfmMenuSep();
-    wfmMenuItem('Compress (.zip)', 'layers', () => { void wfmCompressPaths([entry.path]); });
+    wfmMenuItem('Compress (.zip)', 'layers', () => {
+      const p = wfmIsPicked(entry.path) && wfmSelectedPaths().length > 1 ? wfmSelectedPaths() : [entry.path];
+      void wfmCompressPaths(p);
+    });
     if (!entry.system) {
-      wfmMenuItem('Move', 'move', () => wfmMovePaths([entry.path]));
-      wfmMenuItem('Copy', 'copy', () => wfmCopyPaths([entry.path]));
+      wfmMenuItem('Move', 'move', () => {
+        const p = wfmIsPicked(entry.path) && wfmSelectedPaths().length > 1 ? wfmSelectedPaths() : [entry.path];
+        void wfmMovePaths(p);
+      });
+      wfmMenuItem('Copy', 'copy', () => {
+        const p = wfmIsPicked(entry.path) && wfmSelectedPaths().length > 1 ? wfmSelectedPaths() : [entry.path];
+        void wfmCopyPaths(p);
+      });
     }
   } else {
     wfmMenuItem('Select', 'check', () => wfmPick(entry, true));
     wfmMenuItem('Download', 'download', () => { void wfmDownload(entry); });
     wfmMenuSep();
-    wfmMenuItem('Compress (.zip)', 'layers', () => { void wfmCompressPaths([entry.path]); });
-    wfmMenuItem('Move', 'move', () => wfmMovePaths([entry.path]));
-    wfmMenuItem('Copy', 'copy', () => wfmCopyPaths([entry.path]));
+    wfmMenuItem('Compress (.zip)', 'layers', () => {
+      const p = wfmIsPicked(entry.path) && wfmSelectedPaths().length > 1 ? wfmSelectedPaths() : [entry.path];
+      void wfmCompressPaths(p);
+    });
+    wfmMenuItem('Move', 'move', () => {
+      const p = wfmIsPicked(entry.path) && wfmSelectedPaths().length > 1 ? wfmSelectedPaths() : [entry.path];
+      void wfmMovePaths(p);
+    });
+    wfmMenuItem('Copy', 'copy', () => {
+      const p = wfmIsPicked(entry.path) && wfmSelectedPaths().length > 1 ? wfmSelectedPaths() : [entry.path];
+      void wfmCopyPaths(p);
+    });
     wfmMenuItem('Duplicate', 'copy', () => wfmDuplicate(entry));
     if (wfmIsZipName(entry.name)) {
       wfmMenuItem('Extract here', 'extract', () => wfmExtract(entry, 'here'));
@@ -3112,6 +3263,11 @@ function wfmUse() {
     return;
   }
   const chosen = wfmSelected.slice();
+  const hasFolder = chosen.some((c) => c.type === 'dir');
+  if (hasFolder) {
+    wfmSay('Folders cannot be handed to a web page file input; please select files.', true);
+    return;
+  }
   if (chosen.length > 1 && !pendingMultiple) {
     // The server refuses this too (409), but the sentence is better said here,
     // before a request, and with the selection intact for Download/Delete.
@@ -3196,6 +3352,18 @@ if (wfmList) {
   if (wfmClear) wfmClear.addEventListener('click', () => wfmClearSelection());
   if (wfmDelSel) wfmDelSel.addEventListener('click', () => wfmDeleteSelected());
   if (wfmDownSel) wfmDownSel.addEventListener('click', () => { void wfmDownloadSelected(); });
+  if (wfmCompressSel) wfmCompressSel.addEventListener('click', () => {
+    const p = wfmSelectedPaths();
+    if (p.length) void wfmCompressPaths(p);
+  });
+  if (wfmMoveSel) wfmMoveSel.addEventListener('click', () => {
+    const p = wfmSelectedPaths();
+    if (p.length) void wfmMovePaths(p);
+  });
+  if (wfmCopySel) wfmCopySel.addEventListener('click', () => {
+    const p = wfmSelectedPaths();
+    if (p.length) void wfmCopyPaths(p);
+  });
   // A right-click on the empty space is the root's own menu, and a plain click
   // there clears the selection -- both from the reference UI.
   wfmList.addEventListener('contextmenu', (ev) => {

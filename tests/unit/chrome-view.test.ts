@@ -246,3 +246,22 @@ describe('the page does not manufacture its own console errors', () => {
     expect(icon![0]).toMatch(/href=["']?data:/i);
   });
 });
+
+describe('the workflow files drawer in ChromeView', () => {
+  it('includes batch action buttons for compress, move, and copy in the drawer footer', () => {
+    const html = chromeViewHtml();
+    expect(idsIn(html)).toContain('dcompresssel');
+    expect(idsIn(html)).toContain('dmovesel');
+    expect(idsIn(html)).toContain('dcopysel');
+    expect(startsHidden(html, 'dcompresssel')).toBe(true);
+    expect(startsHidden(html, 'dmovesel')).toBe(true);
+    expect(startsHidden(html, 'dcopysel')).toBe(true);
+  });
+
+  it('includes styles for busy drawer and loading note indicator', () => {
+    const html = chromeViewHtml();
+    expect(html).toContain('#panefiles.is-busy');
+    expect(html).toContain('#wfmnote.is-loading');
+    expect(html).toContain('.spinner');
+  });
+});

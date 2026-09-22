@@ -23,6 +23,7 @@ import {
   WorkflowEntry,
   SYSTEM_FOLDERS,
   normalizeRelativePath,
+  computeHighestBranch,
   assertSegment,
 } from '../../src/core/WorkflowStorage';
 import { readZipArchive } from '../../src/core/ZipArchive';
@@ -758,6 +759,36 @@ describe('WorkflowStorage: Compress -> ZIP', () => {
     const s = new WorkflowStorage(USER, WF_A);
     await s.mkdir('', 'empty');
     await rejects(s.compress(['empty'], { base: '', name: 'x', destDir: '' }), 400);
+  });
+
+  it('strips common directory prefix when only files are selected in a subfolder', async () => {
+    const s = new WorkflowStorage(USER, WF_A);
+    await s.mkdir('', 'FolderA');
+    await s.mkdir('FolderA', 'Sub');
+    await s.writeFile('FolderA/Sub', 'one.txt', Buffer.from('one'));
+    await s.writeFile('FolderA/Sub', 'two.txt', Buffer.from('two'));
+
+    // Single file in subfolder: should sit directly in zip root
+    const z1 = await s.compress(['FolderA/Sub/one.txt'], { name: 'single' });
+    expect(z1.path).toBe('FolderA/single.zip');
+    const bytes1 = await fs.readFile(onDisk(s, z1.path));
+    const names1 = readZipArchive(bytes1).filter((e) => !e.isDirectory).map((e) => e.name);
+    expect(names1).toEqual(['one.txt']);
+
+    // Multiple files in same subfolder: should sit directly in zip root
+    const z2 = await s.compress(['FolderA/Sub/one.txt', 'FolderA/Sub/two.txt'], { name: 'multi' });
+    expect(z2.path).toBe('FolderA/multi.zip');
+    const bytes2 = await fs.readFile(onDisk(s, z2.path));
+    const names2 = readZipArchive(bytes2).filter((e) => !e.isDirectory).map((e) => e.name).sort();
+    expect(names2).toEqual(['one.txt', 'two.txt']);
+  });
+
+  it('computes the highest branch correctly', () => {
+    expect(computeHighestBranch([])).toBe('');
+    expect(computeHighestBranch(['a.txt'])).toBe('');
+    expect(computeHighestBranch(['FolderA/Sub/a.txt', 'FolderA/b.txt'])).toBe('FolderA');
+    expect(computeHighestBranch(['FolderA/a.txt', 'FolderB/b.txt'])).toBe('');
+    expect(computeHighestBranch(['FolderA/a.txt', 'b.txt'])).toBe('');
   });
 });
 

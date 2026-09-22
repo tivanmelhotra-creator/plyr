@@ -75,6 +75,18 @@ export class FileChooserService {
     this.watchedContext = context;
     for (const page of context.pages()) this.watchPage(page);
     context.on('page', (page) => this.watchPage(page));
+    const anyCtx = context as unknown as {
+      backgroundPages?: () => Page[];
+      on: (event: string, listener: (arg: unknown) => void) => void;
+    };
+    if (typeof anyCtx.backgroundPages === 'function') {
+      try {
+        for (const page of anyCtx.backgroundPages()) this.watchPage(page);
+      } catch { /* context closing */ }
+    }
+    if (typeof anyCtx.on === 'function') {
+      anyCtx.on('backgroundpage', (page: unknown) => this.watchPage(page as Page));
+    }
   }
 
   pendingForPage(pageId: string): FileChooserNotice | null {
@@ -175,6 +187,12 @@ export class FileChooserService {
 
   private notice(pageId: string, pending: PendingChooser): FileChooserNotice {
     const pageRef = this.pages.get(pageId);
+    if (pageRef && pageRef.page) {
+      const k = kindFor(pageRef.page);
+      if (k !== 'other' || pageRef.kind === 'other') pageRef.kind = k;
+      const eid = extensionIdFor(pageRef.page);
+      if (eid) pageRef.extensionId = eid;
+    }
     return {
       ...pending,
       id: `${pageId}:${pending.id}`,

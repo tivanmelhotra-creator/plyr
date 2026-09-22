@@ -1011,7 +1011,8 @@ export class LiveBrowserSession {
       this.runtimeChooserUnsubscribe = this.runtimeChooser?.subscribe((event) => {
         const tab = this.tabs.find((candidate) => candidate.page
           && this.runtimeChooser?.registry().idFor(candidate.page) === event.notice.pageId);
-        if (!tab) return;
+        // Extension pages/popups are not browser tabs in this.tabs, but they belong to the runtime.
+        if (!tab && event.notice.kind !== 'extension' && !event.notice.extensionId) return;
         if (event.type === 'pending') this.emit('filechooser', event.notice as unknown as Record<string, unknown>);
         else this.emit('fileChooserDone', { ok: !event.reason, reason: event.reason });
       }) || null;
@@ -1068,8 +1069,26 @@ export class LiveBrowserSession {
         //     was broken and is never another user's browsing, or
         //   - a page opened while WE were the session that asked for one.
         if (!opener || !this.owned.has(opener)) {
-          const url = (() => { try { return p.url(); } catch { return ''; } })();
-          const isExtensionPage = /^chrome-extension:\/\//i.test(url);
+          let url = (() => { try { return p.url(); } catch { return ''; } })();
+          let isExtensionPage = /^chrome-extension:\/\//i.test(url);
+          if (!isExtensionPage && this.expectOrphanUntil <= Date.now()) {
+            if (!url || url === 'about:blank') {
+              try {
+                await Promise.race([
+                  new Promise<void>((resolve) => {
+                    const onNav = () => {
+                      p.off('framenavigated', onNav);
+                      resolve();
+                    };
+                    p.on('framenavigated', onNav);
+                  }),
+                  new Promise<void>((resolve) => setTimeout(resolve, 800)),
+                ]);
+                url = (() => { try { return p.url(); } catch { return ''; } })();
+                isExtensionPage = /^chrome-extension:\/\//i.test(url);
+              } catch { /* page closed */ }
+            }
+          }
           const claimable = isExtensionPage || this.expectOrphanUntil > Date.now();
           if (!claimable) return;
         }
