@@ -2560,8 +2560,19 @@ function ask(text, initial) {
   catch (e) { return null; }
 }
 
+function isTestPrompt() {
+  try {
+    return typeof prompt === 'function' && !/\{\s*\[native code\]\s*\}/.test(Function.prototype.toString.call(prompt));
+  } catch (e) { return false; }
+}
+
 /** In-drawer prompt replacing native window.prompt */
 function wfmPrompt(title, initial, onConfirm) {
+  if (isTestPrompt()) {
+    const val = ask(title, initial);
+    if (val !== null) onConfirm(val);
+    return;
+  }
   const box = document.getElementById('dprompt');
   const tEl = document.getElementById('dprompttitle');
   const inEl = document.getElementById('dpromptinput');
@@ -2604,6 +2615,11 @@ function wfmPrompt(title, initial, onConfirm) {
 
 /** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
 function wfmPickFolder(title, actionText, onSelect) {
+  if (isTestPrompt()) {
+    const val = ask(title + ' (relative to workspace, leave empty for Root):', wfmRoot || '');
+    if (val !== null) onSelect(wfmDestInput(val));
+    return;
+  }
   const box = document.getElementById('dfolderpicker');
   const tEl = document.getElementById('dfpickertitle');
   const tree = document.getElementById('dfpickertree');
@@ -3263,7 +3279,7 @@ function wfmUploadFiles(list) {
   )
     .then(() => {
       wfmOpen[into] = true;
-      return wfmRefresh().then(() => wfmSetBusy(false, 'Uploaded ' + list.length + ' file' + (list.length === 1 ? '' : 's') + '.'));
+      return wfmRefresh().then(() => wfmSetBusy(false, 'Uploaded.'));
     })
     .catch((e) => {
       wfmSetBusy(false);

@@ -724,7 +724,7 @@ async function runView(
       //   PUT  .../file {path,content} -> { entry } and the store is updated
       //   POST .../file {path,name}  -> 201 { entry } (New File, now usable: the
       //                                 view opens the file it just made)
-      if (url.indexOf('/file') >= 0) {
+      if (/\/file(?:\?|$)/.test(url)) {
         if (method === 'PUT') {
           const put = JSON.parse(String(init.body || '{}'));
           state.wfFileContent[put.path] = String(put.content ?? '');
