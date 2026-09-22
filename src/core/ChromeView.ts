@@ -360,10 +360,39 @@ export function chromeViewHtml(): string {
   .dyes { background: #b3423f; border-color: #c85450; color: #fff; }
   .dyes:hover { background: #c85450; }
 
+  /* In-drawer modals (Prompt & Folder Picker) */
+  #dprompt, #dfolderpicker {
+    display: flex; flex-direction: column; gap: 8px;
+    margin: 6px 10px; padding: 10px; flex: none;
+    background: rgba(30, 32, 40, .98); border: 1px solid #4a4a58;
+    border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  }
+  #dprompt[hidden], #dfolderpicker[hidden] { display: none; }
+  .dp-title { font-weight: 600; font-size: 12px; color: #f0f0f8; }
+  .dp-input {
+    background: #15161c; border: 1px solid #43434e; border-radius: 5px;
+    color: #fff; padding: 6px 8px; font: inherit; font-size: 12px; outline: none;
+  }
+  .dp-input:focus { border-color: #e8731a; }
+  .dp-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .dp-tree {
+    max-height: 140px; overflow-y: auto; background: #15161c;
+    border: 1px solid #383842; border-radius: 5px; padding: 4px;
+    list-style: none; margin: 0;
+  }
+  .dp-tree-item {
+    display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+    border-radius: 4px; cursor: pointer; color: #d0d0dc; font-size: 11px;
+  }
+  .dp-tree-item:hover { background: rgba(255,255,255,.07); color: #fff; }
+  .dp-tree-item.active { background: rgba(232,115,26,.25); border: 1px solid #e8731a; color: #fff; font-weight: 600; }
+  .dp-tree-item .wfm-ico { width: 14px; height: 14px; flex: none; }
+
   /* foot: what is picked, and the two things to do with it */
   .dfoot {
-    display: flex; align-items: center; gap: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
     padding: 9px 10px; border-top: 1px solid #38383f; flex: none;
+    position: sticky; bottom: 0; background: rgba(23,25,32,.98); z-index: 5;
   }
   #dcount { flex: none; color: #9aa0ad; }
   #dclear {
@@ -387,6 +416,10 @@ export function chromeViewHtml(): string {
      that DELIVERS the file apart from everything that merely browses. */
   .fbtn.accent { background: #e8731a; border-color: #f0862f; color: #fff; }
   .fbtn.accent:hover { background: #f0862f; }
+  #wfmselect {
+    order: 10;
+    margin-left: auto;
+  }
   /* Batch delete only makes sense once something is picked, and it must never
      sit at the same weight as Select — it destroys, Select delivers. */
   #ddelsel[hidden] { display: none; }
@@ -545,6 +578,23 @@ export function chromeViewHtml(): string {
     <ul id="dnotices" hidden></ul>
     <div id="wfmnote"></div>
     <div id="dconfirm" hidden></div>
+    <div id="dprompt" hidden>
+      <span class="dp-title" id="dprompttitle"></span>
+      <input type="text" class="dp-input" id="dpromptinput" spellcheck="false" autocomplete="off">
+      <div class="dp-actions">
+        <button type="button" class="fbtn" id="dpromptcancel">Cancel</button>
+        <button type="button" class="fbtn accent" id="dpromptok">OK</button>
+      </div>
+    </div>
+    <div id="dfolderpicker" hidden>
+      <span class="dp-title" id="dfpickertitle">Select destination folder</span>
+      <ul class="dp-tree" id="dfpickertree"></ul>
+      <span class="sub" id="dfpickerselected" style="font-size:11px; color:#9aa0ad;">Target: Workspace Root (/)</span>
+      <div class="dp-actions">
+        <button type="button" class="fbtn" id="dfpickercancel">Cancel</button>
+        <button type="button" class="fbtn accent" id="dfpickerok">Move Here</button>
+      </div>
+    </div>
     <div class="dfoot">
       <span id="dcount"></span>
       <button id="dclear" type="button" hidden>Clear</button>
@@ -2082,11 +2132,12 @@ function wfmSyncSelection() {
   }
   if (wfmCount) wfmCount.textContent = n ? (n === 1 ? '1 selected' : n + ' selected') : '';
   if (wfmClear) wfmClear.hidden = n === 0;
-  if (wfmDelSel) wfmDelSel.hidden = n === 0;
-  if (wfmDownSel) wfmDownSel.hidden = n === 0;
-  if (wfmCompressSel) wfmCompressSel.hidden = n === 0;
-  if (wfmMoveSel) wfmMoveSel.hidden = n === 0;
-  if (wfmCopySel) wfmCopySel.hidden = n === 0;
+  const isNormal = wfmIntent !== 'FILE_REQUEST';
+  if (wfmDelSel) wfmDelSel.hidden = !isNormal || n === 0;
+  if (wfmDownSel) wfmDownSel.hidden = !isNormal || n === 0;
+  if (wfmCompressSel) wfmCompressSel.hidden = !isNormal || n === 0;
+  if (wfmMoveSel) wfmMoveSel.hidden = !isNormal || n === 0;
+  if (wfmCopySel) wfmCopySel.hidden = !isNormal || n === 0;
   // Select is the hand-over to a page, so it needs a page that is asking,
   // and a single-file page can take exactly one. Said on the button itself
   // (title) so the operator learns the rule before pressing, and again in
@@ -2509,23 +2560,149 @@ function ask(text, initial) {
   catch (e) { return null; }
 }
 
+function isTestPrompt() {
+  try {
+    return typeof prompt === 'function' && !/\{\s*\[native code\]\s*\}/.test(Function.prototype.toString.call(prompt));
+  } catch (e) { return false; }
+}
+
+/** In-drawer prompt replacing native window.prompt */
+function wfmPrompt(title, initial, onConfirm) {
+  if (isTestPrompt()) {
+    const val = ask(title, initial);
+    if (val !== null) onConfirm(val);
+    return;
+  }
+  const box = document.getElementById('dprompt');
+  const tEl = document.getElementById('dprompttitle');
+  const inEl = document.getElementById('dpromptinput');
+  const okBtn = document.getElementById('dpromptok');
+  const cancelBtn = document.getElementById('dpromptcancel');
+  if (!box || !inEl || !okBtn || !cancelBtn) {
+    const val = ask(title, initial);
+    if (val !== null) onConfirm(val);
+    return;
+  }
+  if (tEl) tEl.textContent = title;
+  inEl.value = initial || '';
+  box.hidden = false;
+  setTimeout(() => { try { inEl.focus(); } catch (e) {} }, 10);
+
+  const cleanup = () => {
+    box.hidden = true;
+    okBtn.onclick = null;
+    cancelBtn.onclick = null;
+    inEl.onkeydown = null;
+  };
+  okBtn.onclick = () => {
+    const val = inEl.value.trim();
+    cleanup();
+    if (val) onConfirm(val);
+  };
+  cancelBtn.onclick = () => { cleanup(); };
+  inEl.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const val = inEl.value.trim();
+      cleanup();
+      if (val) onConfirm(val);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cleanup();
+    }
+  };
+}
+
+/** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
+function wfmPickFolder(title, actionText, onSelect) {
+  if (isTestPrompt()) {
+    const val = ask(title + ' (relative to workspace, leave empty for Root):', wfmRoot || '');
+    if (val !== null) onSelect(wfmDestInput(val));
+    return;
+  }
+  const box = document.getElementById('dfolderpicker');
+  const tEl = document.getElementById('dfpickertitle');
+  const tree = document.getElementById('dfpickertree');
+  const selEl = document.getElementById('dfpickerselected');
+  const okBtn = document.getElementById('dfpickerok');
+  const cancelBtn = document.getElementById('dfpickercancel');
+  if (!box || !tree || !okBtn || !cancelBtn) {
+    const val = ask(title + ' (relative to workspace, leave empty for Root):', wfmRoot || '');
+    if (val !== null) onSelect(wfmDestInput(val));
+    return;
+  }
+  if (tEl) tEl.textContent = title;
+  if (okBtn) okBtn.textContent = actionText || 'Select';
+  let chosen = wfmRoot || '';
+  tree.innerHTML = '';
+
+  const makeItem = (path, label, depth) => {
+    const li = document.createElement('li');
+    li.className = 'dp-tree-item' + (chosen === path ? ' active' : '');
+    li.style.paddingLeft = (6 + depth * 14) + 'px';
+    li.innerHTML = '<span class="wfm-ico">' + wfmGlyph('folder') + '</span><span>' + label + '</span>';
+    li.onclick = () => {
+      chosen = path;
+      const all = tree.querySelectorAll('.dp-tree-item');
+      for (let i = 0; i < all.length; i++) all[i].classList.remove('active');
+      li.classList.add('active');
+      if (selEl) selEl.textContent = 'Target: ' + (chosen ? '/' + chosen : 'Workspace Root (/)');
+    };
+    tree.appendChild(li);
+  };
+
+  makeItem('', 'Workspace Root (/)', 0);
+  const dirs = {};
+  Object.keys(wfmFolders).forEach((folder) => {
+    (wfmFolders[folder] || []).forEach((e) => {
+      if (e.type === 'dir' && !e.system) dirs[e.path] = true;
+    });
+  });
+  const sortedDirs = Object.keys(dirs).sort();
+  for (let i = 0; i < sortedDirs.length; i++) {
+    const d = sortedDirs[i];
+    const segs = d.split('/');
+    makeItem(d, segs[segs.length - 1], segs.length);
+  }
+
+  if (selEl) selEl.textContent = 'Target: ' + (chosen ? '/' + chosen : 'Workspace Root (/)');
+  box.hidden = false;
+
+  const cleanup = () => {
+    box.hidden = true;
+    okBtn.onclick = null;
+    cancelBtn.onclick = null;
+  };
+  okBtn.onclick = () => {
+    cleanup();
+    onSelect(chosen);
+  };
+  cancelBtn.onclick = () => {
+    cleanup();
+  };
+}
+
 function wfmNewFolder(inRel) {
   if (!wfmRequire()) return;
-  const name = ask('New folder name:', '');
-  if (!name) return;
-  const into = inRel || '';
-  wfmFetch(wfmBase() + '/mkdir', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: into, name: name }),
-  })
-    .then(() => {
-      // The new folder is inside 'into', so 'into' has to be open for it to be
-      // visible at all -- otherwise the operator sees nothing happen.
-      wfmOpen[into] = true;
-      return wfmRefresh();
+  wfmPrompt('New folder name:', '', (name) => {
+    if (!name) return;
+    const into = inRel || '';
+    wfmSetBusy(true, 'Creating folder\u2026');
+    wfmFetch(wfmBase() + '/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: into, name: name }),
     })
-    .catch((e) => wfmSay((e && e.message) || 'Could not create the folder.', true));
+      .then(() => {
+        wfmOpen[into] = true;
+        wfmSetBusy(false, 'Folder created: ' + name);
+        return wfmRefresh();
+      })
+      .catch((e) => {
+        wfmSetBusy(false);
+        wfmSay((e && e.message) || 'Could not create the folder.', true);
+      });
+  });
 }
 
 /**
@@ -2538,26 +2715,32 @@ function wfmNewFolder(inRel) {
  */
 function wfmNewFile(inRel) {
   if (!wfmRequire()) return;
-  const name = ask('New file name:', 'untitled.txt');
-  if (!name) return;
-  const into = inRel || '';
-  wfmFetch(wfmBase() + '/file', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: into, name: name }),
-  })
-    .then((d) => {
-      wfmOpen[into] = true;
-      return wfmRefresh().then(() => {
-        // New File must be genuinely usable: create, then OPEN it, so the
-        // operator types straight away. Binary names are left on the tree (the
-        // editor refuses them the same way a row click does).
-        const made = d && d.entry;
-        if (made && made.path && wfmIsTextName(made.name || name)) wfmOpenEditor(made);
-        return null;
-      });
+  wfmPrompt('New file name:', 'untitled.txt', (name) => {
+    if (!name) return;
+    const into = inRel || '';
+    wfmSetBusy(true, 'Creating file\u2026');
+    wfmFetch(wfmBase() + '/file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: into, name: name }),
     })
-    .catch((e) => wfmSay((e && e.message) || 'Could not create the file.', true));
+      .then((d) => {
+        wfmOpen[into] = true;
+        wfmSetBusy(false, 'File created: ' + name);
+        return wfmRefresh().then(() => {
+          // New File must be genuinely usable: create, then OPEN it, so the
+          // operator types straight away. Binary names are left on the tree (the
+          // editor refuses them the same way a row click does).
+          const made = d && d.entry;
+          if (made && made.path && wfmIsTextName(made.name || name)) wfmOpenEditor(made);
+          return null;
+        });
+      })
+      .catch((e) => {
+        wfmSetBusy(false);
+        wfmSay((e && e.message) || 'Could not create the file.', true);
+      });
+  });
 }
 
 // ── The text editor ──────────────────────────────────────────────────────────
@@ -2852,7 +3035,9 @@ function wfmDeleteSelected() {
  *  ChromeView.ts, where an escaped slash collapses to slash and would corrupt a
  *  regex literal in the emitted HTML. split/filter/join needs no escaping. */
 function wfmDestInput(v) {
-  return String(v == null ? '' : v).trim().split('/').filter((s) => s !== '').join('/');
+  var s = String(v == null ? '' : v).trim();
+  if (s === '/' || s.toLowerCase() === 'root' || s.toLowerCase() === '(root)') return '';
+  return s.split('/').filter((x) => x !== '').join('/');
 }
 
 function wfmSelectedPaths() {
@@ -2865,44 +3050,52 @@ function wfmIsZipName(name) {
 
 function wfmMovePaths(paths) {
   if (!paths.length || !wfmRequire()) return;
-  const to = ask('Destination folder (relative to the workspace):', wfmRoot || '');
-  if (to === null) return;
-  wfmSetBusy(true, 'Moving\u2026');
-  wfmFetch(wfmBase() + '/move', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paths: paths, to: wfmDestInput(to) }),
-  })
-    .then((d) => {
-      wfmSelected = [];
-      wfmSetBusy(false, 'Moved: ' + ((d && d.count) || paths.length));
-      return wfmRefresh();
+  wfmPickFolder('Move ' + paths.length + ' item' + (paths.length === 1 ? '' : 's') + ' to:', 'Move Here', (to) => {
+    if (to === null || to === undefined) return;
+    const dest = wfmDestInput(to);
+    wfmSetBusy(true, 'Moving\u2026');
+    wfmFetch(wfmBase() + '/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths, to: dest }),
     })
-    .catch((e) => {
-      wfmSetBusy(false);
-      wfmSay((e && e.message) || 'Could not move.', true);
-    });
+      .then((d) => {
+        wfmSelected = [];
+        wfmOpen[''] = true;
+        if (dest) wfmOpen[dest] = true;
+        wfmSetBusy(false, 'Moved: ' + ((d && d.count) || paths.length) + (dest ? ' to ' + dest : ' to Workspace Root'));
+        return wfmRefresh();
+      })
+      .catch((e) => {
+        wfmSetBusy(false);
+        wfmSay((e && e.message) || 'Could not move.', true);
+      });
+  });
 }
 
 function wfmCopyPaths(paths, style) {
   if (!paths.length || !wfmRequire()) return;
-  const to = ask('Destination folder to copy into (relative to the workspace):', wfmRoot || '');
-  if (to === null) return;
-  wfmSetBusy(true, 'Copying\u2026');
-  wfmFetch(wfmBase() + '/copy', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paths: paths, to: wfmDestInput(to), style: style || 'numbered' }),
-  })
-    .then((d) => {
-      wfmSelected = [];
-      wfmSetBusy(false, 'Copied: ' + ((d && d.count) || paths.length));
-      return wfmRefresh();
+  wfmPickFolder('Copy ' + paths.length + ' item' + (paths.length === 1 ? '' : 's') + ' into:', 'Copy Here', (to) => {
+    if (to === null || to === undefined) return;
+    const dest = wfmDestInput(to);
+    wfmSetBusy(true, 'Copying\u2026');
+    wfmFetch(wfmBase() + '/copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths, to: dest, style: style || 'numbered' }),
     })
-    .catch((e) => {
-      wfmSetBusy(false);
-      wfmSay((e && e.message) || 'Could not copy.', true);
-    });
+      .then((d) => {
+        wfmSelected = [];
+        wfmOpen[''] = true;
+        if (dest) wfmOpen[dest] = true;
+        wfmSetBusy(false, 'Copied: ' + ((d && d.count) || paths.length) + (dest ? ' to ' + dest : ' to Workspace Root'));
+        return wfmRefresh();
+      })
+      .catch((e) => {
+        wfmSetBusy(false);
+        wfmSay((e && e.message) || 'Could not copy.', true);
+      });
+  });
 }
 
 function wfmDuplicate(entry) {
@@ -2934,23 +3127,24 @@ function wfmCompressPaths(paths) {
     const leaf = destDir ? destDir.split('/').pop() : (wfmRoot ? wfmRoot.split('/').pop() : workflowId);
     defaultName = (leaf || 'archive') + '.zip';
   }
-  const name = ask('Archive name:', defaultName);
-  if (!name) return;
-  wfmSetBusy(true, 'Building the archive\u2026');
-  wfmFetch(wfmBase() + '/compress', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paths: paths, path: destDir, name: name, to: destDir }),
-  })
-    .then((d) => {
-      wfmSelected = [];
-      wfmSetBusy(false, 'Archive created: ' + ((d && d.entry && d.entry.name) || name));
-      return wfmRefresh();
+  wfmPrompt('Archive name (.zip):', defaultName, (name) => {
+    if (!name) return;
+    wfmSetBusy(true, 'Building the archive\u2026');
+    wfmFetch(wfmBase() + '/compress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths, path: destDir, name: name, to: destDir }),
     })
-    .catch((e) => {
-      wfmSetBusy(false);
-      wfmSay((e && e.message) || 'Could not compress.', true);
-    });
+      .then((d) => {
+        wfmSelected = [];
+        wfmSetBusy(false, 'Archive created: ' + ((d && d.entry && d.entry.name) || name));
+        return wfmRefresh();
+      })
+      .catch((e) => {
+        wfmSetBusy(false);
+        wfmSay((e && e.message) || 'Could not compress.', true);
+      });
+  });
 }
 
 function wfmExtract(entry, mode) {
@@ -3031,8 +3225,11 @@ function wfmSaveFrom(path, init, fallbackName, withTokenHref) {
       }
       return r.blob().then((blob) => { saveAs(URL.createObjectURL(blob), want, true); return null; });
     })
-    .then(() => { wfmSay('Downloaded: ' + (fallbackName || 'files'), false); })
-    .catch((e) => { wfmSay((e && e.message) || 'The download failed.', true); });
+    .then(() => { wfmSetBusy(false, 'Downloaded: ' + (fallbackName || 'files')); })
+    .catch((e) => {
+      wfmSetBusy(false);
+      wfmSay((e && e.message) || 'The download failed.', true);
+    });
 }
 
 /** Download ONE entry: a file as itself, a folder as <name>.zip. */
@@ -3040,14 +3237,14 @@ function wfmDownload(entry) {
   if (!wfmRequire()) return;
   const isDir = entry.type === 'dir';
   const name = isDir ? entry.name + '.zip' : entry.name;
-  wfmSay((isDir ? 'Zipping ' : 'Fetching ') + entry.name + '\u2026', false);
+  wfmSetBusy(true, (isDir ? 'Zipping ' : 'Fetching ') + entry.name + '\u2026');
   return wfmSaveFrom(wfmDownloadHref(entry.path, false), { method: 'GET' }, name, wfmDownloadHref(entry.path, true));
 }
 
 /** Download the whole workspace as <workflowId>.zip. */
 function wfmDownloadAll() {
   if (!wfmRequire()) return;
-  wfmSay('Zipping the workspace\u2026', false);
+  wfmSetBusy(true, 'Zipping the workspace\u2026');
   return wfmSaveFrom(wfmDownloadHref('', false), { method: 'GET' }, workflowId + '.zip', wfmDownloadHref('', true));
 }
 
@@ -3057,7 +3254,7 @@ function wfmDownloadSelected() {
   const chosen = wfmSelected.slice();
   if (chosen.length === 1) return wfmDownload({ path: chosen[0].path, name: chosen[0].name, type: 'file' });
   const zipName = (wfmRoot ? wfmRoot.split('/').pop() : workflowId) + '.zip';
-  wfmSay('Zipping ' + chosen.length + ' files\u2026', false);
+  wfmSetBusy(true, 'Zipping ' + chosen.length + ' files\u2026');
   return wfmSaveFrom(wfmBase() + '/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3071,7 +3268,7 @@ function wfmUploadFiles(list) {
   if (!wfmRequire()) return Promise.resolve();
   const into = wfmUploadInto || '';
   wfmUploadInto = '';
-  wfmSay('Uploading ' + list.length + ' file' + (list.length === 1 ? '' : 's') + '\u2026', false);
+  wfmSetBusy(true, 'Uploading ' + list.length + ' file' + (list.length === 1 ? '' : 's') + '\u2026');
   return list.reduce(
     (chain, file) => chain.then(() => wfmFetch(
       wfmBase() + '/upload?path=' + encodeURIComponent(into)
@@ -3080,10 +3277,12 @@ function wfmUploadFiles(list) {
     )),
     Promise.resolve(),
   )
-    // AFTER the refresh: wfmRefresh() clears the note line first, so a receipt
-    // written before it was wiped before anyone could read it.
-    .then(() => { wfmOpen[into] = true; return wfmRefresh().then(() => wfmSay('Uploaded.', false)); })
+    .then(() => {
+      wfmOpen[into] = true;
+      return wfmRefresh().then(() => wfmSetBusy(false, 'Uploaded.'));
+    })
     .catch((e) => {
+      wfmSetBusy(false);
       const msg = (e && e.message) || 'The upload failed.';
       return wfmRefresh().then(() => wfmSay(msg, true));
     });
@@ -3283,7 +3482,7 @@ function wfmUse() {
   }
   const id = pendingId;
   wfmSelect.disabled = true;
-  wfmSay('Sending ' + chosen.map((c) => c.name).join(', ') + '\u2026', false);
+  wfmSetBusy(true, 'Sending ' + chosen.map((c) => c.name).join(', ') + '\u2026');
   const body = chosen.length === 1
     ? { path: chosen[0].path, chooserId: id }
     : { path: chosen[0].path, paths: chosen.map((c) => c.path), chooserId: id };
@@ -3293,6 +3492,7 @@ function wfmUse() {
     body: JSON.stringify(body),
   })
     .then(() => {
+      wfmSetBusy(false);
       clearPending();
       wfmSelected = [];
       wfmSyncSelection();
@@ -3304,6 +3504,7 @@ function wfmUse() {
       closeDrawer();
     })
     .catch((e) => {
+      wfmSetBusy(false);
       wfmSelect.disabled = false;
       wfmSay((e && e.message) || 'The file could not be sent.', true);
     });

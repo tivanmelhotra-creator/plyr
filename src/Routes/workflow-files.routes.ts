@@ -394,7 +394,9 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       const paths = Array.isArray(body.paths) && body.paths.length
         ? body.paths
         : [String(body.path ?? '')];
-      const entries = await store.moveMany(paths, String(body.to ?? ''));
+      const rawTo = String(body.to ?? '').trim();
+      const to = (rawTo === '/' || rawTo.toLowerCase() === 'root' || rawTo.toLowerCase() === '(root)') ? '' : rawTo;
+      const entries = await store.moveMany(paths, to);
       res.json({ success: true, entries, count: entries.length });
     } catch (e) { sendError(res, e); }
   });
@@ -416,7 +418,9 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
         ? body.paths
         : [String(body.path ?? '')];
       const style = String(body.style || '') === 'copy' ? 'copy' : 'numbered';
-      const entries = await store.copyMany(paths, String(body.to ?? ''), { style });
+      const rawTo = String(body.to ?? '').trim();
+      const to = (rawTo === '/' || rawTo.toLowerCase() === 'root' || rawTo.toLowerCase() === '(root)') ? '' : rawTo;
+      const entries = await store.copyMany(paths, to, { style });
       res.json({ success: true, entries, count: entries.length });
     } catch (e) { sendError(res, e); }
   });
@@ -453,9 +457,13 @@ export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
       if (!store) return;
       const body = (req.body ?? {}) as { paths?: unknown; path?: unknown; name?: unknown; to?: unknown };
       const paths = Array.isArray(body.paths) ? body.paths : [];
+      const rawPath = body.path !== undefined ? String(body.path ?? '').trim() : undefined;
+      const cleanPath = (rawPath === '/' || rawPath?.toLowerCase() === 'root' || rawPath?.toLowerCase() === '(root)') ? '' : rawPath;
+      const rawTo = body.to !== undefined ? String(body.to ?? '').trim() : undefined;
+      const cleanTo = (rawTo === '/' || rawTo?.toLowerCase() === 'root' || rawTo?.toLowerCase() === '(root)') ? '' : rawTo;
       const entry = await store.compress(paths, {
-        base: body.path,
-        destDir: body.to,
+        base: cleanPath,
+        destDir: cleanTo,
         name: body.name,
       });
       res.status(201).json({ success: true, entry });

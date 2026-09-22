@@ -1,4 +1,6 @@
 import type { BrowserContext, Page } from 'playwright';
+import WebSocket from 'ws';
+import { resolveUpload } from './RemoteUploads';
 import {
   BrowserPageRegistry,
   type BrowserPageKind,
@@ -53,6 +55,14 @@ export class FileChooserService {
   private readonly choosers = new Map<string, RemoteFileChooser>();
   private readonly listeners = new Set<FileChooserListener>();
   private watchedContext: BrowserContext | null = null;
+  private cdpWs: WebSocket | null = null;
+  private readonly cdpChoosers = new Map<string, {
+    id: string;
+    sessionId: string;
+    pageId: string;
+    notice: FileChooserNotice;
+  }>();
+  private cdpSeq = 0;
 
   constructor(
     private readonly userId: string,
@@ -68,6 +78,84 @@ export class FileChooserService {
   subscribe(listener: FileChooserListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  attachCDP(wsUrl: string): void {
+    if (!wsUrl || this.cdpWs) return;
+    try {
+      const ws = new WebSocket(wsUrl);
+      this.cdpWs = ws;
+      let nextId = 1;
+      const targetSessions = new Map<string, { sessionId: string; targetInfo: { targetId: string; type: string; url: string; title: string } }>();
+
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ id: nextId++, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true } }));
+        ws.send(JSON.stringify({ id: nextId++, method: 'Target.setDiscoverTargets', params: { discover: true } }));
+      });
+
+      ws.on('message', (data: WebSocket.Data) => {
+        try {
+          const msg = JSON.parse(String(data));
+          if (msg.method === 'Target.attachedToTarget') {
+            const { sessionId, targetInfo } = msg.params;
+            targetSessions.set(sessionId, { sessionId, targetInfo });
+            ws.send(JSON.stringify({ id: nextId++, sessionId, method: 'Page.enable' }));
+            ws.send(JSON.stringify({ id: nextId++, sessionId, method: 'Page.setInterceptFileChooserDialog', params: { enabled: true } }));
+          } else if (msg.method === 'Target.detachedFromTarget') {
+            const { sessionId } = msg.params;
+            targetSessions.delete(sessionId);
+            for (const [key, entry] of this.cdpChoosers.entries()) {
+              if (entry.sessionId === sessionId) {
+                this.cdpChoosers.delete(key);
+                this.emit({ type: 'done', notice: entry.notice, reason: 'closed' });
+              }
+            }
+          } else if (msg.method === 'Page.fileChooserOpened') {
+            const sessionId = msg.sessionId;
+            const target = targetSessions.get(sessionId);
+            const isExtension = target?.targetInfo.url?.startsWith('chrome-extension://') || target?.targetInfo.type === 'other';
+            const extId = target?.targetInfo.url?.match(/^chrome-extension:\/\/([^/]+)/)?.[1];
+            const chooserSeq = ++this.cdpSeq;
+            const localId = `cdp${chooserSeq}`;
+            const pageId = `cdp:${target?.targetInfo.targetId || sessionId}`;
+            const fullId = `${pageId}:${localId}`;
+            const multiple = msg.params.mode === 'selectMultiple';
+            const notice: FileChooserNotice = {
+              id: fullId,
+              pageId,
+              profileId: this.profileId,
+              runtimeId: this.runtimeId,
+              multiple,
+              accept: '',
+              name: 'file',
+              at: Date.now(),
+              kind: isExtension ? 'extension' : 'other',
+              ...(extId ? { extensionId: extId } : {}),
+            };
+            this.cdpChoosers.set(fullId, {
+              id: fullId,
+              sessionId,
+              pageId,
+              notice,
+            });
+            this.emit({ type: 'pending', notice });
+          }
+        } catch { /* ignore parse errors */ }
+      });
+
+      ws.on('error', () => { /* quiet on error */ });
+      ws.on('close', () => {
+        this.cdpWs = null;
+      });
+    } catch { /* ignored */ }
+  }
+
+  dispose(): void {
+    if (this.cdpWs) {
+      try { this.cdpWs.close(); } catch { /* ignore */ }
+      this.cdpWs = null;
+    }
+    this.cdpChoosers.clear();
   }
 
   watch(context: BrowserContext): void {
@@ -90,12 +178,19 @@ export class FileChooserService {
   }
 
   pendingForPage(pageId: string): FileChooserNotice | null {
+    for (const entry of this.cdpChoosers.values()) {
+      if (entry.pageId === pageId) return entry.notice;
+    }
     const chooser = this.choosers.get(pageId);
     const pending = chooser?.pending();
     return pending ? this.notice(pageId, pending) : null;
   }
 
   pendingAny(): FileChooserNotice | null {
+    if (this.cdpChoosers.size > 0) {
+      const first = this.cdpChoosers.values().next().value;
+      if (first) return first.notice;
+    }
     for (const pageId of this.choosers.keys()) {
       const pending = this.pendingForPage(pageId);
       if (pending) return pending;
@@ -103,17 +198,54 @@ export class FileChooserService {
     return null;
   }
 
-  async accept(pageId: string, id: string, tokens: string[]) {
+  async accept(pageId: string, id: string, tokens: string[]): Promise<{ count: number; persisted: string[] }> {
+    const cdp = this.cdpChoosers.get(id) || Array.from(this.cdpChoosers.values()).find((c) => c.id === id || c.pageId === pageId);
+    if (cdp && this.cdpWs && this.cdpWs.readyState === WebSocket.OPEN) {
+      const paths = await Promise.all(tokens.map((t) => resolveUpload(this.userId, t)));
+      this.cdpWs.send(JSON.stringify({
+        id: Date.now(),
+        sessionId: cdp.sessionId,
+        method: 'Page.handleFileChooser',
+        params: { action: 'accept', files: paths },
+      }));
+      this.cdpChoosers.delete(cdp.id);
+      this.emit({ type: 'done', notice: cdp.notice });
+      return { count: paths.length, persisted: [] };
+    }
     const chooser = this.requireChooser(pageId);
     return chooser.accept(this.localId(pageId, id), tokens);
   }
 
-  async acceptPaths(pageId: string, id: string, paths: string[]) {
+  async acceptPaths(pageId: string, id: string, paths: string[]): Promise<{ count: number }> {
+    const cdp = this.cdpChoosers.get(id) || Array.from(this.cdpChoosers.values()).find((c) => c.id === id || c.pageId === pageId);
+    if (cdp && this.cdpWs && this.cdpWs.readyState === WebSocket.OPEN) {
+      this.cdpWs.send(JSON.stringify({
+        id: Date.now(),
+        sessionId: cdp.sessionId,
+        method: 'Page.handleFileChooser',
+        params: { action: 'accept', files: paths },
+      }));
+      this.cdpChoosers.delete(cdp.id);
+      this.emit({ type: 'done', notice: cdp.notice });
+      return { count: paths.length };
+    }
     const chooser = this.requireChooser(pageId);
     return chooser.acceptPaths(this.localId(pageId, id), paths);
   }
 
   async cancel(pageId: string, id = ''): Promise<boolean> {
+    const cdp = id ? this.cdpChoosers.get(id) : Array.from(this.cdpChoosers.values()).find((c) => c.pageId === pageId);
+    if (cdp && this.cdpWs && this.cdpWs.readyState === WebSocket.OPEN) {
+      this.cdpWs.send(JSON.stringify({
+        id: Date.now(),
+        sessionId: cdp.sessionId,
+        method: 'Page.handleFileChooser',
+        params: { action: 'cancel' },
+      }));
+      this.cdpChoosers.delete(cdp.id);
+      this.emit({ type: 'done', notice: cdp.notice, reason: 'cancelled' });
+      return true;
+    }
     const chooser = this.choosers.get(pageId);
     if (!chooser) return false;
     return chooser.cancel(id ? this.localId(pageId, id) : '');
@@ -211,6 +343,12 @@ export class FileChooserService {
 
   private pageIdForId(id: string): string | null {
     const value = String(id || '');
+    if (this.cdpChoosers.has(value)) {
+      return this.cdpChoosers.get(value)!.pageId;
+    }
+    for (const [key, cdp] of this.cdpChoosers.entries()) {
+      if (value.startsWith(`${cdp.pageId}:`) || key === value) return cdp.pageId;
+    }
     for (const pageId of this.choosers.keys()) {
       if (value.startsWith(`${pageId}:`)) return pageId;
       const pending = this.pendingForPage(pageId);

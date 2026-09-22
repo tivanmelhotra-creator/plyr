@@ -1011,8 +1011,9 @@ export class LiveBrowserSession {
       this.runtimeChooserUnsubscribe = this.runtimeChooser?.subscribe((event) => {
         const tab = this.tabs.find((candidate) => candidate.page
           && this.runtimeChooser?.registry().idFor(candidate.page) === event.notice.pageId);
-        // Extension pages/popups are not browser tabs in this.tabs, but they belong to the runtime.
-        if (!tab && event.notice.kind !== 'extension' && !event.notice.extensionId) return;
+        // In RealChrome, every chooser intercepted in this runtime belongs to the active session
+        // (including browser tabs, extension popups, background/action pages, or windows).
+        if (!tab && event.notice.runtimeId && this.runtimeChooser && event.notice.runtimeId !== this.runtimeChooser.runtimeId) return;
         if (event.type === 'pending') this.emit('filechooser', event.notice as unknown as Record<string, unknown>);
         else this.emit('fileChooserDone', { ok: !event.reason, reason: event.reason });
       }) || null;

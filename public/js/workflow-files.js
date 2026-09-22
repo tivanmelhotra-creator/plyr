@@ -321,11 +321,15 @@
       : '';
     els.clear.hidden = n === 0;
     els.foot.classList.toggle('has-sel', n > 0);
+    var isPicker = state.mode === 'picker' || state.intent === 'FILE_REQUEST' || (state.opts && state.opts.intent === 'FILE_REQUEST');
+    els.foot.classList.toggle('is-picker', !!isPicker);
     // The drawer may be built without the batch buttons (a caller that supplies
     // its own footer); guard every lookup so the tree keeps working regardless.
-    if (els.compressSel) els.compressSel.hidden = n === 0;
-    if (els.moveSel) els.moveSel.hidden = n === 0;
-    if (els.copySel) els.copySel.hidden = n === 0;
+    if (els.compressSel) els.compressSel.hidden = isPicker || n === 0;
+    if (els.moveSel) els.moveSel.hidden = isPicker || n === 0;
+    if (els.copySel) els.copySel.hidden = isPicker || n === 0;
+    if (els.down) els.down.hidden = isPicker || n === 0;
+    if (els.del) els.del.hidden = isPicker || n === 0;
     // Select is the hand-over to a page; a single-file page takes exactly one.
     // Said on the button before it is pressed, and again in the note if it is.
     els.select.title = (n > 1 && !state.multiple)
@@ -866,60 +870,163 @@
 
   /** The operator's typed destination folder, reduced to a relative path. */
   function destInput(v) {
-    return String(v == null ? '' : v).trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    var s = String(v == null ? '' : v).trim();
+    if (s === '/' || s.toLowerCase() === 'root' || s.toLowerCase() === '(root)') return '';
+    return s.replace(/^\/+/, '').replace(/\/+$/, '');
   }
 
-  /** POST /move for a set of paths into a typed folder. */
+  /** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
+  function pickFolder(title, actionLabel, onSelect) {
+    if (!state || !state.els || !state.els.folderModal) {
+      var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
+      if (to !== null) onSelect(destInput(to));
+      return;
+    }
+    var modal = state.els.folderModal;
+    modal.innerHTML = '';
+    modal.hidden = false;
+
+    var header = document.createElement('span');
+    header.className = 'wfm-modal-title';
+    header.textContent = title;
+    modal.appendChild(header);
+
+    var tree = document.createElement('ul');
+    tree.className = 'wfm-modal-tree';
+    modal.appendChild(tree);
+
+    var targetLbl = document.createElement('span');
+    targetLbl.style.fontSize = '0.74rem';
+    targetLbl.style.color = 'var(--text-dim, #9aa0ad)';
+    var chosen = state.root || '';
+    targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' + (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
+    modal.appendChild(targetLbl);
+
+    var makeItem = function (path, label, depth) {
+      var li = document.createElement('li');
+      li.className = 'wfm-modal-tree-item' + (chosen === path ? ' active' : '');
+      li.style.paddingLeft = (6 + depth * 14) + 'px';
+      li.innerHTML = '<span class="wfm-ico">' + BIC('folder', 13) + '</span><span>' + label + '</span>';
+      li.addEventListener('click', function () {
+        chosen = path;
+        var all = tree.querySelectorAll('.wfm-modal-tree-item');
+        for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
+        li.classList.add('active');
+        targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' + (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
+      });
+      tree.appendChild(li);
+    };
+
+    makeItem('', t('wfm.rootWorkspace', 'Workspace Root (/)'), 0);
+    var dirs = {};
+    if (state.folders) {
+      Object.keys(state.folders).forEach(function (f) {
+        (state.folders[f] || []).forEach(function (e) {
+          if (e.type === 'dir' && !e.system) dirs[e.path] = true;
+        });
+      });
+    }
+    var sortedDirs = Object.keys(dirs).sort();
+    for (var i = 0; i < sortedDirs.length; i++) {
+      var d = sortedDirs[i];
+      var segs = d.split('/');
+      makeItem(d, segs[segs.length - 1], segs.length);
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'wfm-modal-actions';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn btn-ghost btn-sm';
+    cancelBtn.textContent = t('wfm.cancel', 'Cancel');
+    actions.appendChild(cancelBtn);
+
+    var okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'btn btn-primary btn-sm';
+    okBtn.textContent = actionLabel || t('wfm.select', 'Select');
+    actions.appendChild(okBtn);
+    modal.appendChild(actions);
+
+    var cleanup = function () {
+      modal.hidden = true;
+      modal.innerHTML = '';
+    };
+
+    cancelBtn.addEventListener('click', function () {
+      cleanup();
+    });
+    okBtn.addEventListener('click', function () {
+      cleanup();
+      onSelect(chosen);
+    });
+  }
+
+  /** POST /move for a set of paths into a selected folder. */
   function movePaths(paths) {
     if (!state || !paths.length) return Promise.resolve();
-    var to = ask(t('wfm.movePrompt', 'Destination folder (relative to the workspace):'), state.root || '');
-    if (to === null) return Promise.resolve();
     var s = state;
-    setBusy(true, t('wfm.moving', 'Moving\u2026'));
-    return call(base() + '/move', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paths: paths, to: destInput(to) })
-    })
-      .then(function (d) {
-        if (state !== s) return;
-        // The paths changed, so any selection keyed on them is stale.
-        s.selected = [];
-        setBusy(false, t('wfm.moveDone', 'Moved:') + ' ' + ((d && d.count) || paths.length));
-        return refresh();
+    pickFolder(t('wfm.move', 'Move') + ' (' + paths.length + '):', t('wfm.moveHere', 'Move Here'), function (to) {
+      if (to === null || to === undefined) return;
+      var dest = destInput(to);
+      setBusy(true, t('wfm.moving', 'Moving\u2026'));
+      return call(base() + '/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: paths, to: dest })
       })
-      .catch(function (e) {
-        if (state === s) {
-          setBusy(false);
-          say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true);
-        }
-      });
+        .then(function (d) {
+          if (state !== s) return;
+          // The paths changed, so any selection keyed on them is stale.
+          s.selected = [];
+          if (s.open) {
+            s.open[''] = true;
+            if (dest) s.open[dest] = true;
+          }
+          setBusy(false, t('wfm.moveDone', 'Moved:') + ' ' + ((d && d.count) || paths.length) + (dest ? ' to ' + dest : ' to Workspace Root'));
+          return refresh();
+        })
+        .catch(function (e) {
+          if (state === s) {
+            setBusy(false);
+            say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true);
+          }
+        });
+    });
+    return Promise.resolve();
   }
 
-  /** POST /copy for a set of paths into a typed folder. */
+  /** POST /copy for a set of paths into a selected folder. */
   function copyPaths(paths, style) {
     if (!state || !paths.length) return Promise.resolve();
-    var to = ask(t('wfm.copyPrompt', 'Destination folder to copy into (relative to the workspace):'), state.root || '');
-    if (to === null) return Promise.resolve();
     var s = state;
-    setBusy(true, t('wfm.copying', 'Copying\u2026'));
-    return call(base() + '/copy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paths: paths, to: destInput(to), style: style || 'numbered' })
-    })
-      .then(function (d) {
-        if (state !== s) return;
-        s.selected = [];
-        setBusy(false, t('wfm.copyDone', 'Copied:') + ' ' + ((d && d.count) || paths.length));
-        return refresh();
+    pickFolder(t('wfm.copy', 'Copy') + ' (' + paths.length + '):', t('wfm.copyHere', 'Copy Here'), function (to) {
+      if (to === null || to === undefined) return;
+      var dest = destInput(to);
+      setBusy(true, t('wfm.copying', 'Copying\u2026'));
+      return call(base() + '/copy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: paths, to: dest, style: style || 'numbered' })
       })
-      .catch(function (e) {
-        if (state === s) {
-          setBusy(false);
-          say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true);
-        }
-      });
+        .then(function (d) {
+          if (state !== s) return;
+          s.selected = [];
+          if (s.open) {
+            s.open[''] = true;
+            if (dest) s.open[dest] = true;
+          }
+          setBusy(false, t('wfm.copyDone', 'Copied:') + ' ' + ((d && d.count) || paths.length) + (dest ? ' to ' + dest : ' to Workspace Root'));
+          return refresh();
+        })
+        .catch(function (e) {
+          if (state === s) {
+            setBusy(false);
+            say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true);
+          }
+        });
+    });
+    return Promise.resolve();
   }
 
   /** POST /duplicate for ONE entry — `config.json` -> `config copy.json`. */
@@ -1085,15 +1192,24 @@
         var want = nameFromDisposition(r.headers.get('content-disposition')) || fallbackName || 'download';
         return r.blob().then(function (blob) { saveBlob(blob, want); return want; });
       })
-      .then(function (name) { if (state === s) say(t('wfm.downloaded', 'Downloaded:') + ' ' + name, false); })
-      .catch(function (e) { if (state === s) say((e && e.message) || t('wfm.downloadFailed', 'The download failed.'), true); });
+      .then(function (name) {
+        if (state === s) {
+          setBusy(false, t('wfm.downloaded', 'Downloaded:') + ' ' + name);
+        }
+      })
+      .catch(function (e) {
+        if (state === s) {
+          setBusy(false);
+          say((e && e.message) || t('wfm.downloadFailed', 'The download failed.'), true);
+        }
+      });
   }
 
   /** Download ONE entry: a file as itself, a folder as <name>.zip. */
   function downloadEntry(entry) {
     if (!state) return Promise.resolve();
     var isDir = entry.type === 'dir';
-    say((isDir ? t('wfm.zipping', 'Zipping\u2026') : t('wfm.fetching', 'Fetching\u2026')) + ' ' + entry.name, false);
+    setBusy(true, (isDir ? t('wfm.zipping', 'Zipping\u2026') : t('wfm.fetching', 'Fetching\u2026')) + ' ' + entry.name);
     return saveFrom(base() + '/download?path=' + encodeURIComponent(entry.path), { method: 'GET' },
       isDir ? entry.name + '.zip' : entry.name);
   }
@@ -1101,7 +1217,7 @@
   /** Download the whole workspace as <workflowId>.zip. */
   function downloadAll() {
     if (!state) return Promise.resolve();
-    say(t('wfm.zipping', 'Zipping\u2026'), false);
+    setBusy(true, t('wfm.zipping', 'Zipping\u2026'));
     return saveFrom(base() + '/download', { method: 'GET' }, state.workflowId + '.zip');
   }
 
@@ -1111,7 +1227,7 @@
     var chosen = state.selected.slice();
     if (chosen.length === 1) return downloadEntry({ path: chosen[0].path, name: chosen[0].name, type: 'file' });
     var leaf = state.root ? state.root.split('/').pop() : state.workflowId;
-    say(t('wfm.zipping', 'Zipping\u2026') + ' (' + chosen.length + ')', false);
+    setBusy(true, t('wfm.zipping', 'Zipping\u2026') + ' (' + chosen.length + ')');
     return saveFrom(base() + '/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1381,7 +1497,7 @@
     }
     var uid = typeof s.opts.userId === 'function' ? s.opts.userId() : (s.opts.userId || '');
     s.els.select.disabled = true;
-    say(t('wfm.sending', 'Sending\u2026') + ' ' + chosen.map(function (c) { return c.name; }).join(', '), false);
+    setBusy(true, t('wfm.sending', 'Sending\u2026') + ' ' + chosen.map(function (c) { return c.name; }).join(', '));
     // ONE request, however many files. The session answers a waiting chooser
     // once and then forgets it, so several files have to travel together:
     // `path` is the first (the only field a single pick sends, unchanged),
@@ -1396,6 +1512,7 @@
     })
       .then(function (d) {
         if (state !== s) return;
+        setBusy(false);
         if (typeof s.opts.onUsed === 'function') {
           try {
             // One file: the object, as it always was. Several: the list, so a
@@ -1409,8 +1526,9 @@
       })
       .catch(function (e) {
         if (state !== s) return;
+        setBusy(false);
         s.els.select.disabled = false;
-        say((e && e.message) || t('wfm.useFailed', 'The file could not be sent.'), true);
+        say((e && e.message) || t('wfm.useFailed', 'The file could not be sent to the page.'), true);
       });
   }
 
@@ -1523,6 +1641,11 @@
     confirmHost.hidden = true;
     root.appendChild(confirmHost);
 
+    var folderModalHost = document.createElement('div');
+    folderModalHost.className = 'wfm-folder-modal';
+    folderModalHost.hidden = true;
+    root.appendChild(folderModalHost);
+
     // ── foot: what is picked, and the two things to do with it
     var foot = document.createElement('div');
     foot.className = 'wfm-foot';
@@ -1613,8 +1736,9 @@
     return {
       root: root, list: list, note: note, select: select, input: input,
       total: total, count: count, clear: clear, foot: foot,
-      confirm: confirmHost, selectAll: all, crumbs: crumbs,
-      compressSel: footCompress, moveSel: footMove, copySel: footCopy
+      confirm: confirmHost, folderModal: folderModalHost, selectAll: all, crumbs: crumbs,
+      compressSel: footCompress, moveSel: footMove, copySel: footCopy,
+      down: down, del: del
     };
   }
 

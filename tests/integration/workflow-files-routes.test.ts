@@ -747,6 +747,48 @@ describe('workflow files: utility operation routes', () => {
     expect(r.body.entry.path).toBe('BranchFolder/leafarchive.zip');
   });
 
+  it('end-to-end workflow: upload in subfolder -> compress -> move zip to root workspace', async () => {
+    // 1. Create subfolder
+    const dirRes = await request(app).post(`${base()}/mkdir`).send({ path: '', name: 'WorkflowSub' });
+    expect(dirRes.status).toBe(201);
+
+    // 2. Upload multiple files into subfolder
+    await upload('WorkflowSub', 'data1.txt', 'Hello Data 1');
+    await upload('WorkflowSub', 'data2.txt', 'Hello Data 2');
+
+    // 3. Compress selected items in subfolder
+    const compRes = await request(app).post(`${base()}/compress`).send({
+      paths: ['WorkflowSub/data1.txt', 'WorkflowSub/data2.txt'],
+      path: 'WorkflowSub',
+      name: 'bundled-workflow',
+      to: 'WorkflowSub',
+    });
+    expect(compRes.status).toBe(201);
+    expect(compRes.body.entry.path).toBe('WorkflowSub/bundled-workflow.zip');
+
+    // 4. Move the created zip to root workspace using '/' or ''
+    const moveRes = await request(app).post(`${base()}/move`).send({
+      paths: ['WorkflowSub/bundled-workflow.zip'],
+      to: '/', // Root workspace
+    });
+    expect(moveRes.status).toBe(200);
+    expect(moveRes.body.entries[0].path).toBe('bundled-workflow.zip');
+
+    // 5. Verify the root listing contains the zip file
+    const rootRes = await request(app).get(`${base()}?path=`);
+    expect(rootRes.status).toBe(200);
+    const rootFileNames = rootRes.body.entries.map((e: { name: string }) => e.name);
+    expect(rootFileNames).toContain('bundled-workflow.zip');
+
+    // 6. Verify the subfolder no longer contains the zip file
+    const subRes = await request(app).get(`${base()}?path=WorkflowSub`);
+    expect(subRes.status).toBe(200);
+    const subFileNames = subRes.body.entries.map((e: { name: string }) => e.name);
+    expect(subFileNames).not.toContain('bundled-workflow.zip');
+    expect(subFileNames).toContain('data1.txt');
+    expect(subFileNames).toContain('data2.txt');
+  });
+
   it('keeps workflows isolated for utility operations', async () => {
     await upload('', 'alice-only.txt', 'alice');
     expect((await request(app).post(`/browser/workflow-files/${wfBob}/copy`).send({ paths: ['alice-only.txt'], to: '' })).status).toBe(404);
