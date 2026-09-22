@@ -1916,9 +1916,17 @@ function wfmSay(text, isErr) {
 
 function wfmSetBusy(isBusy, text) {
   const root = document.getElementById('panefiles');
-  if (!root || !wfmNote) return;
+  if (root) {
+    if (root.classList) {
+      if (isBusy) root.classList.add('is-busy');
+      else root.classList.remove('is-busy');
+    } else {
+      const cls = (root.className || '').replace(/\bis-busy\b/g, '').trim();
+      root.className = isBusy ? (cls ? cls + ' is-busy' : 'is-busy') : cls;
+    }
+  }
+  if (!wfmNote) return;
   if (isBusy) {
-    root.classList.add('is-busy');
     wfmNote.className = 'is-loading';
     wfmNote.textContent = '';
     const spin = document.createElement('span');
@@ -1933,7 +1941,6 @@ function wfmSetBusy(isBusy, text) {
     msg.textContent = text || 'Loading\u2026';
     wfmNote.appendChild(msg);
   } else {
-    root.classList.remove('is-busy');
     if (text) wfmSay(text, false);
     wfmSyncSelection();
   }
@@ -2818,7 +2825,7 @@ function wfmDelete(entry) {
 function wfmDeleteSelected() {
   if (!wfmSelected.length || !wfmRequire()) return;
   const victims = wfmSelected.slice();
-  wfmConfirmStrip('Delete the selected items? (' + victims.length + ')', () => {
+  wfmConfirmStrip('Delete the selected files? (' + victims.length + ')', () => {
     wfmSetBusy(true, 'Deleting\u2026');
     victims.reduce(
       (chain, v) => chain.then(() => wfmFetch(wfmBase() + '?path=' + encodeURIComponent(v.path) + (v.type === 'dir' ? '&recursive=1' : ''), { method: 'DELETE' })
