@@ -81,7 +81,14 @@ describe('canonical Plyr runtime manager', () => {
     expect(compose).not.toContain('volumes:');
     const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
     expect(dockerfile).toContain('RUN npm ci --ignore-scripts');
+    const buildStage = dockerfile.split('AS runtime')[0];
+    expect(buildStage).toContain('COPY scripts ./scripts');
+    expect(buildStage).toContain('COPY extension ./extension');
+    expect(buildStage.indexOf('COPY scripts ./scripts')).toBeLessThan(buildStage.indexOf('RUN npm run build'));
+    expect(buildStage.indexOf('COPY extension ./extension')).toBeLessThan(buildStage.indexOf('RUN npm run build'));
     expect(dockerfile).toContain('COPY extension ./extension');
+    const workflow = fs.readFileSync(path.join(root, '.github/workflows/docker-package.yml'), 'utf8');
+    expect(workflow).toContain('      - scripts/**');
   });
 
   it('has one explicit non-interactive install contract and a fresh-machine Node bootstrap', () => {

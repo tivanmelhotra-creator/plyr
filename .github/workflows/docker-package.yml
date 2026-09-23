@@ -9,7 +9,7 @@ on:
       - .dockerignore
       - package.json
       - package-lock.json
-      - scripts/plyr.sh
+      - scripts/**
       - src/**
       - public/**
       - extension/**

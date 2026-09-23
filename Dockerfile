@@ -14,9 +14,12 @@ ENV SKIP_BROWSER_INSTALL=1
 COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts
 
-# Copy source and compile TypeScript -> dist/
+# npm run build compiles TypeScript AND packages/verifies the extension.
+# Both the build script and its extension source must be present in this stage.
 COPY tsconfig.json ./
 COPY src ./src
+COPY scripts ./scripts
+COPY extension ./extension
 RUN npm run build
 
 # Prune devDependencies for a slim runtime node_modules
