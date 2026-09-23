@@ -4,6 +4,8 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_COMPOSE_FILE="$ROOT_DIR/docker-compose.dev.yml"
+DEV_PROJECT=plyr-dev
 STATE_DIR="${PLYR_STATE_DIR:-$ROOT_DIR/.plyr/runtime}"
 LOG_DIR="$STATE_DIR/logs"
 ENV_FILE="${PLYR_ENV_FILE:-$ROOT_DIR/.env}"
@@ -355,6 +357,100 @@ start_docker() {
   return 1
 }
 
+# Explicitly disposable, separate from the persistent install/start --docker path.
+# Docker installation is ONLY attempted on supported Debian/Ubuntu hosts with
+# administrative access, and never removes or upgrades an existing installation.
+install_dev_docker_engine() {
+  [[ -r /etc/os-release ]] || { error "Cannot identify OS; install Docker Engine manually"; return 1; }
+  local ID='' VERSION_CODENAME=''
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  [[ "$ID" == ubuntu || "$ID" == debian ]] || {
+    error "Automatic Docker setup supports only Ubuntu/Debian; see https://docs.docker.com/engine/install/"; return 1;
+  }
+  [[ -n "$VERSION_CODENAME" ]] || { error "Missing OS version codename"; return 1; }
+  case "$ID:$VERSION_CODENAME" in
+    ubuntu:jammy|ubuntu:noble|ubuntu:resolute|debian:bookworm|debian:trixie) ;;
+    *) error "Unsupported Docker repository release $ID:$VERSION_CODENAME; see https://docs.docker.com/engine/install/$ID/"; return 1 ;;
+  esac
+  have apt-get && have dpkg || { error "apt-get/dpkg are required for automatic setup"; return 1; }
+  local admin=()
+  if [[ "$(id -u)" != 0 ]]; then
+    have sudo || { error "sudo is required to install Docker"; return 1; }
+    admin=(sudo)
+  fi
+  # Do not uninstall or replace a running distro/third-party Docker installation.
+  for pkg in docker.io docker-compose podman-docker containerd runc; do
+    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+      error "Conflicting package $pkg is installed. Refusing to replace it automatically; see https://docs.docker.com/engine/install/$ID/"
+      return 1
+    fi
+  done
+  say "installing Docker Engine and Compose from Docker's official apt repository (administrator privileges required)"
+  "${admin[@]}" apt-get update
+  "${admin[@]}" apt-get install -y ca-certificates curl
+  "${admin[@]}" install -m 0755 -d /etc/apt/keyrings
+  local key_file; key_file="$(mktemp)"
+  if ! curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o "$key_file"; then
+    rm -f "$key_file"; error "Could not download the official Docker signing key"; return 1
+  fi
+  "${admin[@]}" install -m 0644 "$key_file" /etc/apt/keyrings/docker.asc
+  rm -f "$key_file"
+  "${admin[@]}" chmod a+r /etc/apt/keyrings/docker.asc
+  local arch; arch="$(dpkg --print-architecture)"
+  printf 'Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' "$ID" "$VERSION_CODENAME" "$arch" \
+    | "${admin[@]}" tee /etc/apt/sources.list.d/docker.sources >/dev/null
+  "${admin[@]}" apt-get update
+  "${admin[@]}" apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+dev_docker() {
+  [[ -f "$DEV_COMPOSE_FILE" ]] || fail "Missing docker-compose.dev.yml"
+  have docker || install_dev_docker_engine || return 1
+  local docker_cmd=(docker)
+  if ! docker info >/dev/null 2>&1; then
+    if have systemctl && [[ "$(id -u)" == 0 || -S /run/systemd/private ]]; then
+      if [[ "$(id -u)" == 0 ]]; then systemctl start docker || true
+      elif have sudo; then sudo systemctl start docker || true; fi
+    fi
+    if ! docker info >/dev/null 2>&1; then
+      if [[ "$(id -u)" != 0 ]] && have sudo && sudo docker info >/dev/null 2>&1; then
+        docker_cmd=(sudo docker)
+      else
+        error "Docker daemon is unavailable; start Docker or grant daemon access."
+        return 1
+      fi
+    fi
+  fi
+  if ! "${docker_cmd[@]}" compose version >/dev/null 2>&1; then
+    error "Docker Compose plugin is missing: https://docs.docker.com/compose/install/linux/"
+    return 1
+  fi
+  local dc=("${docker_cmd[@]}" compose --project-name "$DEV_PROJECT" --file "$DEV_COMPOSE_FILE")
+  "${dc[@]}" config --quiet || { error "Invalid development Compose configuration"; return 1; }
+
+  # Build first: a failed build must leave the previous working stack intact.
+  # --no-cache ensures each run uses current source; npm ci pins the dependency tree.
+  say "building development image from the current checkout (no build cache)"
+  "${dc[@]}" build --no-cache app || { error "Image build failed; previous stack was not removed"; return 1; }
+  say "removing the previous dev stack and its disposable data volumes"
+  "${dc[@]}" down --volumes --remove-orphans || return 1
+  say "starting fresh app and Redis containers"
+  "${dc[@]}" up -d --no-build --force-recreate --wait --wait-timeout 180 || {
+    error "Development stack did not become healthy; inspect with: docker compose -p plyr-dev -f docker-compose.dev.yml logs"
+    return 1
+  }
+  # /health is a cheap liveness check; /health/browser verifies the browser
+  # prerequisites separately (and Redis connectivity is reported by /health).
+  if ! "${dc[@]}" exec -T app node -e "const h=require('http'); h.get('http://127.0.0.1:3000/health',r=>{let s='';r.on('data',x=>s+=x);r.on('end',()=>{try{process.exit(r.statusCode===200&&JSON.parse(s).redis==='connected'?0:1)}catch{process.exit(1)}})}).on('error',()=>process.exit(1))"; then
+    error "Application is up but Redis is not ready; inspect dev Compose logs"; return 1
+  fi
+  if ! "${dc[@]}" exec -T app node -e "require('http').get('http://127.0.0.1:3000/health/browser',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
+    error "Browser runtime is not ready; inspect dev Compose logs"; return 1
+  fi
+  ready "Development Docker stack: http://localhost:3000 (API_TOKEN=admin123; loopback only)"
+}
+
 stop_native() {
   if pid_alive app; then
     local pid; pid="$(cat "$(pid_file app)")"
@@ -464,8 +560,10 @@ Examples:
   ./plyr install && ./plyr start
   ./plyr status
   ./plyr doctor --deep
+  ./plyr dev-docker     # disposable, loopback-only test stack
 
 Commands:
+  dev-docker             Check Docker/Compose, build, replace dev stack, wait for health
   install                 Bootstrap .env, dependencies, browsers and build
   start [--dev|--build|--native|--docker]
   stop [--native|--docker]
@@ -475,13 +573,15 @@ Commands:
   logs
 
 Policy: auto uses Docker only when Docker and Compose are usable; otherwise native.
-No command flushes Redis, deletes workflows, or removes browser profiles.
+Normal lifecycle commands preserve Redis, workflows and browser profiles.
+Only dev-docker replaces its isolated development stack and discards its data.
 EOF
 }
 
 main() {
   local command="${1:-help}"; shift || true
   case "$command" in
+    dev-docker) [[ $# -eq 0 ]] || fail "dev-docker does not accept options"; dev_docker ;;
     install) [[ "${1:-}" == "--docker" ]] && { ensure_env; load_env; docker_available || fail "Docker/Compose is not available"; (cd "$ROOT_DIR" && docker compose build); return; }; install_native ;;
     install-and-start-dev) install_native; start_native dev ;;
     start)

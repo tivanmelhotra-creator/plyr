@@ -12,7 +12,7 @@ WORKDIR /app
 # Skip the browser download here; the runtime image already has browsers.
 ENV SKIP_BROWSER_INSTALL=1
 COPY package.json package-lock.json* ./
-RUN npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 
 # Copy source and compile TypeScript -> dist/
 COPY tsconfig.json ./

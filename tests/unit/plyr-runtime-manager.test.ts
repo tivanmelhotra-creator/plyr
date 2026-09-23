@@ -33,7 +33,8 @@ describe('canonical Plyr runtime manager', () => {
     expect(help.code).toBe(0);
     expect(help.output).toContain('./plyr install');
     expect(help.output).toContain('./plyr doctor --deep');
-    expect(help.output).toContain('No command flushes Redis');
+    expect(help.output).toContain('Normal lifecycle commands preserve Redis');
+    expect(help.output).toContain('./plyr dev-docker');
   });
 
   it('reports dependency and readiness failures instead of claiming READY', () => {
@@ -62,6 +63,25 @@ describe('canonical Plyr runtime manager', () => {
     expect(script).toContain('docker_storage_ready');
     expect(script).toContain('active_mode');
     expect(script).toContain('npm ci');
+  });
+
+  it('isolates the disposable Docker workflow from persistent Compose state', () => {
+    const fs = require('fs');
+    const manager = fs.readFileSync(path.join(root, 'scripts/plyr.sh'), 'utf8');
+    const compose = fs.readFileSync(path.join(root, 'docker-compose.dev.yml'), 'utf8');
+    expect(manager).toContain('DEV_PROJECT=plyr-dev');
+    expect(manager).toContain('install_dev_docker_engine');
+    expect(manager).toContain('docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin');
+    expect(manager).toContain('build --no-cache app');
+    expect(manager).toContain('down --volumes --remove-orphans');
+    expect(manager).toContain('up -d --no-build --force-recreate --wait --wait-timeout 180');
+    expect(compose).toContain('127.0.0.1:3000:3000');
+    expect(compose).toContain('API_TOKEN: admin123');
+    expect(compose).not.toContain('env_file:');
+    expect(compose).not.toContain('volumes:');
+    const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
+    expect(dockerfile).toContain('RUN npm ci --ignore-scripts');
+    expect(dockerfile).toContain('COPY extension ./extension');
   });
 
   it('has one explicit non-interactive install contract and a fresh-machine Node bootstrap', () => {

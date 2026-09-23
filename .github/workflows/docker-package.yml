@@ -1,0 +1,48 @@
+name: Docker package
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - docker-compose.dev.yml
+      - docker-compose.yml
+      - .dockerignore
+      - package.json
+      - package-lock.json
+      - scripts/plyr.sh
+      - src/**
+      - public/**
+      - extension/**
+      - .github/workflows/docker-package.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate development package
+        run: |
+          bash -n scripts/plyr.sh
+          docker compose -p plyr-dev -f docker-compose.dev.yml config --quiet
+      - name: Build production-parity image from Dockerfile
+        run: docker build --pull --tag plyr-ci:${{ github.sha }} .
+      - name: Export Docker image package (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          docker save plyr-ci:${{ github.sha }} | gzip > plyr-docker-image.tar.gz
+      - name: Upload image package (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plyr-docker-image
+          path: plyr-docker-image.tar.gz
+          if-no-files-found: error
+          retention-days: 7

@@ -40,6 +40,25 @@ Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript**
 
 ---
 
+## Docker برای توسعه و تست (هر بار از صفر)
+
+از ریشهٔ مخزن، برای اجرای آخرین کد با یک دستور:
+
+```bash
+./plyr dev-docker
+```
+
+این مسیر جدا از `./install.sh --server-docker` و `docker-compose.yml` معمولی است. ابتدا وجود Docker Engine، daemon و Compose plugin را بررسی می‌کند؛ اگر Docker نصب نباشد، فقط روی نسخه‌های پشتیبانی‌شدهٔ Ubuntu/Debian و با دسترسی مدیر آن را از مخزن رسمی Docker نصب می‌کند. اگر Docker موجود ولی ناقص/ناسازگار باشد، به‌جای دست‌کاری نصب فعلی، خطای راهنما می‌دهد. روی macOS/Windows نصب Docker Desktop باید یک‌بار از بیرون انجام شود.
+
+سپس با `docker-compose.dev.yml` و پروژهٔ مستقل `plyr-dev` image را **بدون cache** از همین checkout می‌سازد (ساخت ناموفق، نمونهٔ قبلی را دست‌نخورده می‌گذارد)، کانتینرها و volumeهای **همین پروژهٔ توسعه** را حذف می‌کند و app + Redis را از نو با انتظار برای healthcheck اجرا می‌کند. `.env`، Node و Redis روی میزبان لازم نیست؛ Playwright و وابستگی‌های مرورگر داخل image فراهم می‌شوند. دسترسی فقط از `http://localhost:3000` است؛ `APP_ENV=server`، `DEPLOYMENT_MODE=single` و `API_TOKEN=admin123` صرفاً در Compose مخصوص توسعه تنظیم شده‌اند. **این توکن عمومی و ناامن است؛ پورت را به شبکه/اینترنت یا reverse proxy متصل نکنید.** Production باید با پیکربندی جدا و توکن تصادفی امن راه‌اندازی شود.
+
+دادهٔ Redis و فایل‌های داخل کانتینرِ Dev/Test در اجرای بعدی از بین می‌روند. این مسیر به استک معمولی Docker و داده‌های آن دست نمی‌زند، ولی هر دو از پورت 3000 استفاده می‌کنند؛ آن‌ها را هم‌زمان اجرا نکنید. برای دیدن لاگ یا توقف استک توسعه:
+
+```bash
+docker compose -p plyr-dev -f docker-compose.dev.yml logs -f
+docker compose -p plyr-dev -f docker-compose.dev.yml down --volumes
+```
+
 ## پیش‌نیازها
 
 - Node.js ≥ 20
