@@ -12,11 +12,14 @@ WORKDIR /app
 # Skip the browser download here; the runtime image already has browsers.
 ENV SKIP_BROWSER_INSTALL=1
 COPY package.json package-lock.json* ./
-RUN npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 
-# Copy source and compile TypeScript -> dist/
+# npm run build compiles TypeScript AND packages/verifies the extension.
+# Both the build script and its extension source must be present in this stage.
 COPY tsconfig.json ./
 COPY src ./src
+COPY scripts ./scripts
+COPY extension ./extension
 RUN npm run build
 
 # Prune devDependencies for a slim runtime node_modules
@@ -59,8 +62,11 @@ WORKDIR /app
 # runtime (DESKTOP_AUTO_PROVISION), but doing it in the image means the first
 # request is fast, works offline, and cannot fail behind a corporate proxy.
 USER root
+# DEBIAN_FRONTEND=noninteractive is REQUIRED: tzdata is pulled in as a
+# dependency and otherwise blocks forever on "Geographic area:" (no TTY),
+# hanging the image build until the CI timeout.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+ && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
       xvfb x11vnc websockify novnc openbox \
  && rm -rf /var/lib/apt/lists/*
 
