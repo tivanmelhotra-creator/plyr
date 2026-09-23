@@ -62,8 +62,11 @@ WORKDIR /app
 # runtime (DESKTOP_AUTO_PROVISION), but doing it in the image means the first
 # request is fast, works offline, and cannot fail behind a corporate proxy.
 USER root
+# DEBIAN_FRONTEND=noninteractive is REQUIRED: tzdata is pulled in as a
+# dependency and otherwise blocks forever on "Geographic area:" (no TTY),
+# hanging the image build until the CI timeout.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+ && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
       xvfb x11vnc websockify novnc openbox \
  && rm -rf /var/lib/apt/lists/*
 

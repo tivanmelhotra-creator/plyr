@@ -87,6 +87,10 @@ describe('canonical Plyr runtime manager', () => {
     expect(buildStage.indexOf('COPY scripts ./scripts')).toBeLessThan(buildStage.indexOf('RUN npm run build'));
     expect(buildStage.indexOf('COPY extension ./extension')).toBeLessThan(buildStage.indexOf('RUN npm run build'));
     expect(dockerfile).toContain('COPY extension ./extension');
+    // apt-get in the image must never wait for interactive input (tzdata prompt).
+    for (const line of dockerfile.split('\n').filter((l: string) => /apt-get install/.test(l))) {
+      expect(line).toContain('DEBIAN_FRONTEND=noninteractive');
+    }
     const workflow = fs.readFileSync(path.join(root, '.github/workflows/docker-package.yml'), 'utf8');
     expect(workflow).toContain('      - scripts/**');
   });
