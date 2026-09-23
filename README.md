@@ -50,7 +50,30 @@ Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript**
 
 این مسیر جدا از `./install.sh --server-docker` و `docker-compose.yml` معمولی است. ابتدا وجود Docker Engine، daemon و Compose plugin را بررسی می‌کند؛ اگر Docker نصب نباشد، فقط روی نسخه‌های پشتیبانی‌شدهٔ Ubuntu/Debian و با دسترسی مدیر آن را از مخزن رسمی Docker نصب می‌کند. اگر Docker موجود ولی ناقص/ناسازگار باشد، به‌جای دست‌کاری نصب فعلی، خطای راهنما می‌دهد. روی macOS/Windows نصب Docker Desktop باید یک‌بار از بیرون انجام شود.
 
-سپس با `docker-compose.dev.yml` و پروژهٔ مستقل `plyr-dev` image را **بدون cache** از همین checkout می‌سازد (ساخت ناموفق، نمونهٔ قبلی را دست‌نخورده می‌گذارد)، کانتینرها و volumeهای **همین پروژهٔ توسعه** را حذف می‌کند و app + Redis را از نو با انتظار برای healthcheck اجرا می‌کند. `.env`، Node و Redis روی میزبان لازم نیست؛ Playwright و وابستگی‌های مرورگر داخل image فراهم می‌شوند. دسترسی فقط از `http://localhost:3000` است؛ `APP_ENV=server`، `DEPLOYMENT_MODE=single` و `API_TOKEN=admin123` صرفاً در Compose مخصوص توسعه تنظیم شده‌اند. **این توکن عمومی و ناامن است؛ پورت را به شبکه/اینترنت یا reverse proxy متصل نکنید.** Production باید با پیکربندی جدا و توکن تصادفی امن راه‌اندازی شود.
+### image از کجا می‌آید؟ (سریع‌ترین مسیر خودکار انتخاب می‌شود)
+
+Workflow `Docker package` برای **هر commit پوش‌شده** (هر شاخه) image را یک‌بار می‌سازد و در GHCR با تگ کامل SHA منتشر می‌کند: `ghcr.io/<owner>/<repo>:<commit-sha>` (به‌علاوهٔ تگ نام شاخه و `latest` برای `main`). `./plyr dev-docker` این‌طور تصمیم می‌گیرد:
+
+| وضعیت checkout | کاری که انجام می‌شود |
+|---|---|
+| تمیز (بدون تغییر commit‌نشده) و image این commit منتشر شده | همان image ساخته‌شده در CI را `pull` می‌کند — بدون build محلی |
+| تغییرات commit‌نشده دارید، یا image هنوز در CI آماده نیست | build محلی **با layer cache** (فقط لایه‌های تغییرکرده دوباره ساخته می‌شوند) |
+
+```bash
+./plyr dev-docker                 # پیش‌فرض: خودکار (pull یا build محلی)
+./plyr dev-docker --ref pr-47     # تست یک PR/شاخه/SHA پوش‌شده بدون checkout
+./plyr dev-docker --build         # اجبار به build محلی (با cache)
+./plyr dev-docker --fresh         # build کاملاً از صفر: --no-cache --pull
+./plyr dev-docker --prebuilt      # فقط image منتشرشده؛ اگر نبود خطا بده
+```
+
+layer cache داکر بر اساس **محتوای فایل‌ها** است؛ هر تغییر در `src/`، `package-lock.json`، `Dockerfile` و… آن مرحله و مراحل بعدی را دوباره می‌سازد، پس build با cache هم همیشه آخرین کد را تست می‌کند. `--fresh` فقط برای وقتی است که به خود cache شک دارید.
+
+**یک‌بار تنظیم:** بستهٔ GHCR بعد از اولین انتشار به‌صورت پیش‌فرض private است. یک‌بار در GitHub → Packages → `plyr` → Package settings → Change visibility آن را Public کنید (یا روی سیستم خودتان `docker login ghcr.io` بزنید). تا این کار انجام نشود، اسکریپت خودکار به build محلی برمی‌گردد. imageهای منتشرشده فقط `linux/amd64` هستند؛ روی ماشین‌های ARM (مثل Mac با Apple Silicon) build محلی انجام می‌شود.
+
+### چرخهٔ اجرا
+
+سپس با `docker-compose.dev.yml` و پروژهٔ مستقل `plyr-dev` (image آماده یا ساخته‌شده؛ pull/build ناموفق، نمونهٔ قبلی را دست‌نخورده می‌گذارد)، کانتینرها و volumeهای **همین پروژهٔ توسعه** را حذف می‌کند و app + Redis را از نو با انتظار برای healthcheck اجرا می‌کند. `.env`، Node و Redis روی میزبان لازم نیست؛ Playwright و وابستگی‌های مرورگر داخل image فراهم می‌شوند. دسترسی فقط از `http://localhost:3000` است؛ `APP_ENV=server`، `DEPLOYMENT_MODE=single` و `API_TOKEN=admin123` صرفاً در Compose مخصوص توسعه تنظیم شده‌اند. **این توکن عمومی و ناامن است؛ پورت را به شبکه/اینترنت یا reverse proxy متصل نکنید.** Production باید با پیکربندی جدا و توکن تصادفی امن راه‌اندازی شود.
 
 دادهٔ Redis و فایل‌های داخل کانتینرِ Dev/Test در اجرای بعدی از بین می‌روند. این مسیر به استک معمولی Docker و داده‌های آن دست نمی‌زند، ولی هر دو از پورت 3000 استفاده می‌کنند؛ آن‌ها را هم‌زمان اجرا نکنید. برای دیدن لاگ یا توقف استک توسعه:
 

@@ -1,6 +1,16 @@
 name: Docker package
 
+# Builds the image once per pushed commit and publishes it to GHCR as
+#   ghcr.io/<owner>/<repo>:<full-commit-sha>   (immutable, used by ./plyr dev-docker)
+#   ghcr.io/<owner>/<repo>:<branch>            (moving, for humans)
+#   ghcr.io/<owner>/<repo>:latest              (default branch only)
+# `./plyr dev-docker` pulls the SHA tag of a clean checkout instead of building
+# the Playwright image locally, so every commit must get a SHA tag: pushes have
+# no path filter. The GitHub Actions layer cache keeps unchanged layers fast.
+
 on:
+  push:
+    branches: ['**']
   pull_request:
     paths:
       - Dockerfile
@@ -14,35 +24,74 @@ on:
       - public/**
       - extension/**
       - .github/workflows/docker-package.yml
-  push:
-    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: docker-package-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   build:
+    # Same-repo PR commits are already built and published by the push event;
+    # only fork PRs (which cannot publish) are built here, as a check.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+
       - name: Validate development package
         run: |
           bash -n scripts/plyr.sh
           docker compose -p plyr-dev -f docker-compose.dev.yml config --quiet
-      - name: Build production-parity image from Dockerfile
-        run: docker build --pull --tag plyr-ci:${{ github.sha }} .
-      - name: Export Docker image package (manual runs only)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          docker save plyr-ci:${{ github.sha }} | gzip > plyr-docker-image.tar.gz
-      - name: Upload image package (manual runs only)
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+
+      - name: Compute image name (GHCR requires lowercase)
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
-          name: plyr-docker-image
-          path: plyr-docker-image.tar.gz
-          if-no-files-found: error
-          retention-days: 7
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build (and publish) production-parity image from Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          pull: true
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: How to run this exact image
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Image published"
+            echo '```bash'
+            echo "./plyr dev-docker --ref ${GITHUB_SHA}"
+            echo "docker pull ${{ steps.image.outputs.name }}:${GITHUB_SHA}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -404,7 +404,96 @@ install_dev_docker_engine() {
   "${admin[@]}" apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
 
+# ---------- dev-docker image source ----------
+# CI (.github/workflows/docker-package.yml) publishes one image per pushed commit
+# to GHCR, tagged with the full commit SHA. Pulling that image is much faster
+# than building the Playwright/Chromium image locally, and it is exactly the
+# image CI built. The SHA tag is immutable, so a pulled image can never be
+# "the previous version" by accident.
+
+# ghcr.io/<owner>/<repo> derived from origin (GHCR names must be lowercase).
+dev_docker_registry_image() {
+  if [[ -n "${PLYR_DEV_IMAGE_REPO:-}" ]]; then printf '%s' "$PLYR_DEV_IMAGE_REPO"; return 0; fi
+  local url slug
+  url="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null || true)"
+  slug="$(sed -E 's#^(https?://[^/]*github\.com/|git@github\.com:|ssh://git@github\.com/)##; s#\.git$##' <<<"$url")"
+  [[ "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  printf 'ghcr.io/%s' "$(tr '[:upper:]' '[:lower:]' <<<"$slug")"
+}
+
+# Resolve --ref (branch, tag, SHA or pr-N) to a full commit SHA on origin.
+dev_docker_resolve_ref() {
+  local ref="$1" sha=''
+  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "$ref"; return 0; fi
+  if [[ "$ref" =~ ^pr-([0-9]+)$ ]]; then
+    sha="$(git -C "$ROOT_DIR" ls-remote origin "refs/pull/${BASH_REMATCH[1]}/head" 2>/dev/null | awk 'NR==1{print $1}')"
+  else
+    sha="$(git -C "$ROOT_DIR" ls-remote origin "refs/heads/$ref" "refs/tags/$ref" 2>/dev/null | awk 'NR==1{print $1}')"
+    [[ -n "$sha" ]] || sha="$(git -C "$ROOT_DIR" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null || true)"
+  fi
+  [[ -n "$sha" ]] || return 1
+  printf '%s' "$sha"
+}
+
+# Returns 0 after tagging the published image as plyr-dev:local; 1 = use a local build.
+dev_docker_pull_prebuilt() {
+  local source="$1" ref="$2" repo sha arch
+  repo="$(dev_docker_registry_image)" || { info "origin is not a GitHub repository; building locally"; return 1; }
+  arch="$("${docker_cmd[@]}" version --format '{{.Server.Arch}}' 2>/dev/null || true)"
+  if [[ -n "$arch" && "$arch" != amd64 ]]; then
+    info "published images are linux/amd64 only (this Docker is $arch); building locally"; return 1
+  fi
+  if [[ -n "$ref" ]]; then
+    sha="$(dev_docker_resolve_ref "$ref")" || { error "Cannot resolve '$ref' on origin (branch, tag, SHA or pr-N)"; return 1; }
+  else
+    have git && git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || { info "no git checkout; building locally"; return 1; }
+    if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
+      info "working tree has uncommitted changes; building locally so the test uses them"; return 1
+    fi
+    sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  fi
+  say "pulling the CI-built image for commit ${sha:0:7} ($repo:$sha)"
+  local out
+  if out="$("${docker_cmd[@]}" pull "$repo:$sha" 2>&1)"; then
+    "${docker_cmd[@]}" tag "$repo:$sha" plyr-dev:local || return 1
+    return 0
+  fi
+  if grep -qiE 'unauthorized|denied' <<<"$out"; then
+    warn "registry refused the pull. Make the GHCR package public once (GitHub > Packages > Package settings > Change visibility) or run: docker login ghcr.io"
+  else
+    warn "no published image for ${sha:0:7} yet (not pushed, or CI still building)"
+  fi
+  [[ "$source" == prebuilt ]] && { error "Prebuilt image unavailable: $repo:$sha"; return 1; }
+  info "falling back to a local build"
+  return 1
+}
+
+dev_docker_build_local() {
+  local fresh="$1"
+  if [[ "$fresh" == 1 ]]; then
+    say "building development image from the current checkout (fresh: --no-cache --pull)"
+    "${dc[@]}" build --no-cache --pull app || { error "Image build failed; previous stack was not removed"; return 1; }
+  else
+    # Docker's layer cache is keyed on file content: any change to src/, package-lock.json,
+    # Dockerfile, etc. rebuilds from that step, so cached builds still test the current code.
+    say "building development image from the current checkout (layer cache enabled)"
+    "${dc[@]}" build app || { error "Image build failed; previous stack was not removed"; return 1; }
+  fi
+}
+
 dev_docker() {
+  local source=auto ref='' fresh=0
+  while (( $# )); do
+    case "$1" in
+      --build) source=build ;;
+      --fresh) source=build; fresh=1 ;;
+      --prebuilt) source=prebuilt ;;
+      --ref) [[ $# -ge 2 ]] || fail "--ref needs a branch, tag, SHA or pr-N"; ref="$2"; source=prebuilt; shift ;;
+      --ref=*) ref="${1#--ref=}"; source=prebuilt ;;
+      *) fail "unknown dev-docker option: $1 (use --build, --fresh, --prebuilt or --ref <branch|sha|pr-N>)" ;;
+    esac
+    shift
+  done
   [[ -f "$DEV_COMPOSE_FILE" ]] || fail "Missing docker-compose.dev.yml"
   have docker || install_dev_docker_engine || return 1
   local docker_cmd=(docker)
@@ -429,10 +518,15 @@ dev_docker() {
   local dc=("${docker_cmd[@]}" compose --project-name "$DEV_PROJECT" --file "$DEV_COMPOSE_FILE")
   "${dc[@]}" config --quiet || { error "Invalid development Compose configuration"; return 1; }
 
-  # Build first: a failed build must leave the previous working stack intact.
-  # --no-cache ensures each run uses current source; npm ci pins the dependency tree.
-  say "building development image from the current checkout (no build cache)"
-  "${dc[@]}" build --no-cache app || { error "Image build failed; previous stack was not removed"; return 1; }
+  # Obtain the image first: a failed pull/build must leave the previous working
+  # stack intact. Either path ends with the image tagged as plyr-dev:local.
+  if [[ "$source" != build ]] && dev_docker_pull_prebuilt "$source" "$ref"; then
+    :
+  elif [[ "$source" == prebuilt ]]; then
+    return 1
+  else
+    dev_docker_build_local "$fresh" || return 1
+  fi
   say "removing the previous dev stack and its disposable data volumes"
   "${dc[@]}" down --volumes --remove-orphans || return 1
   say "starting fresh app and Redis containers"
@@ -560,10 +654,13 @@ Examples:
   ./plyr install && ./plyr start
   ./plyr status
   ./plyr doctor --deep
-  ./plyr dev-docker     # disposable, loopback-only test stack
+  ./plyr dev-docker     # disposable, loopback-only test stack (pulls CI image when available)
+  ./plyr dev-docker --ref pr-47   # test a pushed branch/PR/SHA without checking it out
 
 Commands:
-  dev-docker             Check Docker/Compose, build, replace dev stack, wait for health
+  dev-docker [--build|--fresh|--prebuilt|--ref <branch|sha|pr-N>]
+                          Get image (CI-built for clean HEAD, else cached local build),
+                          replace dev stack, wait for health. --fresh = --no-cache --pull.
   install                 Bootstrap .env, dependencies, browsers and build
   start [--dev|--build|--native|--docker]
   stop [--native|--docker]
@@ -581,7 +678,7 @@ EOF
 main() {
   local command="${1:-help}"; shift || true
   case "$command" in
-    dev-docker) [[ $# -eq 0 ]] || fail "dev-docker does not accept options"; dev_docker ;;
+    dev-docker) dev_docker "$@" ;;
     install) [[ "${1:-}" == "--docker" ]] && { ensure_env; load_env; docker_available || fail "Docker/Compose is not available"; (cd "$ROOT_DIR" && docker compose build); return; }; install_native ;;
     install-and-start-dev) install_native; start_native dev ;;
     start)

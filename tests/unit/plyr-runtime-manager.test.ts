@@ -72,7 +72,8 @@ describe('canonical Plyr runtime manager', () => {
     expect(manager).toContain('DEV_PROJECT=plyr-dev');
     expect(manager).toContain('install_dev_docker_engine');
     expect(manager).toContain('docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin');
-    expect(manager).toContain('build --no-cache app');
+    expect(manager).toContain('build --no-cache --pull app');
+    expect(manager).toContain('"${dc[@]}" build app');
     expect(manager).toContain('down --volumes --remove-orphans');
     expect(manager).toContain('up -d --no-build --force-recreate --wait --wait-timeout 180');
     expect(compose).toContain('127.0.0.1:3000:3000');
@@ -93,6 +94,32 @@ describe('canonical Plyr runtime manager', () => {
     }
     const workflow = fs.readFileSync(path.join(root, '.github/workflows/docker-package.yml'), 'utf8');
     expect(workflow).toContain('      - scripts/**');
+  });
+
+  it('publishes one immutable image per commit and dev-docker prefers it for a clean checkout', () => {
+    const fs = require('fs');
+    const manager = fs.readFileSync(path.join(root, 'scripts/plyr.sh'), 'utf8');
+    const workflow = fs.readFileSync(path.join(root, '.github/workflows/docker-package.yml'), 'utf8');
+    // Every push gets a full-SHA tag; dev-docker pulls exactly that tag.
+    expect(workflow).toContain("branches: ['**']");
+    expect(workflow).toContain('packages: write');
+    expect(workflow).toContain('type=sha,format=long,prefix=');
+    expect(workflow).toContain('cache-from: type=gha');
+    expect(workflow).toContain('platforms: linux/amd64');
+    expect(manager).toContain('pull "$repo:$sha"');
+    expect(manager).toContain('tag "$repo:$sha" plyr-dev:local');
+    // Uncommitted changes are never masked by a published image.
+    expect(manager).toContain('status --porcelain');
+    // The previous stack is only removed after an image was obtained.
+    const body = manager.slice(manager.indexOf('\ndev_docker() {'));
+    expect(body.indexOf('dev_docker_pull_prebuilt "$source"')).toBeLessThan(body.indexOf('down --volumes --remove-orphans'));
+    expect(body.indexOf('dev_docker_build_local "$fresh"')).toBeLessThan(body.indexOf('down --volumes --remove-orphans'));
+  });
+
+  it('rejects unknown dev-docker options before touching Docker', () => {
+    const result = run(['dev-docker', '--bogus']);
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain('unknown dev-docker option');
   });
 
   it('has one explicit non-interactive install contract and a fresh-machine Node bootstrap', () => {
