@@ -1733,7 +1733,7 @@ function handleSessionClosed() {
 
 function pollBrowserHealth() {
   if (!browserEverConnected || sessionClosedHandled) return Promise.resolve();
-  return fetch('/browser/real/health', {
+  return fetch('/browser/real/health?watch=1', {
     headers: authHeaders(),
     credentials: 'same-origin',
   })
