@@ -101,6 +101,26 @@ describe('BrowserTabs persistence', () => {
     expect(await mod.loadTabs('u2')).toEqual([]);
   });
 
+  it('multiple opened tabs are cleaned on close, and reopening starts a fresh empty session', async () => {
+    // 1. Multiple opened tabs in session
+    await mod.saveTabs('u-multi', [
+      { url: 'https://site1.example/', title: 'Site 1', active: true },
+      { url: 'https://site2.example/', title: 'Site 2' },
+      { url: 'https://site3.example/', title: 'Site 3' },
+    ]);
+    const beforeClose = await mod.loadTabs('u-multi');
+    expect(beforeClose.length).toBe(3);
+
+    // 2. User clicks Close -> session terminates and tabs are cleared
+    await mod.clearTabs('u-multi');
+
+    // 3. Reopen browser
+    const afterReopen = await mod.loadTabs('u-multi');
+
+    // 4. Verify previous tabs do not return
+    expect(afterReopen).toEqual([]);
+  });
+
   it('a userId cannot escape the sessions directory', async () => {
     // The id reaches us from an authenticated socket, but path traversal in a
     // filename is never acceptable regardless of who supplied it.
@@ -660,6 +680,12 @@ describe('tab session restore', () => {
     // and restoring those URLs next time would be a second surprise.
     const forget = liveBrowser.slice(liveBrowser.indexOf('async forgetSession()'));
     expect(forget.slice(0, 600)).toContain('clearTabs(this.userId)');
+  });
+
+  it('closeBrowser() explicitly terminates session and UI sends closeBrowser command', () => {
+    expect(liveBrowser).toMatch(/async closeBrowser\(\): Promise<void>/);
+    expect(streamServer).toMatch(/case 'close':\s*case 'closeBrowser':/);
+    expect(browserView).toContain("t: 'closeBrowser'");
   });
 
   it('tells the user their tabs were restored', () => {

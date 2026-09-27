@@ -481,6 +481,11 @@ export class BrowserStreamServer {
       case 'ping':
         await session.ping();
         break;
+      case 'close':
+      case 'closeBrowser':
+        await session.closeBrowser();
+        try { ws.close(1000, 'session_closed'); } catch { /* already closed */ }
+        break;
       // "Forget this browser session": deletes the saved cookies so the next
       // open starts anonymous again.
       case 'forgetSession':

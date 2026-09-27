@@ -861,6 +861,7 @@ export class LiveBrowserSession {
    */
   private tabsFrozen = false;
   private closed = false;
+  private explicitlyClosed = false;
   public readonly userId: string;
   private vp = { ...DEFAULT_VIEWPORT };
   /**
@@ -3839,6 +3840,34 @@ export class LiveBrowserSession {
     this.emit('session', { signedIn: false, cleared: true });
   }
 
+  /**
+   * Terminate the browser session explicitly (user clicked Close in the UI).
+   * Unlike a network disconnect / idle timeout, Close must fully close all
+   * opened tabs/pages, discard saved tabs so they do not restore on reopen,
+   * and clean up the browser context.
+   */
+  async closeBrowser(): Promise<void> {
+    if (this.closed) return;
+    this.explicitlyClosed = true;
+    await this.forgetSession();
+    for (const tab of this.tabs) {
+      const page = tab.page;
+      tab.page = null;
+      if (!page) continue;
+      this.owned.delete(page);
+      try { await page.close(); } catch { /* already gone */ }
+    }
+    if (this.context) {
+      try {
+        for (const p of this.context.pages()) {
+          try { await p.close(); } catch { /* already gone */ }
+        }
+      } catch { /* ignore */ }
+    }
+    this.tabs = [];
+    await this.close();
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -3868,14 +3897,16 @@ export class LiveBrowserSession {
     // it — see `tabsFrozen`.
     try {
       if (!this.tabsFrozen) {
-        const list: SavedTab[] = this.tabs
-          .filter((t) => !t.dead)
-          .map((t) => ({
-            url: t.url,
-            title: t.title,
-            ...(t.id === this.activeId ? { active: true } : {}),
-          }));
-        await saveTabs(this.userId, list);
+        if (!this.explicitlyClosed) {
+          const list: SavedTab[] = this.tabs
+            .filter((t) => !t.dead)
+            .map((t) => ({
+              url: t.url,
+              title: t.title,
+              ...(t.id === this.activeId ? { active: true } : {}),
+            }));
+          await saveTabs(this.userId, list);
+        }
       }
     } catch { /* a lost tab list must never block the teardown below */ }
     // A file the user uploaded for one dialog must not outlive the window they
@@ -3916,6 +3947,13 @@ export class LiveBrowserSession {
       if (!page) continue;
       this.owned.delete(page);
       try { await page.close(); } catch { /* already gone */ }
+    }
+    if (this.context && this.explicitlyClosed) {
+      try {
+        for (const p of this.context.pages()) {
+          try { await p.close(); } catch { /* already gone */ }
+        }
+      } catch { /* ignore */ }
     }
     this.tabs = [];
     // Save BEFORE closing, or the login the user just performed inside the
