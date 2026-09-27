@@ -672,6 +672,11 @@ async function runView(
         body: { success: true, owner: state.owner, chooser: state.pendingChooser },
       }));
     }
+    if (url.indexOf('/browser/real/health') >= 0) {
+      return Promise.resolve(reply({
+        body: { success: true, enabled: true, running: true, responsive: true },
+      }));
+    }
     // The Workflow Files workspace: list, use, and the mutations. Modelled just
     // far enough that the view's requests can be read back; the storage rules
     // themselves are the routes' tests' business.

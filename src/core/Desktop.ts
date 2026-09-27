@@ -594,6 +594,27 @@ export class Desktop {
       .catch(() => null); // xdpyinfo absent or display down — caller falls back
   }
 
+  /**
+   * Determine CLI arguments for openbox to enforce the titleLayout "LC".
+   *
+   * WHY:
+   * The Xvfb desktop has no panel/taskbar. When windows minimize, they vanish into
+   * a black screen. Removing minimize & maximize keeps only title + close.
+   */
+  static async openboxArgs(): Promise<string[]> {
+    const customRc = path.resolve(__dirname, '../../scripts/openbox-rc.xml');
+    try {
+      const exists = await fs.stat(customRc).then(() => true).catch(() => false);
+      if (exists) {
+        const userRc = path.join(os.homedir(), '.config', 'openbox', 'rc.xml');
+        await fs.mkdir(path.dirname(userRc), { recursive: true }).catch(() => {});
+        await fs.copyFile(customRc, userRc).catch(() => {});
+        return ['--config-file', customRc];
+      }
+    } catch { /* ignore */ }
+    return [];
+  }
+
   private static async ensureWindowManager(): Promise<void> {
     if (this.procs.has('wm')) return;
     // Ask X, not our own process table: after an app restart a WM from the
@@ -605,7 +626,8 @@ export class Desktop {
       if (!(await which(wm))) continue;
       // fluxbox is quieter about a missing config if told where to look; both
       // accept being run with no arguments, so keep it simple and portable.
-      this.spawnTracked('wm', wm, []);
+      const args = wm === 'openbox' ? await this.openboxArgs() : [];
+      this.spawnTracked('wm', wm, args);
       // Give it a moment to become the manager before Chrome maps a window;
       // a WM that arrives late does not retroactively manage what X already
       // mapped without one.

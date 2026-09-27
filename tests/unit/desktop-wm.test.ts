@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { displayIsManaged } from '../../src/core/Desktop';
+import { displayIsManaged, Desktop } from '../../src/core/Desktop';
 
 // Captured from: xprop -root -display :77 _NET_SUPPORTING_WM_CHECK
 const REAL_NO_WM = '_NET_SUPPORTING_WM_CHECK:  no such atom on any window.\n';
@@ -74,3 +74,12 @@ describe('displayIsManaged', () => {
     expect(displayIsManaged('some window somewhere')).toBe(false);
   });
 });
+
+describe('openboxArgs', () => {
+  it('points openbox to the custom rc.xml enforcing titleLayout LC', async () => {
+    const args = await Desktop.openboxArgs();
+    expect(args).toContain('--config-file');
+    expect(args[args.indexOf('--config-file') + 1]).toMatch(/openbox-rc\.xml$/);
+  });
+});
+

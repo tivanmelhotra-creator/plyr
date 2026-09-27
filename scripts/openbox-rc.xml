@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <!--
+    Openbox configuration for Plyr remote desktop.
+
+    WHY titleLayout IS "LC":
+    The virtual Xvfb screen has no desktop panel or taskbar (like tint2 or lxpanel).
+    When a window is iconified (minimized), it vanishes completely into a black
+    screen with no UI control to restore or switch back to it («پنجره غیب میشه»).
+    Similarly, the Maximize button provides no value because the browser window
+    is already sized to fill the virtual desktop.
+
+    Setting <titleLayout>LC</titleLayout> removes the Minimize and Maximize buttons
+    entirely, leaving only the window Label and the Close ('C') button.
+  -->
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout>LC</titleLayout>
+    <keepBorder>yes</keepBorder>
+    <animateIconify>no</animateIconify>
+    <font place="ActiveWindow">
+      <name>sans</name>
+      <size>10</size>
+      <weight>bold</weight>
+    </font>
+    <font place="InactiveWindow">
+      <name>sans</name>
+      <size>10</size>
+      <weight>normal</weight>
+    </font>
+  </theme>
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+  </desktops>
+  <keyboard>
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+    <keybind key="A-Tab">
+      <action name="NextWindow"/>
+    </keybind>
+  </keyboard>
+  <mouse>
+    <dragThreshold>1</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="Drag">
+        <action name="Move"/>
+      </mousebind>
+    </context>
+    <context name="Close">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="Click">
+        <action name="Close"/>
+      </mousebind>
+    </context>
+    <context name="Client">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+  </mouse>
+</openbox_config>

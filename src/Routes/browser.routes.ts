@@ -340,12 +340,7 @@ export const createBrowserRoutes = (): Router => {
       if (session) {
         await session.closeBrowser();
       } else if (RealChrome.isRunning()) {
-        const ctx = await RealChrome.getContext().catch(() => null);
-        if (ctx) {
-          for (const p of ctx.pages()) {
-            try { await p.close(); } catch { /* ignore */ }
-          }
-        }
+        await RealChrome.closeBrowser();
       }
       res.json({ success: true });
     } catch (e) {

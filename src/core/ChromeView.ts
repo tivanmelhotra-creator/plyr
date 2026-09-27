@@ -517,10 +517,55 @@ export function chromeViewHtml(): string {
   }
   .edfoot #edstatus.dirty { color: #f0862f; }
   #edmeta { color: #6d7382; }
+
+  /* ── The session ended overlay ─────────────────────────────────────────
+     Presents a clean card when Chromium is closed, rather than leaving the
+     operator staring at the pitch-black canvas of an empty virtual desktop. */
+  #ended {
+    position: fixed; inset: 0; z-index: 50; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; background: rgba(20, 20, 25, 0.95); backdrop-filter: blur(6px);
+    color: #e6e6ee; text-align: center; padding: 24px;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #ended[hidden] { display: none; }
+  .endedcard {
+    background: #23252d; border: 1px solid #3d404c; border-radius: 10px;
+    padding: 28px; max-width: 26rem; box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+  }
+  .endedicon { margin-bottom: 12px; color: #6da2ff; }
+  .endedcard h3 { margin: 0 0 8px; font-size: 17px; font-weight: 600; color: #fff; }
+  .endedcard p { margin: 0 0 20px; font-size: 13px; color: #a4a6b2; line-height: 1.5; }
+  .endedbtns { display: flex; gap: 10px; justify-content: center; }
+  .btnclose {
+    font: inherit; color: #fff; background: #e04545;
+    border: 1px solid #eb5555; border-radius: 6px;
+    padding: 7px 18px; cursor: pointer;
+  }
+  .btnclose:hover { background: #ee5555; }
+  .btnreopen {
+    font: inherit; color: #eaeaf0; background: #33333c;
+    border: 1px solid #4a4a55; border-radius: 6px;
+    padding: 7px 18px; cursor: pointer;
+  }
+  .btnreopen:hover { background: #3d3d47; }
 </style>
 </head>
 <body>
 <div id="screen"></div>
+<div id="ended" hidden>
+  <div class="endedcard">
+    <div class="endedicon">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+    </div>
+    <h3>Chromium Session Closed</h3>
+    <p>The browser window has been closed. You can close this tab or relaunch a fresh session.</p>
+    <div class="endedbtns">
+      <button class="btnclose" id="btnendedclose" type="button">Close Tab</button>
+      <button class="btnreopen" id="btnendedreopen" type="button">Relaunch</button>
+    </div>
+  </div>
+</div>
 <!-- THE ONE PERMANENT CONTROL. Everything else is in the drawer it opens. -->
 <button id="burger" type="button" title="Workflow Files" aria-label="Workflow Files" hidden>
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
@@ -533,6 +578,9 @@ export function chromeViewHtml(): string {
     <h4>Workflow Files</h4>
     <span id="dtotal"></span>
     <span class="dgrow"></span>
+    <button class="dtool" id="dclosebrowser" type="button" title="Close Chromium Session" aria-label="Close Chromium">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+    </button>
     <!-- Every file on screen. Always offered: the selection is the drawer's
          OWN (Download, Delete work on any number); only SENDING to a page
          is bound by the page's 'multiple', and that is checked at Select. -->
@@ -969,6 +1017,10 @@ function attach() {
   rfb.focusOnClick  = true;
 
   rfb.addEventListener('connect', () => {
+    browserEverConnected = true;
+    sessionClosedHandled = false;
+    const endedEl = document.getElementById('ended');
+    if (endedEl) endedEl.hidden = true;
     note.hidden = true;
     // Only once there is a desktop to exchange files WITH. Showing the
     // hamburger over the "Starting Chromium..." spinner would offer a drawer
@@ -1367,6 +1419,39 @@ if (burger) {
 const dcloseBtn = document.getElementById('dclose');
 if (dcloseBtn) dcloseBtn.addEventListener('click', () => closeDrawer());
 
+const dcloseBrowserBtn = document.getElementById('dclosebrowser');
+if (dcloseBrowserBtn) {
+  dcloseBrowserBtn.addEventListener('click', () => {
+    if (confirm('Close Chromium session and all open tabs?')) {
+      fetch('/browser/real/close', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        credentials: 'same-origin',
+        body: '{}',
+      }).finally(() => {
+        handleSessionClosed();
+      });
+    }
+  });
+}
+
+const btnEndedClose = document.getElementById('btnendedclose');
+if (btnEndedClose) {
+  btnEndedClose.addEventListener('click', () => {
+    try { window.close(); } catch (e) {}
+  });
+}
+
+const btnEndedReopen = document.getElementById('btnendedreopen');
+if (btnEndedReopen) {
+  btnEndedReopen.addEventListener('click', () => {
+    const endedEl = document.getElementById('ended');
+    if (endedEl) endedEl.hidden = true;
+    sessionClosedHandled = false;
+    void startThenConnect(1);
+  });
+}
+
 // Escape shuts the menu first, then the drawer: aiming at a menu must not
 // cost the whole drawer.
 document.addEventListener('keydown', (ev) => {
@@ -1630,6 +1715,36 @@ const delivered = {};
 let seeded = false;
 
 let watching = false;
+let browserEverConnected = false;
+let sessionClosedHandled = false;
+
+function handleSessionClosed() {
+  if (sessionClosedHandled) return;
+  sessionClosedHandled = true;
+  watching = false;
+  if (rfb) {
+    try { rfb.disconnect(); } catch (e) {}
+    rfb = null;
+  }
+  try { window.close(); } catch (e) {}
+  const endedEl = document.getElementById('ended');
+  if (endedEl) endedEl.hidden = false;
+}
+
+function pollBrowserHealth() {
+  if (!browserEverConnected || sessionClosedHandled) return Promise.resolve();
+  return fetch('/browser/real/health?watch=1', {
+    headers: authHeaders(),
+    credentials: 'same-origin',
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      if (j && j.success && j.running === false) {
+        handleSessionClosed();
+      }
+    })
+    .catch(() => {});
+}
 
 /** Start the watch loop. Called once, when the desktop connects. */
 function startWatching() {
@@ -1652,7 +1767,8 @@ function tick() {
 function watchOnce() {
   return Promise.resolve()
     .then(() => pollChooser())
-    .then(() => pollDownloads());
+    .then(() => pollDownloads())
+    .then(() => pollBrowserHealth());
 }
 
 /** Is a page asking for a file? If so, get the operator's file to it. */
