@@ -4,14 +4,14 @@
     Openbox configuration for Plyr remote desktop.
 
     WHY titleLayout IS "LC":
-    The virtual Xvfb screen has no desktop panel or taskbar (like tint2 or lxpanel).
-    When a window is iconified (minimized), it vanishes completely into a black
-    screen with no UI control to restore or switch back to it («پنجره غیب میشه»).
-    Similarly, the Maximize button provides no value because the browser window
-    is already sized to fill the virtual desktop.
+    The virtual Xvfb screen in Docker has no OS taskbar (like tint2 or lxpanel).
+    The Minimize and Maximize buttons belong to the host OS window manager and have
+    improper/unintended behavior in Docker/Xvfb (minimizing makes the browser window
+    disappear into a black screen with no way to restore it).
 
-    Setting <titleLayout>LC</titleLayout> removes the Minimize and Maximize buttons
-    entirely, leaving only the window Label and the Close ('C') button.
+    Setting <titleLayout>LC</titleLayout> explicitly removes the Minimize ('I') and
+    Maximize ('M') buttons entirely, leaving only the window Label ('L') and Close ('C').
+    Managing open browser sessions will be handled through an internal Task View.
   -->
   <theme>
     <name>Clearlooks</name>
@@ -52,6 +52,18 @@
       <mousebind button="Left" action="Drag">
         <action name="Move"/>
       </mousebind>
+      <mousebind button="Right" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="DoubleClick">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+    <context name="Maximize">
+    </context>
+    <context name="Iconify">
     </context>
     <context name="Close">
       <mousebind button="Left" action="Press">

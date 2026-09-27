@@ -594,6 +594,40 @@ export async function enableExtensionInstalls(userDataDir: string): Promise<stri
   }
 }
 
+/**
+ * Ensure Chromium delegates window decorations to the window manager (Openbox)
+ * rather than drawing its own client-side Minimize and Maximize controls.
+ *
+ * In Docker/Xvfb, Openbox uses <titleLayout>LC</titleLayout> which enforces
+ * having only the Title and Close button. Setting `browser.custom_chrome_frame`
+ * to false prevents Chromium from drawing its own CSD Minimize/Maximize buttons.
+ */
+export async function ensureSystemTitlebar(userDataDir: string): Promise<string> {
+  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+  try {
+    await fs.mkdir(path.dirname(prefsPath), { recursive: true });
+    let prefs: { browser?: Record<string, unknown> } = {};
+    try {
+      prefs = JSON.parse(await fs.readFile(prefsPath, 'utf8'));
+    } catch {
+      prefs = {};
+    }
+    const browser = (prefs.browser || {}) as Record<string, unknown>;
+    if (browser.custom_chrome_frame === false) {
+      return 'already set';
+    }
+    browser.custom_chrome_frame = false;
+    prefs.browser = browser;
+
+    const tmp = `${prefsPath}.cftmp`;
+    await fs.writeFile(tmp, JSON.stringify(prefs), 'utf8');
+    await fs.rename(tmp, prefsPath);
+    return 'custom_chrome_frame -> false';
+  } catch (e) {
+    return `could not set (${(e as Error).message})`;
+  }
+}
+
 /** Ask a DevTools port who it is. Used purely to prove the port is live. */
 function fetchDebugVersion(
   host: string,
@@ -1005,6 +1039,8 @@ export class RealChrome {
     // each restore ZERO tabs. See enableSessionRestore for the table.
     const restoreTabs = config.REAL_CHROME_RESTORE_TABS === true;
     const restoreSaid = restoreTabs ? await enableSessionRestore(userDataDir) : 'disabled';
+    // Remove client-side Minimize and Maximize controls: delegate window frame to Openbox (LC layout)
+    const titlebarSaid = await ensureSystemTitlebar(userDataDir);
 
     // The Element Inspector this repository SHIPS, made present before the
     // extension list is read.

@@ -26,7 +26,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { promises as fs } from 'fs';
+import path from 'path';
+import os from 'os';
 import { displayIsManaged, Desktop } from '../../src/core/Desktop';
+import { ensureSystemTitlebar } from '../../src/core/RealChrome';
 
 // Captured from: xprop -root -display :77 _NET_SUPPORTING_WM_CHECK
 const REAL_NO_WM = '_NET_SUPPORTING_WM_CHECK:  no such atom on any window.\n';
@@ -80,6 +84,56 @@ describe('openboxArgs', () => {
     const args = await Desktop.openboxArgs();
     expect(args).toContain('--config-file');
     expect(args[args.indexOf('--config-file') + 1]).toMatch(/openbox-rc\.xml$/);
+  });
+
+  it('verifies openbox-rc.xml removes Minimize and Maximize buttons leaving only LC', async () => {
+    const rcPath = path.resolve(__dirname, '../../scripts/openbox-rc.xml');
+    const content = await fs.readFile(rcPath, 'utf8');
+    expect(content).toContain('<titleLayout>LC</titleLayout>');
+    expect(content).not.toMatch(/<titleLayout>.*[IM].*<\/titleLayout>/);
+  });
+});
+
+describe('ensureSystemTitlebar', () => {
+  it('seeds custom_chrome_frame = false into fresh Preferences', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chrome-titlebar-test-'));
+    try {
+      const res = await ensureSystemTitlebar(tmpDir);
+      expect(res).toBe('custom_chrome_frame -> false');
+
+      const prefsFile = path.join(tmpDir, 'Default', 'Preferences');
+      const prefs = JSON.parse(await fs.readFile(prefsFile, 'utf8'));
+      expect(prefs.browser?.custom_chrome_frame).toBe(false);
+
+      // Idempotent call
+      const second = await ensureSystemTitlebar(tmpDir);
+      expect(second).toBe('already set');
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves existing Preferences while disabling custom_chrome_frame', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chrome-titlebar-test-'));
+    try {
+      const prefsDir = path.join(tmpDir, 'Default');
+      await fs.mkdir(prefsDir, { recursive: true });
+      const prefsFile = path.join(prefsDir, 'Preferences');
+      await fs.writeFile(prefsFile, JSON.stringify({
+        session: { restore_on_startup: 5 },
+        browser: { other_setting: 'keep' },
+      }), 'utf8');
+
+      const res = await ensureSystemTitlebar(tmpDir);
+      expect(res).toBe('custom_chrome_frame -> false');
+
+      const prefs = JSON.parse(await fs.readFile(prefsFile, 'utf8'));
+      expect(prefs.session?.restore_on_startup).toBe(5);
+      expect(prefs.browser?.other_setting).toBe('keep');
+      expect(prefs.browser?.custom_chrome_frame).toBe(false);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
