@@ -178,7 +178,7 @@ export class BrowserStreamServer {
       // A failed command is reported to the client that sent it and nothing else
       // happens. The session stays up, and the UI shows a real state rather than
       // going quiet.
-      void this.handleCommand(session, msg).catch((e: unknown) => {
+      void this.handleCommand(session, msg, ws).catch((e: unknown) => {
         const detail = (e as Error)?.message || String(e);
         try {
           this.send(ws, 'error', { message: 'command_failed', command: msg.t, detail });
@@ -202,13 +202,14 @@ export class BrowserStreamServer {
     // leaving.
     for (const msg of pending.splice(0)) {
       if (session.isClosed()) break;
-      await this.handleCommand(session, msg).catch(() => {});
+      await this.handleCommand(session, msg, ws).catch(() => {});
     }
   }
 
   private async handleCommand(
     session: LiveBrowserSession,
-    msg: { t?: string; [k: string]: unknown }
+    msg: { t?: string; [k: string]: unknown },
+    ws?: WebSocket
   ): Promise<void> {
     if (session.isClosed()) return;
     const num = (v: unknown, d = 0): number => {
@@ -484,7 +485,9 @@ export class BrowserStreamServer {
       case 'close':
       case 'closeBrowser':
         await session.closeBrowser();
-        try { ws.close(1000, 'session_closed'); } catch { /* already closed */ }
+        if (ws) {
+          try { ws.close(1000, 'session_closed'); } catch { /* already closed */ }
+        }
         break;
       // "Forget this browser session": deletes the saved cookies so the next
       // open starts anonymous again.

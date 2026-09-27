@@ -335,7 +335,7 @@ export const createBrowserRoutes = (): Router => {
    */
   router.post(['/browser/close', '/browser/real/close'], async (req: AuthenticatedRequest, res) => {
     try {
-      const userId = req.userId || '0';
+      const userId = resolveUserId(req);
       const session = liveBrowserSessions.forUser(userId);
       if (session) {
         await session.closeBrowser();

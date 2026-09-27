@@ -1463,6 +1463,7 @@ export class LiveBrowserSession {
     // the page they had left. That is not a cosmetic detail: the URL bar is
     // how you know where you are before you start picking selectors.
     page.on('framenavigated', async (frame) => {
+      if (this.closed || this.explicitlyClosed) return;
       if (frame !== page.mainFrame()) return;
       const tab = this.tabOfPage(page);
       if (tab) {
@@ -1518,6 +1519,10 @@ export class LiveBrowserSession {
       if (page === this.cdpPage) { this.cdp = null; this.cdpPage = null; }
       if (!tab) return;
       tab.page = null;
+      if (this.closed || this.explicitlyClosed) {
+        tab.dead = true;
+        return;
+      }
       if (page === this.page) {
         tab.dead = true;
         this.page = null;
@@ -1946,6 +1951,7 @@ export class LiveBrowserSession {
    */
   private async persistTabs(): Promise<void> {
     if (this.closed) return;
+    if (this.explicitlyClosed) return;
     if (this.tabsFrozen) return;
     const list: SavedTab[] = this.tabs
       .filter((t) => !t.dead)
@@ -2206,6 +2212,7 @@ export class LiveBrowserSession {
    */
   private async recover(reason: string): Promise<boolean> {
     if (this.closed) return false;
+    if (this.explicitlyClosed) return false;
     if (this.recovering) return this.recovering;
     this.recovering = (async () => {
       try {
@@ -3849,7 +3856,7 @@ export class LiveBrowserSession {
   async closeBrowser(): Promise<void> {
     if (this.closed) return;
     this.explicitlyClosed = true;
-    await this.forgetSession();
+    this.tabsFrozen = true;
     for (const tab of this.tabs) {
       const page = tab.page;
       tab.page = null;
@@ -3866,6 +3873,7 @@ export class LiveBrowserSession {
     }
     this.tabs = [];
     await this.close();
+    await clearTabs(this.userId).catch(() => {});
   }
 
   async close(): Promise<void> {
