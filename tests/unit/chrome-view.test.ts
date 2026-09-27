@@ -274,4 +274,14 @@ describe('the workflow files drawer in ChromeView', () => {
     expect(html).toContain('wfmIntent');
     expect(html).toContain('FILE_REQUEST');
   });
+
+  it('includes session ended overlay with Close Tab and Relaunch controls', () => {
+    const html = chromeViewHtml();
+    expect(idsIn(html)).toContain('ended');
+    expect(startsHidden(html, 'ended')).toBe(true);
+    expect(idsIn(html)).toContain('btnendedclose');
+    expect(idsIn(html)).toContain('btnendedreopen');
+    expect(idsIn(html)).toContain('dclosebrowser');
+    expect(html).toContain('pollBrowserHealth');
+  });
 });

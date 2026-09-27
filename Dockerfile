@@ -71,6 +71,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Bring in only what we need to run
+COPY scripts/openbox-rc.xml /etc/xdg/openbox/rc.xml
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./

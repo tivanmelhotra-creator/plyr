@@ -651,6 +651,8 @@ export class RealChrome {
   /** Stable only for one launch; a restart/recovery receives a new id. */
   private static runtimeIncarnation = '';
   private static activeDebugPort = 0;
+  private static isRestarting = false;
+  private static isRecycling = false;
 
   private static starting: Promise<BrowserContext> | null = null;
   private static loaded: InstalledExtension[] = [];
@@ -893,12 +895,17 @@ export class RealChrome {
     }
     // stop() tolerates a context whose close() hangs, and the profile — cookies,
     // extension storage and the session file the restore reads — is on disk.
-    await this.stop();
-    await this.getContext();
-    return {
-      action: 'recycled',
-      reason: 'browser stopped answering; relaunched with the same profile',
-    };
+    this.isRecycling = true;
+    try {
+      await this.stop();
+      await this.getContext();
+      return {
+        action: 'recycled',
+        reason: 'browser stopped answering; relaunched with the same profile',
+      };
+    } finally {
+      this.isRecycling = false;
+    }
   }
 
   /** True when `ctx` is the shared persistent context, which must never be closed. */
@@ -1197,11 +1204,11 @@ export class RealChrome {
         // for a file with nowhere to put it.
         this.chooserService?.dispose();
         this.chooserService = null;
-        // There used to be a third line here, dropping the claimed Alert Tab.
-        // It is gone with the claim itself: `alertSurface()` now reads
-        // `ctx.pages()` fresh on every call and holds nothing between them, so
-        // a closed context leaves no stale handle to invalidate. Fewer things
-        // to remember at teardown is the point, not a side effect.
+        if (!this.isRestarting && !this.isRecycling) {
+          // When the window is closed by the user, clear the saved tabs session cache
+          // so next launch starts with a fresh tab instead of restoring closed tabs.
+          void clearTabSessions(userDataDir).catch(() => {});
+        }
       });
 
       if (debugPort > 0) {
@@ -1604,10 +1611,51 @@ export class RealChrome {
 
   /** Stop and start again — the only way to pick up newly installed extensions. */
   static async restart(): Promise<RealChromeStatus> {
-    await this.stop();
-    await this.getContext();
-    return this.status();
+    this.isRestarting = true;
+    try {
+      await this.stop();
+      await this.getContext();
+      return this.status();
+    } finally {
+      this.isRestarting = false;
+    }
   }
+
+  /**
+   * Explicitly terminate RealChrome and clear persisted tab sessions.
+   *
+   * Unlike crash recovery or extension restart, an explicit Close is an intentional
+   * teardown: all open pages are closed, the browser stops, and saved tab session files
+   * are purged so that subsequent launches open fresh with a single default tab rather
+   * than restoring old closed tabs. Cookies, logins, and profile data remain intact.
+   */
+  static async closeBrowser(timeoutMs = 10_000): Promise<void> {
+    const ctx = this.context;
+    if (ctx) {
+      for (const p of ctx.pages()) {
+        try { await p.close(); } catch { /* ignore */ }
+      }
+    }
+    await this.stop(timeoutMs);
+    await clearTabSessions(config.REAL_CHROME_USER_DATA_DIR).catch(() => {});
+  }
+}
+
+/**
+ * Delete persisted tab session files from the profile.
+ *
+ * Used during explicit browser close so that upon next launch, the browser
+ * starts fresh with a single default tab instead of restoring previously closed
+ * tabs. All cookies, logins, storage, and preferences are untouched.
+ */
+export async function clearTabSessions(userDataDir: string): Promise<void> {
+  const sessionsDir = path.join(userDataDir, 'Default', 'Sessions');
+  try {
+    const entries = await fs.readdir(sessionsDir).catch(() => []);
+    for (const entry of entries) {
+      await fs.unlink(path.join(sessionsDir, entry)).catch(() => {});
+    }
+  } catch { /* ignore */ }
 }
 
 /**
