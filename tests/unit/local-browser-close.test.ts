@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
@@ -7,8 +7,11 @@ import { loadTabs } from '../../src/core/BrowserTabs';
 import { loadStorageState } from '../../src/core/BrowserProfile';
 import { GlobalBrowser } from '../../src/core/GlobalBrowser';
 import { config } from '../../src/config';
+import { describeBrowser, ensureProbed } from '../browser/real-browser';
 
-describe('Local Browser Close Lifecycle', () => {
+await ensureProbed();
+
+describeBrowser('Local Browser Close Lifecycle', () => {
   let dir = '';
 
   beforeEach(async () => {
