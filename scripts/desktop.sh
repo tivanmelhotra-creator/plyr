@@ -144,13 +144,27 @@ cmd_start() {
     port_open "$NOVNC_PORT" || { err "websockify failed; see $RUN_DIR/novnc.log"; exit 1; }
   fi
 
+  # ── openbox (Window Manager: titleLayout LC, Close button only) ────────────
+  if command -v openbox >/dev/null 2>&1; then
+    if ! pgrep -f "openbox.*${DISPLAY_NUM}" >/dev/null 2>&1 && ! pgrep -x openbox >/dev/null 2>&1; then
+      local rc_file="$(cd "$(dirname "$0")" && pwd)/openbox-rc.xml"
+      local wm_args=()
+      if [ -f "$rc_file" ]; then
+        wm_args=(--config-file "$rc_file")
+      fi
+      DISPLAY="$DISPLAY_NUM" openbox "${wm_args[@]}" >"$RUN_DIR/openbox.log" 2>&1 &
+      echo $! > "$RUN_DIR/openbox.pid"
+      log "started openbox on ${DISPLAY_NUM} (titleLayout LC: Close only, Minimize/Maximize removed)"
+    fi
+  fi
+
   echo
   log "ready →  http://localhost:${NOVNC_PORT}/vnc.html?autoconnect=1&resize=remote"
   log "export DISPLAY=${DISPLAY_NUM} before launching Chrome, or set REAL_CHROME_DISPLAY."
 }
 
 cmd_stop() {
-  for name in novnc x11vnc xvfb; do
+  for name in novnc x11vnc openbox xvfb; do
     if [ -f "$RUN_DIR/$name.pid" ]; then
       pid="$(cat "$RUN_DIR/$name.pid")"
       if kill -0 "$pid" 2>/dev/null; then
