@@ -967,7 +967,15 @@
     // them polling the server every 1.5s for ever. Registered as a closure by
     // the setup block because that is where their timer ids live.
     if (ps.hoCleanup) { try { ps.hoCleanup(); } catch (e) {} }
-    if (ps.ws) { try { ps.ws.close(); } catch (e) {} }
+    if (ps.ws) {
+      if (ps.ws.readyState === WebSocket.OPEN) {
+        try { ps.ws.send(JSON.stringify({ t: 'closeBrowser' })); } catch (e) {}
+      }
+      try { ps.ws.close(); } catch (e) {}
+    }
+    if (window.API && typeof window.API.post === 'function') {
+      try { window.API.post('/browser/close', {}).catch(function () {}); } catch (e) {}
+    }
     if (ps.rio) { try { ps.rio.detach(); } catch (e) {} }
     if (ps.onKeyDoc) document.removeEventListener('keydown', ps.onKeyDoc, true);
     // The re-clamp listener holds the overlay's DOM alive; drop it with the modal.

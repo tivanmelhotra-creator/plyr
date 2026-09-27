@@ -26,6 +26,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 import { config } from '../config';
+import { liveBrowserSessions } from '../core/LiveSessions';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
 import { flagCatalogue } from '../core/ChromeFlags';
 import { describeProfile, PROFILES } from '../core/EnvProfile';
@@ -327,6 +328,29 @@ export const createBrowserRoutes = (): Router => {
       // Tab sync handled via LiveBrowserEvents internally
       res.json({ success: true, closed: prefix });
     } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Fully close the active browser session and tabs for the user.
+   */
+  router.post(['/browser/close', '/browser/real/close'], async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = resolveUserId(req);
+      const session = liveBrowserSessions.forUser(userId);
+      if (session) {
+        await session.closeBrowser();
+      } else if (RealChrome.isRunning()) {
+        const ctx = await RealChrome.getContext().catch(() => null);
+        if (ctx) {
+          for (const p of ctx.pages()) {
+            try { await p.close(); } catch { /* ignore */ }
+          }
+        }
+      }
+      res.json({ success: true });
+    } catch (e) {
+      sendError(res, e);
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────────
