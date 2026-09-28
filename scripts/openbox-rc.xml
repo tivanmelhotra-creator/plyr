@@ -3,19 +3,20 @@
   <!--
     Openbox configuration for Plyr remote desktop.
 
-    WHY titleLayout IS "LC":
-    The virtual Xvfb screen in Docker has no OS taskbar (like tint2 or lxpanel).
-    The Minimize and Maximize buttons belong to the host OS window manager and have
-    improper/unintended behavior in Docker/Xvfb (minimizing makes the browser window
-    disappear into a black screen with no way to restore it).
+    WHY titleLayout IS "NLIMC" (again):
+    An earlier change used "LC" (Close only) because a minimized window had no
+    way back on a desktop without a taskbar. Testing with two Chromium profiles
+    showed that was the wrong fix: only the Default profile lost the buttons,
+    other profiles kept drawing their own Minimize/Maximize, so the result was
+    inconsistent and removed nothing of value.
 
-    Setting <titleLayout>LC</titleLayout> explicitly removes the Minimize ('I') and
-    Maximize ('M') buttons entirely, leaving only the window Label ('L') and Close ('C').
-    Managing open browser sessions will be handled through an internal Task View.
+    The way back is now the viewer's Task View, which lists every open browser
+    window (per profile) and can restore + focus a minimized one. So the full
+    title bar is back: Icon, Label, Iconify (Minimize), Maximize, Close.
   -->
   <theme>
     <name>Clearlooks</name>
-    <titleLayout>LC</titleLayout>
+    <titleLayout>NLIMC</titleLayout>
     <keepBorder>yes</keepBorder>
     <animateIconify>no</animateIconify>
     <font place="ActiveWindow">
@@ -52,18 +53,31 @@
       <mousebind button="Left" action="Drag">
         <action name="Move"/>
       </mousebind>
+      <mousebind button="Left" action="DoubleClick">
+        <action name="ToggleMaximize"/>
+      </mousebind>
       <mousebind button="Right" action="Press">
         <action name="Focus"/>
         <action name="Raise"/>
       </mousebind>
-      <mousebind button="Left" action="DoubleClick">
+    </context>
+    <context name="Iconify">
+      <mousebind button="Left" action="Press">
         <action name="Focus"/>
         <action name="Raise"/>
       </mousebind>
+      <mousebind button="Left" action="Click">
+        <action name="Iconify"/>
+      </mousebind>
     </context>
     <context name="Maximize">
-    </context>
-    <context name="Iconify">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="Click">
+        <action name="ToggleMaximize"/>
+      </mousebind>
     </context>
     <context name="Close">
       <mousebind button="Left" action="Press">

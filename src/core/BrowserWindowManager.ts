@@ -1,13 +1,29 @@
 /**
- * BrowserWindowManager — Internal Window Manager for Remote Browser sessions.
+ * BrowserWindowManager — Task View backend for the Remote Browser desktop.
  *
- * Tracks active and minimized browser sessions/profiles inside Docker/Xvfb without
- * requiring an OS taskbar (like tint2 or lxpanel). Provides listing, minimize, and
- * restore capabilities for the remote desktop environment.
+ * The Xvfb desktop has no taskbar, so the viewer's Task View is the ONLY way an
+ * operator can see and get back to browser windows once more than one is open
+ * (several Chromium profiles side by side) or once one has been minimized.
+ *
+ * WHY IT LOOKS LIKE THIS
+ * ----------------------
+ * The first version kept ONE synthetic "default" session and pinned at most one
+ * X11 window to it, so two live profiles showed up as a single card. It also
+ * depended on wmctrl / xdotool / xprop, none of which the runtime image
+ * installed, so inside Docker every X11 call failed silently.
+ *
+ * Now every managed, top-level Chromium window on the display is its own entry,
+ * labelled with the profile it belongs to and reported as active or minimized
+ * straight from the window manager. The Dockerfile installs the tools.
+ *
+ * Out of scope on purpose (for now): split screen, grids, multi-browser views.
  */
 
 import { execFile } from 'child_process';
+import { promises as fs } from 'fs';
+import path from 'path';
 import { promisify } from 'util';
+import { config } from '../config';
 import { RealChrome } from './RealChrome';
 import { Desktop } from './Desktop';
 
@@ -23,196 +39,353 @@ export interface BrowserWindowInfo {
   state: WindowState;
   windowId?: string;
   pid?: number;
+  /** True for the window that currently has input focus. */
+  focused?: boolean;
+  /** 'x11' entries are rebuilt from the window manager on every list(). */
+  source?: 'x11' | 'registered';
   updatedAt?: number;
 }
+
+export interface X11WindowRow {
+  windowId: string;
+  pid: number;
+  wmClass: string;
+  title: string;
+}
+
+export interface WindowProps {
+  hidden: boolean;
+  skipTaskbar: boolean;
+  normal: boolean;
+}
+
+export interface ChromeProfileEntry {
+  dir: string;
+  name: string;
+}
+
+/** Shown when we know a browser runs but cannot see its windows. */
+const PLACEHOLDER_ID = 'default';
+const DEFAULT_PROFILE_LABEL = 'Default Profile';
+const APP_NAMES = ['Chromium', 'Google Chrome', 'Google Chrome for Testing', 'Chrome'];
+
+// ───────────────────────────────────────────────────────────────────────────
+// Pure helpers (exported for unit tests)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** wmctrl pads ids (0x02400003), xprop does not (0x2400003): compare one form. */
+export function normalizeWindowId(id: string): string {
+  const raw = String(id || '').trim().toLowerCase();
+  if (!raw) return '';
+  const n = raw.startsWith('0x') ? parseInt(raw, 16) : parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return '0x' + n.toString(16);
+}
+
+/** Parse `wmctrl -l -p -x`: <id> <desktop> <pid> <class> <host> <title...> */
+export function parseWmctrlList(stdout: string): X11WindowRow[] {
+  const rows: X11WindowRow[] = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const m = line.trim().match(/^(0x[0-9a-fA-F]+)\s+(-?\d+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/);
+    if (!m) continue;
+    const windowId = normalizeWindowId(m[1]);
+    if (!windowId) continue;
+    rows.push({
+      windowId,
+      pid: parseInt(m[3], 10) || 0,
+      wmClass: m[4],
+      title: (m[6] || '').trim(),
+    });
+  }
+  return rows;
+}
+
+export function isBrowserWindowClass(wmClass: string): boolean {
+  return /chrom(e|ium)/i.test(String(wmClass || ''));
+}
+
+/** Parse `xprop -id W _NET_WM_STATE _NET_WM_WINDOW_TYPE`. */
+export function parseWindowProps(stdout: string): WindowProps {
+  const text = String(stdout || '');
+  const typeLine = text.split('\n').find((l) => l.startsWith('_NET_WM_WINDOW_TYPE(')) || '';
+  return {
+    hidden: text.includes('_NET_WM_STATE_HIDDEN'),
+    skipTaskbar: text.includes('_NET_WM_STATE_SKIP_TASKBAR'),
+    // No type published means a plain top-level window.
+    normal: !typeLine || typeLine.includes('_NET_WM_WINDOW_TYPE_NORMAL'),
+  };
+}
+
+/**
+ * Split a Chromium window title into the page title and, when Chromium shows
+ * one (it does once more than one profile exists), the profile name.
+ * Handles both "Page - Chromium - Work" and "Page - Work - Chromium".
+ */
+export function parseBrowserTitle(
+  raw: string,
+  profileNames: string[] = [],
+): { page: string; profileName: string | null } {
+  const original = String(raw || '').trim();
+  let segs = original.split(' - ');
+  let profileName: string | null = null;
+
+  let appIdx = -1;
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (APP_NAMES.includes(segs[i].trim())) { appIdx = i; break; }
+  }
+  if (appIdx >= 0) {
+    const after = segs.slice(appIdx + 1).join(' - ').trim();
+    if (after) profileName = after;
+    segs = segs.slice(0, appIdx);
+  }
+  if (!profileName && segs.length > 1) {
+    const last = segs[segs.length - 1].trim();
+    if (profileNames.includes(last)) {
+      profileName = last;
+      segs = segs.slice(0, -1);
+    }
+  }
+  const page = segs.join(' - ').trim() || original || 'Chromium';
+  return { page, profileName };
+}
+
+/** Profiles Chromium knows about, from `<user-data-dir>/Local State`. */
+export function parseLocalState(json: string): ChromeProfileEntry[] {
+  try {
+    const state = JSON.parse(json) as { profile?: { info_cache?: Record<string, { name?: string }> } };
+    const cache = state?.profile?.info_cache || {};
+    return Object.keys(cache).map((dir) => ({ dir, name: String(cache[dir]?.name || dir) }));
+  } catch {
+    return [];
+  }
+}
+
+/** Pull --user-data-dir / --profile-directory out of /proc/<pid>/cmdline. */
+export function parseChromeCmdline(cmdline: string): { userDataDir?: string; profileDirectory?: string } {
+  const out: { userDataDir?: string; profileDirectory?: string } = {};
+  const unquote = (v: string) => v.replace(/^"|"$/g, '');
+  for (const arg of String(cmdline || '').split('\0')) {
+    if (arg.startsWith('--user-data-dir=')) out.userDataDir = unquote(arg.slice('--user-data-dir='.length));
+    else if (arg.startsWith('--profile-directory=')) out.profileDirectory = unquote(arg.slice('--profile-directory='.length));
+  }
+  return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Manager
+// ───────────────────────────────────────────────────────────────────────────
 
 export class BrowserWindowManager {
   private static sessions = new Map<string, BrowserWindowInfo>();
 
-  /**
-   * Register or update a browser session.
-   */
+  /** Register or update a browser session (used by callers that own one). */
   static register(info: Partial<BrowserWindowInfo> & { id: string }): BrowserWindowInfo {
     const existing = this.sessions.get(info.id);
     const updated: BrowserWindowInfo = {
       id: info.id,
       profileId: info.profileId || existing?.profileId || 'default',
-      profileName: info.profileName || existing?.profileName || 'Default Profile',
+      profileName: info.profileName || existing?.profileName || DEFAULT_PROFILE_LABEL,
       title: info.title || existing?.title || 'Chromium',
       state: info.state || existing?.state || 'active',
       windowId: info.windowId || existing?.windowId,
       pid: info.pid || existing?.pid,
+      focused: info.focused ?? existing?.focused,
+      source: info.source || existing?.source || 'registered',
       updatedAt: Date.now(),
     };
     this.sessions.set(info.id, updated);
     return updated;
   }
 
-  /**
-   * Remove a session when closed.
-   */
   static unregister(id: string): boolean {
     return this.sessions.delete(id);
   }
 
-  /**
-   * Get a single window session by id.
-   */
   static get(id: string): BrowserWindowInfo | null {
     return this.sessions.get(id) || null;
   }
 
-  /**
-   * Query X11 for window IDs belonging to Chromium/Chrome on the current DISPLAY.
-   */
-  private static async findX11Windows(display?: string): Promise<Array<{ id: string; pid: number; title: string; minimized: boolean }>> {
-    const disp = display || Desktop.display;
-    const env = { ...process.env, DISPLAY: disp };
-    const results: Array<{ id: string; pid: number; title: string; minimized: boolean }> = [];
+  private static env(): NodeJS.ProcessEnv {
+    return { ...process.env, DISPLAY: Desktop.display };
+  }
 
+  private static async run(cmd: string, args: string[], timeout = 2000): Promise<string | null> {
     try {
-      // wmctrl -l -p -x gives: <win_id> <desktop> <pid> <class> <client> <title>
-      const { stdout } = await execFileAsync('wmctrl', ['-l', '-p', '-x'], { env, timeout: 2000 });
-      for (const line of stdout.split('\n')) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length < 5) continue;
-        const winId = parts[0];
-        const pid = parseInt(parts[2], 10);
-        const winClass = (parts[3] || '').toLowerCase();
-        const title = parts.slice(5).join(' ');
-
-        if (winClass.includes('chromium') || winClass.includes('chrome') || winClass.includes('google-chrome')) {
-          let minimized = false;
-          try {
-            const { stdout: xpropOut } = await execFileAsync('xprop', ['-id', winId, '_NET_WM_STATE'], { env, timeout: 1000 });
-            if (xpropOut.includes('_NET_WM_STATE_HIDDEN')) {
-              minimized = true;
-            }
-          } catch {
-            // xprop failed, assume visible
-          }
-          results.push({ id: winId, pid, title, minimized });
-        }
-      }
+      const { stdout } = await execFileAsync(cmd, args, { env: this.env(), timeout });
+      return String(stdout);
     } catch {
-      // wmctrl not installed or X server unavailable
+      return null;
     }
+  }
 
-    return results;
+  private static async activeWindowId(): Promise<string> {
+    const out = await this.run('xprop', ['-root', '_NET_ACTIVE_WINDOW'], 1000);
+    const m = out ? out.match(/#\s*(0x[0-9a-fA-F]+)/) : null;
+    return m ? normalizeWindowId(m[1]) : '';
+  }
+
+  private static async windowProps(windowId: string): Promise<WindowProps> {
+    const out = await this.run('xprop', ['-id', windowId, '_NET_WM_STATE', '_NET_WM_WINDOW_TYPE'], 1000);
+    return out === null ? { hidden: false, skipTaskbar: false, normal: true } : parseWindowProps(out);
+  }
+
+  private static async readCmdline(pid: number): Promise<{ userDataDir?: string; profileDirectory?: string }> {
+    if (!pid) return {};
+    try {
+      return parseChromeCmdline(await fs.readFile(`/proc/${pid}/cmdline`, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  private static async readProfiles(userDataDir: string): Promise<ChromeProfileEntry[]> {
+    try {
+      return parseLocalState(await fs.readFile(path.join(userDataDir, 'Local State'), 'utf8'));
+    } catch {
+      return [];
+    }
   }
 
   /**
-   * List all known browser windows, auto-syncing with RealChrome and X11 if available.
+   * Every managed top-level browser window on the display, or null when the
+   * window tools / X server are not available.
+   */
+  private static async scanX11(): Promise<BrowserWindowInfo[] | null> {
+    const listing = await this.run('wmctrl', ['-l', '-p', '-x']);
+    if (listing === null) return null;
+
+    const rows = parseWmctrlList(listing).filter((r) => isBrowserWindowClass(r.wmClass));
+    const active = await this.activeWindowId();
+    const defaultDir = config.REAL_CHROME_USER_DATA_DIR ? path.resolve(config.REAL_CHROME_USER_DATA_DIR) : '';
+    const profileCache = new Map<string, ChromeProfileEntry[]>();
+    const out: BrowserWindowInfo[] = [];
+
+    for (const row of rows) {
+      const props = await this.windowProps(row.windowId);
+      if (!props.normal || props.skipTaskbar) continue; // menus, bubbles, popups
+
+      const cmd = await this.readCmdline(row.pid);
+      const udd = cmd.userDataDir ? path.resolve(cmd.userDataDir) : defaultDir;
+      let profiles = profileCache.get(udd);
+      if (!profiles) {
+        profiles = udd ? await this.readProfiles(udd) : [];
+        profileCache.set(udd, profiles);
+      }
+
+      const parsed = parseBrowserTitle(row.title, profiles.map((p) => p.name));
+      const separateInstance = !!(udd && defaultDir && udd !== defaultDir);
+      const instancePrefix = separateInstance ? `${path.basename(udd)}/` : '';
+
+      let dir = 'Default';
+      let label = '';
+      if (parsed.profileName) {
+        const hit = profiles.find((p) => p.name === parsed.profileName);
+        dir = hit?.dir || parsed.profileName;
+        label = parsed.profileName;
+      } else if (cmd.profileDirectory) {
+        dir = cmd.profileDirectory;
+        label = profiles.find((p) => p.dir === dir)?.name || dir;
+      }
+      if (dir === 'Default') label = DEFAULT_PROFILE_LABEL;
+      if (separateInstance) label = `${path.basename(udd)} · ${label}`;
+
+      out.push({
+        id: row.windowId,
+        windowId: row.windowId,
+        pid: row.pid || undefined,
+        profileId: instancePrefix + dir,
+        profileName: label,
+        title: parsed.page,
+        state: props.hidden ? 'minimized' : 'active',
+        focused: !props.hidden && active === row.windowId,
+        source: 'x11',
+        updatedAt: Date.now(),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * All open browser windows for Task View: one entry per window, across every
+   * profile, each marked active or minimized.
    */
   static async list(): Promise<BrowserWindowInfo[]> {
-    // 1. Sync from RealChrome if active
-    if (RealChrome.isRunning()) {
+    const x11 = await this.scanX11().catch(() => null);
+
+    // Windows are re-read every time: one that is gone has been closed.
+    for (const [id, s] of Array.from(this.sessions.entries())) {
+      if (s.source === 'x11') this.sessions.delete(id);
+    }
+
+    if (x11 && x11.length > 0) {
+      this.sessions.delete(PLACEHOLDER_ID);
+      for (const w of x11) this.sessions.set(w.id, w);
+    } else if (RealChrome.isRunning()) {
+      // Browser is up but its windows are not visible to us (no window tools,
+      // or headless). Show one honest card rather than nothing.
       let pageTitle = 'Chromium';
       try {
         const tabs = await RealChrome.tabs();
-        if (tabs.length > 0 && tabs[0].title) {
-          pageTitle = tabs[0].title;
-        }
+        if (tabs.length > 0 && tabs[0].title) pageTitle = tabs[0].title;
       } catch {
-        // use default title
+        // keep default title
       }
-
-      const defaultSession = this.sessions.get('default') || this.sessions.get('session_default');
-      if (!defaultSession) {
-        this.register({
-          id: 'default',
-          profileId: 'default',
-          profileName: 'Default Profile',
-          title: pageTitle,
-          state: 'active',
-        });
-      } else {
-        defaultSession.title = pageTitle;
-      }
+      this.register({ id: PLACEHOLDER_ID, profileId: 'default', profileName: DEFAULT_PROFILE_LABEL, title: pageTitle });
+    } else {
+      this.sessions.delete(PLACEHOLDER_ID);
     }
 
-    // 2. Sync states with X11 windows if on live desktop
-    const x11Windows = await this.findX11Windows().catch(() => []);
-    if (x11Windows.length > 0) {
-      for (const win of x11Windows) {
-        let matched = false;
-        for (const session of this.sessions.values()) {
-          if (session.windowId === win.id || (session.pid && session.pid === win.pid)) {
-            session.windowId = win.id;
-            session.state = win.minimized ? 'minimized' : 'active';
-            if (win.title && !session.title) session.title = win.title;
-            matched = true;
-            break;
-          }
-        }
-        if (!matched && this.sessions.size > 0) {
-          const first = Array.from(this.sessions.values())[0];
-          if (!first.windowId) {
-            first.windowId = win.id;
-            first.state = win.minimized ? 'minimized' : 'active';
-            matched = true;
-          }
-        }
-      }
-    }
-
-    return Array.from(this.sessions.values()).filter((s) => s.state !== 'closed');
+    const isDefault = (s: BrowserWindowInfo) => (s.profileId === 'Default' || s.profileId === 'default' ? 0 : 1);
+    return Array.from(this.sessions.values())
+      .filter((s) => s.state !== 'closed')
+      .sort((a, b) => isDefault(a) - isDefault(b) || a.profileName.localeCompare(b.profileName) || a.id.localeCompare(b.id));
   }
 
-  /**
-   * Minimize a browser window by ID.
-   */
+  private static async resolve(id: string): Promise<BrowserWindowInfo | null> {
+    const key = normalizeWindowId(id) && id.startsWith('0x') ? normalizeWindowId(id) : id;
+    let session = this.sessions.get(key) || null;
+    if (!session || session.source === 'x11') {
+      await this.list();
+      session = this.sessions.get(key) || null;
+    }
+    return session;
+  }
+
+  /** Minimize (iconify) a browser window. */
   static async minimize(id: string): Promise<BrowserWindowInfo | null> {
-    const session = this.sessions.get(id);
+    const session = await this.resolve(id);
     if (!session) return null;
 
-    const env = { ...process.env, DISPLAY: Desktop.display };
     if (session.windowId) {
-      try {
-        await execFileAsync('xdotool', ['windowminimize', session.windowId], { env, timeout: 2000 });
-      } catch {
-        try {
-          await execFileAsync('wmctrl', ['-i', '-r', session.windowId, '-b', 'add,hidden'], { env, timeout: 2000 });
-        } catch {
-          // Fallback if xdotool/wmctrl not present
-        }
-      }
+      const ok = (await this.run('xdotool', ['windowminimize', session.windowId])) !== null;
+      if (!ok) throw new Error('Could not minimize the window: xdotool is not available on this display.');
     }
-
     session.state = 'minimized';
+    session.focused = false;
     session.updatedAt = Date.now();
     return session;
   }
 
-  /**
-   * Restore and focus a browser window by ID.
-   */
+  /** Restore (un-minimize), raise and focus a browser window. */
   static async restore(id: string): Promise<BrowserWindowInfo | null> {
-    const session = this.sessions.get(id);
+    const session = await this.resolve(id);
     if (!session) return null;
 
-    const env = { ...process.env, DISPLAY: Desktop.display };
     if (session.windowId) {
-      try {
-        // wmctrl -i -a <winId> un-minimizes (un-iconifies) and raises + focuses in Openbox
-        await execFileAsync('wmctrl', ['-i', '-a', session.windowId], { env, timeout: 2000 });
-      } catch {
-        try {
-          await execFileAsync('xdotool', ['windowactivate', session.windowId], { env, timeout: 2000 });
-        } catch {
-          // Fallback
-        }
-      }
+      // wmctrl -a de-iconifies, raises and focuses; xdotool is the fallback.
+      const ok =
+        (await this.run('wmctrl', ['-i', '-a', session.windowId])) !== null ||
+        (await this.run('xdotool', ['windowactivate', session.windowId])) !== null;
+      if (!ok) throw new Error('Could not restore the window: wmctrl/xdotool are not available on this display.');
     }
-
+    for (const s of this.sessions.values()) s.focused = false;
     session.state = 'active';
+    session.focused = true;
     session.updatedAt = Date.now();
     return session;
   }
 
-  /**
-   * Reset in-memory session state (primarily for unit tests).
-   */
+  /** Reset in-memory state (primarily for unit tests). */
   static clear(): void {
     this.sessions.clear();
   }
