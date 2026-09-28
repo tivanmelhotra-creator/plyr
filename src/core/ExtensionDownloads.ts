@@ -223,9 +223,20 @@ export function nextExtensionDownloadReports(arg: { waitMs: number; since: numbe
   return new Promise<unknown[]>((resolve) => {
     let done = false;
     const finish = (out: unknown[]): void => { if (!done) { done = true; resolve(out); } };
-    rec.waiters.push(() => finish(drain()));
+    // A waiter must (a) drain ONLY while its own poll is still open and (b) be
+    // removed when that poll ends by timeout. Before this, every quiet poll left
+    // its waiter behind; the next completed download woke those stale waiters
+    // FIRST, the oldest one drained the queue into a promise that had already
+    // resolved, and the report was silently lost. REPRODUCED
+    // (tests/unit/extension-download-poll.test.ts): export #1 arrives live,
+    // every export after the first quiet poll is dropped from the live path and
+    // only a later sweep (if any) could recover it.
+    const waiter = (): void => { if (!done) finish(drain()); };
+    rec.waiters.push(waiter);
     setTimeout(() => {
       if (done) return;
+      const at = rec.waiters.indexOf(waiter);
+      if (at >= 0) rec.waiters.splice(at, 1);
       try {
         api.search(
           { startedAfter: new Date(arg.since).toISOString(), orderBy: ['-startTime'], limit: 50 },
@@ -312,6 +323,17 @@ function normaliseReport(raw: unknown): ExtensionDownloadReport | null {
   };
 }
 
+/**
+ * Per-download trace of the extension export path, one line per stage:
+ * report -> handle decision -> adopt result. Off unless PLYR_TRACE_EXT_DOWNLOADS=1,
+ * so production logs are unchanged. Exists to answer "which stage stopped
+ * receiving export #N" from a real run.
+ */
+function trace(stage: string, id: number | string, detail: Record<string, unknown> = {}): void {
+  if (process.env.PLYR_TRACE_EXT_DOWNLOADS !== '1') return;
+  console.log(`[ExtensionDownloads][trace] ${stage} id=${id} ${JSON.stringify(detail)}`);
+}
+
 export class ExtensionDownloadBridge {
   private readonly handled = new Set<number>();
   private readonly handledOrder: number[] = [];
@@ -364,6 +386,7 @@ export class ExtensionDownloadBridge {
       return;                                              // worker already gone
     }
     if (!info || !info.ok) return;                         // no `downloads` permission
+    trace('worker-attached', '-', { url, extensionId: info.extensionId });
     if (info.extensionId) this.byExtension.set(info.extensionId, worker);
     worker.on('close', () => {
       if (info.extensionId && this.byExtension.get(info.extensionId) === worker) {
@@ -375,12 +398,16 @@ export class ExtensionDownloadBridge {
       let batch: unknown[];
       try {
         batch = await worker.evaluate(nextExtensionDownloadReports, { waitMs: this.pollMs, since: this.since });
-      } catch {
+      } catch (e) {
+        trace('worker-poll-ended', '-', { url, error: (e as Error)?.message || String(e) });
         return;   // worker stopped; a restart emits 'serviceworker' again
       }
       for (const raw of batch || []) {
         const r = normaliseReport(raw);
-        if (r) void this.handle(r);
+        if (r) {
+          trace('report', r.id, { url, state: r.state, byExtensionId: r.byExtensionId, filePath: r.filePath });
+          void this.handle(r);
+        }
       }
     }
   }
@@ -396,7 +423,7 @@ export class ExtensionDownloadBridge {
   async handle(r: ExtensionDownloadReport): Promise<ShelfEntry | null> {
     // Every extension with the `downloads` permission reports every download,
     // and a sweep may repeat one: the id is the identity.
-    if (this.handled.has(r.id)) return null;
+    if (this.handled.has(r.id)) { trace('handle:duplicate-id', r.id); return null; }
     this.handled.add(r.id);
     this.handledOrder.push(r.id);
     if (this.handledOrder.length > 2000) this.handled.delete(this.handledOrder.shift()!);
@@ -406,6 +433,7 @@ export class ExtensionDownloadBridge {
     if (!isExtensionProduced(r)) {
       if (r.state === 'interrupted') this.shelf.spendFailedClaim([r.url, r.finalUrl].filter(Boolean).map(downloadUrlKey));
       else this.shelf.releaseClaim(r.filePath, [r.url, r.finalUrl]);
+      trace('handle:website-download', r.id);
       return null;
     }
 
@@ -417,7 +445,7 @@ export class ExtensionDownloadBridge {
       filePath: r.filePath,
       urls: [r.url, r.finalUrl],
       interrupted: r.state === 'interrupted',
-    })) return null;
+    })) { trace('handle:claimed-by-page', r.id); return null; }
 
     // The reporter may not be the extension that asked for the download; the
     // one that did is the one whose wrapper saw the filename.
@@ -443,7 +471,7 @@ export class ExtensionDownloadBridge {
           // Reported complete but not on disk: most often a sweep finding a
           // download some other consumer already took. Nothing to adopt, and
           // a failed row for it would be noise.
-          if (r.state === 'complete') return null;
+          if (r.state === 'complete') { trace('handle:file-missing', r.id, { sourcePath }); return null; }
         }
       }
     } else if (!isInside(this.opts.downloadsDir, sourcePath)) {
@@ -460,6 +488,7 @@ export class ExtensionDownloadBridge {
     }));
     this.chain = run.catch(() => { /* keep the chain alive */ });
     const entry = await run;
+    trace('adopted', r.id, { token: entry.token, name: entry.name, state: entry.state, workflowPath: entry.workflowPath || '', error: entry.error });
     if (entry.state === 'failed') {
       console.warn('[ExtensionDownloads] extension download failed:', entry.error, 'name=', entry.name);
     }

@@ -311,6 +311,67 @@ describe('Extension Download/Export reaches the Workflow Workspace', () => {
     expect(await fs.readFile(path.join(wfDir(), 'from_https.json'), 'utf8')).toBe('{"https":true}');
   });
 
+  // ── PR #52 regression: the FIRST export arrived, the next ones did not. ──
+  // The bridge here polls every 2 s (pollMs). Each export below is preceded by
+  // a quiet gap LONGER than one poll: that is what left stale waiters in the
+  // worker, and the next onChanged then lost its report to one of them. So
+  // before every export the REAL service worker is asked how many waiters it
+  // holds (one open poll = at most one), and the export must then reach the
+  // shelf and the workflow.
+  async function arrivesLive(name: string, fire: () => Promise<unknown>): Promise<ShelfEntry> {
+    await new Promise((r) => setTimeout(r, 2_600));   // > one quiet poll
+    const waiters = await worker!.evaluate(() => ((self as any).__plyrExtDl?.waiters || []).length);
+    expect(waiters).toBeLessThanOrEqual(1);
+    const known = new Set(shelf.list().map((x) => x.token));
+    const stem = name.replace(/\.[^.]+$/, '');
+    const t0 = Date.now();
+    await fire();
+    for (;;) {
+      const row = shelf.list().find((x) => !known.has(x.token) && x.state !== 'inProgress' && x.name.startsWith(stem));
+      if (row) return row;
+      if (Date.now() - t0 > 10_000) throw new Error(`${name} never reached the shelf`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  it('8. THREE consecutive service-worker exports, same filename, each arrives live', async (t) => {
+    skipIfUnavailable(t);
+    for (let i = 1; i <= 3; i++) {
+      const row = await arrivesLive('live_same.json',
+        () => worker!.evaluate((n) => (self as any).exportFile('live_same.json', `{"live":${n}}`), i));
+      expect(row.state).toBe('completed');
+      expect(row.source).toBe('extension');
+    }
+    expect((await wfFiles()).filter((f) => f.startsWith('live_same')))
+      .toEqual(['live_same (2).json', 'live_same (3).json', 'live_same.json']);
+  }, 60_000);
+
+  it('9. THREE consecutive service-worker exports of the SAME http URL each arrive live', async (t) => {
+    skipIfUnavailable(t);
+    for (let i = 0; i < 3; i++) {
+      const row = await arrivesLive('live_http.json',
+        () => worker!.evaluate((u) => (self as any).exportUrl(u, 'live_http.json'), `${base}/export.json`));
+      expect(row.state).toBe('completed');
+    }
+    expect((await wfFiles()).filter((f) => f.startsWith('live_http')))
+      .toEqual(['live_http (2).json', 'live_http (3).json', 'live_http.json']);
+  }, 60_000);
+
+  it('10. THREE consecutive extension-TAB exports, same filename, each filed exactly once', async (t) => {
+    skipIfUnavailable(t);
+    const tab = await ctx!.newPage();
+    await tab.goto(`chrome-extension://${extId}/popup.html`);
+    for (let i = 1; i <= 3; i++) {
+      await arrivesLive('live_tab.json',
+        () => tab.evaluate((n) => (window as any).exportFromTab('live_tab.json', `{"tab":${n}}`), i));
+    }
+    await new Promise((r) => setTimeout(r, 2_500));   // let any duplicate report arrive
+    expect((await wfFiles()).filter((f) => f.startsWith('live_tab')))
+      .toEqual(['live_tab (2).json', 'live_tab (3).json', 'live_tab.json']);
+    expect(shelf.list().filter((x) => x.name.startsWith('live_tab'))).toHaveLength(3);
+    await tab.close();
+  }, 60_000);
+
   it('6. nothing is duplicated and no nameless GUID is left behind', async (t) => {
     skipIfUnavailable(t);
     await new Promise((r) => setTimeout(r, 2500));   // one more poll cycle + sweep
@@ -320,12 +381,15 @@ describe('Extension Download/Export reaches the Workflow Workspace', () => {
       ...(tlsUnavailable ? [] : ['from_https.json']),
       'from_tab.json', 'http_same (2).json', 'http_same (3).json', 'http_same.json',
       'report.csv', 'same (2).json', 'same (3).json', 'same.json', 'tab_http.json',
+      'live_same.json', 'live_same (2).json', 'live_same (3).json',
+      'live_http.json', 'live_http (2).json', 'live_http (3).json',
+      'live_tab.json', 'live_tab (2).json', 'live_tab (3).json',
     ].sort();
     expect(files).toEqual(expected);
     expect(shelf.list()).toHaveLength(expected.length);
     // Every service-worker GUID was MOVED to the shelf, not left to pile up.
     const left = await fs.readdir(config.DOWNLOADS_DIR);
-    const unclaimedSw = left.length - 3;   // the page + two tab downloads are Playwright's artifacts
+    const unclaimedSw = left.length - 6;   // the page + five tab downloads are Playwright's artifacts
     expect(unclaimedSw).toBe(0);
   });
 
