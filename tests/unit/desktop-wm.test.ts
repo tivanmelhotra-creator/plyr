@@ -80,17 +80,24 @@ describe('displayIsManaged', () => {
 });
 
 describe('openboxArgs', () => {
-  it('points openbox to the custom rc.xml enforcing titleLayout LC', async () => {
+  it('points openbox to the custom rc.xml', async () => {
     const args = await Desktop.openboxArgs();
     expect(args).toContain('--config-file');
     expect(args[args.indexOf('--config-file') + 1]).toMatch(/openbox-rc\.xml$/);
   });
 
-  it('verifies openbox-rc.xml removes Minimize and Maximize buttons leaving only LC', async () => {
+  it('keeps the full title bar: Minimize, Maximize and Close (NLIMC) all wired', async () => {
     const rcPath = path.resolve(__dirname, '../../scripts/openbox-rc.xml');
     const content = await fs.readFile(rcPath, 'utf8');
-    expect(content).toContain('<titleLayout>LC</titleLayout>');
-    expect(content).not.toMatch(/<titleLayout>.*[IM].*<\/titleLayout>/);
+    expect(content).toContain('<titleLayout>NLIMC</titleLayout>');
+
+    const block = (name: string) => {
+      const m = content.match(new RegExp(`<context name="${name}">([\\s\\S]*?)</context>`));
+      return m ? m[1] : '';
+    };
+    expect(block('Iconify')).toContain('<action name="Iconify"/>');
+    expect(block('Maximize')).toContain('<action name="ToggleMaximize"/>');
+    expect(block('Close')).toContain('<action name="Close"/>');
   });
 });
 
@@ -136,4 +143,3 @@ describe('ensureSystemTitlebar', () => {
     }
   });
 });
-

@@ -58,6 +58,11 @@ WORKDIR /app
 # is the window manager that maps the Chrome window (an unmanaged X session
 # leaves it unmapped and the view stays blank).
 #
+# wmctrl + xdotool + x11-utils (xprop) power the viewer's Task View: listing
+# every browser window across profiles, telling active from minimized, and
+# restoring/focusing one. Without them every call fails silently and Task View
+# can only ever show a single placeholder card.
+#
 # Installed at build time on purpose: the server CAN provision these itself at
 # runtime (DESKTOP_AUTO_PROVISION), but doing it in the image means the first
 # request is fast, works offline, and cannot fail behind a corporate proxy.
@@ -67,7 +72,7 @@ USER root
 # hanging the image build until the CI timeout.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
-      xvfb x11vnc websockify novnc openbox \
+      xvfb x11vnc websockify novnc openbox wmctrl xdotool x11-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # Bring in only what we need to run
