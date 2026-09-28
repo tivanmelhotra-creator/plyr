@@ -63,6 +63,7 @@ import {
   REAL_CHROME_SHELF_USER,
   type ShelfEntry,
 } from './RealChromeShelf';
+import { ExtensionDownloadBridge } from './ExtensionDownloads';
 import { type PendingChooser } from './RemoteFileChooser';
 import { FileChooserService } from './FileChooserService';
 import {
@@ -703,6 +704,14 @@ export class RealChrome {
   private static shelf: RealChromeShelf | null = null;
 
   /**
+   * Extension Download/Export. An extension's service worker downloads with no
+   * page, so `page.on('download')` never fires and the shelf never hears of
+   * it; this bridge observes those downloads from inside the extension and
+   * hands them to the SAME shelf. See core/ExtensionDownloads.
+   */
+  private static extensionDownloads: ExtensionDownloadBridge | null = null;
+
+  /**
    * The file dialogs this browser opens.
    *
    * Also not optional, and for the mirror-image reason. Without an interceptor
@@ -1213,6 +1222,13 @@ export class RealChrome {
       // away when the context closes, which is the bug this fixes.
       this.shelf = new RealChromeShelf(REAL_CHROME_SHELF_USER);
       this.shelf.watch(context);
+      // Extension exports feed the same shelf. Awaited for the init script that
+      // records the filename an extension PAGE asks for; before any navigation,
+      // like the shelf itself.
+      this.extensionDownloads = new ExtensionDownloadBridge(this.shelf, {
+        downloadsDir: config.DOWNLOADS_DIR,
+      });
+      await this.extensionDownloads.watch(context);
 
       // And for the same reason, before anyone can press a page's "Choose file":
       // an un-intercepted chooser opens a native dialog onto the SERVER's disk,
@@ -1235,6 +1251,8 @@ export class RealChrome {
         // they were claimed with saveAs into the user's download directory and
         // are fetched by token, so a link already handed out keeps working.
         this.shelf = null;
+        this.extensionDownloads?.dispose();
+        this.extensionDownloads = null;
         // A pending dialog, by contrast, cannot outlive its browser: the page
         // that asked is gone, so keeping the row would have the view prompting
         // for a file with nowhere to put it.

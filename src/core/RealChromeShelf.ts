@@ -59,6 +59,7 @@ import {
   sweepDownloads,
   discardDownload,
   MAX_DOWNLOAD_BYTES,
+  nameFromUrl,
 } from './RemoteDownloads';
 import { safeFileName, extensionOf } from './RemoteUploads';
 import { DownloadHeaderIndex } from './DownloadHeaders';
@@ -78,6 +79,37 @@ export interface ShelfEntry {
   at: number;
   /** Where the workflow's own copy went (`downloads/<name>`), when bound. */
   workflowPath?: string;
+  /**
+   * Set when the browser WAS bound to a workflow but the copy into
+   * `<workflow>/downloads/` failed. The shelf copy is still safe, but a row
+   * that silently lacked its workflow copy is exactly the "downloaded, yet not
+   * in the workspace" report, so the failure is now visible on the row.
+   */
+  workflowError?: string;
+  /**
+   * `extension` for a file an EXTENSION produced (see core/ExtensionDownloads);
+   * absent for an ordinary page download. Informational only: both kinds go
+   * through the same naming, cap and workflow-persist steps below.
+   */
+  source?: 'extension';
+}
+
+/**
+ * A finished download that reached the shelf WITHOUT a Playwright `Download`
+ * object — i.e. one Chrome performed on behalf of an extension's service
+ * worker, which has no page and therefore never emits `page.on('download')`.
+ * See core/ExtensionDownloads for the measurement.
+ */
+export interface AdoptedDownload {
+  /** Where Chrome itself wrote the bytes (a bare GUID under DOWNLOADS_DIR). */
+  sourcePath: string;
+  url: string;
+  /** The `filename` the extension passed to `chrome.downloads.download`. */
+  requestedName: string;
+  /** Chrome's own `DownloadItem.mime`. */
+  contentType: string;
+  /** Non-empty when Chrome reported the download as interrupted. */
+  error: string;
 }
 
 /** Newest-first, capped: a page in a download loop must not grow this forever. */
@@ -182,6 +214,141 @@ export class RealChromeShelf {
    */
   private readonly headers = new DownloadHeaderIndex();
 
+  /**
+   * Downloads Playwright handed us, so a second observer does not file them
+   * twice.
+   *
+   * WHY THIS EXISTS: core/ExtensionDownloads watches `chrome.downloads` from
+   * inside the extensions, and that API sees EVERY download in the profile.
+   * A download an extension TAB starts arrives here through
+   * `page.on('download')` AND is later reported by the bridge; it must be
+   * filed once.
+   *
+   * WHY BY FILE AND NOT BY URL: a URL is not the identity of a download. The
+   * first version of this spent one "credit" per URL, and a website download
+   * of `https://host/export.json` left a credit that nobody ever spent (the
+   * bridge ignores website downloads). A service-worker export of the SAME
+   * http(s) URL a few seconds later then looked "already claimed" and was
+   * dropped: bytes finished on disk under a GUID, and never reached the
+   * workflow. data:/blob: exports hid the bug because their URL is new every
+   * time. MEASURED: Chrome's `DownloadItem.filename` and Playwright's
+   * `Download.path()` are the SAME absolute path (`<downloadsPath>/<guid>`),
+   * so that path is the identity used here.
+   */
+  private readonly claimedFiles = new Map<string, number>();
+  /** Tracked downloads whose path is not known yet, by URL key. */
+  private readonly pendingPaths = new Map<string, Set<Promise<string>>>();
+  /**
+   * Tracked downloads that FAILED (no path exists for them), by URL key: an
+   * interrupted report can only be matched by URL. Spent by every interrupted
+   * report of that URL, website ones included, so none goes stale.
+   */
+  private readonly failedClaims = new Map<string, number[]>();
+  static readonly CLAIM_TTL_MS = 10 * 60 * 1000;
+
+  /**
+   * Was this finished download already taken by `track()`? Spends the claim
+   * when it was. Waits (bounded) for a tracked download of the same URL whose
+   * path is still being resolved, so the answer does not depend on which of
+   * the two observers heard about completion first.
+   */
+  async claimedByPage(
+    report: { filePath: string; urls: string[]; interrupted: boolean },
+    waitMs = 5_000,
+  ): Promise<boolean> {
+    this.pruneClaims();
+    const keys = report.urls.filter(Boolean).map(downloadUrlKey);
+    if (report.interrupted) return this.spendFailedClaim(keys);
+    const file = report.filePath ? path.resolve(report.filePath) : '';
+    if (!file) return false;
+    if (this.claimedFiles.delete(file)) return true;
+    const pending = keys.flatMap((k) => [...(this.pendingPaths.get(k) || [])]);
+    if (!pending.length) return false;
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise((res) => setTimeout(res, waitMs)),
+    ]);
+    return this.claimedFiles.delete(file);
+  }
+
+  /** Forget a website download's claim once the bridge has seen it complete. */
+  releaseClaim(filePath: string): void {
+    if (filePath) this.claimedFiles.delete(path.resolve(filePath));
+  }
+
+  /** Spend one failed-download claim for any of these URL keys. */
+  spendFailedClaim(keys: string[]): boolean {
+    const now = Date.now();
+    for (const k of keys) {
+      const list = (this.failedClaims.get(k) || []).filter((at) => now - at < RealChromeShelf.CLAIM_TTL_MS);
+      if (list.length) {
+        list.shift();
+        if (list.length) this.failedClaims.set(k, list); else this.failedClaims.delete(k);
+        return true;
+      }
+      this.failedClaims.delete(k);
+    }
+    return false;
+  }
+
+  private pruneClaims(): void {
+    const now = Date.now();
+    for (const [f, at] of this.claimedFiles) {
+      if (now - at >= RealChromeShelf.CLAIM_TTL_MS) this.claimedFiles.delete(f);
+    }
+    // Bounded: a page in a download loop must not grow this forever.
+    while (this.claimedFiles.size > 2000) {
+      const oldest = this.claimedFiles.keys().next().value;
+      if (oldest === undefined) break;
+      this.claimedFiles.delete(oldest);
+    }
+  }
+
+  /**
+   * Remember the file Chrome writes for a tracked download. `path()` resolves
+   * when the download finishes (the same moment the bridge's report is sent),
+   * so it is recorded as pending first and the bridge waits for it.
+   */
+  private registerClaim(dl: Download, rawUrl: string): void {
+    const key = downloadUrlKey(rawUrl || '');
+    let pathOf: Promise<string>;
+    try {
+      pathOf = Promise.resolve(dl.path()).then((p) => (p ? path.resolve(p) : ''), () => '');
+    } catch {
+      pathOf = Promise.resolve('');
+    }
+    const set = this.pendingPaths.get(key) || new Set<Promise<string>>();
+    set.add(pathOf);
+    this.pendingPaths.set(key, set);
+    void pathOf.then((p) => {
+      if (p) {
+        this.claimedFiles.set(p, Date.now());
+      } else if (rawUrl) {
+        const list = this.failedClaims.get(key) || [];
+        list.push(Date.now());
+        this.failedClaims.set(key, list);
+        if (this.failedClaims.size > 500) {
+          const oldest = this.failedClaims.keys().next().value;
+          if (oldest !== undefined) this.failedClaims.delete(oldest);
+        }
+      }
+      set.delete(pathOf);
+      if (!set.size && this.pendingPaths.get(key) === set) this.pendingPaths.delete(key);
+      this.pruneClaims();
+    });
+  }
+
+  /**
+   * One workflow persist at a time.
+   *
+   * `WorkflowStorage.importFile` picks `name (2).ext` when `name.ext` exists,
+   * but that is check-then-rename: two exports of the same filename finishing
+   * together could both see the name as free and the second would replace the
+   * first. Serialising the (fast, local) copy makes "same filename, several
+   * times" deterministic: `a.json`, `a (2).json`, `a (3).json`.
+   */
+  private persistChain: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly userId: string) {}
 
   /** Declarations remembered so far. For tests and diagnostics. */
@@ -253,12 +420,24 @@ export class RealChromeShelf {
   async track(dl: Download): Promise<ShelfEntry> {
     const url = (() => { try { return dl.url(); } catch { return ''; } })();
 
+    // Claimed from the very first moment, so the extension bridge — which only
+    // hears about a download when it COMPLETES — never adopts it a second time.
+    // By Chrome's own file, not by URL: see `claimedFiles`.
+    this.registerClaim(dl, url);
+
     // What the WEBSITE said this file is called, which is the answer whenever it
     // exists: 40/40 correct against suggestedFilename()'s 25/40. Chrome's guess
     // is only the fallback — it reports the literal string `download` for every
     // RFC 5987 and raw-UTF-8 name, which is the reported bug.
     const declared = this.headers.lookup(url);
-    const chosen = preferDeclaredName(declared?.name || '', String(dl.suggestedFilename() || ''));
+    // An EXTENSION page (a popup opened as a tab) that exports through
+    // `chrome.downloads.download({ url: blob:…, filename })` does reach
+    // `page.on('download')`, but MEASURED the filename it asked for is lost:
+    // suggestedFilename() is `b473cc79-….json`, a GUID. The extension's own
+    // request is recorded by core/ExtensionDownloads and wins when present.
+    const requested = await requestedNameFromExtensionPage(dl, url);
+    const chosen = requested
+      || preferDeclaredName(declared?.name || '', String(dl.suggestedFilename() || ''));
     // Sanitised BEFORE it reaches a filesystem or the UI, wherever it came from:
     // a name carrying a bidi override can make `report.exe` read as `report.txt`
     // on the shelf.
@@ -279,39 +458,7 @@ export class RealChromeShelf {
     try {
       const target = await downloadPathFor(this.userId, entry.token, suggested);
       await this.claimBytes(dl, target);
-
-      // Chrome could not always name the FORMAT. A site that streams bytes with
-      // no filename and no Content-Disposition leaves suggestedFilename() with
-      // no extension at all — measured here as a bare GUID. The bytes are on
-      // disk now, so the format can be identified from them, and the response's
-      // own Content-Type is passed as the last resort below that: for a format
-      // with no magic number (an .xlsx served as octet-stream, a .csv, an .rtf)
-      // the header is the ONLY evidence that exists.
-      const done = await finalizeDownloadName(target, url, declared?.contentType || '');
-      entry.name = done.name;
-      entry.size = done.size;
-      entry.state = 'completed';
-
-      if (entry.size > MAX_DOWNLOAD_BYTES) {
-        // Over the cap: delete it rather than silently keep a quarter-gigabyte
-        // the user never agreed to store, and say why instead of offering a
-        // link that will fail.
-        await discardDownload(this.userId, entry.token).catch(() => {});
-        entry.state = 'failed';
-        entry.error = 'download_too_large';
-      } else {
-        // THE WORKFLOW'S OWN COPY. The shelf is ephemeral (DOWNLOADS_DIR, TTL);
-        // a browser bound to a saved workflow also files the download under
-        // `<workflow>/downloads/`, which is the folder automation nodes read.
-        // Awaited so the row is only reported complete once both copies exist,
-        // but never fatal: the shelf copy is already safe. The binding is
-        // re-read from the store here (S16): after a restart, or on a pm2
-        // worker that did not take the /bind, memory alone says "nothing".
-        const persisted = await persistDownload(await realChromeWorkflowForTransfer(), entry.name, done.path);
-        if (persisted) entry.workflowPath = persisted.path;
-      }
-
-      void sweepDownloads(this.userId).catch(() => { /* best-effort housekeeping */ });
+      await this.complete(entry, target, url, declared?.contentType || '');
     } catch (e) {
       // A failed download must SAY so. A row stuck at "in progress" forever is
       // how a user ends up waiting for something that will never arrive.
@@ -325,6 +472,105 @@ export class RealChromeShelf {
     // behind for the retry either.
     this.headers.forget(url);
     return entry;
+  }
+
+  /**
+   * Put a download Playwright never reported onto the shelf — through the SAME
+   * steps `track()` uses.
+   *
+   * This is the Extension Download/Export path. MEASURED (see
+   * core/ExtensionDownloads): `chrome.downloads.download()` called from an
+   * extension's service worker writes the bytes to DOWNLOADS_DIR as a bare GUID
+   * and emits NO `page.on('download')`, because a service worker is not a page.
+   * The browser says "downloaded", the GUID sits on the server's disk, and the
+   * workflow's `downloads/` never hears of it.
+   *
+   * Not a second download system: the bytes are MOVED into a token directory
+   * exactly like a claimed Playwright download, and then `complete()` names,
+   * caps and files them into `<workflow>/downloads/` identically.
+   */
+  async adopt(input: AdoptedDownload): Promise<ShelfEntry> {
+    const url = String(input.url || '');
+    const requested = String(input.requestedName || '');
+    // `safeFileName('')` is the placeholder `file`, never '' — so an empty
+    // request must not reach it (the Ask #13 bug, by a different road).
+    const suggested = (requested && safeFileName(requested))
+      || (isOpaqueUrl(url) ? 'download' : nameFromUrl(url));
+    const entry: ShelfEntry = {
+      token: mintDownloadToken(),
+      name: suggested,
+      url: displayUrl(url),
+      state: 'inProgress',
+      size: 0,
+      error: '',
+      at: Date.now(),
+      source: 'extension',
+    };
+    this.rows.push(entry);
+    if (this.rows.length > MAX_ROWS) this.rows.splice(0, this.rows.length - MAX_ROWS);
+
+    try {
+      if (input.error) throw new Error(`extension_download_interrupted: ${input.error}`);
+      if (!input.sourcePath) throw new Error('extension_download_missing_file');
+      const target = await downloadPathFor(this.userId, entry.token, suggested);
+      await moveFile(input.sourcePath, target);
+      // A data:/blob: URL has no path to borrow a suffix from — and worse,
+      // `extensionFromUrl('data:application/json;base64,…')` would read the
+      // payload as a path. Chrome's own MIME type is the honest evidence.
+      await this.complete(entry, target, isOpaqueUrl(url) ? '' : url, input.contentType || '');
+    } catch (e) {
+      entry.state = 'failed';
+      entry.error = (e as Error)?.message || 'download_failed';
+      // An interrupted download may still have left a partial GUID behind.
+      if (input.sourcePath) await fs.rm(input.sourcePath, { force: true }).catch(() => {});
+    }
+    return entry;
+  }
+
+  /**
+   * The shared tail of every download: name the format, enforce the cap, file
+   * the workflow copy. One implementation, so a page download and an extension
+   * export can never disagree about any of the three.
+   */
+  private async complete(entry: ShelfEntry, target: string, url: string, contentType: string): Promise<void> {
+    // Chrome could not always name the FORMAT. A site that streams bytes with
+    // no filename and no Content-Disposition leaves suggestedFilename() with
+    // no extension at all — measured here as a bare GUID. The bytes are on
+    // disk now, so the format can be identified from them, and the response's
+    // own Content-Type is passed as the last resort below that: for a format
+    // with no magic number (an .xlsx served as octet-stream, a .csv, an .rtf)
+    // the header is the ONLY evidence that exists.
+    const done = await finalizeDownloadName(target, url, contentType);
+    entry.name = done.name;
+    entry.size = done.size;
+    entry.state = 'completed';
+
+    if (entry.size > MAX_DOWNLOAD_BYTES) {
+      // Over the cap: delete it rather than silently keep a quarter-gigabyte
+      // the user never agreed to store, and say why instead of offering a
+      // link that will fail.
+      await discardDownload(this.userId, entry.token).catch(() => {});
+      entry.state = 'failed';
+      entry.error = 'download_too_large';
+    } else {
+      // THE WORKFLOW'S OWN COPY. The shelf is ephemeral (DOWNLOADS_DIR, TTL);
+      // a browser bound to a saved workflow also files the download under
+      // `<workflow>/downloads/`, which is the folder automation nodes read.
+      // Awaited so the row is only reported complete once both copies exist,
+      // but never fatal: the shelf copy is already safe. The binding is
+      // re-read from the store here (S16): after a restart, or on a pm2
+      // worker that did not take the /bind, memory alone says "nothing".
+      const run = this.persistChain.then(async () => {
+        const ref = await realChromeWorkflowForTransfer();
+        const persisted = await persistDownload(ref, entry.name, done.path);
+        if (persisted) entry.workflowPath = persisted.path;
+        else if (ref) entry.workflowError = 'workflow_persist_failed';
+      });
+      this.persistChain = run.catch(() => { /* keep the chain alive */ });
+      await run;
+    }
+
+    void sweepDownloads(this.userId).catch(() => { /* best-effort housekeeping */ });
   }
 
   /**
@@ -369,4 +615,91 @@ export class RealChromeShelf {
       }
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers for extension-produced downloads
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The identity of a download URL for de-duplication, bounded in size.
+ *
+ * A `data:` URL IS the file and can be megabytes long; the extension bridge
+ * reports it from inside the browser, so it is shortened there by the SAME
+ * rule (installExtensionDownloadObserver) and both sides must agree exactly.
+ * Short URLs are themselves; long ones keep a prefix, their length and a
+ * 32-bit FNV-1a of the whole string.
+ */
+export function downloadUrlKey(u: string): string {
+  const s = String(u || '');
+  if (s.length <= 4096) return s;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return s.slice(0, 2048) + '#len=' + s.length + '#fnv=' + h.toString(16);
+}
+
+/** `data:` and `blob:` URLs carry no path a filename or suffix may come from. */
+function isOpaqueUrl(url: string): boolean {
+  return /^(data|blob):/i.test(String(url || ''));
+}
+
+/**
+ * A `data:` URL is the whole file, and can be megabytes long. The shelf row
+ * only needs to say where the file came from, so it keeps the scheme and type.
+ */
+function displayUrl(url: string): string {
+  const s = String(url || '');
+  if (/^data:/i.test(s)) return s.slice(0, s.indexOf(',') > 0 ? s.indexOf(',') : 64).slice(0, 128);
+  return s.length > 2048 ? s.slice(0, 2048) : s;
+}
+
+/**
+ * MOVE Chrome's GUID file into its token directory.
+ *
+ * A move and not a copy: nobody else owns this file (Playwright never saw the
+ * download, so it will not clean it up), and leaving it would accumulate
+ * nameless files in DOWNLOADS_DIR forever. `rename` first; across filesystems
+ * (DOWNLOADS_TMP_DIR may live elsewhere) fall back to copy + unlink.
+ */
+async function moveFile(src: string, dest: string): Promise<void> {
+  try {
+    await fs.rename(src, dest);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== 'EXDEV') throw e;
+    await fs.copyFile(src, dest);
+    await fs.rm(src, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * The filename an extension PAGE asked `chrome.downloads.download` for, if the
+ * download came from one. Recorded in the page by the init script installed by
+ * core/ExtensionDownloads; '' for every ordinary website download, which is
+ * never even asked (the page check is synchronous and first).
+ */
+async function requestedNameFromExtensionPage(dl: Download, url: string): Promise<string> {
+  let page: Page | null = null;
+  try { page = dl.page(); } catch { page = null; }
+  let pageUrl = '';
+  try { pageUrl = page ? page.url() : ''; } catch { pageUrl = ''; }
+  if (!page || !pageUrl.startsWith('chrome-extension://')) return '';
+  try {
+    const name = await Promise.race([
+      page.evaluate(takeRequestedNameInPage, url),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 1500)),
+    ]);
+    return typeof name === 'string' ? name : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Runs INSIDE the extension page. Kept free of closures for `evaluate`. */
+function takeRequestedNameInPage(u: string): string {
+  const g = globalThis as unknown as {
+    __plyrExtDl?: { byUrl?: Record<string, string[]> };
+  };
+  const list = g.__plyrExtDl && g.__plyrExtDl.byUrl && g.__plyrExtDl.byUrl[u];
+  if (!list || !list.length) return '';
+  return String(list.shift() || '');
 }
