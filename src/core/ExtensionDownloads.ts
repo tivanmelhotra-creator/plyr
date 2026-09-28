@@ -405,7 +405,7 @@ export class ExtensionDownloadBridge {
     // is released here, so the shelf's bookkeeping cannot grow or go stale.
     if (!isExtensionProduced(r)) {
       if (r.state === 'interrupted') this.shelf.spendFailedClaim([r.url, r.finalUrl].filter(Boolean).map(downloadUrlKey));
-      else this.shelf.releaseClaim(r.filePath);
+      else this.shelf.releaseClaim(r.filePath, [r.url, r.finalUrl]);
       return null;
     }
 

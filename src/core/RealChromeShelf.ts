@@ -112,6 +112,40 @@ export interface AdoptedDownload {
   error: string;
 }
 
+/**
+ * A download `track()` took, remembered so the extension bridge does not adopt
+ * it again. Its Chrome file is resolved lazily through `path`.
+ */
+interface TrackedClaim {
+  key: string;
+  at: number;
+  /** claimBytes failed: no file exists, only an interrupted report can match. */
+  failed: boolean;
+  /** Set once `path` has been asked; '' until then. */
+  resolvedPath: string;
+  /** Resolves when claimBytes has succeeded or failed. */
+  settled: Promise<void>;
+  settle: () => void;
+  path: () => Promise<string>;
+}
+
+/**
+ * `dl.path()`, called at most once however many parties ask (claimBytes'
+ * fallback and the extension bridge's de-duplication share it). Resolves to ''
+ * for no artifact, never rejects.
+ */
+function memoisedPath(dl: Download): () => Promise<string> {
+  let memo: Promise<string> | null = null;
+  return () => {
+    if (!memo) {
+      memo = (async () => {
+        try { return (await dl.path()) || ''; } catch { return ''; }
+      })();
+    }
+    return memo;
+  };
+}
+
 /** Newest-first, capped: a page in a download loop must not grow this forever. */
 const MAX_ROWS = 40;
 
@@ -235,107 +269,133 @@ export class RealChromeShelf {
    * `Download.path()` are the SAME absolute path (`<downloadsPath>/<guid>`),
    * so that path is the identity used here.
    */
-  private readonly claimedFiles = new Map<string, number>();
-  /** Tracked downloads whose path is not known yet, by URL key. */
-  private readonly pendingPaths = new Map<string, Set<Promise<string>>>();
-  /**
-   * Tracked downloads that FAILED (no path exists for them), by URL key: an
-   * interrupted report can only be matched by URL. Spent by every interrupted
-   * report of that URL, website ones included, so none goes stale.
-   */
-  private readonly failedClaims = new Map<string, number[]>();
+  private readonly tracked = new Map<string, TrackedClaim[]>();
   static readonly CLAIM_TTL_MS = 10 * 60 * 1000;
+  /** How long `claimedByPage` waits for a tracked download to settle. */
+  static readonly CLAIM_WAIT_MS = 5_000;
 
   /**
    * Was this finished download already taken by `track()`? Spends the claim
-   * when it was. Waits (bounded) for a tracked download of the same URL whose
-   * path is still being resolved, so the answer does not depend on which of
-   * the two observers heard about completion first.
+   * when it was.
+   *
+   * Only tracked downloads of the SAME URL are candidates, and each one's
+   * Chrome file is resolved LAZILY, here, through the download's shared
+   * memoised `path()`. `track()`'s own happy path never calls `path()` (the
+   * documented saveAs -> path() fallback order in claimBytes); only an
+   * extension report that could be a duplicate of a page download asks.
+   * Waits (bounded) for those candidates to settle first, so the answer does
+   * not depend on which observer heard about completion first.
    */
   async claimedByPage(
     report: { filePath: string; urls: string[]; interrupted: boolean },
-    waitMs = 5_000,
+    waitMs = RealChromeShelf.CLAIM_WAIT_MS,
   ): Promise<boolean> {
     this.pruneClaims();
-    const keys = report.urls.filter(Boolean).map(downloadUrlKey);
-    if (report.interrupted) return this.spendFailedClaim(keys);
-    const file = report.filePath ? path.resolve(report.filePath) : '';
-    if (!file) return false;
-    if (this.claimedFiles.delete(file)) return true;
-    const pending = keys.flatMap((k) => [...(this.pendingPaths.get(k) || [])]);
-    if (!pending.length) return false;
+    const keys = [...new Set(report.urls.filter(Boolean).map(downloadUrlKey))];
+    const candidates = keys.flatMap((k) => this.tracked.get(k) || []);
+    if (!candidates.length) return false;
     await Promise.race([
-      Promise.allSettled(pending),
+      Promise.allSettled(candidates.map((c) => c.settled)),
       new Promise((res) => setTimeout(res, waitMs)),
     ]);
-    return this.claimedFiles.delete(file);
-  }
 
-  /** Forget a website download's claim once the bridge has seen it complete. */
-  releaseClaim(filePath: string): void {
-    if (filePath) this.claimedFiles.delete(path.resolve(filePath));
-  }
+    if (report.interrupted) {
+      // A failed download has no file; only a FAILED tracked one can match.
+      const hit = candidates.find((c) => c.failed);
+      if (hit) { this.dropClaim(hit); return true; }
+      return false;
+    }
 
-  /** Spend one failed-download claim for any of these URL keys. */
-  spendFailedClaim(keys: string[]): boolean {
-    const now = Date.now();
-    for (const k of keys) {
-      const list = (this.failedClaims.get(k) || []).filter((at) => now - at < RealChromeShelf.CLAIM_TTL_MS);
-      if (list.length) {
-        list.shift();
-        if (list.length) this.failedClaims.set(k, list); else this.failedClaims.delete(k);
-        return true;
-      }
-      this.failedClaims.delete(k);
+    const file = report.filePath ? path.resolve(report.filePath) : '';
+    if (!file) return false;
+    for (const c of candidates) {
+      if (c.failed) continue;
+      const p = await Promise.race([
+        c.path(),
+        new Promise<string>((res) => setTimeout(() => res(''), waitMs)),
+      ]);
+      if (p && path.resolve(p) === file) { this.dropClaim(c); return true; }
     }
     return false;
   }
 
+  /**
+   * Forget a WEBSITE download's claim once the bridge has seen it finish.
+   * Never calls `path()`: a claim whose file was not already resolved simply
+   * ages out (CLAIM_TTL_MS). Removing the whole URL's claims here would be
+   * wrong — another tracked download of that URL may still be in flight.
+   */
+  releaseClaim(filePath: string, urls: string[] = []): void {
+    const file = filePath ? path.resolve(filePath) : '';
+    for (const k of new Set(urls.filter(Boolean).map(downloadUrlKey))) {
+      for (const c of [...(this.tracked.get(k) || [])]) {
+        if (file && c.resolvedPath && path.resolve(c.resolvedPath) === file) this.dropClaim(c);
+      }
+    }
+  }
+
+  /** Spend one FAILED tracked claim for any of these URL keys. */
+  spendFailedClaim(keys: string[]): boolean {
+    for (const k of keys) {
+      const hit = (this.tracked.get(k) || []).find((c) => c.failed);
+      if (hit) { this.dropClaim(hit); return true; }
+    }
+    return false;
+  }
+
+  private dropClaim(c: TrackedClaim): void {
+    const list = this.tracked.get(c.key);
+    if (!list) return;
+    const i = list.indexOf(c);
+    if (i >= 0) list.splice(i, 1);
+    if (!list.length) this.tracked.delete(c.key);
+  }
+
   private pruneClaims(): void {
     const now = Date.now();
-    for (const [f, at] of this.claimedFiles) {
-      if (now - at >= RealChromeShelf.CLAIM_TTL_MS) this.claimedFiles.delete(f);
+    let total = 0;
+    for (const [k, list] of this.tracked) {
+      const live = list.filter((c) => now - c.at < RealChromeShelf.CLAIM_TTL_MS);
+      if (live.length) { this.tracked.set(k, live); total += live.length; } else this.tracked.delete(k);
     }
     // Bounded: a page in a download loop must not grow this forever.
-    while (this.claimedFiles.size > 2000) {
-      const oldest = this.claimedFiles.keys().next().value;
-      if (oldest === undefined) break;
-      this.claimedFiles.delete(oldest);
+    while (total > 2000) {
+      const oldestKey = this.tracked.keys().next().value;
+      if (oldestKey === undefined) break;
+      total -= (this.tracked.get(oldestKey) || []).length;
+      this.tracked.delete(oldestKey);
     }
   }
 
   /**
-   * Remember the file Chrome writes for a tracked download. `path()` resolves
-   * when the download finishes (the same moment the bridge's report is sent),
-   * so it is recorded as pending first and the bridge waits for it.
+   * Remember a tracked download so the extension bridge does not adopt it a
+   * second time. Deliberately does NOT call `dl.path()`: it stores the
+   * download's memoised path resolver, shared with claimBytes' fallback, so
+   * `path()` is called at most once per download and never on the happy path
+   * of `track()` itself.
    */
-  private registerClaim(dl: Download, rawUrl: string): void {
-    const key = downloadUrlKey(rawUrl || '');
-    let pathOf: Promise<string>;
-    try {
-      pathOf = Promise.resolve(dl.path()).then((p) => (p ? path.resolve(p) : ''), () => '');
-    } catch {
-      pathOf = Promise.resolve('');
-    }
-    const set = this.pendingPaths.get(key) || new Set<Promise<string>>();
-    set.add(pathOf);
-    this.pendingPaths.set(key, set);
-    void pathOf.then((p) => {
-      if (p) {
-        this.claimedFiles.set(p, Date.now());
-      } else if (rawUrl) {
-        const list = this.failedClaims.get(key) || [];
-        list.push(Date.now());
-        this.failedClaims.set(key, list);
-        if (this.failedClaims.size > 500) {
-          const oldest = this.failedClaims.keys().next().value;
-          if (oldest !== undefined) this.failedClaims.delete(oldest);
-        }
-      }
-      set.delete(pathOf);
-      if (!set.size && this.pendingPaths.get(key) === set) this.pendingPaths.delete(key);
-      this.pruneClaims();
-    });
+  private registerClaim(url: string, pathOf: () => Promise<string>): TrackedClaim {
+    const key = downloadUrlKey(url || '');
+    let settle: () => void = () => {};
+    const settled = new Promise<void>((res) => { settle = res; });
+    const claim: TrackedClaim = {
+      key,
+      at: Date.now(),
+      failed: false,
+      resolvedPath: '',
+      settled,
+      settle: () => settle(),
+      path: async () => {
+        const p = await pathOf();
+        claim.resolvedPath = p;
+        return p;
+      },
+    };
+    const list = this.tracked.get(key) || [];
+    list.push(claim);
+    this.tracked.set(key, list);
+    this.pruneClaims();
+    return claim;
   }
 
   /**
@@ -422,8 +482,10 @@ export class RealChromeShelf {
 
     // Claimed from the very first moment, so the extension bridge — which only
     // hears about a download when it COMPLETES — never adopts it a second time.
-    // By Chrome's own file, not by URL: see `claimedFiles`.
-    this.registerClaim(dl, url);
+    // By Chrome's own file, not by URL (see `tracked`), resolved lazily: one
+    // memoised `path()` shared with claimBytes' fallback, never called here.
+    const pathOf = memoisedPath(dl);
+    const claim = this.registerClaim(url, pathOf);
 
     // What the WEBSITE said this file is called, which is the answer whenever it
     // exists: 40/40 correct against suggestedFilename()'s 25/40. Chrome's guess
@@ -457,13 +519,23 @@ export class RealChromeShelf {
 
     try {
       const target = await downloadPathFor(this.userId, entry.token, suggested);
-      await this.claimBytes(dl, target);
+      try {
+        await this.claimBytes(dl, target, pathOf);
+      } catch (e) {
+        // No bytes were claimed: this download can only match an INTERRUPTED
+        // report, by URL.
+        claim.failed = true;
+        throw e;
+      } finally {
+        claim.settle();
+      }
       await this.complete(entry, target, url, declared?.contentType || '');
     } catch (e) {
       // A failed download must SAY so. A row stuck at "in progress" forever is
       // how a user ends up waiting for something that will never arrive.
       entry.state = 'failed';
       entry.error = (e as Error)?.message || 'download_failed';
+      claim.settle();
     }
     // The declaration has been used, so drop it. An endpoint like `/export`
     // legitimately returns a DIFFERENT file every time it is called, and keeping
@@ -593,14 +665,18 @@ export class RealChromeShelf {
    * itself put the file, and copy from there. Copy, not rename: the artifact may
    * still belong to another consumer.
    */
-  private async claimBytes(dl: Download, target: string): Promise<void> {
+  private async claimBytes(
+    dl: Download,
+    target: string,
+    pathOf: () => Promise<string> = memoisedPath(dl),
+  ): Promise<void> {
     try {
       await dl.saveAs(target);
       return;
     } catch (primary) {
       let src = '';
       try {
-        src = (await dl.path()) || '';
+        src = (await pathOf()) || '';
       } catch {
         /* no artifact to fall back to */
       }
