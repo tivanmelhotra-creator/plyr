@@ -64,6 +64,7 @@ import {
   type ShelfEntry,
 } from './RealChromeShelf';
 import { ExtensionDownloadBridge } from './ExtensionDownloads';
+import { ChromiumDownloadObserver } from './ChromiumDownloadObserver';
 import { type PendingChooser } from './RemoteFileChooser';
 import { FileChooserService } from './FileChooserService';
 import {
@@ -712,6 +713,14 @@ export class RealChrome {
   private static extensionDownloads: ExtensionDownloadBridge | null = null;
 
   /**
+   * Every OTHER download Chromium performs: an extension popup's export (the
+   * J2TEAM Cookies case), a frame Playwright does not own. Seen through the
+   * browser's own download events on the debug port and handed to the SAME
+   * shelf. See core/ChromiumDownloadObserver.
+   */
+  private static downloadObserver: ChromiumDownloadObserver | null = null;
+
+  /**
    * The file dialogs this browser opens.
    *
    * Also not optional, and for the mirror-image reason. Without an interceptor
@@ -1253,6 +1262,8 @@ export class RealChrome {
         this.shelf = null;
         this.extensionDownloads?.dispose();
         this.extensionDownloads = null;
+        this.downloadObserver?.dispose();
+        this.downloadObserver = null;
         // A pending dialog, by contrast, cannot outlive its browser: the page
         // that asked is gone, so keeping the row would have the view prompting
         // for a file with nowhere to put it.
@@ -1276,6 +1287,19 @@ export class RealChrome {
         };
         if (this.debugInfo.ws && this.chooserService) {
           this.chooserService.attachCDP(this.debugInfo.ws);
+        }
+        // Browser-level download capture. Awaited (bounded) so the first page
+        // an operator opens is already covered.
+        if (this.debugInfo.ws && this.shelf) {
+          this.downloadObserver = new ChromiumDownloadObserver(this.shelf, {
+            downloadsDir: config.DOWNLOADS_DIR,
+          });
+          await Promise.race([
+            this.downloadObserver.attach(this.debugInfo.ws),
+            new Promise((res) => setTimeout(res, 3_000)),
+          ]);
+        } else {
+          console.warn('[RealChrome] no DevTools endpoint: extension popup exports will not be captured');
         }
       }
 

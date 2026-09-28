@@ -90,8 +90,11 @@ export interface ShelfEntry {
    * `extension` for a file an EXTENSION produced (see core/ExtensionDownloads);
    * absent for an ordinary page download. Informational only: both kinds go
    * through the same naming, cap and workflow-persist steps below.
+   *
+   * `browser` for a download core/ChromiumDownloadObserver filed that no page
+   * reported and that did not come from an extension frame.
    */
-  source?: 'extension';
+  source?: 'extension' | 'browser';
 }
 
 /**
@@ -110,6 +113,8 @@ export interface AdoptedDownload {
   contentType: string;
   /** Non-empty when Chrome reported the download as interrupted. */
   error: string;
+  /** Row label; defaults to `extension` (the original adopt() caller). */
+  source?: 'extension' | 'browser';
 }
 
 /**
@@ -270,6 +275,24 @@ export class RealChromeShelf {
    * so that path is the identity used here.
    */
   private readonly tracked = new Map<string, TrackedClaim[]>();
+
+  /**
+   * Chrome files a PAGE download already owns, remembered after the first
+   * `claimedByPage` match.
+   *
+   * WHY: two observers now ask. core/ExtensionDownloads (chrome.downloads) and
+   * core/ChromiumDownloadObserver (the browser's own download events) can both
+   * report the same extension-tab download. The first match spends the claim;
+   * without this the second would find no claim left and adopt the file a
+   * second time. Bounded like `tracked`.
+   */
+  private readonly pageFiles = new Set<string>();
+
+  /**
+   * Chrome files already adopted (or being adopted), so two observers that
+   * report the same file produce ONE row. Keyed by Chrome's own path.
+   */
+  private readonly adoptedSources = new Map<string, ShelfEntry>();
   static readonly CLAIM_TTL_MS = 10 * 60 * 1000;
   /** How long `claimedByPage` waits for a tracked download to settle. */
   static readonly CLAIM_WAIT_MS = 5_000;
@@ -291,6 +314,8 @@ export class RealChromeShelf {
     waitMs = RealChromeShelf.CLAIM_WAIT_MS,
   ): Promise<boolean> {
     this.pruneClaims();
+    const own = report.filePath && !report.interrupted ? path.resolve(report.filePath) : '';
+    if (own && this.pageFiles.has(own)) return true;
     const keys = [...new Set(report.urls.filter(Boolean).map(downloadUrlKey))];
     const candidates = keys.flatMap((k) => this.tracked.get(k) || []);
     if (!candidates.length) return false;
@@ -314,7 +339,11 @@ export class RealChromeShelf {
         c.path(),
         new Promise<string>((res) => setTimeout(() => res(''), waitMs)),
       ]);
-      if (p && path.resolve(p) === file) { this.dropClaim(c); return true; }
+      if (p && path.resolve(p) === file) {
+        this.dropClaim(c);
+        this.rememberPageFile(file);
+        return true;
+      }
     }
     return false;
   }
@@ -341,6 +370,15 @@ export class RealChromeShelf {
       if (hit) { this.dropClaim(hit); return true; }
     }
     return false;
+  }
+
+  private rememberPageFile(file: string): void {
+    this.pageFiles.add(file);
+    while (this.pageFiles.size > 2000) {
+      const oldest = this.pageFiles.values().next().value;
+      if (oldest === undefined) break;
+      this.pageFiles.delete(oldest);
+    }
   }
 
   private dropClaim(c: TrackedClaim): void {
@@ -562,6 +600,10 @@ export class RealChromeShelf {
    * caps and files them into `<workflow>/downloads/` identically.
    */
   async adopt(input: AdoptedDownload): Promise<ShelfEntry> {
+    // One Chrome file, one row, however many observers report it.
+    const sourceKey = input.sourcePath ? path.resolve(input.sourcePath) : '';
+    const already = sourceKey ? this.adoptedSources.get(sourceKey) : undefined;
+    if (already) return already;
     const url = String(input.url || '');
     const requested = String(input.requestedName || '');
     // `safeFileName('')` is the placeholder `file`, never '' — so an empty
@@ -576,8 +618,16 @@ export class RealChromeShelf {
       size: 0,
       error: '',
       at: Date.now(),
-      source: 'extension',
+      source: input.source || 'extension',
     };
+    if (sourceKey) {
+      this.adoptedSources.set(sourceKey, entry);
+      while (this.adoptedSources.size > 2000) {
+        const oldest = this.adoptedSources.keys().next().value;
+        if (oldest === undefined) break;
+        this.adoptedSources.delete(oldest);
+      }
+    }
     this.rows.push(entry);
     if (this.rows.length > MAX_ROWS) this.rows.splice(0, this.rows.length - MAX_ROWS);
 
