@@ -148,6 +148,116 @@ export function chromeViewHtml(): string {
      two dismissals in the same corner is one too many. */
   #burger[hidden] { display: none; }
 
+  /* ── Task View Button & Overlay ─────────────────────────────────────── */
+  #btn-taskview {
+    position: fixed; top: 12px; right: 54px; z-index: 7;
+    font: inherit; color: #e6e6ee; background: rgba(24,26,33,.92);
+    border: 1px solid #4a4a55; border-radius: 8px;
+    width: 34px; height: 34px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(3px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    transition: all 0.15s ease;
+  }
+  #btn-taskview:hover { color: #38bdf8; border-color: rgba(56,189,248,.5); }
+  #btn-taskview:focus-visible { outline: 2px solid #7aa2ff; outline-offset: 1px; }
+  #btn-taskview[hidden] { display: none; }
+
+  .taskview-badge {
+    position: absolute; top: -4px; right: -4px;
+    background: #f97316; color: #fff; font-size: 10px; font-weight: 700;
+    min-width: 16px; height: 16px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0 4px; border: 1px solid #181a21;
+  }
+
+  .tv-overlay {
+    position: fixed; inset: 0; z-index: 99;
+    background: rgba(10, 12, 16, 0.75);
+    backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .tv-overlay[hidden] { display: none !important; }
+  .tv-modal {
+    background: #181a21; border: 1px solid #2d3139;
+    border-radius: 14px; width: 100%; max-width: 680px;
+    box-shadow: 0 20px 48px rgba(0,0,0,.6);
+    display: flex; flex-direction: column; max-height: 85vh;
+    overflow: hidden;
+  }
+  .tv-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid #2d3139; background: #1f222b;
+  }
+  .tv-title-area {
+    display: flex; align-items: center; gap: 12px; color: #f3f4f6;
+  }
+  .tv-title-area h3 {
+    margin: 0; font-size: 16px; font-weight: 600; color: #f9fafb;
+  }
+  .tv-title-area p {
+    margin: 2px 0 0; font-size: 12px; color: #9ca3af;
+  }
+  .tv-btn-close {
+    background: transparent; border: none; color: #9ca3af;
+    font-size: 18px; cursor: pointer; width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px;
+  }
+  .tv-btn-close:hover { color: #f3f4f6; background: rgba(255,255,255,.08); }
+  .tv-grid {
+    padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px; overflow-y: auto; max-height: 60vh;
+  }
+  .tv-card {
+    background: #1f222b; border: 1px solid #2d3139; border-radius: 10px;
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    transition: all 0.15s ease;
+  }
+  .tv-card:hover {
+    border-color: #3b82f6; background: #232732;
+  }
+  .tv-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .tv-profile-tag {
+    font-size: 11px; font-weight: 600; color: #93c5fd;
+    background: rgba(59,130,246,.15); padding: 2px 8px; border-radius: 4px;
+    border: 1px solid rgba(59,130,246,.3);
+  }
+  .tv-state-badge {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;
+  }
+  .tv-state-active {
+    color: #4ade80; background: rgba(34,197,94,.15); border: 1px solid rgba(34,197,94,.3);
+  }
+  .tv-state-minimized {
+    color: #fb923c; background: rgba(249,115,22,.15); border: 1px solid rgba(249,115,22,.3);
+  }
+  .tv-window-title {
+    font-size: 13px; font-weight: 500; color: #e5e7eb;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tv-actions {
+    display: flex; gap: 8px; margin-top: 4px;
+  }
+  .tv-btn-restore {
+    flex: 1; padding: 7px 12px; font-size: 12px; font-weight: 600;
+    color: #fff; background: #2563eb; border: none; border-radius: 6px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .tv-btn-restore:hover { background: #1d4ed8; }
+  .tv-btn-minimize {
+    padding: 7px 12px; font-size: 12px; font-weight: 500;
+    color: #d1d5db; background: #374151; border: none; border-radius: 6px;
+    cursor: pointer;
+  }
+  .tv-btn-minimize:hover { background: #4b5563; color: #fff; }
+  .tv-empty {
+    grid-column: 1 / -1; text-align: center; padding: 32px 16px; color: #9ca3af;
+  }
+
   /* ── The drawer ────────────────────────────────────────────────────────
      Docked to the right edge, full height, an overlay. This is the same
      Workflow Files workspace the canvas views get from
@@ -566,10 +676,32 @@ export function chromeViewHtml(): string {
     </div>
   </div>
 </div>
-<!-- THE ONE PERMANENT CONTROL. Everything else is in the drawer it opens. -->
+<!-- Permanent controls: Task View & Workflow Files drawer -->
+<button id="btn-taskview" type="button" title="Task View (Browser Windows)" aria-label="Task View" hidden>
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+  <span id="tv-badge" class="taskview-badge" hidden>0</span>
+</button>
 <button id="burger" type="button" title="Workflow Files" aria-label="Workflow Files" hidden>
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
 </button>
+
+<div id="taskview-overlay" class="tv-overlay" hidden>
+  <div class="tv-modal">
+    <div class="tv-header">
+      <div class="tv-title-area">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        <div>
+          <h3>Task View</h3>
+          <p>Active and minimized browser sessions</p>
+        </div>
+      </div>
+      <button id="tv-close" class="tv-btn-close" type="button" title="Close Task View" aria-label="Close">✕</button>
+    </div>
+    <div id="tv-list" class="tv-grid">
+      <!-- Session cards rendered here dynamically -->
+    </div>
+  </div>
+</div>
 <div id="files" hidden>
   <div class="dhead">
     <span class="dbadge">
@@ -1028,6 +1160,8 @@ function attach() {
     // populated. The drawer itself stays shut: it is an overlay the operator
     // asks for, never one that greets them.
     burger.hidden = false;
+    const btnTvEl = document.getElementById('btn-taskview');
+    if (btnTvEl) btnTvEl.hidden = false;
     // And only now start watching for files moving in either direction: before
     // the desktop is up there is no page that can ask for a file and nothing
     // that can have downloaded one.
@@ -1372,6 +1506,8 @@ function openDrawer(which, quiet) {
   const before = drawerPane;
   drawer.hidden = false;
   if (burger) burger.hidden = true;
+  const btnTv = document.getElementById('btn-taskview');
+  if (btnTv) btnTv.hidden = true;
   const next = which || drawerPane;
   showPane(next);
   if (quiet) return;
@@ -1383,6 +1519,8 @@ function closeDrawer() {
   if (!drawer) return;
   drawer.hidden = true;
   if (burger) burger.hidden = false;
+  const btnTv = document.getElementById('btn-taskview');
+  if (btnTv) btnTv.hidden = false;
   wfmCloseMenu();
   // Closing the drawer also closes the editor: the drawer is ONE surface, and a
   // half-typed file must not be left behind the next time it is opened on the
@@ -1451,6 +1589,141 @@ if (btnEndedReopen) {
     void startThenConnect(1);
   });
 }
+
+// ── Task View Controller (Active & Minimized Browser Sessions) ──────────────
+const btnTv = document.getElementById('btn-taskview');
+const tvOverlay = document.getElementById('taskview-overlay');
+const tvClose = document.getElementById('tv-close');
+const tvList = document.getElementById('tv-list');
+const tvBadge = document.getElementById('tv-badge');
+
+function tvEscape(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function updateTvBadge(windows) {
+  if (!tvBadge) return;
+  const minCount = windows.filter((w) => w.state === 'minimized').length;
+  if (minCount > 0) {
+    tvBadge.textContent = String(minCount);
+    tvBadge.hidden = false;
+  } else {
+    tvBadge.hidden = true;
+  }
+}
+
+async function refreshTaskView() {
+  if (!tvList) return;
+  tvList.innerHTML = '<div class="tv-empty">Loading active sessions...</div>';
+  try {
+    const res = await fetch('/browser/windows', {
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    });
+    const data = await res.json();
+    const windows = Array.isArray(data) ? data : (data.windows || []);
+    updateTvBadge(windows);
+
+    if (windows.length === 0) {
+      tvList.innerHTML = '<div class="tv-empty">No active browser sessions found.</div>';
+      return;
+    }
+
+    tvList.innerHTML = '';
+    for (const win of windows) {
+      const card = document.createElement('div');
+      card.className = 'tv-card';
+      const isMin = win.state === 'minimized';
+      const profileLabel = tvEscape(win.profileName || win.profileId || 'Default Profile');
+      const titleLabel = tvEscape(win.title || 'Chromium');
+      const winId = tvEscape(win.id);
+
+      card.innerHTML =
+        '<div class="tv-card-header">' +
+          '<span class="tv-profile-tag">' + profileLabel + '</span>' +
+          '<span class="tv-state-badge ' + (isMin ? 'tv-state-minimized' : 'tv-state-active') + '">' +
+            (isMin ? 'Minimized' : 'Active') +
+          '</span>' +
+        '</div>' +
+        '<div class="tv-window-title" title="' + titleLabel + '">' + titleLabel + '</div>' +
+        '<div class="tv-actions">' +
+          '<button class="tv-btn-restore" type="button" data-id="' + winId + '">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>' +
+            (isMin ? 'Restore &amp; Focus' : 'Focus') +
+          '</button>' +
+          (!isMin ? '<button class="tv-btn-minimize" type="button" data-id="' + winId + '">Minimize</button>' : '') +
+        '</div>';
+
+      const rBtn = card.querySelector('.tv-btn-restore');
+      if (rBtn) {
+        rBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          rBtn.textContent = 'Restoring...';
+          try {
+            await fetch('/browser/windows/' + encodeURIComponent(win.id) + '/restore', {
+              method: 'POST',
+              headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+              credentials: 'same-origin',
+            });
+            if (tvOverlay) tvOverlay.hidden = true;
+          } catch (err) {
+            console.error('Failed to restore window', err);
+          }
+        });
+      }
+
+      const mBtn = card.querySelector('.tv-btn-minimize');
+      if (mBtn) {
+        mBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          mBtn.textContent = '...';
+          try {
+            await fetch('/browser/windows/' + encodeURIComponent(win.id) + '/minimize', {
+              method: 'POST',
+              headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+              credentials: 'same-origin',
+            });
+            void refreshTaskView();
+          } catch (err) {
+            console.error('Failed to minimize window', err);
+          }
+        });
+      }
+
+      tvList.appendChild(card);
+    }
+  } catch (err) {
+    tvList.innerHTML = '<div class="tv-empty">Error loading sessions.</div>';
+  }
+}
+
+if (btnTv) {
+  btnTv.addEventListener('click', () => {
+    if (tvOverlay) {
+      tvOverlay.hidden = false;
+      void refreshTaskView();
+    }
+  });
+}
+if (tvClose) {
+  tvClose.addEventListener('click', () => {
+    if (tvOverlay) tvOverlay.hidden = true;
+  });
+}
+if (tvOverlay) {
+  tvOverlay.addEventListener('click', (e) => {
+    if (e.target === tvOverlay) tvOverlay.hidden = true;
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && tvOverlay && !tvOverlay.hidden) {
+    tvOverlay.hidden = true;
+  }
+});
 
 // Escape shuts the menu first, then the drawer: aiming at a menu must not
 // cost the whole drawer.

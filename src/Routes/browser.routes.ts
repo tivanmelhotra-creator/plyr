@@ -28,6 +28,7 @@ import path from 'path';
 import { config } from '../config';
 import { liveBrowserSessions } from '../core/LiveSessions';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
+import { BrowserWindowManager } from '../core/BrowserWindowManager';
 import { flagCatalogue } from '../core/ChromeFlags';
 import { describeProfile, PROFILES } from '../core/EnvProfile';
 // `displayGuidance` is no longer imported here: the "there is no screen" message
@@ -343,6 +344,60 @@ export const createBrowserRoutes = (): Router => {
         await RealChrome.closeBrowser();
       }
       res.json({ success: true });
+    } catch (e) {
+      sendError(res, e);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task View / Browser Window Manager
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * List all active and minimized browser windows for Task View.
+   */
+  router.get('/browser/windows', async (_req, res) => {
+    try {
+      const windows = await BrowserWindowManager.list();
+      res.json(windows);
+    } catch (e) {
+      sendError(res, e);
+    }
+  });
+
+  /**
+   * Restore and focus a minimized or hidden browser window.
+   */
+  router.post('/browser/windows/:id/restore', async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (!id) {
+        return fail(res, 400, 'Missing window id parameter.');
+      }
+      const restored = await BrowserWindowManager.restore(id);
+      if (!restored) {
+        return fail(res, 404, `Browser window "${id}" not found.`);
+      }
+      res.json({ success: true, window: restored });
+    } catch (e) {
+      sendError(res, e);
+    }
+  });
+
+  /**
+   * Minimize an active browser window.
+   */
+  router.post('/browser/windows/:id/minimize', async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (!id) {
+        return fail(res, 400, 'Missing window id parameter.');
+      }
+      const minimized = await BrowserWindowManager.minimize(id);
+      if (!minimized) {
+        return fail(res, 404, `Browser window "${id}" not found.`);
+      }
+      res.json({ success: true, window: minimized });
     } catch (e) {
       sendError(res, e);
     }
