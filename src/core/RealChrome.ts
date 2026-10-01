@@ -63,6 +63,8 @@ import {
   REAL_CHROME_SHELF_USER,
   type ShelfEntry,
 } from './RealChromeShelf';
+import { ExtensionDownloadBridge } from './ExtensionDownloads';
+import { ChromiumDownloadObserver } from './ChromiumDownloadObserver';
 import { type PendingChooser } from './RemoteFileChooser';
 import { FileChooserService } from './FileChooserService';
 import {
@@ -703,6 +705,22 @@ export class RealChrome {
   private static shelf: RealChromeShelf | null = null;
 
   /**
+   * Extension Download/Export. An extension's service worker downloads with no
+   * page, so `page.on('download')` never fires and the shelf never hears of
+   * it; this bridge observes those downloads from inside the extension and
+   * hands them to the SAME shelf. See core/ExtensionDownloads.
+   */
+  private static extensionDownloads: ExtensionDownloadBridge | null = null;
+
+  /**
+   * Every OTHER download Chromium performs: an extension popup's export (the
+   * J2TEAM Cookies case), a frame Playwright does not own. Seen through the
+   * browser's own download events on the debug port and handed to the SAME
+   * shelf. See core/ChromiumDownloadObserver.
+   */
+  private static downloadObserver: ChromiumDownloadObserver | null = null;
+
+  /**
    * The file dialogs this browser opens.
    *
    * Also not optional, and for the mirror-image reason. Without an interceptor
@@ -1213,6 +1231,13 @@ export class RealChrome {
       // away when the context closes, which is the bug this fixes.
       this.shelf = new RealChromeShelf(REAL_CHROME_SHELF_USER);
       this.shelf.watch(context);
+      // Extension exports feed the same shelf. Awaited for the init script that
+      // records the filename an extension PAGE asks for; before any navigation,
+      // like the shelf itself.
+      this.extensionDownloads = new ExtensionDownloadBridge(this.shelf, {
+        downloadsDir: config.DOWNLOADS_DIR,
+      });
+      await this.extensionDownloads.watch(context);
 
       // And for the same reason, before anyone can press a page's "Choose file":
       // an un-intercepted chooser opens a native dialog onto the SERVER's disk,
@@ -1235,6 +1260,10 @@ export class RealChrome {
         // they were claimed with saveAs into the user's download directory and
         // are fetched by token, so a link already handed out keeps working.
         this.shelf = null;
+        this.extensionDownloads?.dispose();
+        this.extensionDownloads = null;
+        this.downloadObserver?.dispose();
+        this.downloadObserver = null;
         // A pending dialog, by contrast, cannot outlive its browser: the page
         // that asked is gone, so keeping the row would have the view prompting
         // for a file with nowhere to put it.
@@ -1258,6 +1287,19 @@ export class RealChrome {
         };
         if (this.debugInfo.ws && this.chooserService) {
           this.chooserService.attachCDP(this.debugInfo.ws);
+        }
+        // Browser-level download capture. Awaited (bounded) so the first page
+        // an operator opens is already covered.
+        if (this.debugInfo.ws && this.shelf) {
+          this.downloadObserver = new ChromiumDownloadObserver(this.shelf, {
+            downloadsDir: config.DOWNLOADS_DIR,
+          });
+          await Promise.race([
+            this.downloadObserver.attach(this.debugInfo.ws),
+            new Promise((res) => setTimeout(res, 3_000)),
+          ]);
+        } else {
+          console.warn('[RealChrome] no DevTools endpoint: extension popup exports will not be captured');
         }
       }
 
