@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from 'playwright';
 import WebSocket from 'ws';
 import { resolveUpload } from './RemoteUploads';
+import { persistUploads, realChromeWorkflowForTransfer } from './WorkflowBinding';
 import {
   BrowserPageRegistry,
   type BrowserPageKind,
@@ -8,6 +9,8 @@ import {
 } from './BrowserPageRegistry';
 import {
   RemoteFileChooser,
+  FileChooserError,
+  CHOOSER_TTL_MS,
   type PendingChooser,
 } from './RemoteFileChooser';
 
@@ -44,6 +47,17 @@ function extensionIdFor(page: Page): string | undefined {
   }
 }
 
+interface CdpChooser {
+  id: string;
+  sessionId: string;
+  targetId: string;
+  pageId: string;
+  /** The <input type=file> Chrome says the dialog belongs to. */
+  backendNodeId: number;
+  notice: FileChooserNotice;
+  expiry: ReturnType<typeof setTimeout> | null;
+}
+
 /**
  * Runtime/page-scoped owner for intercepted file choosers.
  *
@@ -56,13 +70,18 @@ export class FileChooserService {
   private readonly listeners = new Set<FileChooserListener>();
   private watchedContext: BrowserContext | null = null;
   private cdpWs: WebSocket | null = null;
-  private readonly cdpChoosers = new Map<string, {
-    id: string;
-    sessionId: string;
-    pageId: string;
-    notice: FileChooserNotice;
-  }>();
+  /**
+   * File dialogs opened in a target PLAYWRIGHT DOES NOT OWN: an extension's
+   * action popup. Keyed by chooser id. See `attachCDP` for why only those.
+   */
+  private readonly cdpChoosers = new Map<string, CdpChooser>();
   private cdpSeq = 0;
+  /** Newest dialog sequence per target, so a slow describe cannot resurrect a stale one. */
+  private readonly cdpLatest = new Map<string, number>();
+  /** CDP target id -> is it one of Playwright's own pages. Filled lazily. */
+  private readonly ownedTargets = new Map<string, boolean>();
+  private cdpNextId = 1;
+  private readonly cdpPending = new Map<number, (r: { result?: unknown; error?: { message?: string } }) => void>();
 
   constructor(
     private readonly userId: string,
@@ -80,82 +99,242 @@ export class FileChooserService {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Intercept file dialogs in targets Playwright does NOT own.
+   *
+   * Interception is switched on for every page target (cheap, and a target
+   * cannot be classified reliably at the moment it appears), but a dialog is
+   * only REPORTED here when Playwright does not own the page: for the ones it
+   * owns, `page.on('filechooser')` is the single source of truth.
+   *
+   * WHY ONLY THOSE. An extension's action popup is not a Playwright `Page`
+   * (MEASURED: `context.pages()` stays `['about:blank']` while the popup is
+   * open), so `page.on('filechooser')` never fires for it and the dialog
+   * opened on the server's screen. This session covers exactly that gap.
+   *
+   * An earlier version attached to EVERY page target as well. MEASURED on
+   * Chromium 145 with a plain website:
+   *
+   *   - one click produced TWO `Page.fileChooserOpened` (two sessions per
+   *     target: auto-attach AND the explicit attach both ran), next to
+   *     Playwright's own `filechooser`: three "pending" rows for one dialog;
+   *   - answering one went through `Page.handleFileChooser`, a method that
+   *     DOES NOT EXIST in the protocol (`-32601 wasn't found`). The send was
+   *     fire-and-forget, so the error was never seen: the row was dropped as
+   *     "done" and the page never got the file;
+   *   - the shadow rows were listed before Playwright's real one, so the view
+   *     answered a phantom first, was told nothing, and asked again. The
+   *     answer that finally reached Playwright's chooser is the "every other
+   *     attempt" that worked.
+   *
+   * Files are handed over the way Playwright itself does it: the event carries
+   * the `backendNodeId` of the <input>, and `DOM.setFileInputFiles` on the
+   * same session sets its files and fires input/change. The reply is awaited;
+   * a failure is an error, not a silent "done".
+   */
   attachCDP(wsUrl: string): void {
     if (!wsUrl || this.cdpWs) return;
     try {
       const ws = new WebSocket(wsUrl);
       this.cdpWs = ws;
-      let nextId = 1;
-      const targetSessions = new Map<string, { sessionId: string; targetInfo: { targetId: string; type: string; url: string; title: string } }>();
+      /** One session per target, never two. */
+      const sessionByTarget = new Map<string, string>();
+      const targetBySession = new Map<string, string>();
+      const attaching = new Set<string>();
+
+      const attach = async (t: { targetId: string; type: string; url?: string }): Promise<void> => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (t.type !== 'page' && t.type !== 'background_page' && t.type !== 'other') return;
+        if (sessionByTarget.has(t.targetId) || attaching.has(t.targetId)) return;
+        attaching.add(t.targetId);
+        try {
+          if (await this.isPlaywrightTarget(t.targetId)) return;
+          const r = await this.cdpSend('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+          const sessionId = (r.result as { sessionId?: string } | undefined)?.sessionId;
+          if (!sessionId) return;
+          sessionByTarget.set(t.targetId, sessionId);
+          targetBySession.set(sessionId, t.targetId);
+          await this.cdpSend('Page.enable', {}, sessionId);
+          await this.cdpSend('DOM.enable', {}, sessionId);
+          await this.cdpSend('Page.setInterceptFileChooserDialog', { enabled: true }, sessionId);
+        } finally {
+          attaching.delete(t.targetId);
+        }
+      };
+
+      const forget = (targetId: string, reason?: string): void => {
+        const sessionId = sessionByTarget.get(targetId);
+        sessionByTarget.delete(targetId);
+        if (sessionId) targetBySession.delete(sessionId);
+        this.ownedTargets.delete(targetId);
+        this.cdpLatest.delete(targetId);
+        for (const entry of [...this.cdpChoosers.values()]) {
+          if (entry.targetId === targetId) this.dropCdp(entry, reason || 'closed');
+        }
+      };
 
       ws.on('open', () => {
-        ws.send(JSON.stringify({ id: nextId++, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true } }));
-        ws.send(JSON.stringify({ id: nextId++, method: 'Target.setDiscoverTargets', params: { discover: true } }));
-        ws.send(JSON.stringify({ id: nextId++, method: 'Target.getTargets' }));
+        void this.cdpSend('Target.setDiscoverTargets', { discover: true });
+        void this.cdpSend('Target.getTargets').then((r) => {
+          const infos = (r.result as { targetInfos?: Array<{ targetId: string; type: string; url?: string }> } | undefined)?.targetInfos || [];
+          for (const t of infos) void attach(t);
+        });
       });
 
       ws.on('message', (data: WebSocket.Data) => {
-        try {
-          const msg = JSON.parse(String(data));
-          if (msg.result && Array.isArray(msg.result.targetInfos)) {
-            for (const t of msg.result.targetInfos) {
-              if (t.type === 'page' || t.type === 'other' || t.type === 'service_worker' || t.type === 'background_page') {
-                ws.send(JSON.stringify({ id: nextId++, method: 'Target.attachToTarget', params: { targetId: t.targetId, flatten: true } }));
-              }
-            }
-          }
-          if (msg.method === 'Target.attachedToTarget') {
-            const { sessionId, targetInfo } = msg.params;
-            targetSessions.set(sessionId, { sessionId, targetInfo });
-            ws.send(JSON.stringify({ id: nextId++, sessionId, method: 'Page.enable' }));
-            ws.send(JSON.stringify({ id: nextId++, sessionId, method: 'Page.setInterceptFileChooserDialog', params: { enabled: true } }));
-          } else if (msg.method === 'Target.detachedFromTarget') {
-            const { sessionId } = msg.params;
-            targetSessions.delete(sessionId);
-            for (const [key, entry] of this.cdpChoosers.entries()) {
-              if (entry.sessionId === sessionId) {
-                this.cdpChoosers.delete(key);
-                this.emit({ type: 'done', notice: entry.notice, reason: 'closed' });
-              }
-            }
-          } else if (msg.method === 'Page.fileChooserOpened') {
-            const sessionId = msg.sessionId;
-            const target = targetSessions.get(sessionId);
-            const isExtension = target?.targetInfo.url?.startsWith('chrome-extension://') || target?.targetInfo.type === 'other';
-            const extId = target?.targetInfo.url?.match(/^chrome-extension:\/\/([^/]+)/)?.[1];
-            const chooserSeq = ++this.cdpSeq;
-            const localId = `cdp${chooserSeq}`;
-            const pageId = `cdp:${target?.targetInfo.targetId || sessionId}`;
-            const fullId = `${pageId}:${localId}`;
-            const multiple = msg.params.mode === 'selectMultiple';
-            const notice: FileChooserNotice = {
-              id: fullId,
-              pageId,
-              profileId: this.profileId,
-              runtimeId: this.runtimeId,
-              multiple,
-              accept: '',
-              name: 'file',
-              at: Date.now(),
-              kind: isExtension ? 'extension' : 'other',
-              ...(extId ? { extensionId: extId } : {}),
-            };
-            this.cdpChoosers.set(fullId, {
-              id: fullId,
-              sessionId,
-              pageId,
-              notice,
+        let msg: { id?: number; method?: string; sessionId?: string; params?: Record<string, unknown>; result?: unknown; error?: { message?: string } };
+        try { msg = JSON.parse(String(data)); } catch { return; }
+        if (typeof msg.id === 'number') {
+          const cb = this.cdpPending.get(msg.id);
+          if (cb) { this.cdpPending.delete(msg.id); cb(msg); }
+          return;
+        }
+        const p = msg.params || {};
+        if (msg.method === 'Target.targetCreated' || msg.method === 'Target.targetInfoChanged') {
+          const t = p.targetInfo as { targetId: string; type: string; url?: string } | undefined;
+          if (t) void attach(t);
+        } else if (msg.method === 'Target.targetDestroyed') {
+          forget(String(p.targetId || ''));
+        } else if (msg.method === 'Target.detachedFromTarget') {
+          const targetId = targetBySession.get(String(p.sessionId || ''));
+          if (targetId) forget(targetId);
+        } else if (msg.method === 'Page.fileChooserOpened' && msg.sessionId) {
+          const targetId = targetBySession.get(msg.sessionId);
+          const sessionId = msg.sessionId;
+          // Ownership is decided NOW, not when the target appeared: a page
+          // Playwright opened announces itself over DevTools a moment BEFORE
+          // Playwright has it in `context.pages()`, so an attach-time check
+          // misjudges exactly the tabs the operator just opened (MEASURED
+          // through LiveBrowser.newTab: one phantom row per click, and the
+          // real one left pending after the phantom was answered, which
+          // brought the "Add File" prompt back after a successful upload).
+          // By the time a human clicks a file input the page is known.
+          if (targetId) {
+            void this.isPlaywrightTarget(targetId).then((owned) => {
+              if (!owned) this.onCdpChooser(targetId, sessionId, p);
             });
-            this.emit({ type: 'pending', notice });
           }
-        } catch { /* ignore parse errors */ }
+        }
       });
 
       ws.on('error', () => { /* quiet on error */ });
       ws.on('close', () => {
-        this.cdpWs = null;
+        if (this.cdpWs === ws) this.cdpWs = null;
+        for (const [, cb] of this.cdpPending) cb({ error: { message: 'closed' } });
+        this.cdpPending.clear();
+        for (const entry of [...this.cdpChoosers.values()]) this.dropCdp(entry, 'closed');
       });
     } catch { /* ignored */ }
+  }
+
+  /** A CDP request whose reply is awaited. Never rejects. */
+  private cdpSend(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<{ result?: unknown; error?: { message?: string } }> {
+    const ws = this.cdpWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve({ error: { message: 'not connected' } });
+    const id = this.cdpNextId++;
+    return new Promise((resolve) => {
+      this.cdpPending.set(id, resolve);
+      try {
+        ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      } catch (e) {
+        this.cdpPending.delete(id);
+        resolve({ error: { message: (e as Error)?.message || 'send failed' } });
+      }
+    });
+  }
+
+  /**
+   * Is this DevTools target one of Playwright's own pages? Those are already
+   * covered by `page.on('filechooser')`, and covering them twice is the bug.
+   */
+  private async isPlaywrightTarget(targetId: string): Promise<boolean> {
+    const known = this.ownedTargets.get(targetId);
+    if (known !== undefined) return known;
+    const ctx = this.watchedContext;
+    let owned = false;
+    if (ctx) {
+      for (const page of ctx.pages()) {
+        try {
+          const cdp = await ctx.newCDPSession(page);
+          try {
+            const info = await cdp.send('Target.getTargetInfo');
+            if (info.targetInfo.targetId === targetId) { owned = true; break; }
+          } finally {
+            await cdp.detach().catch(() => {});
+          }
+        } catch { /* page closing: it is not this one */ }
+      }
+    }
+    if (owned) this.ownedTargets.set(targetId, true);
+    return owned;
+  }
+
+  private onCdpChooser(targetId: string, sessionId: string, p: Record<string, unknown>): void {
+    const backendNodeId = Number(p.backendNodeId);
+    // One dialog per target: a new one supersedes the old (the page re-opened it).
+    for (const old of [...this.cdpChoosers.values()]) {
+      if (old.targetId === targetId) this.dropCdp(old, 'superseded');
+    }
+    if (!Number.isFinite(backendNodeId)) return;    // nothing to hand the file to
+    const seq = ++this.cdpSeq;
+    const pageId = `cdp:${targetId}`;
+    const fullId = `${pageId}:cdp${seq}`;
+    const notice: FileChooserNotice = {
+      id: fullId,
+      pageId,
+      profileId: this.profileId,
+      runtimeId: this.runtimeId,
+      multiple: p.mode === 'selectMultiple',
+      accept: '',
+      name: 'file',
+      at: Date.now(),
+      kind: 'extension',
+    };
+    // The input's own accept/name first, so the operator is offered the right
+    // files, and the row is only visible (and answerable) once it is complete.
+    void this.cdpSend('DOM.describeNode', { backendNodeId }, sessionId).then((r) => {
+      // A newer dialog on this target, or a closed session, got here first.
+      if (this.cdpLatest.get(targetId) !== seq || !this.cdpWs) return;
+      const attrs = (r.result as { node?: { attributes?: string[] } } | undefined)?.node?.attributes || [];
+      for (let i = 0; i + 1 < attrs.length; i += 2) {
+        if (attrs[i] === 'accept') notice.accept = attrs[i + 1];
+        if (attrs[i] === 'name') notice.name = attrs[i + 1] || 'file';
+      }
+      const entry: CdpChooser = { id: fullId, sessionId, targetId, pageId, backendNodeId, notice, expiry: null };
+      entry.expiry = setTimeout(() => this.dropCdp(entry, 'expired'), CHOOSER_TTL_MS);
+      if (typeof entry.expiry.unref === 'function') entry.expiry.unref();
+      this.cdpChoosers.set(fullId, entry);
+      this.emit({ type: 'pending', notice });
+    });
+    this.cdpLatest.set(targetId, seq);
+  }
+
+  private dropCdp(entry: CdpChooser, reason?: string): void {
+    if (this.cdpChoosers.get(entry.id) !== entry) return;
+    this.cdpChoosers.delete(entry.id);
+    if (entry.expiry) { clearTimeout(entry.expiry); entry.expiry = null; }
+    this.emit({ type: 'done', notice: entry.notice, ...(reason ? { reason } : {}) });
+  }
+
+  private findCdp(pageId: string, id: string): CdpChooser | undefined {
+    const direct = id ? this.cdpChoosers.get(id) : undefined;
+    if (direct) return direct;
+    if (id) return undefined;
+    return [...this.cdpChoosers.values()].find((c) => c.pageId === pageId);
+  }
+
+  /**
+   * Hand files to a popup's <input> and only then forget the dialog. The
+   * entry is removed BEFORE the request (one answer per dialog, like
+   * RemoteFileChooser), and a failed hand-over is reported to the caller.
+   */
+  private async cdpSetFiles(entry: CdpChooser, paths: string[]): Promise<void> {
+    this.dropCdp(entry, undefined);
+    const use = entry.notice.multiple ? paths : paths.slice(0, 1);
+    const r = await this.cdpSend('DOM.setFileInputFiles', { files: use, backendNodeId: entry.backendNodeId }, entry.sessionId);
+    if (r.error) {
+      throw new FileChooserError(`The extension did not accept the file: ${r.error.message || 'unknown error'}.`);
+    }
   }
 
   dispose(): void {
@@ -163,6 +342,7 @@ export class FileChooserService {
       try { this.cdpWs.close(); } catch { /* ignore */ }
       this.cdpWs = null;
     }
+    for (const entry of this.cdpChoosers.values()) if (entry.expiry) clearTimeout(entry.expiry);
     this.cdpChoosers.clear();
   }
 
@@ -207,51 +387,49 @@ export class FileChooserService {
   }
 
   async accept(pageId: string, id: string, tokens: string[]): Promise<{ count: number; persisted: string[] }> {
-    const cdp = this.cdpChoosers.get(id) || Array.from(this.cdpChoosers.values()).find((c) => c.id === id || c.pageId === pageId);
-    if (cdp && this.cdpWs && this.cdpWs.readyState === WebSocket.OPEN) {
-      const paths = await Promise.all(tokens.map((t) => resolveUpload(this.userId, t)));
-      this.cdpWs.send(JSON.stringify({
-        id: Date.now(),
-        sessionId: cdp.sessionId,
-        method: 'Page.handleFileChooser',
-        params: { action: 'accept', files: paths },
-      }));
-      this.cdpChoosers.delete(cdp.id);
-      this.emit({ type: 'done', notice: cdp.notice });
-      return { count: paths.length, persisted: [] };
+    const cdp = this.findCdp(pageId, id);
+    if (cdp) {
+      const paths: string[] = [];
+      for (const t of (Array.isArray(tokens) ? tokens : []).slice(0, 10)) {
+        try { paths.push(await resolveUpload(this.userId, String(t))); } catch { /* expired or foreign token */ }
+      }
+      if (!paths.length) {
+        this.dropCdp(cdp, 'no_valid_files');
+        throw new FileChooserError('None of those uploads are still available.');
+      }
+      await this.cdpSetFiles(cdp, paths);
+      const used = cdp.notice.multiple ? paths : paths.slice(0, 1);
+      let persisted: string[] = [];
+      try {
+        persisted = (await persistUploads(await realChromeWorkflowForTransfer(), used)).map((e) => e.path);
+      } catch { /* logged inside persistUploads */ }
+      return { count: used.length, persisted };
     }
     const chooser = this.requireChooser(pageId);
     return chooser.accept(this.localId(pageId, id), tokens);
   }
 
   async acceptPaths(pageId: string, id: string, paths: string[]): Promise<{ count: number }> {
-    const cdp = this.cdpChoosers.get(id) || Array.from(this.cdpChoosers.values()).find((c) => c.id === id || c.pageId === pageId);
-    if (cdp && this.cdpWs && this.cdpWs.readyState === WebSocket.OPEN) {
-      this.cdpWs.send(JSON.stringify({
-        id: Date.now(),
-        sessionId: cdp.sessionId,
-        method: 'Page.handleFileChooser',
-        params: { action: 'accept', files: paths },
-      }));
-      this.cdpChoosers.delete(cdp.id);
-      this.emit({ type: 'done', notice: cdp.notice });
-      return { count: paths.length };
+    const cdp = this.findCdp(pageId, id);
+    if (cdp) {
+      const list = (Array.isArray(paths) ? paths : []).filter((p): p is string => typeof p === 'string' && p.length > 0).slice(0, 10);
+      if (!list.length) {
+        this.dropCdp(cdp, 'no_valid_files');
+        throw new FileChooserError('No file was selected.');
+      }
+      await this.cdpSetFiles(cdp, list);
+      return { count: cdp.notice.multiple ? list.length : 1 };
     }
     const chooser = this.requireChooser(pageId);
     return chooser.acceptPaths(this.localId(pageId, id), paths);
   }
 
   async cancel(pageId: string, id = ''): Promise<boolean> {
-    const cdp = id ? this.cdpChoosers.get(id) : Array.from(this.cdpChoosers.values()).find((c) => c.pageId === pageId);
-    if (cdp && this.cdpWs && this.cdpWs.readyState === WebSocket.OPEN) {
-      this.cdpWs.send(JSON.stringify({
-        id: Date.now(),
-        sessionId: cdp.sessionId,
-        method: 'Page.handleFileChooser',
-        params: { action: 'cancel' },
-      }));
-      this.cdpChoosers.delete(cdp.id);
-      this.emit({ type: 'done', notice: cdp.notice, reason: 'cancelled' });
+    const cdp = this.findCdp(pageId, id);
+    if (cdp) {
+      // The dialog was intercepted, so nothing is open on the server's screen;
+      // forgetting it is releasing it.
+      this.dropCdp(cdp, 'cancelled');
       return true;
     }
     const chooser = this.choosers.get(pageId);
