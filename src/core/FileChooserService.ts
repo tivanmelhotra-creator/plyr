@@ -121,7 +121,17 @@ export class FileChooserService {
           } else if (msg.method === 'Page.fileChooserOpened') {
             const sessionId = msg.sessionId;
             const target = targetSessions.get(sessionId);
-            const isExtension = target?.targetInfo.url?.startsWith('chrome-extension://') || target?.targetInfo.type === 'other';
+            const targetType = target?.targetInfo.type;
+            const isExtension = target?.targetInfo.url?.startsWith('chrome-extension://') || targetType === 'other';
+            // Regular web tabs are ALREADY intercepted by the Playwright side
+            // (watch() -> page.on('filechooser')). Registering the same dialog
+            // here too creates a SECOND pending entry per click, which is what
+            // makes "Add File" prompt twice and swallows the first selection
+            // (the view answers the CDP entry, then re-asks for the stale
+            // Playwright entry). Only targets Playwright does not surface as a
+            // Page — extension views, service workers, background pages — need
+            // the raw CDP path.
+            if (targetType === 'page' && !isExtension) return;
             const extId = target?.targetInfo.url?.match(/^chrome-extension:\/\/([^/]+)/)?.[1];
             const chooserSeq = ++this.cdpSeq;
             const localId = `cdp${chooserSeq}`;
