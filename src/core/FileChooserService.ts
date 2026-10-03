@@ -60,6 +60,8 @@ export class FileChooserService {
     id: string;
     sessionId: string;
     pageId: string;
+    /** DOM.BackendNodeId of the clicked <input type=file>, from Page.fileChooserOpened. */
+    backendNodeId?: number;
     notice: FileChooserNotice;
   }>();
   private cdpSeq = 0;
@@ -138,6 +140,13 @@ export class FileChooserService {
             const pageId = `cdp:${target?.targetInfo.targetId || sessionId}`;
             const fullId = `${pageId}:${localId}`;
             const multiple = msg.params.mode === 'selectMultiple';
+            // The clicked <input type=file>'s backend node id. handleFileChooser
+            // must echo it back to target THIS chooser; without it Chromium falls
+            // back to "the currently open chooser", which is unreliable inside
+            // extension popups / service workers — the silent extension-import
+            // failure. JSON.stringify drops it when undefined, preserving the
+            // old "currently open chooser" behaviour for targets that lack it.
+            const backendNodeId = msg.params.backendNodeId as number | undefined;
             const notice: FileChooserNotice = {
               id: fullId,
               pageId,
@@ -154,6 +163,7 @@ export class FileChooserService {
               id: fullId,
               sessionId,
               pageId,
+              ...(backendNodeId !== undefined ? { backendNodeId } : {}),
               notice,
             });
             this.emit({ type: 'pending', notice });
@@ -224,7 +234,7 @@ export class FileChooserService {
         id: Date.now(),
         sessionId: cdp.sessionId,
         method: 'Page.handleFileChooser',
-        params: { action: 'accept', files: paths },
+        params: { action: 'accept', files: paths, backendNodeId: cdp.backendNodeId },
       }));
       this.cdpChoosers.delete(cdp.id);
       this.emit({ type: 'done', notice: cdp.notice });
@@ -241,7 +251,7 @@ export class FileChooserService {
         id: Date.now(),
         sessionId: cdp.sessionId,
         method: 'Page.handleFileChooser',
-        params: { action: 'accept', files: paths },
+        params: { action: 'accept', files: paths, backendNodeId: cdp.backendNodeId },
       }));
       this.cdpChoosers.delete(cdp.id);
       this.emit({ type: 'done', notice: cdp.notice });
