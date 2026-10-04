@@ -1566,6 +1566,7 @@
    */
   function use() {
     if (!state || !state.selected.length) return;
+    if (state.opts && state.opts.browseOnly) return;
     var s = state;
     var chosen = s.selected.slice();
     var hasFolder = chosen.some(function (c) { return c.type === 'dir'; });
@@ -1862,6 +1863,10 @@
    *               runs as, so the server finds THIS session's waiting dialog,
    *   accept:     the page's accept list, checked before /use,
    *   multiple:   the page's own `multiple` — what makes multi-select possible,
+   *   browseOnly: true when NO page is waiting for a file (the workflow editor):
+   *               the drawer is then a plain workspace -- browse, upload,
+   *               organise -- and has no Select, since there is no dialog to
+   *               answer and /use would only be refused,
    *   onUsed:     function({name,size} | [{name,size}]) after a hand-over,
    *   onClose:    function(reason) when the drawer goes away for any reason
    * }
@@ -1881,6 +1886,10 @@
     var host = o.host || document.body;
     var els = build(host);
     panel = els.root;
+    // No page is asking for a file (the editor): hide Select, which could only
+    // ever end in "No live browser is open". Done with a class, not `hidden`,
+    // because `.btn` sets its own display and would win over the attribute.
+    els.root.classList.toggle('is-browse', !!o.browseOnly);
     state = {
       workflowId: workflowId,
       folders: {},
@@ -1938,6 +1947,8 @@
     close: close,
     bind: bind,
     isOpen: function () { return !!panel; },
+    /** The workflow the drawer on screen is browsing; '' when none is open. */
+    workflowId: function () { return state ? state.workflowId : ''; },
     currentWorkflowId: currentWorkflowId,
     // Exported for tests: the id rule must agree with the server's.
     WORKFLOW_ID_RE: WORKFLOW_ID_RE

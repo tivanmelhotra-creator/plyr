@@ -29,6 +29,13 @@
     if (window.BrowserView && typeof window.BrowserView.stop === 'function') {
       try { window.BrowserView.stop(); } catch (e) { /* noop */ }
     }
+    // The Workflow Files drawer is an overlay of whichever view opened it (the
+    // editor's hamburger, or the Live Browser View's). Its module state is
+    // global, so a drawer left open here would make the NEXT view's hamburger
+    // read "already open" and close it instead of opening it.
+    if (window.WorkflowFiles && typeof window.WorkflowFiles.close === 'function') {
+      try { window.WorkflowFiles.close('route'); } catch (e) { /* noop */ }
+    }
     // Step 26: tear down the bottom run/log drawer when leaving the editor
     // (the panel is editor-scoped; persisted last-run survives in localStorage).
     if (window.RunPanel && typeof window.RunPanel.unmount === 'function') {
@@ -951,6 +958,14 @@
                 '<span class="fe-avatar-dot" aria-hidden="true"></span></button>' +
               '<div class="fe-menu fe-menu-end" id="fe-acct-menu" role="menu" hidden></div>' +
             '</div>' +
+            // Workflow Files hamburger: the SAME drawer the Live Browser View
+            // has, so the open workflow's file workspace is reachable without
+            // starting a browser. Beside the avatar, not instead of it -- the
+            // avatar is where Language and Logout live on this full-bleed route.
+            '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
+              ' aria-haspopup="dialog" aria-expanded="false"' +
+              ' title="' + esc(t('rio.filesMenu')) + '" aria-label="' + esc(t('rio.filesMenu')) + '">' +
+              IC('menu', 16) + '</button>' +
           '</div>' +
           // Breadcrumb + badge moved to a hairline second line so the tab strip
           // owns row one (the images never wrap the bar to two tall rows).
@@ -1175,6 +1190,7 @@
         wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
       }
       refreshStatusBar();
+      reconcileFiles();
     }
     refreshWfLabel();
 
@@ -1512,6 +1528,57 @@
       });
     }
     bindMenu(acctBtn, acctMenu, renderAcctMenu);
+
+    // ---- Workflow Files (hamburger) ---------------------------------------
+    // The drawer is hosted by `.fe-layout` (a sibling of the canvas, never a
+    // child): a drawer inside the canvas would send every click in it to the
+    // canvas' own pan / marquee handlers. `browseOnly` because no page is
+    // waiting for a file here -- Select would have nothing to answer.
+    var filesBtn = root.querySelector('#fe-files');
+    var filesHost = root.querySelector('.fe-layout');
+    var filesMine = false;    // the drawer on screen was opened by THIS editor
+    function syncFilesBtn() {
+      if (!filesBtn) return;
+      var up = !!(filesMine && window.WorkflowFiles && window.WorkflowFiles.isOpen());
+      filesBtn.setAttribute('aria-expanded', up ? 'true' : 'false');
+      filesBtn.classList.toggle('open', up);
+    }
+    function openFiles() {
+      var W = window.WorkflowFiles;
+      if (!W || !filesHost) return;
+      if (filesMine && W.isOpen()) { W.close('toggled'); return; }
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!(cur && cur.id)) {
+        // A draft has no workspace yet: the files live under the saved id.
+        if (U().toast) U().toast(t('fe.filesNeedSave'), 'info');
+        return;
+      }
+      filesMine = !!W.open({
+        host: filesHost,
+        workflowId: String(cur.id),
+        browseOnly: true,
+        onClose: function () { filesMine = false; syncFilesBtn(); }
+      });
+      syncFilesBtn();
+    }
+    if (filesBtn) {
+      filesBtn.addEventListener('click', function (ev) { ev.stopPropagation(); openFiles(); });
+    }
+    /**
+     * The workflow under the editor changed (another tab, New Workflow, or an
+     * autosave that just gave a draft its id). A drawer left on screen would
+     * keep listing the OLD workflow's files, so follow the new one, or close
+     * when there is none.
+     */
+    function reconcileFiles() {
+      var W = window.WorkflowFiles;
+      if (!filesMine || !W || !W.isOpen()) return;
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      var id = cur && cur.id ? String(cur.id) : '';
+      if (id === W.workflowId()) return;
+      W.close('workflow-changed');
+      if (id) openFiles();
+    }
 
     // ---- Workflow tab strip (item A) ------------------------------------
     // Real data only: the mock names in the reference image (Login Flow /

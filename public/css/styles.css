@@ -508,6 +508,9 @@ table.data td.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospa
    (charcoal canvas + orange accent, Final ui-ux)
    ============================================ */
 .fe-layout {
+  /* Positioned so the Workflow Files drawer (an absolutely placed overlay,
+     see .wfm-drawer) docks to the layout rather than to the page. */
+  position: relative;
   display: grid;
   grid-template-columns: 240px 1fr;
   gap: 0;
@@ -3997,6 +4000,9 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
    precisely because it reflects real stack state. */
 .fe-icobtn:disabled { opacity: 0.38; cursor: default; }
 .fe-hist { display: inline-flex; align-items: center; gap: 4px; }
+/* Workflow Files hamburger: lit while its drawer is open, like the avatar. */
+.fe-filesbtn.open { color: var(--primary); border-color: var(--primary); }
+.fe-filesbtn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 /* ---- split buttons (Export / Save) ----------------------------------- */
 .fe-split { position: relative; display: inline-flex; }
@@ -6218,6 +6224,10 @@ body.route-fullbleed .fe-mm-restore {
 /* Out of the way while the drawer it opens is on screen: the drawer has its
  * own Close, and two dismissals in the same corner is one too many. */
 .bvp-hamburger.is-off { display: none; }
+/* Opened from the workflow editor, where no page is waiting for a file: the
+ * drawer is a plain workspace, and Select has nothing to answer. (A class, not
+ * `hidden`, because `.btn` sets its own display and would win.) */
+.wfm-drawer.is-browse .wfm-select { display: none; }
 
 /* ---- the floating panel ------------------------------------------------ */
 .bvp-panel {
