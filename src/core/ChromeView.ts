@@ -1797,7 +1797,7 @@ async function refreshExtensions() {
   if (!extList) return;
   extEmpty('Loading extensions...');
   try {
-    const res = await fetch('/browser/extensions', {
+    const res = await fetch('/browser/extensions?include=profile', {
       headers: authHeaders(),
       credentials: 'same-origin',
     });

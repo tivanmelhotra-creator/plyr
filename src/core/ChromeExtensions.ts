@@ -244,6 +244,90 @@ export async function listExtensions(extensionsDir: string): Promise<InstalledEx
 }
 
 /**
+ * Extensions installed INSIDE the running Chrome (Web Store "Add to Chrome",
+ * done from the /desktop/chrome screen), as opposed to the ones this server
+ * side-loads from its extensions directory.
+ *
+ * WHY THIS EXISTS: `listExtensions` only reads the side-load directory, so an
+ * extension added from within Chrome itself was invisible to every list built on
+ * it -- including the "Open here" panel -- and stayed invisible across restarts,
+ * because Chrome keeps it in the profile, not in that directory.
+ *
+ * Source of truth is the profile: `Default/Extensions/<id>/<version>/` holds the
+ * unpacked files, and the `extensions.settings` pref (in `Secure Preferences`
+ * and/or `Preferences`) records whether each one is enabled. Disabled and
+ * built-in (component) extensions are skipped: they cannot be opened as a page.
+ * Never throws -- an unreadable profile is simply an empty list.
+ */
+export async function listProfileExtensions(
+  userDataDir: string,
+  exclude: Iterable<string> = [],
+): Promise<InstalledExtension[]> {
+  const skip = new Set(exclude);
+  const profileDir = path.join(userDataDir, 'Default');
+
+  // Chrome splits its prefs across two files depending on build; read both and
+  // let the later (plain Preferences) fill gaps, never overwrite a known entry.
+  const settings: Record<string, Record<string, unknown>> = {};
+  for (const file of ['Secure Preferences', 'Preferences']) {
+    try {
+      const prefs = JSON.parse(await fs.readFile(path.join(profileDir, file), 'utf8'));
+      const s = prefs?.extensions?.settings;
+      if (s && typeof s === 'object') {
+        for (const [id, v] of Object.entries(s as Record<string, unknown>)) {
+          if (!settings[id] && v && typeof v === 'object') settings[id] = v as Record<string, unknown>;
+        }
+      }
+    } catch { /* missing or unreadable file: nothing to add from it */ }
+  }
+
+  let ids: string[];
+  try {
+    ids = await fs.readdir(path.join(profileDir, 'Extensions'));
+  } catch {
+    return [];
+  }
+
+  const found: InstalledExtension[] = [];
+  for (const id of ids) {
+    if (!STORE_ID_RE.test(id) || skip.has(id)) continue;
+    const st = settings[id];
+    if (st) {
+      // location 5/10 = component (built into Chrome), 6 = external component.
+      if ([5, 6, 10].includes(Number(st.location))) continue;
+      // state 1 = enabled; any disable_reasons means Chrome is not running it.
+      const reasons = st.disable_reasons;
+      const disabled = (Array.isArray(reasons) ? reasons.length > 0 : Number(reasons) > 0)
+        || (st.state !== undefined && Number(st.state) !== 1);
+      if (disabled) continue;
+    }
+    // The pref names the exact version dir; otherwise take the newest on disk.
+    let versionDir = '';
+    const rel = typeof st?.path === 'string' ? st.path : '';
+    if (rel) {
+      const cand = path.join(profileDir, 'Extensions', rel);
+      if (await readManifest(cand)) versionDir = cand;
+    }
+    if (!versionDir) {
+      let versions: string[] = [];
+      try { versions = await fs.readdir(path.join(profileDir, 'Extensions', id)); } catch { continue; }
+      versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const v of versions) {
+        const cand = path.join(profileDir, 'Extensions', id, v);
+        if (await readManifest(cand)) { versionDir = cand; break; }
+      }
+    }
+    if (!versionDir) continue;
+    const manifest = await readManifest(versionDir);
+    if (!manifest || manifest.app) continue; // hosted/packaged apps are not extension pages
+    const info = await describe(id, versionDir);
+    if (info) found.push({ ...info, extensionId: id, storeId: id });
+  }
+  found.sort((a, b) => a.name.localeCompare(b.name));
+  return found;
+}
+
+/**
  * Strip a CRX header, returning the embedded ZIP.
  *
  * Returns the input unchanged when it is already a bare ZIP ("PK\x03\x04"), so

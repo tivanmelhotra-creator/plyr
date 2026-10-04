@@ -729,20 +729,29 @@ export const createBrowserRoutes = (): Router => {
   // Extensions
   // ─────────────────────────────────────────────────────────────────────────
 
-  router.get('/browser/extensions', async (_req, res) => {
+  router.get('/browser/extensions', async (req, res) => {
     try {
       const installed = await listExtensions(config.REAL_CHROME_EXTENSIONS_DIR);
       const loaded = RealChrome.loadedExtensions();
       const loadedIds = new Set(loaded.map((e) => e.id));
+      const rows: Array<Record<string, unknown>> = installed.map((e) => ({
+        ...e,
+        loaded: loadedIds.has(e.id),
+        ...(loaded.find((l) => l.id === e.id) || {}),
+      }));
+      // Opt-in, so the editor's Extensions panel (which can delete rows) never
+      // shows extensions it has no way to remove. The /desktop/chrome "Open
+      // here" panel asks for them: they were added from inside Chrome itself.
+      if (req.query.include === 'profile') {
+        for (const e of await RealChrome.profileExtensions()) {
+          rows.push({ ...e, loaded: true, source: 'profile' });
+        }
+      }
       res.json({
         success: true,
         extensionsDir: config.REAL_CHROME_EXTENSIONS_DIR,
         // `loaded` tells the UI whether a restart is still pending for this one.
-        extensions: installed.map((e) => ({
-          ...e,
-          loaded: loadedIds.has(e.id),
-          ...(loaded.find((l) => l.id === e.id) || {}),
-        })),
+        extensions: rows,
       });
     } catch (e) { sendError(res, e); }
   });
@@ -923,7 +932,7 @@ export const createBrowserRoutes = (): Router => {
       const body = (req.body || {}) as { for?: unknown };
       const explicit = typeof body.for === 'string' ? body.for.trim() : '';
       const forSite = explicit || await RealChrome.activeSiteUrl();
-      const url = RealChrome.extensionPageUrl(req.params.id, forSite);
+      const url = await RealChrome.resolveExtensionPageUrl(req.params.id, forSite);
       if (!url) {
         return fail(res, 404, 'That extension is not loaded.',
           'Install it from the Extensions panel; the browser reloads it for you.');

@@ -52,6 +52,7 @@ import {
 } from './BrowserProfile';
 import {
   listExtensions,
+  listProfileExtensions,
   extensionLaunchArgs,
   type InstalledExtension,
 } from './ChromeExtensions';
@@ -1560,6 +1561,46 @@ export class RealChrome {
   }
 
   /**
+   * Extensions the operator installed INSIDE this Chrome (Web Store "Add to
+   * Chrome"). They live in the profile, not the side-load directory, so
+   * `loadedExtensions()` never sees them. Only meaningful while Chrome runs,
+   * and anything already side-loaded is left out so nothing is listed twice.
+   */
+  static async profileExtensions(): Promise<Array<InstalledExtension & {
+    url: string; popupUrl: string; optionsUrl: string; runtimeId: string;
+  }>> {
+    if (!this.isRunning()) return [];
+    const sideloaded = new Set(this.loadedExtensions().map((e) => e.runtimeId));
+    const list = await listProfileExtensions(config.REAL_CHROME_USER_DATA_DIR, sideloaded)
+      .catch(() => []);
+    return list.map((e) => {
+      const base = `chrome-extension://${e.id}/`;
+      return {
+        ...e,
+        runtimeId: e.id,
+        url: base,
+        popupUrl: e.popup ? base + e.popup : '',
+        optionsUrl: e.optionsPage ? base + e.optionsPage : '',
+      };
+    });
+  }
+
+  /**
+   * Like extensionPageUrl, but also finds extensions installed from inside
+   * Chrome. Side-loaded ones win, so existing behaviour is unchanged.
+   */
+  static async resolveExtensionPageUrl(id: string, forPageUrl = ''): Promise<string> {
+    const direct = this.extensionPageUrl(id, forPageUrl);
+    if (direct) return direct;
+    const found = (await this.profileExtensions()).find(
+      (e) => e.id === id || e.name === id || e.runtimeId === id,
+    );
+    if (!found) return '';
+    const base = found.popupUrl || found.optionsUrl || found.url;
+    return forPageUrl ? extensionPageUrlFor(forPageUrl, base) : base;
+  }
+
+  /**
    * Best URL to open for an extension inside the canvas picker.
    *
    * Preference order is popup → options → root, because the popup is what the
@@ -1669,7 +1710,8 @@ export class RealChrome {
   static async openExtensionTab(url: string): Promise<string> {
     const ctx = this.context;
     if (!ctx) throw new RealChromeError('The browser is not running.');
-    if (!isLoadedExtensionUrl(url, this.loadedExtensions())) {
+    const runnable = [...this.loadedExtensions(), ...(await this.profileExtensions())];
+    if (!isLoadedExtensionUrl(url, runnable)) {
       throw new RealChromeError('Only pages of an installed extension can be opened.');
     }
     const page = await ctx.newPage();
