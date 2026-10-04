@@ -515,7 +515,7 @@ export function chromeViewHtml(): string {
   .dp-input:focus { border-color: #e8731a; }
   .dp-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
   .dp-tree {
-    max-height: 140px; overflow-y: auto; background: #15161c;
+    max-height: 210px; overflow-y: auto; background: #15161c;
     border: 1px solid #383842; border-radius: 5px; padding: 4px;
     list-style: none; margin: 0;
   }
@@ -526,6 +526,7 @@ export function chromeViewHtml(): string {
   .dp-tree-item:hover { background: rgba(255,255,255,.07); color: #fff; }
   .dp-tree-item.active { background: rgba(232,115,26,.25); border: 1px solid #e8731a; color: #fff; font-weight: 600; }
   .dp-tree-item .wfm-ico { width: 14px; height: 14px; flex: none; }
+  .dp-tree-item.dp-hint { cursor: default; pointer-events: none; color: #8b8b98; font-style: italic; }
 
   /* foot: what is picked, and the two things to do with it */
   .dfoot {
@@ -3206,8 +3207,62 @@ function wfmPrompt(title, initial, onConfirm) {
   };
 }
 
-/** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
-function wfmPickFolder(title, actionText, onSelect) {
+/** Does 'path' equal one of 'roots', or sit below one of them? */
+function wfmIsUnder(path, roots) {
+  for (let i = 0; i < roots.length; i += 1) {
+    const r = roots[i];
+    if (path === r || path.indexOf(r + '/') === 0) return true;
+  }
+  return false;
+}
+
+/** Folder paths in TREE order: a parent, then everything below it, then its sibling. */
+function wfmByTreeOrder(a, b) {
+  const x = a.split('/');
+  const y = b.split('/');
+  const n = Math.min(x.length, y.length);
+  for (let i = 0; i < n; i += 1) {
+    if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  }
+  return x.length - y.length;
+}
+
+/**
+ * Read EVERY folder in the workspace, not just the ones expanded on screen, so
+ * the destination picker can offer them all. Breadth-first and bounded (depth
+ * and count), so one Move can never become hundreds of requests. The listings
+ * land in the same cache the tree uses.
+ */
+const WFM_PICKER_MAX_DEPTH = 8;
+const WFM_PICKER_MAX_FOLDERS = 200;
+function wfmLoadAllFolders() {
+  const requestedWorkflowId = workflowId;
+  let seen = 0;
+  const level = (rels, depth) => {
+    if (workflowId !== requestedWorkflowId || !rels.length || depth > WFM_PICKER_MAX_DEPTH) return Promise.resolve();
+    return Promise.all(rels.map((r) => wfmFetchFolder(r))).then(() => {
+      if (workflowId !== requestedWorkflowId) return null;
+      const next = [];
+      rels.forEach((r) => {
+        (wfmFolders[r] || []).forEach((e) => {
+          if (e.type === 'dir' && seen < WFM_PICKER_MAX_FOLDERS) { seen += 1; next.push(e.path); }
+        });
+      });
+      return level(next, depth + 1);
+    });
+  };
+  return level([''], 0);
+}
+
+/**
+ * In-drawer Folder Tree Picker for Move / Copy.
+ *
+ * Offers the workspace root and EVERY folder under it -- uploads/ and
+ * downloads/ included, since they are real destinations -- not only the
+ * folders already expanded. 'exclude' is what is being moved or copied: a
+ * folder cannot go into itself or below itself, so those are not offered.
+ */
+function wfmPickFolder(title, actionText, onSelect, exclude) {
   if (isTestPrompt()) {
     const val = ask(title + ' (relative to workspace, leave empty for Root):', wfmRoot || '');
     if (val !== null) onSelect(wfmDestInput(val));
@@ -3224,41 +3279,60 @@ function wfmPickFolder(title, actionText, onSelect) {
     if (val !== null) onSelect(wfmDestInput(val));
     return;
   }
+  const skip = exclude || [];
   if (tEl) tEl.textContent = title;
   if (okBtn) okBtn.textContent = actionText || 'Select';
-  let chosen = wfmRoot || '';
-  tree.innerHTML = '';
+  // Where the operator is looking, unless that is a folder being moved.
+  let chosen = (wfmRoot && !wfmIsUnder(wfmRoot, skip)) ? wfmRoot : '';
+  const paintTarget = () => {
+    if (selEl) selEl.textContent = 'Target: ' + (chosen ? '/' + chosen : 'Workspace Root (/)');
+  };
 
   const makeItem = (path, label, depth) => {
     const li = document.createElement('li');
     li.className = 'dp-tree-item' + (chosen === path ? ' active' : '');
-    li.style.paddingLeft = (6 + depth * 14) + 'px';
-    li.innerHTML = '<span class="wfm-ico">' + wfmGlyph('folder') + '</span><span>' + label + '</span>';
+    li.setAttribute('data-path', path);
+    li.style.paddingInlineStart = (6 + depth * 14) + 'px';
+    const ico = document.createElement('span');
+    ico.className = 'wfm-ico';
+    ico.innerHTML = wfmGlyph('folder');
+    li.appendChild(ico);
+    // textContent, never markup: a folder name came from a shared filesystem.
+    const nm = document.createElement('span');
+    nm.textContent = label;
+    li.appendChild(nm);
     li.onclick = () => {
       chosen = path;
       const all = tree.querySelectorAll('.dp-tree-item');
       for (let i = 0; i < all.length; i++) all[i].classList.remove('active');
       li.classList.add('active');
-      if (selEl) selEl.textContent = 'Target: ' + (chosen ? '/' + chosen : 'Workspace Root (/)');
+      paintTarget();
     };
     tree.appendChild(li);
   };
 
-  makeItem('', 'Workspace Root (/)', 0);
-  const dirs = {};
-  Object.keys(wfmFolders).forEach((folder) => {
-    (wfmFolders[folder] || []).forEach((e) => {
-      if (e.type === 'dir' && !e.system) dirs[e.path] = true;
+  const fillTree = () => {
+    tree.innerHTML = '';
+    makeItem('', 'Workspace Root (/)', 0);
+    const dirs = {};
+    Object.keys(wfmFolders).forEach((folder) => {
+      (wfmFolders[folder] || []).forEach((e) => {
+        if (e.type === 'dir' && e.path && !wfmIsUnder(e.path, skip)) dirs[e.path] = true;
+      });
     });
-  });
-  const sortedDirs = Object.keys(dirs).sort();
-  for (let i = 0; i < sortedDirs.length; i++) {
-    const d = sortedDirs[i];
-    const segs = d.split('/');
-    makeItem(d, segs[segs.length - 1], segs.length);
-  }
+    Object.keys(dirs).sort(wfmByTreeOrder).forEach((d) => {
+      const segs = d.split('/');
+      makeItem(d, segs[segs.length - 1], segs.length);
+    });
+  };
 
-  if (selEl) selEl.textContent = 'Target: ' + (chosen ? '/' + chosen : 'Workspace Root (/)');
+  const requestedWorkflowId = workflowId;
+  fillTree();
+  const loading = document.createElement('li');
+  loading.className = 'dp-tree-item dp-hint';
+  loading.textContent = 'Loading folders\\u2026';
+  tree.appendChild(loading);
+  paintTarget();
   box.hidden = false;
 
   const cleanup = () => {
@@ -3273,6 +3347,13 @@ function wfmPickFolder(title, actionText, onSelect) {
   cancelBtn.onclick = () => {
     cleanup();
   };
+
+  // Complete the tree as the remaining listings arrive; the destination can be
+  // picked before the load ends. A picker closed meanwhile is left alone.
+  wfmLoadAllFolders().then(() => {
+    if (box.hidden || workflowId !== requestedWorkflowId) return;
+    fillTree();
+  });
 }
 
 function wfmNewFolder(inRel) {
@@ -3664,7 +3745,7 @@ function wfmMovePaths(paths) {
         wfmSetBusy(false);
         wfmSay((e && e.message) || 'Could not move.', true);
       });
-  });
+  }, paths);
 }
 
 function wfmCopyPaths(paths, style) {
@@ -3689,7 +3770,7 @@ function wfmCopyPaths(paths, style) {
         wfmSetBusy(false);
         wfmSay((e && e.message) || 'Could not copy.', true);
       });
-  });
+  }, paths);
 }
 
 function wfmDuplicate(entry) {

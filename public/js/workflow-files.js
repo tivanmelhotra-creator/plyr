@@ -55,6 +55,16 @@
    caller. It is validated against the same pattern the server uses; an id
    that does not fit is treated as "no saved workflow", never guessed.
 
+   A NOTEPAD FOR TEXT FILES
+   ------------------------
+   A text file (.txt, .md, .json, ...) opens in an in-drawer editor, the same
+   notepad the Local Browser view has: read through GET .../file, saved through
+   PUT .../file, both scoped to the workflow id + the file's own RELATIVE path.
+   In the workflow editor's browse-only drawer a click on the NAME opens it; in
+   the file-picker drawer a click still SELECTS (that is how a page's file input
+   is answered), and the row menu's Edit opens it instead. Binary files never
+   reach it.
+
    CSP-safe: no inline handlers, no eval, textContent for every name.
    ============================================ */
 (function () {
@@ -118,6 +128,25 @@
   var IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico|tiff?)$/i;
   function fileIcon(name) {
     return IMAGE_EXT_RE.test(String(name || '')) ? 'image-frame' : 'file-text';
+  }
+
+  /**
+   * The names the notepad opens. Extension-based and deliberately narrow, the
+   * same list as the Local Browser view's editor: a binary file never reaches
+   * a textarea (it would be mangled on save).
+   */
+  var TEXT_EXT = [
+    'txt', 'text', 'md', 'markdown', 'rst', 'json', 'jsonc', 'js', 'mjs', 'cjs',
+    'ts', 'tsx', 'jsx', 'css', 'scss', 'less', 'html', 'htm', 'xml', 'csv', 'tsv',
+    'yml', 'yaml', 'ini', 'cfg', 'conf', 'env', 'log', 'sh', 'bash', 'zsh', 'py',
+    'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cc', 'cs', 'php',
+    'sql', 'toml', 'properties', 'gradle', 'dockerfile', 'svg', 'gitignore', 'srt'
+  ];
+  function isTextName(name) {
+    var n = String(name || '').toLowerCase();
+    var dot = n.lastIndexOf('.');
+    if (dot < 0 || dot === n.length - 1) return false;
+    return TEXT_EXT.indexOf(n.slice(dot + 1)) >= 0;
   }
 
   function apiHeaders(extra) {
@@ -606,12 +635,22 @@
 
     li.addEventListener('click', function () {
       if (isDir) { toggleFolder(entry.path); return; }
+      // No page is waiting for a file (the workflow editor): a TEXT file's name
+      // opens the notepad, and the selection is left exactly as it was (the
+      // checkbox is the selection's control). Any other file keeps toggling.
+      if (state && state.opts && state.opts.browseOnly && isTextName(entry.name)) {
+        void openEditor(entry);
+        return;
+      }
       // Only FILES can be selected: a folder cannot go into an input.
       pick(entry);
     });
     li.addEventListener('dblclick', function () {
       // A folder opens INTO (the breadcrumb takes it), a file is handed over.
       if (isDir) { void goTo(entry.path); return; }
+      // Browse-only: nothing to hand over, and the first click already opened
+      // the notepad -- a double-click must not also select the file.
+      if (state && state.opts && state.opts.browseOnly) return;
       pick(entry, true);
       use();
     });
@@ -959,18 +998,77 @@
     return s.replace(/^\/+/, '').replace(/\/+$/, '');
   }
 
-  /** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
-  function pickFolder(title, actionLabel, onSelect) {
+  /** Does `path` equal one of `roots`, or sit below one of them? */
+  function isUnder(path, roots) {
+    for (var i = 0; i < roots.length; i++) {
+      var r = roots[i];
+      if (path === r || path.indexOf(r + '/') === 0) return true;
+    }
+    return false;
+  }
+
+  /** Folder paths in TREE order: a parent, then everything below it, then its sibling. */
+  function byTreeOrder(a, b) {
+    var x = a.split('/');
+    var y = b.split('/');
+    var n = Math.min(x.length, y.length);
+    for (var i = 0; i < n; i++) {
+      if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+    }
+    return x.length - y.length;
+  }
+
+  /**
+   * Read EVERY folder in the workspace (not just the ones the operator has
+   * expanded), so the destination picker can offer them all. Breadth-first and
+   * bounded: a depth and a count cap keep a pathological tree from turning one
+   * Move into hundreds of requests. Listings land in the same cache the tree
+   * uses, so nothing is fetched twice.
+   */
+  var PICKER_MAX_DEPTH = 8;
+  var PICKER_MAX_FOLDERS = 200;
+  function loadAllFolders() {
+    if (!state) return Promise.resolve();
+    var s = state;
+    var seen = 0;
+    function level(rels, depth) {
+      if (state !== s || !rels.length || depth > PICKER_MAX_DEPTH) return Promise.resolve();
+      return Promise.all(rels.map(function (r) { return fetchFolder(r); })).then(function () {
+        if (state !== s) return null;
+        var next = [];
+        rels.forEach(function (r) {
+          (s.folders[r] || []).forEach(function (e) {
+            if (e.type === 'dir' && seen < PICKER_MAX_FOLDERS) { seen++; next.push(e.path); }
+          });
+        });
+        return level(next, depth + 1);
+      });
+    }
+    return level([''], 0);
+  }
+
+  /**
+   * In-drawer Folder Tree Picker for Move / Copy.
+   *
+   * It offers the workspace root and EVERY folder under it -- uploads/ and
+   * downloads/ included (they are real destinations: Move a file into uploads/
+   * to stage it as input) -- not only the folders already expanded on screen.
+   * `exclude` is what is being moved/copied: a folder cannot go into itself or
+   * below itself, so those are not offered.
+   */
+  function pickFolder(title, actionLabel, onSelect, exclude) {
     if (isTestPrompt()) {
       var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
       if (to !== null) onSelect(destInput(to));
       return;
     }
     if (!state || !state.els || !state.els.folderModal) {
-      var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
-      if (to !== null) onSelect(destInput(to));
+      var to2 = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
+      if (to2 !== null) onSelect(destInput(to2));
       return;
     }
+    var s = state;
+    var skip = exclude || [];
     var modal = state.els.folderModal;
     modal.innerHTML = '';
     modal.hidden = false;
@@ -987,39 +1085,53 @@
     var targetLbl = document.createElement('span');
     targetLbl.style.fontSize = '0.74rem';
     targetLbl.style.color = 'var(--text-dim, #9aa0ad)';
-    var chosen = state.root || '';
-    targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' + (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
     modal.appendChild(targetLbl);
 
-    var makeItem = function (path, label, depth) {
+    // Where the operator is looking, unless that is a folder being moved.
+    var chosen = (state.root && !isUnder(state.root, skip)) ? state.root : '';
+    function paintTarget() {
+      targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' +
+        (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
+    }
+    paintTarget();
+
+    var okBtn;
+    function makeItem(path, label, depth) {
       var li = document.createElement('li');
       li.className = 'wfm-modal-tree-item' + (chosen === path ? ' active' : '');
-      li.style.paddingLeft = (6 + depth * 14) + 'px';
-      li.innerHTML = '<span class="wfm-ico">' + BIC('folder', 13) + '</span><span>' + label + '</span>';
+      li.setAttribute('data-path', path);
+      li.style.paddingInlineStart = (6 + depth * 14) + 'px';
+      var ico = document.createElement('span');
+      ico.className = 'wfm-ico';
+      ico.innerHTML = BIC('folder', 13);
+      li.appendChild(ico);
+      // textContent, never markup: a folder name came from a shared filesystem.
+      var nm = document.createElement('span');
+      nm.textContent = label;
+      li.appendChild(nm);
       li.addEventListener('click', function () {
         chosen = path;
         var all = tree.querySelectorAll('.wfm-modal-tree-item');
         for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
         li.classList.add('active');
-        targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' + (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
+        paintTarget();
       });
       tree.appendChild(li);
-    };
+    }
 
-    makeItem('', t('wfm.rootWorkspace', 'Workspace Root (/)'), 0);
-    var dirs = {};
-    if (state.folders) {
-      Object.keys(state.folders).forEach(function (f) {
-        (state.folders[f] || []).forEach(function (e) {
-          if (e.type === 'dir' && !e.system) dirs[e.path] = true;
+    function fillTree() {
+      tree.textContent = '';
+      makeItem('', t('wfm.rootWorkspace', 'Workspace Root (/)'), 0);
+      var dirs = {};
+      Object.keys(s.folders).forEach(function (f) {
+        (s.folders[f] || []).forEach(function (e) {
+          if (e.type === 'dir' && e.path && !isUnder(e.path, skip)) dirs[e.path] = true;
         });
       });
-    }
-    var sortedDirs = Object.keys(dirs).sort();
-    for (var i = 0; i < sortedDirs.length; i++) {
-      var d = sortedDirs[i];
-      var segs = d.split('/');
-      makeItem(d, segs[segs.length - 1], segs.length);
+      Object.keys(dirs).sort(byTreeOrder).forEach(function (d) {
+        var segs = d.split('/');
+        makeItem(d, segs[segs.length - 1], segs.length);
+      });
     }
 
     var actions = document.createElement('div');
@@ -1030,7 +1142,7 @@
     cancelBtn.textContent = t('wfm.cancel', 'Cancel');
     actions.appendChild(cancelBtn);
 
-    var okBtn = document.createElement('button');
+    okBtn = document.createElement('button');
     okBtn.type = 'button';
     okBtn.className = 'btn btn-primary btn-sm';
     okBtn.textContent = actionLabel || t('wfm.select', 'Select');
@@ -1048,6 +1160,19 @@
     okBtn.addEventListener('click', function () {
       cleanup();
       onSelect(chosen);
+    });
+
+    // Show what is already known at once, then complete it as the remaining
+    // listings arrive. The destination can be picked before the load ends.
+    fillTree();
+    var loading = document.createElement('li');
+    loading.className = 'wfm-modal-tree-item wfm-hint';
+    loading.textContent = t('wfm.loadingFolders', 'Loading folders\u2026');
+    tree.appendChild(loading);
+    loadAllFolders().then(function () {
+      // Closed or replaced while loading: nothing to repaint.
+      if (state !== s || modal.hidden || !tree.parentNode) return;
+      fillTree();
     });
   }
 
@@ -1081,7 +1206,7 @@
             say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true);
           }
         });
-    });
+    }, paths);
     return Promise.resolve();
   }
 
@@ -1114,7 +1239,7 @@
             say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true);
           }
         });
-    });
+    }, paths);
     return Promise.resolve();
   }
 
@@ -1230,6 +1355,132 @@
     }
     parts.push(entry.path);
     say(parts.join('  ·  '), false);
+  }
+
+  // ── The notepad: ONE text file, read and written as TEXT ────────────────
+  //
+  // GET .../file?path=<rel> returns { content }; PUT .../file takes
+  // { path, content } and writes it back to the SAME relative path. The server
+  // caps both at 2 MB and answers in words past that. `state.edit` is the file
+  // on screen ({ path, name, dirty, warned }) or null; every late answer
+  // re-checks it, so a slow read for a file the operator has since left cannot
+  // overwrite what is showing.
+
+  function edGutter(text) {
+    if (!state || !state.els.edGutter) return;
+    var lines = String(text == null ? '' : text).split('\n').length;
+    var out = '';
+    for (var i = 1; i <= lines; i++) out += i + '\n';
+    state.els.edGutter.textContent = out;
+  }
+
+  function edStats(text) {
+    if (!state || !state.els.edMeta) return;
+    var n = String(text == null ? '' : text).length;
+    state.els.edMeta.textContent = n === 1
+      ? '1 ' + t('wfm.char', 'char')
+      : n + ' ' + t('wfm.chars', 'chars');
+  }
+
+  function edStatus(text, dirty, isErr) {
+    if (!state || !state.els.edStatus) return;
+    state.els.edStatus.textContent = text || '';
+    state.els.edStatus.className = 'wfm-ed-status' + (dirty ? ' dirty' : '') + (isErr ? ' err' : '');
+  }
+
+  function openEditor(entry) {
+    if (!state || !entry || entry.type === 'dir') return Promise.resolve();
+    if (!isTextName(entry.name)) {
+      say(t('wfm.notText', 'That kind of file cannot be opened in the text editor. Use Download.'), true);
+      return Promise.resolve();
+    }
+    var s = state;
+    var els = s.els;
+    closeMenu();
+    s.edit = { path: entry.path, name: entry.name, dirty: false, warned: false };
+    els.edName.textContent = entry.name;
+    els.edName.title = entry.path;
+    els.edText.value = '';
+    els.edText.disabled = true;
+    els.edSave.disabled = true;
+    edGutter('');
+    edStats('');
+    edStatus(t('wfm.edLoading', 'Loading\u2026'), false);
+    els.root.classList.add('is-editing');
+    els.editor.hidden = false;
+    return call(base() + '/file?path=' + encodeURIComponent(entry.path))
+      .then(function (d) {
+        if (state !== s || !s.edit || s.edit.path !== entry.path) return null;
+        var content = String((d && d.content) || '');
+        els.edText.value = content;
+        els.edText.disabled = false;
+        els.edSave.disabled = false;
+        edGutter(content);
+        edStats(content);
+        edStatus(t('wfm.edReady', 'Ready'), false);
+        try { els.edText.focus(); } catch (e) { /* not focusable in the harness */ }
+        return null;
+      })
+      .catch(function (e) {
+        if (state !== s || !s.edit || s.edit.path !== entry.path) return;
+        edStatus((e && e.message) || t('wfm.readFailed', 'Could not read the file.'), false, true);
+      });
+  }
+
+  /**
+   * Back to the tree. A draft with unsaved changes is NOT dropped on the first
+   * press: the status says so and a second Close discards it (force=true).
+   */
+  function closeEditor(force) {
+    if (!state || !state.edit) return;
+    var ed = state.edit;
+    if (ed.dirty && !force && !ed.warned) {
+      ed.warned = true;
+      edStatus(t('wfm.unsavedClose', 'Unsaved changes. Save, or press Close again to discard.'), true);
+      return;
+    }
+    var els = state.els;
+    state.edit = null;
+    els.edText.value = '';
+    els.edText.disabled = false;
+    els.edGutter.textContent = '';
+    els.edMeta.textContent = '';
+    els.editor.hidden = true;
+    els.root.classList.remove('is-editing');
+  }
+
+  function saveEditor() {
+    if (!state || !state.edit) return Promise.resolve();
+    var s = state;
+    var ed = s.edit;
+    var els = s.els;
+    var text = els.edText.value || '';
+    els.edSave.disabled = true;
+    edStatus(t('wfm.saving', 'Saving\u2026'), false);
+    return call(base() + '/file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: ed.path, content: text })
+    })
+      .then(function () {
+        if (state !== s) return null;
+        els.edSave.disabled = false;
+        // Typed while the save was in flight: that text is NOT on the server.
+        if (s.edit === ed && els.edText.value === text) {
+          ed.dirty = false;
+          ed.warned = false;
+          edStatus(t('wfm.saved', 'Saved'), false);
+        }
+        edStats(els.edText.value);
+        // The row's size is stale now; re-read the open folders.
+        void refresh();
+        return null;
+      })
+      .catch(function (e) {
+        if (state !== s) return;
+        els.edSave.disabled = false;
+        edStatus((e && e.message) || t('wfm.saveFailed', 'Could not save the file.'), true, true);
+      });
   }
 
   // ── Download: the operator's own copy ──────────────────────────────────
@@ -1420,18 +1671,17 @@
    *           · Compress · Move · Copy · Rename · Delete
    *   System: Open · New File · New Folder · Upload Here · Download (.zip)
    *           · Compress                                (uploads/, downloads/)
-   *   File:   Select · Download · Compress · Move · Copy · Duplicate · Extract (.zip)
-   *           · Rename · Delete · Details
+   *   File:   Select · Edit (text files) · Download · Compress · Move · Copy
+   *           · Duplicate · Extract (.zip) · Rename · Delete · Details
    *   Root:   New Folder · New File · Upload File · Select All
    *           · Download workspace · Compress · Refresh
    *
    * "Open" on a folder roots the tree THERE (the breadcrumb is the way back);
    * the chevron on the row expands it in place instead.
    *
-   * "Open / Preview" is deliberately NOT offered for a file: this client has
-   * no viewer, and a menu entry that does nothing is worse than one that is
-   * absent. Extract is offered only for a `.zip` — the one format this pass
-   * supports.
+   * "Edit" is offered only for a text file (the notepad refuses the rest), so
+   * no entry ever does nothing. Extract is offered only for a `.zip` — the one
+   * format this pass supports.
    */
   function openMenu(entry, x, y) {
     if (!state) return;
@@ -1483,6 +1733,9 @@
       }
     } else {
       menuItem(menu, t('wfm.pick', 'Select'), 'check', function () { pick(entry, true); });
+      if (isTextName(entry.name)) {
+        menuItem(menu, t('wfm.edit', 'Edit'), 'file-text', function () { void openEditor(entry); });
+      }
       menuItem(menu, t('wfm.download', 'Download'), 'download', function () { void downloadEntry(entry); });
       menuSep(menu);
       menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () {
@@ -1743,6 +1996,71 @@
     promptModalHost.hidden = true;
     root.appendChild(promptModalHost);
 
+    // ── the notepad: hidden until a text file opens (see openEditor)
+    var editor = document.createElement('div');
+    editor.className = 'wfm-editor';
+    editor.hidden = true;
+    var edBar = document.createElement('div');
+    edBar.className = 'wfm-ed-bar';
+    var edIco = document.createElement('span');
+    edIco.className = 'wfm-ico';
+    edIco.innerHTML = BIC('file-text', 14);
+    edBar.appendChild(edIco);
+    var edNameEl = document.createElement('span');
+    edNameEl.className = 'wfm-ed-name';
+    edBar.appendChild(edNameEl);
+    var edGrow = document.createElement('span');
+    edGrow.className = 'wfm-grow';
+    edBar.appendChild(edGrow);
+    var edSaveBtn = iconBtn('wfm-ed-save', 'save', t('wfm.save', 'Save') + ' (Ctrl+S)', function () { void saveEditor(); });
+    edBar.appendChild(edSaveBtn);
+    edBar.appendChild(iconBtn('wfm-ed-close', 'x', t('wfm.edClose', 'Close file'), function () { closeEditor(false); }));
+    editor.appendChild(edBar);
+    var edBody = document.createElement('div');
+    edBody.className = 'wfm-ed-body';
+    var edGutterEl = document.createElement('div');
+    edGutterEl.className = 'wfm-ed-gutter';
+    edGutterEl.setAttribute('aria-hidden', 'true');
+    edBody.appendChild(edGutterEl);
+    var edTextEl = document.createElement('textarea');
+    edTextEl.className = 'wfm-ed-text';
+    edTextEl.spellcheck = false;
+    edTextEl.setAttribute('wrap', 'off');
+    edTextEl.setAttribute('aria-label', t('wfm.edContents', 'File contents'));
+    // Typing marks the draft dirty, so there is always a visible sign that
+    // something is not on the server yet.
+    edTextEl.addEventListener('input', function () {
+      if (!state || !state.edit) return;
+      state.edit.dirty = true;
+      state.edit.warned = false;
+      edGutter(edTextEl.value);
+      edStats(edTextEl.value);
+      edStatus(t('wfm.unsaved', 'Unsaved changes'), true);
+    });
+    // The line numbers follow the text when it scrolls.
+    edTextEl.addEventListener('scroll', function () { edGutterEl.scrollTop = edTextEl.scrollTop; });
+    edTextEl.addEventListener('keydown', function (ev) {
+      if (ev && (ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
+        ev.preventDefault();
+        void saveEditor();
+      }
+    });
+    edBody.appendChild(edTextEl);
+    editor.appendChild(edBody);
+    var edFoot = document.createElement('div');
+    edFoot.className = 'wfm-ed-foot';
+    var edStatusEl = document.createElement('span');
+    edStatusEl.className = 'wfm-ed-status';
+    edFoot.appendChild(edStatusEl);
+    var edGrow2 = document.createElement('span');
+    edGrow2.className = 'wfm-grow';
+    edFoot.appendChild(edGrow2);
+    var edMetaEl = document.createElement('span');
+    edMetaEl.className = 'wfm-ed-meta';
+    edFoot.appendChild(edMetaEl);
+    editor.appendChild(edFoot);
+    root.appendChild(editor);
+
     // ── foot: what is picked, and the two things to do with it
     var foot = document.createElement('div');
     foot.className = 'wfm-foot';
@@ -1823,6 +2141,8 @@
         // Escape closes the MENU first when one is up, so it is not a way to
         // lose the whole drawer by aiming at a menu.
         if (menu) { closeMenu(); return; }
+        // ... and the notepad before the drawer, for the same reason.
+        if (state && state.edit) { closeEditor(false); return; }
         close('closed');
       }
     });
@@ -1835,7 +2155,9 @@
       total: total, count: count, clear: clear, foot: foot,
       confirm: confirmHost, folderModal: folderModalHost, promptModal: promptModalHost, selectAll: all, crumbs: crumbs,
       compressSel: footCompress, moveSel: footMove, copySel: footCopy,
-      down: down, del: del
+      down: down, del: del,
+      editor: editor, edName: edNameEl, edText: edTextEl, edGutter: edGutterEl,
+      edSave: edSaveBtn, edStatus: edStatusEl, edMeta: edMetaEl
     };
   }
 
@@ -1900,6 +2222,8 @@
       uploadInto: '',
       /** Where the tree is rooted; '' is the workspace. See goTo(). */
       root: '',
+      /** The text file open in the notepad, or null. See openEditor(). */
+      edit: null,
       opts: o,
       els: els
     };
