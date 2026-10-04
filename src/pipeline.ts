@@ -17,6 +17,16 @@ import {
 import { isTriggerAction } from './core/TriggerEngine';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
+import {
+  EXT_BROWSER_FLAG,
+  OPEN_EXTENSION_ACTIONS,
+  acquireExtensionBrowser,
+  closeOwnedPages,
+  confineContextToOwnedPages,
+  runOpenExtensionStep,
+  stepsUseExtensions,
+  withExtensionRunLock,
+} from './core/ExtensionStep';
 // Dual browser mode. Only these two lines and ensureLocalContext below know
 // that local mode exists; every node action stays identical in both modes,
 // because both end up as an ordinary Playwright BrowserContext.
@@ -720,6 +730,34 @@ async function ensureLocalContext(context: AutomationContext): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════════
+// EXTENSION BROWSER SETUP (Real Chrome — the only browser with extensions)
+// ════════════════════════════════════════════════════════════════
+
+async function ensureExtensionContext(context: AutomationContext): Promise<void> {
+  const { profileManager, log, jobId } = context;
+
+  if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
+
+  log('[BROWSER] This workflow uses extensions — attaching to the server\'s Real Chrome...');
+  const real = await acquireExtensionBrowser();
+
+  // Real Chrome is shared with the viewer, so the run only ever sees, and may
+  // only close, tabs it opened itself (see confineContextToOwnedPages).
+  context.data[EXT_BROWSER_FLAG] = true;
+  context.browserContext = confineContextToOwnedPages(real, context.data);
+  context.browserMode = 'remote';
+  context.browserShared = true; // never ours to close
+
+  // Always a tab of our own: adopting the operator's tab (as local mode does)
+  // would automate whatever they are looking at.
+  const page = await context.browserContext.newPage();
+  context.page = page;
+  profileManager.registerPage(jobId, page);
+
+  log('[BROWSER] Attached to Real Chrome (extensions available)');
+}
+
+// ════════════════════════════════════════════════════════════════
 // FREE BROWSER SETUP
 // ════════════════════════════════════════════════════════════════
 
@@ -828,7 +866,15 @@ async function ensureFreeContext(context: AutomationContext): Promise<void> {
 // MAIN PIPELINE
 // ════════════════════════════════════════════════════════════════
 
-export async function runPipeline(params: {
+export async function runPipeline(params: Parameters<typeof runPipelineImpl>[0]): Promise<JobResult> {
+  // Only a workflow that contains an `open-extension` node leaves the normal
+  // path: it needs Real Chrome (the only browser with extensions) and one run
+  // at a time on it. Every other workflow goes straight through, unchanged.
+  if (!stepsUseExtensions(params.steps)) return runPipelineImpl(params);
+  return withExtensionRunLock(() => runPipelineImpl(params), { log: params.log });
+}
+
+async function runPipelineImpl(params: {
   userId: string;
   steps: AutomationStep[];
   headless?: boolean;
@@ -908,6 +954,8 @@ export async function runPipeline(params: {
     // option.
     if (browserModes.modeOf(userId) === 'local') {
       await ensureLocalContext(context);
+    } else if (stepsUseExtensions(steps)) {
+      await ensureExtensionContext(context);
     } else if (isVip) {
       await ensureVipBrowser(context);
     } else {
@@ -918,6 +966,7 @@ export async function runPipeline(params: {
       throw new Error('CANCELLED_BY_USER');
     }
   } catch (e: any) {
+    await closeOwnedPages(context.data).catch(() => { });
     if (e.message === 'CANCELLED_BY_USER') {
       return { success: false, message: 'CANCELLED_BY_USER', durationMs: 0 };
     }
@@ -2003,6 +2052,20 @@ export async function runPipeline(params: {
         }
 
         // ════════════════════════════════════════════════════════════════
+        // 33b. OPEN EXTENSION — open an installed extension's page as a tab
+        // ────────────────────────────────────────────────────────────────
+        // Deliberately NOT part of `goto`: see core/ExtensionStep.ts.
+        // ════════════════════════════════════════════════════════════════
+        if ((OPEN_EXTENSION_ACTIONS as readonly string[]).includes(step.action)) {
+          const opened = await runOpenExtensionStep(context as any, finalParams, { log });
+          profileManager.registerPage(jobId, context.page!);
+
+          globalStepNumber++;
+          stepOutputs.push(createStepOutput(globalStepNumber, 'open-extension', true, opened, stepStartTime));
+          continue stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
         // 34. NAVIGATE / GOTO
         // ════════════════════════════════════════════════════════════════
         if (step.action === 'navigate' || step.action === 'goto' || step.action === 'goto-url') {
@@ -2430,6 +2493,8 @@ export async function runPipeline(params: {
             log('[BROWSER] Launch requested — opening a fresh context');
             if (browserModes.modeOf(userId) === 'local') {
               await ensureLocalContext(context);
+            } else if (stepsUseExtensions(steps)) {
+              await ensureExtensionContext(context);
             } else if (isVip) {
               await ensureVipBrowser(context);
             } else {
@@ -2517,6 +2582,8 @@ export async function runPipeline(params: {
           // feature could do, so the shared case never touches the browser.
           if (context.browserShared) {
             log('[BROWSER] Close requested — detaching from your local browser (it stays open)');
+            // On Real Chrome the run's own tabs are its to close; nothing else is.
+            if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
           } else if (context.browserContext) {
             try {
               const pages = context.browserContext.pages();
@@ -3091,6 +3158,9 @@ export async function runPipeline(params: {
       await quotaManager.consumeQuota(userId, finalElapsed, userPlan.quota);
     }
 
+    // Real Chrome runs: close the tabs this run opened, and only those.
+    if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
+
     if (context.browserContext) {
       // 'browserShared' is local mode (the user's own browser) — never ours to
       // close. A finished run must leave their tabs exactly as it found them.
@@ -3132,6 +3202,8 @@ export async function runPipeline(params: {
     }
 
     await savePartialOutputs(userId, jobId, stepOutputs, log).catch(() => { });
+
+    if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
 
     if (context.browserContext) {
       // Same rule on the failure path, and it matters MORE here: a run that

@@ -52,6 +52,7 @@ import {
 } from './BrowserProfile';
 import {
   listExtensions,
+  listProfileExtensions,
   extensionLaunchArgs,
   type InstalledExtension,
 } from './ChromeExtensions';
@@ -269,6 +270,46 @@ export function unpackedExtensionId(absDir: string): string {
     id += String.fromCharCode('a'.charCodeAt(0) + parseInt(ch, 16));
   }
   return id;
+}
+
+/**
+ * Is `url` a page inside one of the given loaded extensions?
+ * Compared by parsed scheme + id (host), never by string prefix, so
+ * `chrome-extension://<id>.evil/` or a look-alike cannot slip through.
+ */
+export function isLoadedExtensionUrl(url: string, loaded: Array<{ runtimeId: string }>): boolean {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'chrome-extension:') return false;
+    return loaded.some((e) => e.runtimeId && e.runtimeId === u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is `url` this server's OWN web app (the plyr UI, the picker canvas...)?
+ *
+ * The shared Chromium can have a tab of the app itself open, and that tab is
+ * "visible" just like the site the operator is working on. Reported: Open here
+ * produced `Cookies for 127.0.0.1` instead of `Cookies for arena.ai`, so import
+ * and export had no real site to act on. The app is never a site an extension
+ * should be opened for.
+ *
+ * Loopback names on the server's own port always count; `extraHosts` adds the
+ * host the request arrived on (a published Docker port or a domain name).
+ */
+export function isOwnAppUrl(url: string, extraHosts: string[] = [], ownPort = config.PORT): boolean {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+    const loopback = ['localhost', '127.0.0.1', '[::1]', '0.0.0.0'];
+    if (loopback.includes(u.hostname) && port === String(ownPort)) return true;
+    return extraHosts.some((h) => String(h).toLowerCase() === u.host.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1545,6 +1586,46 @@ export class RealChrome {
   }
 
   /**
+   * Extensions the operator installed INSIDE this Chrome (Web Store "Add to
+   * Chrome"). They live in the profile, not the side-load directory, so
+   * `loadedExtensions()` never sees them. Only meaningful while Chrome runs,
+   * and anything already side-loaded is left out so nothing is listed twice.
+   */
+  static async profileExtensions(): Promise<Array<InstalledExtension & {
+    url: string; popupUrl: string; optionsUrl: string; runtimeId: string;
+  }>> {
+    if (!this.isRunning()) return [];
+    const sideloaded = new Set(this.loadedExtensions().map((e) => e.runtimeId));
+    const list = await listProfileExtensions(config.REAL_CHROME_USER_DATA_DIR, sideloaded)
+      .catch(() => []);
+    return list.map((e) => {
+      const base = `chrome-extension://${e.id}/`;
+      return {
+        ...e,
+        runtimeId: e.id,
+        url: base,
+        popupUrl: e.popup ? base + e.popup : '',
+        optionsUrl: e.optionsPage ? base + e.optionsPage : '',
+      };
+    });
+  }
+
+  /**
+   * Like extensionPageUrl, but also finds extensions installed from inside
+   * Chrome. Side-loaded ones win, so existing behaviour is unchanged.
+   */
+  static async resolveExtensionPageUrl(id: string, forPageUrl = ''): Promise<string> {
+    const direct = this.extensionPageUrl(id, forPageUrl);
+    if (direct) return direct;
+    const found = (await this.profileExtensions()).find(
+      (e) => e.id === id || e.name === id || e.runtimeId === id,
+    );
+    if (!found) return '';
+    const base = found.popupUrl || found.optionsUrl || found.url;
+    return forPageUrl ? extensionPageUrlFor(forPageUrl, base) : base;
+  }
+
+  /**
    * Best URL to open for an extension inside the canvas picker.
    *
    * Preference order is popup → options → root, because the popup is what the
@@ -1611,6 +1692,86 @@ export class RealChrome {
       }
     }
     return false;
+  }
+
+  /**
+   * The http(s) site tabs of the shared Chrome, best candidate first.
+   *
+   * Playwright has no "active tab" for a persistent context, so this asks each
+   * page: a page that is the visible tab of a window reports visibilityState
+   * "visible" (background tabs report "hidden"), and the one in the focused
+   * window also answers hasFocus(). Focused sorts first, then visible, then the
+   * rest. Extension pages, the New Tab page, about:blank and the server's OWN
+   * app are left out: none of them is a site an extension could act on. Each
+   * probe is bounded so one hung tab cannot stall the "Open here" button.
+   */
+  static async siteTabs(ownHosts: string[] = []): Promise<Array<{
+    url: string; title: string; visible: boolean; focused: boolean;
+  }>> {
+    const ctx = this.context;
+    if (!ctx) return [];
+    const out: Array<{ url: string; title: string; visible: boolean; focused: boolean }> = [];
+    for (const p of ctx.pages()) {
+      try {
+        const url = p.url();
+        if (!/^https?:\/\//i.test(url) || isOwnAppUrl(url, ownHosts)) continue;
+        const state = await Promise.race([
+          p.evaluate(() => ({
+            visible: document.visibilityState === 'visible',
+            focused: document.hasFocus(),
+          })),
+          new Promise<{ visible: boolean; focused: boolean }>((resolve) => setTimeout(
+            () => resolve({ visible: false, focused: false }), 1000,
+          )),
+        ]);
+        const title = await Promise.race([
+          p.title().catch(() => ''),
+          new Promise<string>((resolve) => setTimeout(() => resolve(''), 500)),
+        ]);
+        out.push({ url, title, ...state });
+      } catch {
+        // A tab that died mid-iteration is simply not a candidate.
+      }
+    }
+    const rank = (t: { visible: boolean; focused: boolean }) => (t.focused ? 0 : t.visible ? 1 : 2);
+    return out.sort((a, b) => rank(a) - rank(b));
+  }
+
+  /**
+   * The site the operator is most likely looking at, or '' if none. Only a tab
+   * that is actually on screen counts: guessing a hidden background tab would
+   * be worse than saying nothing.
+   */
+  static async activeSiteUrl(ownHosts: string[] = []): Promise<string> {
+    const best = (await this.siteTabs(ownHosts))[0];
+    return best && (best.focused || best.visible) ? best.url : '';
+  }
+
+  /**
+   * Open an extension page in a NEW tab of the shared Chrome and bring it to
+   * the front, so it appears in the operator's /desktop/chrome view.
+   *
+   * Only a URL that belongs to a LOADED extension is accepted. This is the
+   * guard that keeps the route from being a general "open any URL in the
+   * server's browser" endpoint (file://, chrome://, a site of the caller's
+   * choosing). Returns the URL actually opened.
+   */
+  static async openExtensionTab(url: string): Promise<string> {
+    const ctx = this.context;
+    if (!ctx) throw new RealChromeError('The browser is not running.');
+    const runnable = [...this.loadedExtensions(), ...(await this.profileExtensions())];
+    if (!isLoadedExtensionUrl(url, runnable)) {
+      throw new RealChromeError('Only pages of an installed extension can be opened.');
+    }
+    const page = await ctx.newPage();
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    } catch (e) {
+      await page.close().catch(() => {});
+      throw new RealChromeError(`Could not open the extension page: ${(e as Error)?.message || e}`);
+    }
+    await page.bringToFront().catch(() => {});
+    return page.url();
   }
 
   static async status(): Promise<RealChromeStatus> {

@@ -729,20 +729,35 @@ export const createBrowserRoutes = (): Router => {
   // Extensions
   // ─────────────────────────────────────────────────────────────────────────
 
-  router.get('/browser/extensions', async (_req, res) => {
+  /** Hosts this request reached the app on, so its own tabs are never offered as a site. */
+  const ownHostsOf = (req: AuthenticatedRequest): string[] => {
+    const h = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    return h ? [h] : [];
+  };
+
+  router.get('/browser/extensions', async (req, res) => {
     try {
       const installed = await listExtensions(config.REAL_CHROME_EXTENSIONS_DIR);
       const loaded = RealChrome.loadedExtensions();
       const loadedIds = new Set(loaded.map((e) => e.id));
+      const rows: Array<Record<string, unknown>> = installed.map((e) => ({
+        ...e,
+        loaded: loadedIds.has(e.id),
+        ...(loaded.find((l) => l.id === e.id) || {}),
+      }));
+      // Opt-in, so the editor's Extensions panel (which can delete rows) never
+      // shows extensions it has no way to remove. The /desktop/chrome "Open
+      // here" panel asks for them: they were added from inside Chrome itself.
+      if (req.query.include === 'profile') {
+        for (const e of await RealChrome.profileExtensions()) {
+          rows.push({ ...e, loaded: true, source: 'profile' });
+        }
+      }
       res.json({
         success: true,
         extensionsDir: config.REAL_CHROME_EXTENSIONS_DIR,
         // `loaded` tells the UI whether a restart is still pending for this one.
-        extensions: installed.map((e) => ({
-          ...e,
-          loaded: loadedIds.has(e.id),
-          ...(loaded.find((l) => l.id === e.id) || {}),
-        })),
+        extensions: rows,
       });
     } catch (e) { sendError(res, e); }
   });
@@ -898,6 +913,52 @@ export const createBrowserRoutes = (): Router => {
       );
     }
     res.json({ success: true, url, ...(steps.length ? { steps } : {}) });
+  });
+
+  /**
+   * The sites an extension can be opened FOR: the open site tabs of the shared
+   * Chrome (never this app itself), best guess first. Feeds the site picker in
+   * the /desktop/chrome Extensions panel so the operator can choose the
+   * reference site instead of trusting the automatic guess.
+   */
+  router.get('/browser/extensions/sites', async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!RealChrome.isRunning()) return res.json({ success: true, sites: [] });
+      res.json({ success: true, sites: await RealChrome.siteTabs(ownHostsOf(req)) });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * "Open here" for the /desktop/chrome view: open an installed extension's
+   * page as an ordinary TAB of the shared Chrome, so the normal nodes (click,
+   * fill...) and the element picker can work on it like on a web page.
+   *
+   * The caller names the extension, never a URL: the server builds the URL
+   * itself from a LOADED extension (see RealChrome.openExtensionTab), so this
+   * cannot be used to open arbitrary addresses in the server's browser.
+   *
+   * `for` is optional; when absent the server uses the site the operator is
+   * looking at, because /desktop/chrome is a plain VNC view and has no idea
+   * which tab is active. Extensions that ask Chrome "which site am I on?"
+   * need it (see extensionPageUrlFor).
+   */
+  router.post('/browser/extensions/:id/open', async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!RealChrome.isRunning()) {
+        return fail(res, 409, 'The browser is not running.',
+          'Open the browser view first, then try again.');
+      }
+      const body = (req.body || {}) as { for?: unknown };
+      const explicit = typeof body.for === 'string' ? body.for.trim() : '';
+      const forSite = explicit || await RealChrome.activeSiteUrl(ownHostsOf(req));
+      const url = await RealChrome.resolveExtensionPageUrl(req.params.id, forSite);
+      if (!url) {
+        return fail(res, 404, 'That extension is not loaded.',
+          'Install it from the Extensions panel; the browser reloads it for you.');
+      }
+      const opened = await RealChrome.openExtensionTab(url);
+      res.json({ success: true, url: opened, ...(forSite ? { forSite } : {}) });
+    } catch (e) { sendError(res, e); }
   });
 
   // ─────────────────────────────────────────────────────────────────────────
