@@ -272,6 +272,21 @@ export function unpackedExtensionId(absDir: string): string {
 }
 
 /**
+ * Is `url` a page inside one of the given loaded extensions?
+ * Compared by parsed scheme + id (host), never by string prefix, so
+ * `chrome-extension://<id>.evil/` or a look-alike cannot slip through.
+ */
+export function isLoadedExtensionUrl(url: string, loaded: Array<{ runtimeId: string }>): boolean {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'chrome-extension:') return false;
+    return loaded.some((e) => e.runtimeId && e.runtimeId === u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Tell an extension page WHICH site it is being opened for.
  *
  * WHY THIS EXISTS — measured, not guessed (transient probe, since deleted).
@@ -1611,6 +1626,61 @@ export class RealChrome {
       }
     }
     return false;
+  }
+
+  /**
+   * The http(s) URL of the tab the operator is looking at, or '' if none.
+   *
+   * Playwright has no "active tab" for a persistent context, but a page that
+   * is the visible tab of a headed window reports visibilityState "visible"
+   * while every background tab reports "hidden". An extension page, a New Tab
+   * page or about:blank is skipped on purpose: they are not a site an
+   * extension could be opened for. Each probe is bounded so one hung tab
+   * cannot stall the "Open here" button.
+   */
+  static async activeSiteUrl(): Promise<string> {
+    const ctx = this.context;
+    if (!ctx) return '';
+    for (const p of ctx.pages()) {
+      try {
+        const url = p.url();
+        if (!/^https?:\/\//i.test(url)) continue;
+        const visible = await Promise.race([
+          p.evaluate(() => document.visibilityState === 'visible'),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+        ]);
+        if (visible) return url;
+      } catch {
+        // A tab that died mid-iteration is simply not the active one.
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Open an extension page in a NEW tab of the shared Chrome and bring it to
+   * the front, so it appears in the operator's /desktop/chrome view.
+   *
+   * Only a URL that belongs to a LOADED extension is accepted. This is the
+   * guard that keeps the route from being a general "open any URL in the
+   * server's browser" endpoint (file://, chrome://, a site of the caller's
+   * choosing). Returns the URL actually opened.
+   */
+  static async openExtensionTab(url: string): Promise<string> {
+    const ctx = this.context;
+    if (!ctx) throw new RealChromeError('The browser is not running.');
+    if (!isLoadedExtensionUrl(url, this.loadedExtensions())) {
+      throw new RealChromeError('Only pages of an installed extension can be opened.');
+    }
+    const page = await ctx.newPage();
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    } catch (e) {
+      await page.close().catch(() => {});
+      throw new RealChromeError(`Could not open the extension page: ${(e as Error)?.message || e}`);
+    }
+    await page.bringToFront().catch(() => {});
+    return page.url();
   }
 
   static async status(): Promise<RealChromeStatus> {

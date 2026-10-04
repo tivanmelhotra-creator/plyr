@@ -357,3 +357,50 @@ describe('runOpenExtensionStep', () => {
     expect(real.pages()).toHaveLength(1);
   });
 });
+
+// ── "Open here" in the /desktop/chrome view ────────────────────────────────
+import { isLoadedExtensionUrl } from '../../src/core/RealChrome';
+import { chromeViewHtml } from '../../src/core/ChromeView';
+
+describe('isLoadedExtensionUrl — the guard behind POST /browser/extensions/:id/open', () => {
+  const loaded = [{ runtimeId: ID_A }, { runtimeId: ID_B }];
+
+  it('accepts a page of a loaded extension, with or without a query', () => {
+    expect(isLoadedExtensionUrl(`chrome-extension://${ID_A}/popup.html`, loaded)).toBe(true);
+    expect(isLoadedExtensionUrl(`chrome-extension://${ID_B}/popup.html?url=abc`, loaded)).toBe(true);
+  });
+
+  it.each([
+    'https://example.com/',
+    'file:///etc/passwd',
+    'chrome://settings',
+    'javascript:alert(1)',
+    `chrome-extension://${'d'.repeat(32)}/popup.html`,       // not loaded
+    `chrome-extension://${ID_A}.evil.test/popup.html`,       // look-alike host
+    `https://x.test/chrome-extension://${ID_A}/popup.html`,  // id only in the path
+    '',
+    'not a url',
+  ])('refuses %s', (bad) => {
+    expect(isLoadedExtensionUrl(bad, loaded)).toBe(false);
+  });
+});
+
+describe('/desktop/chrome has an Extensions button with "Open here"', () => {
+  const html = chromeViewHtml();
+
+  it('adds the button, hidden until the desktop is connected, next to Task View', () => {
+    expect(html).toMatch(/<button id="btn-ext"[^>]*\bhidden\b/);
+    expect(html).toContain('id="ext-overlay"');
+    expect(html).toContain('id="ext-list"');
+  });
+
+  it('opens the page through the server by extension id, never by a URL it built itself', () => {
+    expect(html).toContain("'/browser/extensions/' + encodeURIComponent(ext.id) + '/open'");
+    expect(html).toContain("openBtn.textContent = 'Open here'");
+  });
+
+  it('is hidden while the files drawer is open, like the other floating buttons', () => {
+    expect((html.match(/btnExtD\.hidden = true/g) || []).length).toBe(1);
+    expect((html.match(/btnExtD\.hidden = false/g) || []).length).toBe(1);
+  });
+});

@@ -900,6 +900,39 @@ export const createBrowserRoutes = (): Router => {
     res.json({ success: true, url, ...(steps.length ? { steps } : {}) });
   });
 
+  /**
+   * "Open here" for the /desktop/chrome view: open an installed extension's
+   * page as an ordinary TAB of the shared Chrome, so the normal nodes (click,
+   * fill...) and the element picker can work on it like on a web page.
+   *
+   * The caller names the extension, never a URL: the server builds the URL
+   * itself from a LOADED extension (see RealChrome.openExtensionTab), so this
+   * cannot be used to open arbitrary addresses in the server's browser.
+   *
+   * `for` is optional; when absent the server uses the site the operator is
+   * looking at, because /desktop/chrome is a plain VNC view and has no idea
+   * which tab is active. Extensions that ask Chrome "which site am I on?"
+   * need it (see extensionPageUrlFor).
+   */
+  router.post('/browser/extensions/:id/open', async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!RealChrome.isRunning()) {
+        return fail(res, 409, 'The browser is not running.',
+          'Open the browser view first, then try again.');
+      }
+      const body = (req.body || {}) as { for?: unknown };
+      const explicit = typeof body.for === 'string' ? body.for.trim() : '';
+      const forSite = explicit || await RealChrome.activeSiteUrl();
+      const url = RealChrome.extensionPageUrl(req.params.id, forSite);
+      if (!url) {
+        return fail(res, 404, 'That extension is not loaded.',
+          'Install it from the Extensions panel; the browser reloads it for you.');
+      }
+      const opened = await RealChrome.openExtensionTab(url);
+      res.json({ success: true, url: opened, ...(forSite ? { forSite } : {}) });
+    } catch (e) { sendError(res, e); }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // Cookies
   // ─────────────────────────────────────────────────────────────────────────

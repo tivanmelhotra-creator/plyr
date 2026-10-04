@@ -163,6 +163,30 @@ export function chromeViewHtml(): string {
   #btn-taskview:focus-visible { outline: 2px solid #7aa2ff; outline-offset: 1px; }
   #btn-taskview[hidden] { display: none; }
 
+  /* Extensions: third in the row, left of Task View. Same look, own hover. */
+  #btn-ext {
+    position: fixed; top: 12px; right: 96px; z-index: 7;
+    font: inherit; color: #e6e6ee; background: rgba(24,26,33,.92);
+    border: 1px solid #4a4a55; border-radius: 8px;
+    width: 34px; height: 34px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(3px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    transition: all 0.15s ease;
+  }
+  #btn-ext:hover { color: #34d399; border-color: rgba(52,211,153,.5); }
+  #btn-ext:focus-visible { outline: 2px solid #7aa2ff; outline-offset: 1px; }
+  #btn-ext[hidden] { display: none; }
+  .ext-row-actions { display: flex; align-items: center; gap: 8px; }
+  .ext-open {
+    font: inherit; font-size: 12px; color: #e6e6ee; background: #2a2e39;
+    border: 1px solid #4a4a55; border-radius: 6px; padding: 5px 12px; cursor: pointer;
+  }
+  .ext-open:hover:not(:disabled) { color: #34d399; border-color: rgba(52,211,153,.5); }
+  .ext-open:disabled { opacity: .5; cursor: default; }
+  .ext-note { font-size: 11px; color: #9ca3af; }
+  .ext-note.err { color: #f87171; }
+
   .taskview-badge {
     position: absolute; top: -4px; right: -4px;
     background: #f97316; color: #fff; font-size: 10px; font-weight: 700;
@@ -685,6 +709,25 @@ export function chromeViewHtml(): string {
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
 </button>
 
+<button id="btn-ext" type="button" title="Extensions" aria-label="Extensions" hidden>
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12v6a2 2 0 0 1-2 2h-4v-2.5a1.5 1.5 0 0 0-3 0V20H7a2 2 0 0 1-2-2v-4h2.5a1.5 1.5 0 0 0 0-3H5V8a2 2 0 0 1 2-2h4V4.5a1.5 1.5 0 0 1 3 0V6h4a2 2 0 0 1 2 2v4z"/></svg>
+</button>
+
+<div id="ext-overlay" class="tv-overlay" hidden>
+  <div class="tv-modal">
+    <div class="tv-header">
+      <div class="tv-title-area">
+        <div>
+          <h3>Extensions</h3>
+          <p>Open as a web page in a new tab, to automate it like a site</p>
+        </div>
+      </div>
+      <button id="ext-close" class="tv-btn-close" type="button" title="Close" aria-label="Close">&#10005;</button>
+    </div>
+    <div id="ext-list" class="tv-grid"></div>
+  </div>
+</div>
+
 <div id="taskview-overlay" class="tv-overlay" hidden>
   <div class="tv-modal">
     <div class="tv-header">
@@ -1162,6 +1205,8 @@ function attach() {
     burger.hidden = false;
     const btnTvEl = document.getElementById('btn-taskview');
     if (btnTvEl) btnTvEl.hidden = false;
+    const btnExtEl = document.getElementById('btn-ext');
+    if (btnExtEl) btnExtEl.hidden = false;
     // And only now start watching for files moving in either direction: before
     // the desktop is up there is no page that can ask for a file and nothing
     // that can have downloaded one.
@@ -1508,6 +1553,8 @@ function openDrawer(which, quiet) {
   if (burger) burger.hidden = true;
   const btnTv = document.getElementById('btn-taskview');
   if (btnTv) btnTv.hidden = true;
+  const btnExtD = document.getElementById('btn-ext');
+  if (btnExtD) btnExtD.hidden = true;
   const next = which || drawerPane;
   showPane(next);
   if (quiet) return;
@@ -1521,6 +1568,8 @@ function closeDrawer() {
   if (burger) burger.hidden = false;
   const btnTv = document.getElementById('btn-taskview');
   if (btnTv) btnTv.hidden = false;
+  const btnExtD = document.getElementById('btn-ext');
+  if (btnExtD) btnExtD.hidden = false;
   wfmCloseMenu();
   // Closing the drawer also closes the editor: the drawer is ONE surface, and a
   // half-typed file must not be left behind the next time it is opened on the
@@ -1723,6 +1772,114 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && tvOverlay && !tvOverlay.hidden) {
     tvOverlay.hidden = true;
   }
+});
+
+// ── Extensions (open an extension's page as a web tab) ──────────────────────
+// This view is a plain VNC screen, so an extension opens here the way it does
+// in any Chrome: its popup, from the toolbar. That is the NORMAL mode and it is
+// left alone. This panel adds the other mode: the same popup as an ordinary
+// TAB, which the element picker and the click/fill nodes can then drive.
+const btnExt = document.getElementById('btn-ext');
+const extOverlay = document.getElementById('ext-overlay');
+const extClose = document.getElementById('ext-close');
+const extList = document.getElementById('ext-list');
+
+function extEmpty(text) {
+  if (!extList) return;
+  extList.textContent = '';
+  const d = document.createElement('div');
+  d.className = 'tv-empty';
+  d.textContent = text;
+  extList.appendChild(d);
+}
+
+async function refreshExtensions() {
+  if (!extList) return;
+  extEmpty('Loading extensions...');
+  try {
+    const res = await fetch('/browser/extensions', {
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    });
+    const data = await res.json();
+    const exts = (data && data.extensions) || [];
+    if (!exts.length) {
+      extEmpty('No extensions installed. Add one from the Extensions panel of the editor.');
+      return;
+    }
+    extList.textContent = '';
+    for (const ext of exts) {
+      const card = document.createElement('div');
+      card.className = 'tv-card';
+      const title = document.createElement('div');
+      title.className = 'tv-window-title';
+      title.textContent = ext.name || ext.id;
+      const actions = document.createElement('div');
+      actions.className = 'ext-row-actions';
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'ext-open';
+      openBtn.textContent = 'Open here';
+      openBtn.title = 'Open this extension as a web page in a new tab';
+      const note = document.createElement('span');
+      note.className = 'ext-note';
+      if (!ext.loaded) {
+        openBtn.disabled = true;
+        note.textContent = 'Not loaded in the browser yet';
+      }
+      openBtn.addEventListener('click', async () => {
+        openBtn.disabled = true;
+        note.className = 'ext-note';
+        note.textContent = 'Opening...';
+        try {
+          const r = await fetch('/browser/extensions/' + encodeURIComponent(ext.id) + '/open', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            credentials: 'same-origin',
+            body: '{}',
+          });
+          const out = await r.json().catch(() => ({}));
+          if (!r.ok || !out.success) {
+            note.className = 'ext-note err';
+            note.textContent = out.error || 'Could not open it.';
+            openBtn.disabled = false;
+            return;
+          }
+          if (extOverlay) extOverlay.hidden = true;
+        } catch (err) {
+          note.className = 'ext-note err';
+          note.textContent = 'Could not reach the server.';
+          openBtn.disabled = false;
+        }
+      });
+      actions.appendChild(openBtn);
+      actions.appendChild(note);
+      card.appendChild(title);
+      card.appendChild(actions);
+      extList.appendChild(card);
+    }
+  } catch (err) {
+    extEmpty('Error loading extensions.');
+  }
+}
+
+if (btnExt) {
+  btnExt.addEventListener('click', () => {
+    if (!extOverlay) return;
+    extOverlay.hidden = false;
+    void refreshExtensions();
+  });
+}
+if (extClose) {
+  extClose.addEventListener('click', () => { if (extOverlay) extOverlay.hidden = true; });
+}
+if (extOverlay) {
+  extOverlay.addEventListener('click', (e) => {
+    if (e.target === extOverlay) extOverlay.hidden = true;
+  });
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && extOverlay && !extOverlay.hidden) extOverlay.hidden = true;
 });
 
 // Escape shuts the menu first, then the drawer: aiming at a menu must not
