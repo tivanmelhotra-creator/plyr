@@ -28,6 +28,7 @@ import path from 'path';
 import { config } from '../config';
 import { liveBrowserSessions } from '../core/LiveSessions';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
+import { ExtensionPickerError } from '../core/ExtensionPagePicker';
 import { BrowserWindowManager } from '../core/BrowserWindowManager';
 import { flagCatalogue } from '../core/ChromeFlags';
 import { describeProfile, PROFILES } from '../core/EnvProfile';
@@ -959,6 +960,29 @@ export const createBrowserRoutes = (): Router => {
       const opened = await RealChrome.openExtensionTab(url);
       res.json({ success: true, url: opened, ...(forSite ? { forSite } : {}) });
     } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * Arm the Element Inspector on an extension page ("Open here") in the shared
+   * Chrome. The extension asks for this when its own active tab is another
+   * extension's page, which Chrome will not let it script (see
+   * ExtensionPagePicker). It names the tab by address and never sends code: the
+   * server injects the Inspector's own files, nothing the caller supplied.
+   */
+  router.post('/browser/inspector/extension-page', async (req: AuthenticatedRequest, res) => {
+    try {
+      const body = (req.body || {}) as { url?: unknown; stop?: unknown };
+      const out = await RealChrome.armExtensionPagePicker({
+        url: typeof body.url === 'string' ? body.url : '',
+        stop: body.stop === true,
+      });
+      res.json({ success: true, url: out.url });
+    } catch (e) {
+      if (e instanceof ExtensionPickerError) {
+        return res.status(409).json({ success: false, reason: e.code, error: e.message });
+      }
+      sendError(res, e);
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────────

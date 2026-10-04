@@ -1982,6 +1982,11 @@
       var err = (res && res.error) || 'failed';
       setInspStatus(
         err === 'no_active_tab' ? 'No active tab.'
+          : err.indexOf('extension_page_') === 0
+            // The server refused to arm an extension page. Its sentence names
+            // the fix (open the extension with "Open here" first, or this is
+            // not the server's browser), so it is shown as written.
+            ? (res.message || 'Could not inspect that extension page.')
           : err === 'no_content_script' || err === 'inject_failed'
             ? 'Cannot inspect this page (browser-internal pages are off limits).'
             : 'Could not start the inspector (' + err + ').',
