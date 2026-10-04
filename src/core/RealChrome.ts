@@ -57,7 +57,12 @@ import {
   type InstalledExtension,
 } from './ChromeExtensions';
 import { resolveFlags, type ResolveFlagsInput, type ResolvedFlags } from './ChromeFlags';
-import { seedInspectorExtension } from './InspectorExtension';
+import { inspectorSourceDir, seedInspectorExtension } from './InspectorExtension';
+import {
+  ExtensionPickerError,
+  armPickerOnPage,
+  disarmPickerOnPage,
+} from './ExtensionPagePicker';
 import { Desktop, displayGuidance } from './Desktop';
 import {
   RealChromeShelf,
@@ -1745,6 +1750,50 @@ export class RealChrome {
   static async activeSiteUrl(ownHosts: string[] = []): Promise<string> {
     const best = (await this.siteTabs(ownHosts))[0];
     return best && (best.focused || best.visible) ? best.url : '';
+  }
+
+  /**
+   * Start (or stop) the Element Inspector on an EXTENSION page open in this
+   * browser: an extension opened with "Open here". Chrome does not let one
+   * extension script another's pages, so the server injects the picker through
+   * CDP instead; see ExtensionPagePicker for the measurements and the design.
+   *
+   * `url` is the tab the caller means (the extension reports its active tab's
+   * address). When it is empty, or several tabs share it, the tab that is
+   * actually on screen wins.
+   */
+  static async armExtensionPagePicker(
+    opts: { url?: string; stop?: boolean } = {},
+  ): Promise<{ url: string }> {
+    const ctx = this.context;
+    if (!ctx) throw new RealChromeError('The browser is not running.');
+    const want = String(opts.url || '').trim();
+    const candidates = ctx.pages().filter((p) => {
+      const u = p.url();
+      return /^chrome-extension:\/\//i.test(u) && (!want || u === want);
+    });
+    if (!candidates.length) {
+      throw new ExtensionPickerError(
+        'No extension page is open in the browser. Use "Open here" on the extension first.',
+        'no_extension_tab',
+      );
+    }
+    let page = candidates[0];
+    if (candidates.length > 1) {
+      for (const c of candidates) {
+        const visible = await Promise.race([
+          c.evaluate(() => document.visibilityState === 'visible').catch(() => false),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+        ]);
+        if (visible) { page = c; break; }
+      }
+    }
+    if (opts.stop) {
+      await disarmPickerOnPage(page);
+      return { url: page.url() };
+    }
+    const armed = await armPickerOnPage(ctx, page, inspectorSourceDir());
+    return { url: armed.url };
   }
 
   /**

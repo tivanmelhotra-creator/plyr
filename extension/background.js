@@ -1860,6 +1860,33 @@ async function handoffUnpair() {
   return { ok: true };
 }
 
+/** Is `url` a page of some OTHER extension (one this worker cannot script)? */
+function isOtherExtensionPage(url) {
+  if (!url || url.indexOf('chrome-extension://') !== 0) return false;
+  try { return url.indexOf(chrome.runtime.getURL('')) !== 0; } catch (e) { return true; }
+}
+
+/**
+ * Ask the server to run the picker on an extension page it can reach over CDP.
+ * Resolves like toggleInspector: { ok } or { ok:false, error, message }.
+ */
+async function armExtensionPageViaServer(desired, url) {
+  var ctx = await inspectorContext();
+  if (ctx.error) return { ok: false, error: ctx.error };
+  var res = await apiFetch(
+    ctx.base + '/browser/inspector/extension-page',
+    { method: 'POST', body: JSON.stringify({ url: url, stop: desired === 'stop' }) },
+    ctx.apiKey
+  );
+  if (res.ok) return { ok: true, active: desired !== 'stop', via: 'server' };
+  var data = res.data || {};
+  return {
+    ok: false,
+    error: 'extension_page_' + (data.reason || res.error || 'failed'),
+    message: data.error || res.message || ''
+  };
+}
+
 /**
  * Toggle the picker in the active tab.
  *
@@ -1874,6 +1901,21 @@ async function toggleInspector(desired) {
       if (!tab || tab.id == null) { resolve({ ok: false, error: 'no_active_tab' }); return; }
 
       var type = desired === 'stop' ? 'ab-inspector-stop' : 'ab-inspector-start';
+
+      // ANOTHER EXTENSION'S PAGE (an extension opened with "Open here").
+      // Chrome refuses to let one extension script another's pages — no flag
+      // or host permission changes that (measured; see
+      // src/core/ExtensionPagePicker.ts) — so injecting from here can only
+      // fail, and used to end in "browser-internal pages are off limits". The
+      // server owns this browser and can reach the page through CDP, so ask it
+      // to arm the same picker there. Picks still come back through THIS
+      // extension's submitElement(), so the bound field and credential are
+      // still ours.
+      if (isOtherExtensionPage(tab.url)) {
+        armExtensionPageViaServer(desired, tab.url).then(resolve);
+        return;
+      }
+
       chrome.tabs.sendMessage(tab.id, { type: type }, function (resp) {
         if (!chrome.runtime.lastError) { resolve(resp || { ok: true }); return; }
         if (!chrome.scripting || !chrome.scripting.executeScript) {
