@@ -288,6 +288,31 @@ export function isLoadedExtensionUrl(url: string, loaded: Array<{ runtimeId: str
 }
 
 /**
+ * Is `url` this server's OWN web app (the plyr UI, the picker canvas...)?
+ *
+ * The shared Chromium can have a tab of the app itself open, and that tab is
+ * "visible" just like the site the operator is working on. Reported: Open here
+ * produced `Cookies for 127.0.0.1` instead of `Cookies for arena.ai`, so import
+ * and export had no real site to act on. The app is never a site an extension
+ * should be opened for.
+ *
+ * Loopback names on the server's own port always count; `extraHosts` adds the
+ * host the request arrived on (a published Docker port or a domain name).
+ */
+export function isOwnAppUrl(url: string, extraHosts: string[] = [], ownPort = config.PORT): boolean {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+    const loopback = ['localhost', '127.0.0.1', '[::1]', '0.0.0.0'];
+    if (loopback.includes(u.hostname) && port === String(ownPort)) return true;
+    return extraHosts.some((h) => String(h).toLowerCase() === u.host.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Tell an extension page WHICH site it is being opened for.
  *
  * WHY THIS EXISTS — measured, not guessed (transient probe, since deleted).
@@ -1670,32 +1695,56 @@ export class RealChrome {
   }
 
   /**
-   * The http(s) URL of the tab the operator is looking at, or '' if none.
+   * The http(s) site tabs of the shared Chrome, best candidate first.
    *
-   * Playwright has no "active tab" for a persistent context, but a page that
-   * is the visible tab of a headed window reports visibilityState "visible"
-   * while every background tab reports "hidden". An extension page, a New Tab
-   * page or about:blank is skipped on purpose: they are not a site an
-   * extension could be opened for. Each probe is bounded so one hung tab
-   * cannot stall the "Open here" button.
+   * Playwright has no "active tab" for a persistent context, so this asks each
+   * page: a page that is the visible tab of a window reports visibilityState
+   * "visible" (background tabs report "hidden"), and the one in the focused
+   * window also answers hasFocus(). Focused sorts first, then visible, then the
+   * rest. Extension pages, the New Tab page, about:blank and the server's OWN
+   * app are left out: none of them is a site an extension could act on. Each
+   * probe is bounded so one hung tab cannot stall the "Open here" button.
    */
-  static async activeSiteUrl(): Promise<string> {
+  static async siteTabs(ownHosts: string[] = []): Promise<Array<{
+    url: string; title: string; visible: boolean; focused: boolean;
+  }>> {
     const ctx = this.context;
-    if (!ctx) return '';
+    if (!ctx) return [];
+    const out: Array<{ url: string; title: string; visible: boolean; focused: boolean }> = [];
     for (const p of ctx.pages()) {
       try {
         const url = p.url();
-        if (!/^https?:\/\//i.test(url)) continue;
-        const visible = await Promise.race([
-          p.evaluate(() => document.visibilityState === 'visible'),
-          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+        if (!/^https?:\/\//i.test(url) || isOwnAppUrl(url, ownHosts)) continue;
+        const state = await Promise.race([
+          p.evaluate(() => ({
+            visible: document.visibilityState === 'visible',
+            focused: document.hasFocus(),
+          })),
+          new Promise<{ visible: boolean; focused: boolean }>((resolve) => setTimeout(
+            () => resolve({ visible: false, focused: false }), 1000,
+          )),
         ]);
-        if (visible) return url;
+        const title = await Promise.race([
+          p.title().catch(() => ''),
+          new Promise<string>((resolve) => setTimeout(() => resolve(''), 500)),
+        ]);
+        out.push({ url, title, ...state });
       } catch {
-        // A tab that died mid-iteration is simply not the active one.
+        // A tab that died mid-iteration is simply not a candidate.
       }
     }
-    return '';
+    const rank = (t: { visible: boolean; focused: boolean }) => (t.focused ? 0 : t.visible ? 1 : 2);
+    return out.sort((a, b) => rank(a) - rank(b));
+  }
+
+  /**
+   * The site the operator is most likely looking at, or '' if none. Only a tab
+   * that is actually on screen counts: guessing a hidden background tab would
+   * be worse than saying nothing.
+   */
+  static async activeSiteUrl(ownHosts: string[] = []): Promise<string> {
+    const best = (await this.siteTabs(ownHosts))[0];
+    return best && (best.focused || best.visible) ? best.url : '';
   }
 
   /**

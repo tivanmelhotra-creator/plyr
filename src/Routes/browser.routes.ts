@@ -729,6 +729,12 @@ export const createBrowserRoutes = (): Router => {
   // Extensions
   // ─────────────────────────────────────────────────────────────────────────
 
+  /** Hosts this request reached the app on, so its own tabs are never offered as a site. */
+  const ownHostsOf = (req: AuthenticatedRequest): string[] => {
+    const h = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    return h ? [h] : [];
+  };
+
   router.get('/browser/extensions', async (req, res) => {
     try {
       const installed = await listExtensions(config.REAL_CHROME_EXTENSIONS_DIR);
@@ -910,6 +916,19 @@ export const createBrowserRoutes = (): Router => {
   });
 
   /**
+   * The sites an extension can be opened FOR: the open site tabs of the shared
+   * Chrome (never this app itself), best guess first. Feeds the site picker in
+   * the /desktop/chrome Extensions panel so the operator can choose the
+   * reference site instead of trusting the automatic guess.
+   */
+  router.get('/browser/extensions/sites', async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!RealChrome.isRunning()) return res.json({ success: true, sites: [] });
+      res.json({ success: true, sites: await RealChrome.siteTabs(ownHostsOf(req)) });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
    * "Open here" for the /desktop/chrome view: open an installed extension's
    * page as an ordinary TAB of the shared Chrome, so the normal nodes (click,
    * fill...) and the element picker can work on it like on a web page.
@@ -931,7 +950,7 @@ export const createBrowserRoutes = (): Router => {
       }
       const body = (req.body || {}) as { for?: unknown };
       const explicit = typeof body.for === 'string' ? body.for.trim() : '';
-      const forSite = explicit || await RealChrome.activeSiteUrl();
+      const forSite = explicit || await RealChrome.activeSiteUrl(ownHostsOf(req));
       const url = await RealChrome.resolveExtensionPageUrl(req.params.id, forSite);
       if (!url) {
         return fail(res, 404, 'That extension is not loaded.',

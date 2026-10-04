@@ -186,6 +186,11 @@ export function chromeViewHtml(): string {
   .ext-open:disabled { opacity: .5; cursor: default; }
   .ext-note { font-size: 11px; color: #9ca3af; }
   .ext-note.err { color: #f87171; }
+  .ext-site { display: flex; align-items: center; gap: 8px; padding: 0 20px 12px; font-size: 12px; color: #9ca3af; }
+  .ext-site select {
+    flex: 1; min-width: 0; font: inherit; font-size: 12px; color: #e6e6ee; background: #2a2e39;
+    border: 1px solid #4a4a55; border-radius: 6px; padding: 5px 8px;
+  }
 
   .taskview-badge {
     position: absolute; top: -4px; right: -4px;
@@ -723,6 +728,10 @@ export function chromeViewHtml(): string {
         </div>
       </div>
       <button id="ext-close" class="tv-btn-close" type="button" title="Close" aria-label="Close">&#10005;</button>
+    </div>
+    <div class="ext-site">
+      <label for="ext-site">For site</label>
+      <select id="ext-site" title="The site the extension acts on (its Import / Export target)"></select>
     </div>
     <div id="ext-list" class="tv-grid"></div>
   </div>
@@ -1783,6 +1792,7 @@ const btnExt = document.getElementById('btn-ext');
 const extOverlay = document.getElementById('ext-overlay');
 const extClose = document.getElementById('ext-close');
 const extList = document.getElementById('ext-list');
+const extSite = document.getElementById('ext-site');
 
 function extEmpty(text) {
   if (!extList) return;
@@ -1793,7 +1803,44 @@ function extEmpty(text) {
   extList.appendChild(d);
 }
 
+// The site an extension is opened FOR. Cookie extensions import / export for
+// the site of the tab they are opened over; opened as their own tab they have
+// no such site, so the reference must be named. Defaults to the best guess
+// (the focused site tab) and keeps the operator's choice across refreshes.
+async function refreshExtSites() {
+  if (!extSite) return;
+  const keep = extSite.value;
+  let sites = [];
+  try {
+    const r = await fetch('/browser/extensions/sites', {
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    });
+    const d = await r.json();
+    sites = (d && d.sites) || [];
+  } catch (err) { sites = []; }
+  extSite.textContent = '';
+  if (!sites.length) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = 'No site tab open - open the site first';
+    extSite.appendChild(o);
+    return;
+  }
+  for (const t of sites) {
+    const o = document.createElement('option');
+    o.value = t.url;
+    let label = t.url;
+    try { label = new URL(t.url).host; } catch (e) { /* keep the raw url */ }
+    o.textContent = label + (t.title ? ' - ' + t.title.slice(0, 40) : '');
+    o.title = t.url;
+    extSite.appendChild(o);
+  }
+  if (keep && sites.some((t) => t.url === keep)) extSite.value = keep;
+}
+
 async function refreshExtensions() {
+  void refreshExtSites();
   if (!extList) return;
   extEmpty('Loading extensions...');
   try {
@@ -1836,7 +1883,7 @@ async function refreshExtensions() {
             method: 'POST',
             headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
             credentials: 'same-origin',
-            body: '{}',
+            body: JSON.stringify({ for: extSite ? extSite.value : '' }),
           });
           const out = await r.json().catch(() => ({}));
           if (!r.ok || !out.success) {
