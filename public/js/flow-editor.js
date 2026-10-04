@@ -2341,6 +2341,7 @@
   var NODE_DISPLAY_NAMES = {
     // navigation
     goto: 'nk.openUrl',
+    'open-extension': 'nk.openExtension',
     wait: 'nk.wait',
     launch: 'nk.launchBrowser',
     'wait-element': 'nk.waitElement',

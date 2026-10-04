@@ -37,6 +37,15 @@
     { id: 'goto', icon: 'globe', cat: 'navigation', fields: [
       { k: 'url', label: 'p.url', type: 'string', ph: 'https://example.com', expr: true, help: 'help.url' },
     ] },
+    // Opens an installed extension's page as an ordinary tab so the normal nodes
+    // (click, fill, upload...) can drive it. Not `goto`: see core/ExtensionStep.ts.
+    { id: 'open-extension', icon: 'plug', cat: 'navigation', fields: [
+      { k: 'extension', label: 'p.extension', type: 'string', ph: 'j2team-cookies', expr: true, help: 'help.extension' },
+      { k: 'page', label: 'p.extPage', type: 'string', ph: 'popup', expr: true, help: 'help.extPage' },
+      { k: 'forSite', label: 'p.forSite', type: 'string', ph: '(default: the current page)', expr: true, help: 'help.forSite' },
+      { k: 'sameTab', label: 'p.sameTab', type: 'boolean', help: 'help.sameTab' },
+      { k: 'timeout', label: 'p.timeout', type: 'number', ph: '30000', min: 0 },
+    ] },
     { id: 'wait', icon: 'clock', cat: 'navigation', fields: [
       { k: 'ms', label: 'p.ms', type: 'number', ph: '1000', min: 0, expr: true, help: 'help.ms' },
       { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) #ready', help: 'help.waitSelector' },

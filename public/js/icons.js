@@ -199,6 +199,7 @@
     __start__: 'play-circle',
     // navigation
     goto: 'globe',
+    'open-extension': 'plug',
     wait: 'clock',
     launch: 'rocket',
     'launch-browser': 'rocket',
