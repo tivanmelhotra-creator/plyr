@@ -274,7 +274,37 @@
     return fetch(path, Object.assign({}, opts, { headers: headers, credentials: 'same-origin' }));
   }
 
+  // ---- step artifacts (screenshots) -----------------------------------------
+  // The server keeps an image a step produced and hands out a RELATIVE url:
+  //   /job/<user>/<job>/artifact/step-<n>.png
+  // An <img src> cannot send the API key, so the bytes are fetched with the
+  // key and shown through a blob: URL. Only that exact url shape is accepted:
+  // the key must never be sent to anything a workflow's output merely NAMED.
+  var ARTIFACT_URL = /^\/job\/[^/?#]+\/[^/?#]+\/artifact\/step-\d{1,6}\.(png|jpg)$/;
+  var artifactCache = {};   // url -> Promise<blob: url>
+
+  function isArtifactUrl(url) {
+    return typeof url === 'string' && ARTIFACT_URL.test(url);
+  }
+
+  function loadArtifactImage(url) {
+    if (!isArtifactUrl(url)) return Promise.reject(new Error('Not an artifact url'));
+    if (!artifactCache[url]) {
+      artifactCache[url] = getRaw(url).then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.blob();
+      }).then(function (blob) {
+        return URL.createObjectURL(blob);
+      });
+      // A failed load must be retryable (the file may not be flushed yet).
+      artifactCache[url].catch(function () { delete artifactCache[url]; });
+    }
+    return artifactCache[url];
+  }
+
   window.API = {
+    isArtifactUrl: isArtifactUrl,
+    loadArtifactImage: loadArtifactImage,
     getRaw: getRaw,
     getKey: getKey,
     setKey: setKey,

@@ -31,6 +31,7 @@ import {
 // that local mode exists; every node action stays identical in both modes,
 // because both end up as an ordinary Playwright BrowserContext.
 import { browserModes } from './core/BrowserMode';
+import { saveArtifact, screenshotFileName } from './core/JobArtifacts';
 import { acquireContext } from './core/BrowserAdapter';
 import { withUtf8Locale } from './core/BrowserProfile';
 import {
@@ -1971,7 +1972,23 @@ async function runPipelineImpl(params: {
           }
 
           globalStepNumber++;
-          stepOutputs.push(createStepOutput(globalStepNumber, 'screenshot', true, { sizeKB, type, target: targetDesc }, stepStartTime));
+
+          // Keep the image so the panel can SHOW it. Best-effort: a full disk
+          // or an oversized capture must never fail a step that succeeded.
+          // The step result carries a small reference, never the bytes.
+          let image: { url: string; mimeType: string; size: number } | undefined;
+          if (buffer.length <= config.ARTIFACT_MAX_BYTES) {
+            try {
+              const ref = await saveArtifact(userId, jobId, screenshotFileName(globalStepNumber, type), buffer);
+              image = { url: ref.url, mimeType: ref.mimeType, size: ref.size };
+            } catch (e: any) {
+              log(`[SCREENSHOT] Could not keep the image for the UI: ${e.message}`);
+            }
+          } else {
+            log(`[SCREENSHOT] ${sizeKB}KB is over ARTIFACT_MAX_BYTES; not kept for the UI`);
+          }
+
+          stepOutputs.push(createStepOutput(globalStepNumber, 'screenshot', true, { sizeKB, type, target: targetDesc, ...(image ? { image } : {}) }, stepStartTime));
           continue stepLoop;
         }
 

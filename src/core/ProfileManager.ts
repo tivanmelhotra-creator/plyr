@@ -1,3 +1,4 @@
+import { sweepArtifacts } from './JobArtifacts';
 import type { BrowserContext, Page } from 'playwright';
 import type { Redis } from 'ioredis';
 import type { StepOutput } from '../types';
@@ -414,6 +415,7 @@ export class ProfileManager {
 
     // 6. Cleanup partial files
     await this.cleanupPartialFiles();
+    await sweepArtifacts().catch((e) => console.error('[GC] Error sweeping artifacts:', e));
 
     // Log results
     if (closedVip > 0 || closedFree > 0 || cleanedJobOutputs > 0 || cleanedPages > 0) {

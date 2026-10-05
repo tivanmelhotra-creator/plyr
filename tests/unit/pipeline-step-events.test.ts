@@ -14,6 +14,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { promises as fsp } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -26,6 +29,8 @@ vi.mock('../../src/core/BrowserAdapter', async (orig) => {
 import { runPipeline } from '../../src/pipeline';
 import { browserModes } from '../../src/core/BrowserMode';
 import { acquireContext } from '../../src/core/BrowserAdapter';
+import { config } from '../../src/config';
+import { resolveArtifact } from '../../src/core/JobArtifacts';
 
 class FakePage extends EventEmitter {
   closed = false;
@@ -339,6 +344,74 @@ describe('runPipeline — item flow reaches the panel for built-in steps (not ju
     expect(done).toHaveLength(2);
     expect(done[0]!.data.inputItemCount).toBe(1);
     expect(done[1]!.data.inputItemCount).toBe(done[0]!.data.outputItemCount); // not double-counted
+  });
+});
+
+describe('runPipeline — a screenshot is kept so the panel can show it', () => {
+  let tmp = '';
+  let origProfiles = '';
+  let origMax = 0;
+  beforeEach(async () => {
+    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'pipeline-shot-'));
+    origProfiles = config.PROFILES_DIR;
+    origMax = config.ARTIFACT_MAX_BYTES;
+    (config as { PROFILES_DIR: string }).PROFILES_DIR = tmp;
+  });
+  afterEach(async () => {
+    (config as { PROFILES_DIR: string }).PROFILES_DIR = origProfiles;
+    (config as { ARTIFACT_MAX_BYTES: number }).ARTIFACT_MAX_BYTES = origMax;
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  });
+
+  const shot = (events: Ev[]) => events.find((e) => e.type === 'step.done' && e.data.action === 'screenshot')!.data;
+
+  it('saves the image and hands the panel a reference, never the bytes', async () => {
+    const { events } = await runAndCollect([{ action: 'screenshot', params: {} }]);
+    const sample = shot(events).outputSample[0];
+
+    expect(sample.image).toMatchObject({ mimeType: 'image/png', size: Buffer.from('fake-png-bytes').length });
+    expect(sample.image.url).toBe('/job/tester/job-events/artifact/step-1.png');
+    // The event stays small: no base64 of the picture anywhere in it.
+    expect(JSON.stringify(shot(events))).not.toContain(Buffer.from('fake-png-bytes').toString('base64'));
+
+    const file = await resolveArtifact('tester', 'job-events', 'step-1.png');
+    expect(file).not.toBeNull();
+    expect(await fsp.readFile(file!.path, 'utf8')).toBe('fake-png-bytes');
+  });
+
+  it('names the file after the step, so two screenshots never overwrite each other', async () => {
+    const { events } = await runAndCollect([
+      { action: 'screenshot', params: {} },
+      { action: 'log', params: { message: 'between' } },
+      { action: 'screenshot', params: {} },
+    ]);
+    const urls = events.filter((e) => e.type === 'step.done' && e.data.action === 'screenshot')
+      .map((e) => e.data.outputSample[0].image.url);
+    expect(urls).toEqual([
+      '/job/tester/job-events/artifact/step-1.png',
+      '/job/tester/job-events/artifact/step-3.png',
+    ]);
+  });
+
+  it('still succeeds when the image cannot be kept (disk problem): no image, no failure', async () => {
+    // PROFILES_DIR is a FILE, so creating the artifacts dir under it fails.
+    const blocker = path.join(tmp, 'blocker');
+    await fsp.writeFile(blocker, 'x');
+    (config as { PROFILES_DIR: string }).PROFILES_DIR = blocker;
+
+    const { result, events } = await runAndCollect([{ action: 'screenshot', params: {} }]);
+    expect(result.success).toBe(true);
+    expect(shot(events).success).toBe(true);
+    expect(shot(events).outputSample[0].image).toBeUndefined();
+    expect(shot(events).outputSample[0]).toMatchObject({ type: 'png' });
+  });
+
+  it('does not keep an oversized capture, but the step still succeeds', async () => {
+    (config as { ARTIFACT_MAX_BYTES: number }).ARTIFACT_MAX_BYTES = 4;
+    const { result, events } = await runAndCollect([{ action: 'screenshot', params: {} }]);
+    expect(result.success).toBe(true);
+    expect(shot(events).outputSample[0].image).toBeUndefined();
+    expect(await resolveArtifact('tester', 'job-events', 'step-1.png')).toBeNull();
   });
 });
 
