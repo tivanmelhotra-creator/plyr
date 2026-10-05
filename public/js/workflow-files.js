@@ -55,6 +55,28 @@
    caller. It is validated against the same pattern the server uses; an id
    that does not fit is treated as "no saved workflow", never guessed.
 
+   A NOTEPAD FOR TEXT FILES
+   ------------------------
+   A text file (.txt, .md, .json, ...) opens in an in-drawer editor, the same
+   notepad the Local Browser view has: read through GET .../file, saved through
+   PUT .../file, both scoped to the workflow id + the file's own RELATIVE path.
+   In the workflow editor's browse-only drawer a click on the NAME opens it; in
+   the file-picker drawer a click still SELECTS (that is how a page's file input
+   is answered), and the row menu's Edit opens it instead. Binary files never
+   reach it.
+
+   A LOCAL BROWSER SWITCH
+   ----------------------
+   In the workflow editor's drawer (browseOnly) one button shows whether the
+   Local Browser is up and turns it on or off: off by default, "Turn on" starts
+   it and shows it in a new tab (the same remote view the element picker opens,
+   but without the picker's "Connect this browser to a field?" alert), "Turn
+   off" closes it. The state is read from GET /browser/real/health, never
+   remembered. While it is running a second button, "Show browser", sits next
+   to "Turn off": it opens the remote view in a new tab again, for when the tab
+   was closed on the operator's own machine while the browser itself stayed up.
+   See browserRow(), toggleBrowser() and showBrowser().
+
    CSP-safe: no inline handlers, no eval, textContent for every name.
    ============================================ */
 (function () {
@@ -118,6 +140,25 @@
   var IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico|tiff?)$/i;
   function fileIcon(name) {
     return IMAGE_EXT_RE.test(String(name || '')) ? 'image-frame' : 'file-text';
+  }
+
+  /**
+   * The names the notepad opens. Extension-based and deliberately narrow, the
+   * same list as the Local Browser view's editor: a binary file never reaches
+   * a textarea (it would be mangled on save).
+   */
+  var TEXT_EXT = [
+    'txt', 'text', 'md', 'markdown', 'rst', 'json', 'jsonc', 'js', 'mjs', 'cjs',
+    'ts', 'tsx', 'jsx', 'css', 'scss', 'less', 'html', 'htm', 'xml', 'csv', 'tsv',
+    'yml', 'yaml', 'ini', 'cfg', 'conf', 'env', 'log', 'sh', 'bash', 'zsh', 'py',
+    'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cc', 'cs', 'php',
+    'sql', 'toml', 'properties', 'gradle', 'dockerfile', 'svg', 'gitignore', 'srt'
+  ];
+  function isTextName(name) {
+    var n = String(name || '').toLowerCase();
+    var dot = n.lastIndexOf('.');
+    if (dot < 0 || dot === n.length - 1) return false;
+    return TEXT_EXT.indexOf(n.slice(dot + 1)) >= 0;
   }
 
   function apiHeaders(extra) {
@@ -241,6 +282,7 @@
     if (!panel) return;
     var s = state;
     closeMenu();
+    stopBrowserWatch(s);
     if (panel.parentNode) panel.parentNode.removeChild(panel);
     panel = null;
     state = null;
@@ -606,12 +648,22 @@
 
     li.addEventListener('click', function () {
       if (isDir) { toggleFolder(entry.path); return; }
+      // No page is waiting for a file (the workflow editor): a TEXT file's name
+      // opens the notepad, and the selection is left exactly as it was (the
+      // checkbox is the selection's control). Any other file keeps toggling.
+      if (state && state.opts && state.opts.browseOnly && isTextName(entry.name)) {
+        void openEditor(entry);
+        return;
+      }
       // Only FILES can be selected: a folder cannot go into an input.
       pick(entry);
     });
     li.addEventListener('dblclick', function () {
       // A folder opens INTO (the breadcrumb takes it), a file is handed over.
       if (isDir) { void goTo(entry.path); return; }
+      // Browse-only: nothing to hand over, and the first click already opened
+      // the notepad -- a double-click must not also select the file.
+      if (state && state.opts && state.opts.browseOnly) return;
       pick(entry, true);
       use();
     });
@@ -959,18 +1011,77 @@
     return s.replace(/^\/+/, '').replace(/\/+$/, '');
   }
 
-  /** In-drawer Folder Tree Picker replacing prompt for Move/Copy */
-  function pickFolder(title, actionLabel, onSelect) {
+  /** Does `path` equal one of `roots`, or sit below one of them? */
+  function isUnder(path, roots) {
+    for (var i = 0; i < roots.length; i++) {
+      var r = roots[i];
+      if (path === r || path.indexOf(r + '/') === 0) return true;
+    }
+    return false;
+  }
+
+  /** Folder paths in TREE order: a parent, then everything below it, then its sibling. */
+  function byTreeOrder(a, b) {
+    var x = a.split('/');
+    var y = b.split('/');
+    var n = Math.min(x.length, y.length);
+    for (var i = 0; i < n; i++) {
+      if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+    }
+    return x.length - y.length;
+  }
+
+  /**
+   * Read EVERY folder in the workspace (not just the ones the operator has
+   * expanded), so the destination picker can offer them all. Breadth-first and
+   * bounded: a depth and a count cap keep a pathological tree from turning one
+   * Move into hundreds of requests. Listings land in the same cache the tree
+   * uses, so nothing is fetched twice.
+   */
+  var PICKER_MAX_DEPTH = 8;
+  var PICKER_MAX_FOLDERS = 200;
+  function loadAllFolders() {
+    if (!state) return Promise.resolve();
+    var s = state;
+    var seen = 0;
+    function level(rels, depth) {
+      if (state !== s || !rels.length || depth > PICKER_MAX_DEPTH) return Promise.resolve();
+      return Promise.all(rels.map(function (r) { return fetchFolder(r); })).then(function () {
+        if (state !== s) return null;
+        var next = [];
+        rels.forEach(function (r) {
+          (s.folders[r] || []).forEach(function (e) {
+            if (e.type === 'dir' && seen < PICKER_MAX_FOLDERS) { seen++; next.push(e.path); }
+          });
+        });
+        return level(next, depth + 1);
+      });
+    }
+    return level([''], 0);
+  }
+
+  /**
+   * In-drawer Folder Tree Picker for Move / Copy.
+   *
+   * It offers the workspace root and EVERY folder under it -- uploads/ and
+   * downloads/ included (they are real destinations: Move a file into uploads/
+   * to stage it as input) -- not only the folders already expanded on screen.
+   * `exclude` is what is being moved/copied: a folder cannot go into itself or
+   * below itself, so those are not offered.
+   */
+  function pickFolder(title, actionLabel, onSelect, exclude) {
     if (isTestPrompt()) {
       var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
       if (to !== null) onSelect(destInput(to));
       return;
     }
     if (!state || !state.els || !state.els.folderModal) {
-      var to = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
-      if (to !== null) onSelect(destInput(to));
+      var to2 = ask(title + ' (relative to workspace, leave empty for Root):', state ? (state.root || '') : '');
+      if (to2 !== null) onSelect(destInput(to2));
       return;
     }
+    var s = state;
+    var skip = exclude || [];
     var modal = state.els.folderModal;
     modal.innerHTML = '';
     modal.hidden = false;
@@ -987,39 +1098,53 @@
     var targetLbl = document.createElement('span');
     targetLbl.style.fontSize = '0.74rem';
     targetLbl.style.color = 'var(--text-dim, #9aa0ad)';
-    var chosen = state.root || '';
-    targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' + (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
     modal.appendChild(targetLbl);
 
-    var makeItem = function (path, label, depth) {
+    // Where the operator is looking, unless that is a folder being moved.
+    var chosen = (state.root && !isUnder(state.root, skip)) ? state.root : '';
+    function paintTarget() {
+      targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' +
+        (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
+    }
+    paintTarget();
+
+    var okBtn;
+    function makeItem(path, label, depth) {
       var li = document.createElement('li');
       li.className = 'wfm-modal-tree-item' + (chosen === path ? ' active' : '');
-      li.style.paddingLeft = (6 + depth * 14) + 'px';
-      li.innerHTML = '<span class="wfm-ico">' + BIC('folder', 13) + '</span><span>' + label + '</span>';
+      li.setAttribute('data-path', path);
+      li.style.paddingInlineStart = (6 + depth * 14) + 'px';
+      var ico = document.createElement('span');
+      ico.className = 'wfm-ico';
+      ico.innerHTML = BIC('folder', 13);
+      li.appendChild(ico);
+      // textContent, never markup: a folder name came from a shared filesystem.
+      var nm = document.createElement('span');
+      nm.textContent = label;
+      li.appendChild(nm);
       li.addEventListener('click', function () {
         chosen = path;
         var all = tree.querySelectorAll('.wfm-modal-tree-item');
         for (var i = 0; i < all.length; i++) all[i].classList.remove('active');
         li.classList.add('active');
-        targetLbl.textContent = t('wfm.targetLabel', 'Target:') + ' ' + (chosen ? '/' + chosen : t('wfm.rootWorkspace', 'Workspace Root (/)'));
+        paintTarget();
       });
       tree.appendChild(li);
-    };
+    }
 
-    makeItem('', t('wfm.rootWorkspace', 'Workspace Root (/)'), 0);
-    var dirs = {};
-    if (state.folders) {
-      Object.keys(state.folders).forEach(function (f) {
-        (state.folders[f] || []).forEach(function (e) {
-          if (e.type === 'dir' && !e.system) dirs[e.path] = true;
+    function fillTree() {
+      tree.textContent = '';
+      makeItem('', t('wfm.rootWorkspace', 'Workspace Root (/)'), 0);
+      var dirs = {};
+      Object.keys(s.folders).forEach(function (f) {
+        (s.folders[f] || []).forEach(function (e) {
+          if (e.type === 'dir' && e.path && !isUnder(e.path, skip)) dirs[e.path] = true;
         });
       });
-    }
-    var sortedDirs = Object.keys(dirs).sort();
-    for (var i = 0; i < sortedDirs.length; i++) {
-      var d = sortedDirs[i];
-      var segs = d.split('/');
-      makeItem(d, segs[segs.length - 1], segs.length);
+      Object.keys(dirs).sort(byTreeOrder).forEach(function (d) {
+        var segs = d.split('/');
+        makeItem(d, segs[segs.length - 1], segs.length);
+      });
     }
 
     var actions = document.createElement('div');
@@ -1030,7 +1155,7 @@
     cancelBtn.textContent = t('wfm.cancel', 'Cancel');
     actions.appendChild(cancelBtn);
 
-    var okBtn = document.createElement('button');
+    okBtn = document.createElement('button');
     okBtn.type = 'button';
     okBtn.className = 'btn btn-primary btn-sm';
     okBtn.textContent = actionLabel || t('wfm.select', 'Select');
@@ -1048,6 +1173,19 @@
     okBtn.addEventListener('click', function () {
       cleanup();
       onSelect(chosen);
+    });
+
+    // Show what is already known at once, then complete it as the remaining
+    // listings arrive. The destination can be picked before the load ends.
+    fillTree();
+    var loading = document.createElement('li');
+    loading.className = 'wfm-modal-tree-item wfm-hint';
+    loading.textContent = t('wfm.loadingFolders', 'Loading folders\u2026');
+    tree.appendChild(loading);
+    loadAllFolders().then(function () {
+      // Closed or replaced while loading: nothing to repaint.
+      if (state !== s || modal.hidden || !tree.parentNode) return;
+      fillTree();
     });
   }
 
@@ -1081,7 +1219,7 @@
             say((e && e.message) || t('wfm.moveFailed', 'Could not move.'), true);
           }
         });
-    });
+    }, paths);
     return Promise.resolve();
   }
 
@@ -1114,7 +1252,7 @@
             say((e && e.message) || t('wfm.copyFailed', 'Could not copy.'), true);
           }
         });
-    });
+    }, paths);
     return Promise.resolve();
   }
 
@@ -1230,6 +1368,132 @@
     }
     parts.push(entry.path);
     say(parts.join('  ·  '), false);
+  }
+
+  // ── The notepad: ONE text file, read and written as TEXT ────────────────
+  //
+  // GET .../file?path=<rel> returns { content }; PUT .../file takes
+  // { path, content } and writes it back to the SAME relative path. The server
+  // caps both at 2 MB and answers in words past that. `state.edit` is the file
+  // on screen ({ path, name, dirty, warned }) or null; every late answer
+  // re-checks it, so a slow read for a file the operator has since left cannot
+  // overwrite what is showing.
+
+  function edGutter(text) {
+    if (!state || !state.els.edGutter) return;
+    var lines = String(text == null ? '' : text).split('\n').length;
+    var out = '';
+    for (var i = 1; i <= lines; i++) out += i + '\n';
+    state.els.edGutter.textContent = out;
+  }
+
+  function edStats(text) {
+    if (!state || !state.els.edMeta) return;
+    var n = String(text == null ? '' : text).length;
+    state.els.edMeta.textContent = n === 1
+      ? '1 ' + t('wfm.char', 'char')
+      : n + ' ' + t('wfm.chars', 'chars');
+  }
+
+  function edStatus(text, dirty, isErr) {
+    if (!state || !state.els.edStatus) return;
+    state.els.edStatus.textContent = text || '';
+    state.els.edStatus.className = 'wfm-ed-status' + (dirty ? ' dirty' : '') + (isErr ? ' err' : '');
+  }
+
+  function openEditor(entry) {
+    if (!state || !entry || entry.type === 'dir') return Promise.resolve();
+    if (!isTextName(entry.name)) {
+      say(t('wfm.notText', 'That kind of file cannot be opened in the text editor. Use Download.'), true);
+      return Promise.resolve();
+    }
+    var s = state;
+    var els = s.els;
+    closeMenu();
+    s.edit = { path: entry.path, name: entry.name, dirty: false, warned: false };
+    els.edName.textContent = entry.name;
+    els.edName.title = entry.path;
+    els.edText.value = '';
+    els.edText.disabled = true;
+    els.edSave.disabled = true;
+    edGutter('');
+    edStats('');
+    edStatus(t('wfm.edLoading', 'Loading\u2026'), false);
+    els.root.classList.add('is-editing');
+    els.editor.hidden = false;
+    return call(base() + '/file?path=' + encodeURIComponent(entry.path))
+      .then(function (d) {
+        if (state !== s || !s.edit || s.edit.path !== entry.path) return null;
+        var content = String((d && d.content) || '');
+        els.edText.value = content;
+        els.edText.disabled = false;
+        els.edSave.disabled = false;
+        edGutter(content);
+        edStats(content);
+        edStatus(t('wfm.edReady', 'Ready'), false);
+        try { els.edText.focus(); } catch (e) { /* not focusable in the harness */ }
+        return null;
+      })
+      .catch(function (e) {
+        if (state !== s || !s.edit || s.edit.path !== entry.path) return;
+        edStatus((e && e.message) || t('wfm.readFailed', 'Could not read the file.'), false, true);
+      });
+  }
+
+  /**
+   * Back to the tree. A draft with unsaved changes is NOT dropped on the first
+   * press: the status says so and a second Close discards it (force=true).
+   */
+  function closeEditor(force) {
+    if (!state || !state.edit) return;
+    var ed = state.edit;
+    if (ed.dirty && !force && !ed.warned) {
+      ed.warned = true;
+      edStatus(t('wfm.unsavedClose', 'Unsaved changes. Save, or press Close again to discard.'), true);
+      return;
+    }
+    var els = state.els;
+    state.edit = null;
+    els.edText.value = '';
+    els.edText.disabled = false;
+    els.edGutter.textContent = '';
+    els.edMeta.textContent = '';
+    els.editor.hidden = true;
+    els.root.classList.remove('is-editing');
+  }
+
+  function saveEditor() {
+    if (!state || !state.edit) return Promise.resolve();
+    var s = state;
+    var ed = s.edit;
+    var els = s.els;
+    var text = els.edText.value || '';
+    els.edSave.disabled = true;
+    edStatus(t('wfm.saving', 'Saving\u2026'), false);
+    return call(base() + '/file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: ed.path, content: text })
+    })
+      .then(function () {
+        if (state !== s) return null;
+        els.edSave.disabled = false;
+        // Typed while the save was in flight: that text is NOT on the server.
+        if (s.edit === ed && els.edText.value === text) {
+          ed.dirty = false;
+          ed.warned = false;
+          edStatus(t('wfm.saved', 'Saved'), false);
+        }
+        edStats(els.edText.value);
+        // The row's size is stale now; re-read the open folders.
+        void refresh();
+        return null;
+      })
+      .catch(function (e) {
+        if (state !== s) return;
+        els.edSave.disabled = false;
+        edStatus((e && e.message) || t('wfm.saveFailed', 'Could not save the file.'), true, true);
+      });
   }
 
   // ── Download: the operator's own copy ──────────────────────────────────
@@ -1361,6 +1625,224 @@
       });
   }
 
+  // ── The Local Browser switch (the workflow editor's drawer only) ────────
+  //
+  // ONE button in the drawer that says whether the Local Browser is up, and
+  // turns it on or off. Default is OFF: nothing is started until it is pressed.
+  //
+  //   off -> [Turn on]   starts the Local Browser and shows it in a NEW tab, the
+  //                      same remote view the element picker opens, but WITHOUT
+  //                      the picker's "Connect this browser to a field?" alert:
+  //                      that alert belongs to a pending field request, and this
+  //                      path never makes one (it calls openRealBrowser(), not
+  //                      requestPick()).
+  //   on  -> [Show browser] [Turn off]
+  //                      [Turn off] closes the browser (POST /browser/real/close,
+  //                      the same close the picker uses).
+  //                      [Show browser] brings the remote view back in a NEW tab
+  //                      WITHOUT touching the browser: the operator may have
+  //                      closed only the tab that displayed it (on their own
+  //                      machine) while the Local Browser stayed up, and Turn off
+  //                      would be the wrong way to get it back. It goes through
+  //                      the same openRealBrowser(), which reuses the running
+  //                      Chrome and only opens a viewer; if the browser died in
+  //                      the meantime it simply starts it, and the next health
+  //                      read says so. Only drawn while the server says running.
+  //
+  // The state is READ from the server (GET /browser/real/health -> `running`),
+  // never remembered here, so a browser started or stopped elsewhere is shown as
+  // it is. It is read on open, after every press, and every few seconds while
+  // the drawer is up. Turning off uses /browser/real/close and NOT /browser/stop:
+  // Stop also switches self-healing off, and a later "Turn on" would then be
+  // refused.
+  //
+  // Only offered where the page can open the viewer (BrowserView, from
+  // browser-view.js): a switch that cannot do its job is worse than none.
+
+  var BROWSER_POLL_MS = 6000;
+
+  function canOpenBrowser() {
+    return !!(window.BrowserView && typeof window.BrowserView.openRealBrowser === 'function');
+  }
+
+  /** The switch's row, appended to the drawer; null when the page cannot open the viewer. */
+  function browserRow(into) {
+    if (!canOpenBrowser()) return null;
+    var el = document.createElement('div');
+    el.className = 'wfm-browser is-off';
+    var dot = document.createElement('span');
+    dot.className = 'wfm-br-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    el.appendChild(dot);
+    var label = document.createElement('span');
+    label.className = 'wfm-br-label';
+    el.appendChild(label);
+    var grow = document.createElement('span');
+    grow.className = 'wfm-grow';
+    el.appendChild(grow);
+    // "Show browser": only while the browser is running (paintBrowser decides),
+    // and a DIFFERENT class from the on/off button so the two can never be
+    // mistaken for each other.
+    var show = document.createElement('button');
+    show.type = 'button';
+    show.className = 'btn btn-sm btn-ghost wfm-br-show';
+    show.hidden = true;
+    show.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      // Synchronously: showBrowser() calls window.open() inside this click.
+      void showBrowser();
+    });
+    el.appendChild(show);
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm wfm-br-btn';
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      void toggleBrowser();
+    });
+    el.appendChild(btn);
+    into.appendChild(el);
+    return { el: el, label: label, show: show, btn: btn };
+  }
+
+  /** Draw the row from state.browser = { running, busy: '' | 'start' | 'stop' }. */
+  function paintBrowser() {
+    if (!state || !state.browser || !state.els.browser) return;
+    var b = state.browser;
+    var ui = state.els.browser;
+    ui.el.classList.toggle('is-on', b.running);
+    ui.el.classList.toggle('is-off', !b.running);
+    ui.el.classList.toggle('is-busy', !!b.busy);
+    ui.label.textContent = t('wfm.browserLabel', 'Local Browser') + ' \u00b7 ' +
+      (b.running ? t('wfm.browserOn', 'Running') : t('wfm.browserOff', 'Off'));
+    // "Show browser" exists only while the browser is up, and waits while any
+    // press (on/off, or a show already opening a tab) is in flight.
+    ui.show.hidden = !b.running;
+    ui.show.disabled = !!b.busy || !!b.showing;
+    ui.show.textContent = b.showing
+      ? t('wfm.browserShowing', 'Opening\u2026')
+      : t('wfm.browserShow', 'Show browser');
+    ui.btn.disabled = !!b.busy || !!b.showing;
+    ui.btn.classList.toggle('btn-primary', !b.running);
+    ui.btn.classList.toggle('btn-ghost', b.running);
+    ui.btn.textContent = b.busy === 'start' ? t('wfm.browserStarting', 'Starting\u2026')
+      : b.busy === 'stop' ? t('wfm.browserStopping', 'Stopping\u2026')
+      : b.running ? t('wfm.browserStop', 'Turn off')
+      : t('wfm.browserStart', 'Turn on');
+  }
+
+  /** Ask the server whether the Local Browser is up, and repaint. Never rejects. */
+  function readBrowser() {
+    if (!state || !state.browser) return Promise.resolve();
+    var s = state;
+    return call('/browser/real/health')
+      .then(function (d) {
+        // A press in flight owns the display until it finishes.
+        if (state !== s || s.browser.busy) return;
+        s.browser.running = !!(d && d.running);
+        paintBrowser();
+      })
+      .catch(function () { /* a status we cannot read changes nothing on screen */ });
+  }
+
+  function startBrowserWatch() {
+    if (!state || !state.els.browser) return;
+    var s = state;
+    s.browser = { running: false, busy: '', showing: false };
+    paintBrowser();
+    void readBrowser();
+    s.browserTimer = setInterval(function () {
+      if (state !== s) { stopBrowserWatch(s); return; }
+      void readBrowser();
+    }, BROWSER_POLL_MS);
+  }
+
+  function stopBrowserWatch(s) {
+    if (s && s.browserTimer) {
+      try { clearInterval(s.browserTimer); } catch (e) { /* fine */ }
+      s.browserTimer = 0;
+    }
+  }
+
+  /**
+   * The press. ON opens the viewer tab in THIS click (a popup opened after an
+   * await would be blocked), through the same openRealBrowser() the picker
+   * uses, so the cold-start retries, the workflow binding and the viewer URL
+   * are exactly the ones that already work. OFF is one POST.
+   */
+  function toggleBrowser() {
+    if (!state || !state.browser || state.browser.busy || state.browser.showing) return Promise.resolve();
+    var s = state;
+    var b = s.browser;
+    var wasRunning = b.running;
+
+    function done(ok, err) {
+      if (state !== s) return null;
+      b.busy = '';
+      if (ok) b.running = !wasRunning;
+      paintBrowser();
+      if (!ok) say((err && err.message) || t('wfm.browserFailed', 'Could not change the Local Browser.'), true);
+      // Whatever the press said, the server has the last word.
+      return readBrowser();
+    }
+
+    b.busy = wasRunning ? 'stop' : 'start';
+    paintBrowser();
+
+    if (wasRunning) {
+      return call('/browser/real/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      }).then(function () { return done(true); }, function (e) { return done(false, e); });
+    }
+
+    var started;
+    try {
+      started = window.BrowserView.openRealBrowser('', null, { workflowId: s.workflowId });
+    } catch (e) {
+      started = Promise.reject(e);
+    }
+    return Promise.resolve(started).then(function () { return done(true); }, function (e) { return done(false, e); });
+  }
+
+  /**
+   * "Show browser": put the remote view of the RUNNING Local Browser back on
+   * screen in a new tab. Nothing is started or stopped by the operator's
+   * intent: this is for the tab that displayed the browser having been closed
+   * while the browser itself stayed up.
+   *
+   * Like Turn on it opens the tab in THIS click (a popup opened after an await
+   * would be blocked) through openRealBrowser(), which reuses the running
+   * Chrome. `showing` is its own flag, not `busy`: busy means the browser is
+   * changing state, and a show never changes it.
+   */
+  function showBrowser() {
+    if (!state || !state.browser || state.browser.busy || state.browser.showing) return Promise.resolve();
+    var s = state;
+    var b = s.browser;
+
+    function done(err) {
+      if (state !== s) return null;
+      b.showing = false;
+      paintBrowser();
+      if (err) say((err && err.message) || t('wfm.browserShowFailed', 'Could not show the Local Browser.'), true);
+      // The server has the last word, as after every press.
+      return readBrowser();
+    }
+
+    b.showing = true;
+    paintBrowser();
+
+    var shown;
+    try {
+      shown = window.BrowserView.openRealBrowser('', null, { workflowId: s.workflowId });
+    } catch (e) {
+      shown = Promise.reject(e);
+    }
+    return Promise.resolve(shown).then(function () { return done(null); }, function (e) { return done(e || new Error('')); });
+  }
+
   /** Start the operator's own native picker, targeting `into`. */
   function askForUpload(into) {
     if (!state) return;
@@ -1420,18 +1902,17 @@
    *           · Compress · Move · Copy · Rename · Delete
    *   System: Open · New File · New Folder · Upload Here · Download (.zip)
    *           · Compress                                (uploads/, downloads/)
-   *   File:   Select · Download · Compress · Move · Copy · Duplicate · Extract (.zip)
-   *           · Rename · Delete · Details
+   *   File:   Select · Edit (text files) · Download · Compress · Move · Copy
+   *           · Duplicate · Extract (.zip) · Rename · Delete · Details
    *   Root:   New Folder · New File · Upload File · Select All
    *           · Download workspace · Compress · Refresh
    *
    * "Open" on a folder roots the tree THERE (the breadcrumb is the way back);
    * the chevron on the row expands it in place instead.
    *
-   * "Open / Preview" is deliberately NOT offered for a file: this client has
-   * no viewer, and a menu entry that does nothing is worse than one that is
-   * absent. Extract is offered only for a `.zip` — the one format this pass
-   * supports.
+   * "Edit" is offered only for a text file (the notepad refuses the rest), so
+   * no entry ever does nothing. Extract is offered only for a `.zip` — the one
+   * format this pass supports.
    */
   function openMenu(entry, x, y) {
     if (!state) return;
@@ -1483,6 +1964,9 @@
       }
     } else {
       menuItem(menu, t('wfm.pick', 'Select'), 'check', function () { pick(entry, true); });
+      if (isTextName(entry.name)) {
+        menuItem(menu, t('wfm.edit', 'Edit'), 'file-text', function () { void openEditor(entry); });
+      }
       menuItem(menu, t('wfm.download', 'Download'), 'download', function () { void downloadEntry(entry); });
       menuSep(menu);
       menuItem(menu, t('wfm.compress', 'Compress (.zip)'), 'layers', function () {
@@ -1637,7 +2121,7 @@
     return b;
   }
 
-  function build(host) {
+  function build(host, opts) {
     var root = document.createElement('div');
     // `is-opening` for one frame, then removed: the drawer slides in from the
     // side it is docked to rather than appearing, which is the only cue that
@@ -1682,6 +2166,10 @@
     x.addEventListener('click', function () { close('closed'); });
     head.appendChild(x);
     root.appendChild(head);
+
+    // ── Local Browser switch: the workflow editor's drawer only. browserRow()
+    // returns null on a page that cannot open the viewer, so no dead button.
+    var browserEls = (opts && opts.browseOnly) ? browserRow(root) : null;
 
     // ── toolbar: the five actions from upload-ui/, icon-only
     var bar = document.createElement('div');
@@ -1742,6 +2230,71 @@
     promptModalHost.className = 'wfm-prompt-modal';
     promptModalHost.hidden = true;
     root.appendChild(promptModalHost);
+
+    // ── the notepad: hidden until a text file opens (see openEditor)
+    var editor = document.createElement('div');
+    editor.className = 'wfm-editor';
+    editor.hidden = true;
+    var edBar = document.createElement('div');
+    edBar.className = 'wfm-ed-bar';
+    var edIco = document.createElement('span');
+    edIco.className = 'wfm-ico';
+    edIco.innerHTML = BIC('file-text', 14);
+    edBar.appendChild(edIco);
+    var edNameEl = document.createElement('span');
+    edNameEl.className = 'wfm-ed-name';
+    edBar.appendChild(edNameEl);
+    var edGrow = document.createElement('span');
+    edGrow.className = 'wfm-grow';
+    edBar.appendChild(edGrow);
+    var edSaveBtn = iconBtn('wfm-ed-save', 'save', t('wfm.save', 'Save') + ' (Ctrl+S)', function () { void saveEditor(); });
+    edBar.appendChild(edSaveBtn);
+    edBar.appendChild(iconBtn('wfm-ed-close', 'x', t('wfm.edClose', 'Close file'), function () { closeEditor(false); }));
+    editor.appendChild(edBar);
+    var edBody = document.createElement('div');
+    edBody.className = 'wfm-ed-body';
+    var edGutterEl = document.createElement('div');
+    edGutterEl.className = 'wfm-ed-gutter';
+    edGutterEl.setAttribute('aria-hidden', 'true');
+    edBody.appendChild(edGutterEl);
+    var edTextEl = document.createElement('textarea');
+    edTextEl.className = 'wfm-ed-text';
+    edTextEl.spellcheck = false;
+    edTextEl.setAttribute('wrap', 'off');
+    edTextEl.setAttribute('aria-label', t('wfm.edContents', 'File contents'));
+    // Typing marks the draft dirty, so there is always a visible sign that
+    // something is not on the server yet.
+    edTextEl.addEventListener('input', function () {
+      if (!state || !state.edit) return;
+      state.edit.dirty = true;
+      state.edit.warned = false;
+      edGutter(edTextEl.value);
+      edStats(edTextEl.value);
+      edStatus(t('wfm.unsaved', 'Unsaved changes'), true);
+    });
+    // The line numbers follow the text when it scrolls.
+    edTextEl.addEventListener('scroll', function () { edGutterEl.scrollTop = edTextEl.scrollTop; });
+    edTextEl.addEventListener('keydown', function (ev) {
+      if (ev && (ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
+        ev.preventDefault();
+        void saveEditor();
+      }
+    });
+    edBody.appendChild(edTextEl);
+    editor.appendChild(edBody);
+    var edFoot = document.createElement('div');
+    edFoot.className = 'wfm-ed-foot';
+    var edStatusEl = document.createElement('span');
+    edStatusEl.className = 'wfm-ed-status';
+    edFoot.appendChild(edStatusEl);
+    var edGrow2 = document.createElement('span');
+    edGrow2.className = 'wfm-grow';
+    edFoot.appendChild(edGrow2);
+    var edMetaEl = document.createElement('span');
+    edMetaEl.className = 'wfm-ed-meta';
+    edFoot.appendChild(edMetaEl);
+    editor.appendChild(edFoot);
+    root.appendChild(editor);
 
     // ── foot: what is picked, and the two things to do with it
     var foot = document.createElement('div');
@@ -1823,6 +2376,8 @@
         // Escape closes the MENU first when one is up, so it is not a way to
         // lose the whole drawer by aiming at a menu.
         if (menu) { closeMenu(); return; }
+        // ... and the notepad before the drawer, for the same reason.
+        if (state && state.edit) { closeEditor(false); return; }
         close('closed');
       }
     });
@@ -1835,7 +2390,10 @@
       total: total, count: count, clear: clear, foot: foot,
       confirm: confirmHost, folderModal: folderModalHost, promptModal: promptModalHost, selectAll: all, crumbs: crumbs,
       compressSel: footCompress, moveSel: footMove, copySel: footCopy,
-      down: down, del: del
+      down: down, del: del,
+      editor: editor, edName: edNameEl, edText: edTextEl, edGutter: edGutterEl,
+      edSave: edSaveBtn, edStatus: edStatusEl, edMeta: edMetaEl,
+      browser: browserEls
     };
   }
 
@@ -1884,7 +2442,7 @@
       return false;
     }
     var host = o.host || document.body;
-    var els = build(host);
+    var els = build(host, o);
     panel = els.root;
     // No page is asking for a file (the editor): hide Select, which could only
     // ever end in "No live browser is open". Done with a class, not `hidden`,
@@ -1900,6 +2458,8 @@
       uploadInto: '',
       /** Where the tree is rooted; '' is the workspace. See goTo(). */
       root: '',
+      /** The text file open in the notepad, or null. See openEditor(). */
+      edit: null,
       opts: o,
       els: els
     };
@@ -1909,6 +2469,7 @@
     els.foot.classList.toggle('is-multi', !!state.multiple);
     render();
     void expand('');
+    startBrowserWatch();
     // Let the class that starts the slide be painted before it is removed.
     try {
       setTimeout(function () { if (panel === els.root) els.root.classList.remove('is-opening'); }, 0);

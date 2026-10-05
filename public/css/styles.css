@@ -6155,7 +6155,7 @@ body.route-fullbleed .fe-mm-restore {
 .wfm-modal-input:focus { border-color: var(--primary); }
 .wfm-modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .wfm-modal-tree {
-  max-height: 140px;
+  max-height: 210px;
   overflow-y: auto;
   background: var(--bg, #15161c);
   border: 1px solid var(--border);
@@ -6177,6 +6177,76 @@ body.route-fullbleed .fe-mm-restore {
 .wfm-modal-tree-item:hover { background: rgba(255,255,255,.07); color: var(--text); }
 .wfm-modal-tree-item.active { background: rgba(232,115,26,.25); border: 1px solid var(--primary, #e8731a); color: var(--text); font-weight: 600; }
 .wfm-modal-tree-item .wfm-ico { width: 14px; height: 14px; flex: none; }
+/* "Loading folders..." while the rest of the tree is being read: not a target. */
+.wfm-modal-tree-item.wfm-hint { cursor: default; pointer-events: none; color: var(--text-dim); font-style: italic; }
+
+/* ---- the notepad: ONE text file, inside the drawer ------------------------
+ * A page of the drawer, not a floating modal: while a file is open the tree,
+ * its toolbar and its footer step aside (the head stays, so the drawer still
+ * has its own Close) and the editor takes the height. The text is code-like,
+ * so it is always left-to-right with the line numbers on the left, whatever
+ * the page direction is. */
+.wfm-editor { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.wfm-editor[hidden] { display: none; }
+.wfm-drawer.is-editing .wfm-toolbar,
+.wfm-drawer.is-editing .wfm-crumbs,
+.wfm-drawer.is-editing .wfm-list,
+.wfm-drawer.is-editing .wfm-note,
+.wfm-drawer.is-editing .wfm-confirm,
+.wfm-drawer.is-editing .wfm-folder-modal,
+.wfm-drawer.is-editing .wfm-prompt-modal,
+.wfm-drawer.is-editing .wfm-foot,
+.wfm-drawer.is-editing .wfm-selectall { display: none; }
+.wfm-ed-bar {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.wfm-ed-name {
+  direction: ltr; min-width: 0; font-size: 0.8rem; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wfm-ed-body {
+  direction: ltr; flex: 1 1 auto; min-height: 0; display: flex;
+  margin: 0.5rem 0.6rem 0; border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; background: var(--bg, #101319);
+}
+.wfm-ed-gutter {
+  flex: 0 0 auto; padding: 8px 6px 8px 8px; text-align: right;
+  font: 11px/1.55 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  color: var(--text-dim); border-right: 1px solid var(--border);
+  user-select: none; white-space: pre; overflow: hidden;
+}
+.wfm-ed-text {
+  flex: 1 1 auto; min-width: 0; padding: 8px; margin: 0;
+  font: 11px/1.55 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  color: var(--text); background: transparent; border: 0; resize: none;
+  outline: none; white-space: pre; overflow: auto; tab-size: 2; text-align: left;
+}
+.wfm-ed-text::selection { background: rgba(232,115,26,.30); }
+.wfm-ed-foot {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.4rem 0.7rem 0.55rem; flex: 0 0 auto;
+  font-size: 0.72rem; color: var(--text-dim);
+}
+.wfm-ed-status.dirty { color: var(--primary); }
+.wfm-ed-status.err { color: var(--danger); }
+/* ---- the Local Browser switch: the workflow editor's drawer only -----------
+ * One row under the drawer's head: a dot (grey = off, green = running, orange
+ * while a press is in flight), the state in words, and ONE button. The notepad
+ * takes the whole drawer while a file is open, so the row steps aside then. */
+.wfm-browser {
+  display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;
+  padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border);
+  font-size: 0.78rem; color: var(--text);
+}
+.wfm-br-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-dim); }
+.wfm-browser.is-on .wfm-br-dot { background: var(--success, #3fb950); }
+.wfm-browser.is-busy .wfm-br-dot { background: var(--primary); }
+.wfm-br-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfm-br-btn { flex: none; }
+/* "Show browser": drawn only while running (the [hidden] attribute does it). */
+.wfm-br-show { flex: none; }
+.wfm-drawer.is-editing .wfm-browser { display: none; }
 /* Batch delete only makes sense once something is picked, and it must never
  * sit at the same weight as Select — it destroys, Select delivers. */
 .wfm-delsel { display: none; }

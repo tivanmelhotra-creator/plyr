@@ -505,7 +505,8 @@ describe('WorkflowFiles: the panel and its requests', () => {
       b.w.WorkflowFiles.open({ host: b.stage });
       await b.tick();
       files()[0].dispatchEvent(new b.w.MouseEvent('contextmenu', { bubbles: true }));
-      expect(menuLabels()).toEqual(['Select', 'Download', 'Compress (.zip)', 'Move', 'Copy', 'Duplicate', 'Rename', 'Delete', 'Details']);
+      // files()[0] is a text file, so the notepad's Edit sits right after Select.
+      expect(menuLabels()).toEqual(['Select', 'Edit', 'Download', 'Compress (.zip)', 'Move', 'Copy', 'Duplicate', 'Rename', 'Delete', 'Details']);
     });
   });
 
