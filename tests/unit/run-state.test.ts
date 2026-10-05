@@ -201,3 +201,57 @@ describe('run-state reducer — node mapping', () => {
     expect(map['1']).toBe('error');   // step 2 -> node[1]
   });
 });
+
+describe('run-state reducer — honest outcome, stopped, variables, logs', () => {
+  const R2 = () => R as any;
+  it('a cancelled job.error is "stopped", not "error"', () => {
+    const s = feed([
+      { type: 'job.start', data: {} },
+      { type: 'step.start', data: { index: 1, action: 'wait' } },
+      { type: 'job.error', data: { reason: 'cancelled', message: 'CANCELLED_BY_USER' } },
+    ]);
+    expect(s.phase).toBe('stopped');
+    expect(R.isTerminal(s)).toBe(true);
+    expect(R.stepStatus(s, 1)).toBe('stopped');
+    expect(R2().outcome(s)).toBe('stopped');
+  });
+  it('quota_exhausted and real failures stay errors', () => {
+    expect(feed([{ type: 'job.start' }, { type: 'job.error', data: { reason: 'quota_exhausted' } }]).phase).toBe('error');
+    expect(feed([{ type: 'job.start' }, { type: 'job.error', data: { message: 'boom' } }]).phase).toBe('error');
+  });
+  it('markStopped only affects a running run (a finished run keeps its result)', () => {
+    const done = feed([{ type: 'job.start' }, { type: 'step.start', data: { index: 1, action: 'a' } },
+      { type: 'step.done', data: { index: 1, action: 'a', success: true } }, { type: 'job.done', data: {} }]);
+    R2().markStopped(done);
+    expect(done.phase).toBe('done');
+    const run = feed([{ type: 'job.start' }, { type: 'step.start', data: { index: 1, action: 'a' } }]);
+    R2().markStopped(run);
+    expect(run.phase).toBe('stopped');
+    expect(R.stepStatus(run, 1)).toBe('stopped');
+  });
+  it('outcome: done with a failed step is "partial", clean is "success"', () => {
+    const clean = feed([{ type: 'job.start' }, { type: 'step.start', data: { index: 1, action: 'a' } },
+      { type: 'step.done', data: { index: 1, action: 'a', success: true } }, { type: 'job.done', data: {} }]);
+    expect(R2().outcome(clean)).toBe('success');
+    const part = feed([{ type: 'job.start' }, { type: 'step.start', data: { index: 1, action: 'a' } },
+      { type: 'step.error', data: { index: 1, action: 'a', error: 'x' } }, { type: 'job.done', data: {} }]);
+    expect(R2().outcome(part)).toBe('partial');
+  });
+  it('step.done carries the runtime variables; log lines use the server timestamp', () => {
+    const s: any = feed([
+      { type: 'job.start' },
+      { type: 'step.start', data: { index: 1, action: 'variable' } },
+      { type: 'step.done', data: { index: 1, action: 'variable', success: true, variables: { price: '9' } } },
+      { type: 'log', data: { message: 'hello' }, ts: '2026-01-01T10:00:00.000Z' } as any,
+    ]);
+    expect(s.variables).toEqual({ price: '9' });
+    const l = s.log[s.log.length - 1];
+    expect(l.text).toBe('hello');
+    expect(l.t).toBe(Date.parse('2026-01-01T10:00:00.000Z'));
+  });
+  it('step.retry and step.path are logged', () => {
+    const s = feed([{ type: 'step.retry', data: { index: 2, action: 'goto', attempt: 1, maxTries: 3, error: 'e' } },
+      { type: 'step.path', data: { index: 3, action: 'if', name: 'Yes' } }]);
+    expect(s.log.map((x) => x.text)).toEqual(['retry 1/3: e', 'path Yes']);
+  });
+});

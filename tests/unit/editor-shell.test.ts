@@ -312,7 +312,9 @@ describe('item E — ACTIVITY LOG', () => {
   it('derives Variables from the graph, not from an invented state bag', () => {
     expect(RP).toContain('function alVariables()');
     expect(RP).toMatch(/n\.action !== 'variable'/);
-    expect(RP).not.toMatch(/state\.variables/);
+    // Declared variables come from the graph; the run's values come from the
+    // worker-reported bag (state.variables), never from a made-up one.
+    expect(RP).toMatch(/state\.variables/);
     ['al.varName', 'al.varValue', 'al.varSource'].forEach(expectKeyInBothDicts);
   });
 
@@ -329,7 +331,7 @@ describe('item E — ACTIVITY LOG', () => {
   /** A `stop()` that left `phase === 'running'` would latch the top-bar slot. */
   it('stop() forces a terminal phase and notifies subscribers', () => {
     const stop = RP.slice(RP.indexOf('function stop()'), RP.indexOf('function stop()') + 900);
-    expect(stop).toMatch(/state\.phase = 'done'/);
+    expect(stop).toMatch(/RS\.markStopped\(state\)/); // 'stopped', never 'done' (= Success)
     expect(stop).toContain('emitUpdate()');
   });
 
