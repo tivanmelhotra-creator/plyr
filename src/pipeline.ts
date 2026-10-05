@@ -1015,6 +1015,28 @@ async function runPipelineImpl(params: {
   // STEP EXECUTION ENGINE
   // ════════════════════════════════════════════════════════════════
 
+  // Single place that announces step completion. Every leaf step - whichever
+  // of the ~45 handlers ran it, and however it left the loop (`continue
+  // stepLoop`, `return`, falling through) - is reported through here exactly
+  // once. The WeakSet keeps container steps (if/loop/try...) from re-announcing
+  // the last output their children already reported.
+  const __doneEmitted = new WeakSet<object>();
+  const emitStepDone = (out: StepOutput): void => {
+    if (__doneEmitted.has(out)) return;
+    __doneEmitted.add(out);
+    context.onEvent?.('step.done', {
+      index: out.step,
+      action: out.action,
+      success: out.success,
+      durationMs: out.durationMs,
+      // Step 21: per-step item flow for the NDV-style live panel.
+      inputItemCount: out.inputItemCount,
+      outputItemCount: out.outputItemCount,
+      outputSample: out.outputSample,
+      outputTruncated: out.outputTruncated
+    });
+  };
+
   const executeStepGroup = async (
     stepsToRun: AutomationStep[]
   ): Promise<{ break?: boolean; continue?: boolean; return?: boolean; returnValue?: any } | void> => {
@@ -1025,7 +1047,8 @@ async function runPipelineImpl(params: {
       const stepStartTime = Date.now();
       // Step 16: live event - announce this step starting.
       const __outLenBefore = stepOutputs.length;
-      context.onEvent?.('step.start', { index: globalStepNumber + 1, action: step.action });
+      const __startIndex = globalStepNumber + 1;
+      context.onEvent?.('step.start', { index: __startIndex, action: step.action });
 
       context.globalLoopCounter++;
 
@@ -1066,6 +1089,10 @@ async function runPipelineImpl(params: {
       const __sgBefore = globalStepNumber;
       const __soBefore = stepOutputs.length;
       let __attempt = 0;
+      // The try/finally below is what guarantees `step.done`: handlers leave via
+      // `continue stepLoop`, which would skip any code placed after the loop.
+      let __errored = false;
+      try {
       // eslint-disable-next-line no-constant-condition
       while (true) {
       __attempt++;
@@ -3112,6 +3139,7 @@ async function runPipelineImpl(params: {
           stepError.message
         ));
         context.onEvent?.('step.error', { index: globalStepNumber, action: step.action, error: String(stepError.message || stepError) });
+        __errored = true; // step.error already closed this step; the finally must not add a step.done
         // Continue-on-fail: swallow the (non-fatal) error and carry on.
         if (!__fatal && __policy.continueOnFail) {
           log(`[CONTINUE-ON-FAIL] Step '${step.action}' failed but continueOnFail is set; continuing.`);
@@ -3124,21 +3152,20 @@ async function runPipelineImpl(params: {
       }
       break; // attempt succeeded — leave the retry loop
       } // end Step 27 retry while-loop
-
-      // Step 16: live event - announce step completion (best-effort).
-      if (stepOutputs.length > __outLenBefore) {
-        const __last = stepOutputs[stepOutputs.length - 1];
-        context.onEvent?.('step.done', {
-          index: __last.step,
-          action: __last.action,
-          success: __last.success,
-          durationMs: __last.durationMs,
-          // Step 21: per-step item flow for the NDV-style live panel.
-          inputItemCount: __last.inputItemCount,
-          outputItemCount: __last.outputItemCount,
-          outputSample: __last.outputSample,
-          outputTruncated: __last.outputTruncated
-        });
+      } finally {
+        // Step 16: live event - announce step completion (best-effort).
+        // A step that failed already got `step.error` (also under continueOnFail);
+        // don't double-report it.
+        if (!__errored) {
+          if (stepOutputs.length > __outLenBefore) {
+            emitStepDone(stepOutputs[stepOutputs.length - 1]!);
+          } else {
+            // Produced no output of its own (an `if` with no matching path,
+            // break/continue/return...). Close the `step.start` we opened so
+            // the UI never leaves it spinning.
+            context.onEvent?.('step.done', { index: __startIndex, action: step.action, success: true, durationMs: Date.now() - stepStartTime });
+          }
+        }
       }
     }
   };
