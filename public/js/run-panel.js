@@ -150,6 +150,7 @@
       if (phase === 'running') { cls = 'badge warn'; label = t('rp.running'); }
       else if (phase === 'done') { cls = 'badge ok'; label = t('rp.done'); }
       else if (phase === 'error') { cls = 'badge bad'; label = t('rp.error'); }
+      else if (phase === 'stopped') { cls = 'badge'; label = t('rp.stopped'); }
       dom.statusBadge.className = cls;
       dom.statusBadge.textContent = label;
     }
@@ -176,6 +177,7 @@
     if (st === 'completed' || st === 'success') return t('ndv.statusSuccess');
     if (st === 'failed' || st === 'error') return t('ndv.statusError');
     if (st === 'active' || st === 'running') return t('ndv.statusRunning');
+    if (st === 'stopped') return t('rp.stopped');
     return t('ndv.statusIdle');
   }
   /** `12.45s` — seconds with two decimals, exactly as the image shows. */
@@ -291,9 +293,12 @@
       var name = (n.params && n.params.name) || '';
       if (!name || seen[name]) return;
       seen[name] = true;
-      // Value: prefer the recorded run output for this node, else unknown.
+      // Value: the runtime variable bag the worker reported, else the node's
+      // own output sample, else unknown.
       var value = null;
-      if (state) {
+      if (state && state.variables && Object.prototype.hasOwnProperty.call(state.variables, name)) {
+        value = state.variables[name];
+      } else if (state) {
         for (var k = 0; k < state.order.length; k += 1) {
           var s = state.steps[String(state.order[k])];
           if (s && s.action === 'variable' && s.outputSample) {
@@ -314,8 +319,36 @@
     return out;
   }
 
-  function renderVariables() {
+  /** Declared variables + any the run created on its own (loop_index, saveAs…). */
+  function allVariables() {
     var vars = alVariables();
+    var known = {};
+    vars.forEach(function (v) { known[v.name] = true; });
+    var rt = (state && state.variables) || {};
+    Object.keys(rt).forEach(function (k) {
+      if (!known[k]) vars.push({ name: k, value: rt[k], source: t('al.varRuntime') });
+    });
+    return vars;
+  }
+
+  /** The REAL event log of the run (log / retry / path / job lines). */
+  function renderLogLines() {
+    var lines = (state && state.log) || [];
+    if (!lines.length) return '<div class="al-empty">' + esc(t('al.noLogs')) + '</div>';
+    return '<div class="al-events">' + lines.map(function (e) {
+      var bad = e.type === 'step.error' || e.type === 'job.error';
+      var iso = e.t ? new Date(e.t).toISOString() : null;
+      return '<div class="al-ev' + (bad ? ' al-error' : '') + '">' +
+        '<span class="al-ev-time mono">' + esc(alClock(iso)) + '</span>' +
+        '<span class="al-ev-action">' + esc(e.type) + '</span>' +
+        (e.index != null ? '<span class="al-ev-sep">#' + esc(String(e.index)) + '</span>' : '') +
+        (e.text ? '<span class="al-ev-detail">' + esc(e.text) + '</span>' : '') +
+        '</div>';
+    }).join('') + '</div>';
+  }
+
+  function renderVariables() {
+    var vars = allVariables();
     if (!vars.length) return '<div class="al-empty">' + esc(t('al.noVars')) + '</div>';
     return '<div class="al-tablewrap"><table class="al-table">' +
       '<thead><tr><th scope="col">' + esc(t('al.varName')) + '</th>' +
@@ -336,9 +369,9 @@
     else if (alTab === 'execution') dom.panelBody.innerHTML = renderExecutionList();
     else if (alTab === 'variables') dom.panelBody.innerHTML = renderVariables();
     else {
-      // `Logs` keeps the existing step timeline (clickable, pinnable) — it is
-      // the raw view the editor already had.
-      dom.panelBody.innerHTML = '<div class="rp-timeline" id="rp-timeline"></div>';
+      // `Logs` shows the run's real event stream (state.log). The clickable,
+      // pinnable step timeline stays above it.
+      dom.panelBody.innerHTML = '<div class="rp-timeline" id="rp-timeline"></div>' + renderLogLines();
       dom.timeline = dom.panelBody.querySelector('#rp-timeline');
       renderTimeline();
     }
@@ -453,12 +486,11 @@
     // (`startJob`/`clearLog` also call stop() first, but both immediately
     // replace `state` with a fresh one, so this is inert for them.)
     if (state && state.phase === 'running') {
-      state.phase = 'done';
-      if (state.finishedAt == null) state.finishedAt = Date.now();
-      if (state.durationMs == null && state.startedAt != null) {
-        state.durationMs = state.finishedAt - state.startedAt;
-      }
+      // "Stopped" is its own outcome — it must never read as "Success".
+      RS.markStopped(state);
       renderHeader();
+      renderBody();
+      paintNodes();
     }
     emitUpdate();
   }
@@ -472,6 +504,7 @@
       var slim = {
         phase: state.phase, jobId: state.jobId, durationMs: state.durationMs,
         error: state.error, steps: state.steps, order: state.order,
+        variables: state.variables,
       };
       localStorage.setItem(key, JSON.stringify(slim));
     } catch (e) { /* quota / serialization — non-fatal */ }
@@ -491,6 +524,7 @@
       state.error = slim.error || null;
       state.steps = slim.steps || {};
       state.order = slim.order || [];
+      state.variables = slim.variables || {};
       renderAll();
       return true;
     } catch (e) { return false; }
@@ -690,7 +724,8 @@
       startedAt: state ? state.startedAt : null,
       finishedAt: state ? state.finishedAt : null,
       // A COUNT, not the bag: the strip only shows "Variables  3".
-      variables: alVariables().length,
+      variables: allVariables().length,
+      outcome: state ? RS.outcome(state) : 'idle',
     };
   }
 

@@ -199,6 +199,37 @@ function safeStoreVariable(
   }
 }
 
+const VAR_PREVIEW_CHARS = 200;
+const VAR_PREVIEW_MAX_ENTRIES = 50;
+const SECRET_VAR_NAME = /pass(word|wd)?|secret|token|api[-_]?key|auth|cookie|credential|session/i;
+
+/**
+ * name -> short, display-only preview of every run variable. Pure and total:
+ * it never throws (circular / BigInt values fall back to String()).
+ */
+export function snapshotVariables(vars: Map<string, any> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!vars) return out;
+  let n = 0;
+  for (const [k, v] of vars) {
+    if (n >= VAR_PREVIEW_MAX_ENTRIES) break;
+    const name = String(k);
+    if (SECRET_VAR_NAME.test(name)) {
+      out[name] = '\u2022\u2022\u2022\u2022';
+    } else {
+      let text: string;
+      try {
+        text = typeof v === 'string' ? v : (JSON.stringify(v) ?? String(v));
+      } catch {
+        text = String(v);
+      }
+      out[name] = text.length > VAR_PREVIEW_CHARS ? text.slice(0, VAR_PREVIEW_CHARS) + '\u2026' : text;
+    }
+    n++;
+  }
+  return out;
+}
+
 function parseBoolean(value: any): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -1054,6 +1085,19 @@ async function runPipelineImpl(params: {
     out.outputTruncated = sum.truncated;
   };
 
+  // The run's variables as the UI may show them: name -> short preview. Sent
+  // only when something changed since the last event, so a 200-step run does
+  // not repeat the same bag 200 times. Names that look like credentials are
+  // masked (the value never leaves the worker).
+  let __lastVarsSig = '';
+  const variablesForEvent = (): Record<string, string> | undefined => {
+    const snap = snapshotVariables(context.variables);
+    const sig = JSON.stringify(snap);
+    if (sig === __lastVarsSig) return undefined;
+    __lastVarsSig = sig;
+    return snap;
+  };
+
   const emitStepDone = (out: StepOutput, stepKey?: string): void => {
     if (__doneEmitted.has(out)) return;
     __doneEmitted.add(out);
@@ -1067,7 +1111,8 @@ async function runPipelineImpl(params: {
       inputItemCount: out.inputItemCount,
       outputItemCount: out.outputItemCount,
       outputSample: out.outputSample,
-      outputTruncated: out.outputTruncated
+      outputTruncated: out.outputTruncated,
+      variables: variablesForEvent()
     });
   };
 
@@ -3195,7 +3240,7 @@ async function runPipelineImpl(params: {
             // Produced no output of its own (an `if` with no matching path,
             // break/continue/return...). Close the `step.start` we opened so
             // the UI never leaves it spinning.
-            context.onEvent?.('step.done', { index: __startIndex, action: step.action, success: true, durationMs: Date.now() - stepStartTime, inputItemCount: context.items.length, outputItemCount: context.items.length });
+            context.onEvent?.('step.done', { index: __startIndex, action: step.action, success: true, durationMs: Date.now() - stepStartTime, inputItemCount: context.items.length, outputItemCount: context.items.length, variables: variablesForEvent() });
           }
         }
       }

@@ -7763,3 +7763,7 @@ body.route-fullbleed .fe-mm-restore {
    control here (it makes the code come back), and putting it next to the button
    the user reaches for reflexively would invite the wrong click. */
 .tgt-foot .tgt-btn.is-quiet:first-child { margin-inline-end: auto; }
+
+.fe-ri-val.tone-muted { color: var(--text-faint); }
+.rp-step.rp-stopped .rp-step-icon { color: var(--text-faint); }
+.al-ev.al-stopped .al-ev-detail { color: var(--text-faint); }

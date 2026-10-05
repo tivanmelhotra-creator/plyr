@@ -1764,9 +1764,14 @@
       var rs = window.RunPanel && window.RunPanel.getSummary
         ? window.RunPanel.getSummary() : null;
       if (!rs || !rs.total) { runInfo.hidden = true; runInfo.innerHTML = ''; return; }
-      var tone = rs.phase === 'error' ? 'red' : rs.phase === 'running' ? 'amber' : 'green';
-      var word = rs.phase === 'error' ? t('ndv.statusError')
-        : rs.phase === 'running' ? t('ndv.statusRunning') : t('ndv.statusSuccess');
+      // Honest outcome: Success / Partial / Error / Stopped / Running.
+      var oc = rs.outcome || (rs.phase === 'error' ? 'error' : rs.phase === 'running' ? 'running' : 'success');
+      var tone = oc === 'error' ? 'red' : (oc === 'running' || oc === 'partial') ? 'amber'
+        : oc === 'stopped' ? 'muted' : 'green';
+      var word = oc === 'error' ? t('ndv.statusError')
+        : oc === 'running' ? t('ndv.statusRunning')
+        : oc === 'stopped' ? t('rp.stopped')
+        : oc === 'partial' ? t('rp.partial') : t('ndv.statusSuccess');
       runInfo.hidden = false;
       runInfo.innerHTML =
         '<span class="fe-ri-cell"><span class="fe-ri-label">' + esc(t('sh.lastRun')) + '</span>' +
