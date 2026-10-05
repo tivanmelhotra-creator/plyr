@@ -553,6 +553,11 @@ export const config = {
   GC_STALE_THRESHOLD_MINUTES: parseInt(cleanEnv(process.env.GC_STALE_THRESHOLD_MINUTES) || '15', 10),
   PARTIAL_FILE_MAX_AGE_HOURS: parseInt(cleanEnv(process.env.PARTIAL_FILE_MAX_AGE_HOURS) || '1', 10),
   JOB_OUTPUT_MAX_AGE_MS: parseInt(cleanEnv(process.env.JOB_OUTPUT_MAX_AGE_MS) || '1800000', 10),
+  // Screenshots a run saved for the UI (see core/JobArtifacts). Swept by the GC.
+  ARTIFACT_MAX_AGE_HOURS: parseInt(cleanEnv(process.env.ARTIFACT_MAX_AGE_HOURS) || '168', 10),
+  // A single screenshot larger than this is still taken (and saveAs still gets
+  // it) but is not kept for the UI - protects the disk from a runaway full-page.
+  ARTIFACT_MAX_BYTES: parseInt(cleanEnv(process.env.ARTIFACT_MAX_BYTES) || String(15 * 1024 * 1024), 10),
 
   // ============================================
   // Rate Limiting

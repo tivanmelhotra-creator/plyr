@@ -14,6 +14,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { promises as fsp } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -26,6 +29,8 @@ vi.mock('../../src/core/BrowserAdapter', async (orig) => {
 import { runPipeline } from '../../src/pipeline';
 import { browserModes } from '../../src/core/BrowserMode';
 import { acquireContext } from '../../src/core/BrowserAdapter';
+import { config } from '../../src/config';
+import { resolveArtifact } from '../../src/core/JobArtifacts';
 
 class FakePage extends EventEmitter {
   closed = false;
@@ -36,10 +41,12 @@ class FakePage extends EventEmitter {
   async reload() {}
   async bringToFront() {}
   async screenshot() { return Buffer.from('fake-png-bytes'); }
+  async waitForSelector() {}
   locator() {
     return {
-      first: () => ({ isVisible: async () => false, innerText: async () => '' }),
+      first: () => ({ isVisible: async () => false, innerText: async () => '', getAttribute: async () => 'one' }),
       innerText: async () => '',
+      evaluateAll: async () => ['a', 'b', 'c'],
     };
   }
 }
@@ -255,3 +262,156 @@ describe('runPipeline — every started step is reported as finished', () => {
     expect(uiAfter(events).counts).toEqual({ total: 2, running: 0, success: 1, error: 1 });
   });
 });
+
+describe('runPipeline — item flow reaches the panel for built-in steps (not just modules)', () => {
+  const doneBy = (events: Ev[], action: string) =>
+    events.find((e) => e.type === 'step.done' && e.data.action === action)!.data;
+
+  it('every built-in step reports input/output counts and a sample', async () => {
+    const { events } = await runAndCollect([
+      { action: 'trigger_schedule', params: { cron: '0 9 * * *' } },
+      { action: 'goto', params: { url: 'https://example.com/a' } },
+      { action: 'wait', params: { ms: '5' } },
+      { action: 'screenshot', params: {} },
+    ]);
+    for (const e of events.filter((x) => x.type === 'step.done')) {
+      expect(e.data.inputItemCount, `${e.data.action} input`).toBe(1);
+      expect(e.data.outputItemCount, `${e.data.action} output`).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(e.data.outputSample), `${e.data.action} sample`).toBe(true);
+    }
+    expect(doneBy(events, 'navigate').outputSample[0]).toMatchObject({ url: 'https://example.com/a' });
+    expect(doneBy(events, 'wait').outputSample[0]).toMatchObject({ type: 'time', ms: 5 });
+    expect(doneBy(events, 'screenshot').outputSample[0]).toMatchObject({ type: 'png' });
+  });
+
+  it('a trigger forwards the stream it was given untouched', async () => {
+    const events: Ev[] = [];
+    await runPipeline({
+      userId: 'tester',
+      steps: [{ action: 'trigger_webhook', params: {} }] as never,
+      log: vi.fn(),
+      jobId: 'job-trigger',
+      profileManager: profileManager(),
+      userPlan: plan,
+      quotaManager,
+      initialItems: [{ json: { order: 7 } }, { json: { order: 8 } }],
+      onEvent: (type: string, data?: Record<string, unknown>) => events.push({ type, data: (data || {}) as any }),
+    } as never);
+    const d = events.find((e) => e.type === 'step.done')!.data;
+    expect(d.inputItemCount).toBe(2);
+    expect(d.outputItemCount).toBe(2);
+    expect(d.outputSample).toEqual([{ order: 7 }, { order: 8 }]);
+  });
+
+  it('extract-data turns a list into one item per element (not one { count, data } blob)', async () => {
+    const { events } = await runAndCollect([
+      { action: 'extract-data', params: { selector: '.row', attribute: 'href' } },
+    ]);
+    const d = doneBy(events, 'extract-data');
+    expect(d.outputItemCount).toBe(3);
+    expect(d.outputSample).toEqual([{ value: 'a' }, { value: 'b' }, { value: 'c' }]);
+  });
+
+  it('log shows what it logged', async () => {
+    const { events } = await runAndCollect([{ action: 'log', params: { message: 'hello' } }]);
+    expect(doneBy(events, 'log').outputSample).toEqual([{ message: 'hello' }]);
+  });
+
+  it('the item count flows from step to step', async () => {
+    const { events } = await runAndCollect([
+      { action: 'log', params: { message: 'a' } },
+      { action: 'log', params: { message: 'b' } },
+    ]);
+    const done = events.filter((e) => e.type === 'step.done');
+    expect(done[1]!.data.inputItemCount).toBe(done[0]!.data.outputItemCount);
+  });
+
+  it('a failed step has no item flow (nothing was produced)', async () => {
+    const { events } = await runAndCollect([{ action: 'goto', params: {}, continueOnFail: true }]);
+    expect(events.filter((e) => e.type === 'step.done')).toHaveLength(0);
+    expect(events.filter((e) => e.type === 'step.error')).toHaveLength(1);
+  });
+
+  it('a retried step reports its flow once, from the attempt that succeeded', async () => {
+    let calls = 0;
+    const page = (await (vi.mocked(acquireContext).getMockImplementation()!)('x' as never) as any).context.all[0] as FakePage;
+    page.goto = async (url: string) => { calls++; if (calls < 2) throw new Error('flaky'); page.currentUrl = url; };
+    const { events } = await runAndCollect([
+      { action: 'goto', params: { url: 'https://example.com/r' }, retryOnFail: true, maxTries: 3, waitBetweenTriesMs: 1 },
+      { action: 'log', params: { message: 'next' } },
+    ]);
+    const done = events.filter((e) => e.type === 'step.done');
+    expect(done).toHaveLength(2);
+    expect(done[0]!.data.inputItemCount).toBe(1);
+    expect(done[1]!.data.inputItemCount).toBe(done[0]!.data.outputItemCount); // not double-counted
+  });
+});
+
+describe('runPipeline — a screenshot is kept so the panel can show it', () => {
+  let tmp = '';
+  let origProfiles = '';
+  let origMax = 0;
+  beforeEach(async () => {
+    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'pipeline-shot-'));
+    origProfiles = config.PROFILES_DIR;
+    origMax = config.ARTIFACT_MAX_BYTES;
+    (config as { PROFILES_DIR: string }).PROFILES_DIR = tmp;
+  });
+  afterEach(async () => {
+    (config as { PROFILES_DIR: string }).PROFILES_DIR = origProfiles;
+    (config as { ARTIFACT_MAX_BYTES: number }).ARTIFACT_MAX_BYTES = origMax;
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  });
+
+  const shot = (events: Ev[]) => events.find((e) => e.type === 'step.done' && e.data.action === 'screenshot')!.data;
+
+  it('saves the image and hands the panel a reference, never the bytes', async () => {
+    const { events } = await runAndCollect([{ action: 'screenshot', params: {} }]);
+    const sample = shot(events).outputSample[0];
+
+    expect(sample.image).toMatchObject({ mimeType: 'image/png', size: Buffer.from('fake-png-bytes').length });
+    expect(sample.image.url).toBe('/job/tester/job-events/artifact/step-1.png');
+    // The event stays small: no base64 of the picture anywhere in it.
+    expect(JSON.stringify(shot(events))).not.toContain(Buffer.from('fake-png-bytes').toString('base64'));
+
+    const file = await resolveArtifact('tester', 'job-events', 'step-1.png');
+    expect(file).not.toBeNull();
+    expect(await fsp.readFile(file!.path, 'utf8')).toBe('fake-png-bytes');
+  });
+
+  it('names the file after the step, so two screenshots never overwrite each other', async () => {
+    const { events } = await runAndCollect([
+      { action: 'screenshot', params: {} },
+      { action: 'log', params: { message: 'between' } },
+      { action: 'screenshot', params: {} },
+    ]);
+    const urls = events.filter((e) => e.type === 'step.done' && e.data.action === 'screenshot')
+      .map((e) => e.data.outputSample[0].image.url);
+    expect(urls).toEqual([
+      '/job/tester/job-events/artifact/step-1.png',
+      '/job/tester/job-events/artifact/step-3.png',
+    ]);
+  });
+
+  it('still succeeds when the image cannot be kept (disk problem): no image, no failure', async () => {
+    // PROFILES_DIR is a FILE, so creating the artifacts dir under it fails.
+    const blocker = path.join(tmp, 'blocker');
+    await fsp.writeFile(blocker, 'x');
+    (config as { PROFILES_DIR: string }).PROFILES_DIR = blocker;
+
+    const { result, events } = await runAndCollect([{ action: 'screenshot', params: {} }]);
+    expect(result.success).toBe(true);
+    expect(shot(events).success).toBe(true);
+    expect(shot(events).outputSample[0].image).toBeUndefined();
+    expect(shot(events).outputSample[0]).toMatchObject({ type: 'png' });
+  });
+
+  it('does not keep an oversized capture, but the step still succeeds', async () => {
+    (config as { ARTIFACT_MAX_BYTES: number }).ARTIFACT_MAX_BYTES = 4;
+    const { result, events } = await runAndCollect([{ action: 'screenshot', params: {} }]);
+    expect(result.success).toBe(true);
+    expect(shot(events).outputSample[0].image).toBeUndefined();
+    expect(await resolveArtifact('tester', 'job-events', 'step-1.png')).toBeNull();
+  });
+});
+

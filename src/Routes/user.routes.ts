@@ -23,6 +23,7 @@ import {
 import { isVipUser } from '../utils/helpers';
 import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValidWorkflowId } from '../utils/redis-keys';
 import { readJobFile, readPartialJobFile } from '../services/job.service';
+import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
 import { WorkflowStorage } from '../core/WorkflowStorage';
 import type { AuthenticatedRequest } from '../middleware/auth';
@@ -799,6 +800,35 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         jobs: list
       });
 
+    } catch (e: unknown) {
+      const error = e as Error;
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ══════════════════════════════════════════
+  // GET /job/:userId/:jobId/artifact/:file - an image a step saved
+  // (today: screenshots).
+  //
+  // Auth: mounted under the same API-key middleware as every /job route, and
+  // that middleware's strict user binding already refuses a key that names a
+  // different :userId. The name is then matched against a closed pattern and
+  // re-checked for containment (core/JobArtifacts).
+  // ══════════════════════════════════════════
+  router.get('/job/:userId/:jobId/artifact/:file', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const found = await resolveArtifact(userId, String(req.params.jobId), String(req.params.file));
+      if (!found) return res.status(404).json({ success: false, error: 'Artifact not found' });
+
+      res.setHeader('Content-Type', found.mimeType);
+      res.setHeader('Content-Length', String(found.size));
+      // Only images we wrote ourselves are ever served, but stay strict anyway:
+      // no sniffing, and never let it be framed or executed as a document.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; sandbox");
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.sendFile(found.path);
     } catch (e: unknown) {
       const error = e as Error;
       res.status(500).json({ success: false, error: error.message });

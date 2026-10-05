@@ -20,11 +20,13 @@
  * Exposes window.RunState = {
  *   create(), applyEvent(state, ev), reset(state),
  *   stepStatus(state, index1), stepAt(state, index1),
- *   nodeStatusMap(state), counts(state), isTerminal(state)
+ *   nodeStatusMap(state), counts(state), isTerminal(state),
+ *   markStopped(state), outcome(state)
  * }
  * `state` shape:
  *   {
- *     phase: 'idle'|'running'|'done'|'error',
+ *     phase: 'idle'|'running'|'done'|'error'|'stopped',
+ *     variables: { [name]: string },   // runtime preview, from step.done.data.variables
  *     jobId: string|null,
  *     startedAt: number|null, finishedAt: number|null, durationMs: number|null,
  *     error: string|null,
@@ -44,6 +46,15 @@
 
   function now() { return Date.now(); }
 
+  // The server stamps every event (`ev.ts`, ISO). A log line must show WHEN IT
+  // HAPPENED, not when the browser got round to receiving it (replay after a
+  // reconnect delivers old events all at once).
+  var evTime = null;
+  function eventTime(ev) {
+    var n = ev && ev.ts ? Date.parse(ev.ts) : NaN;
+    return isNaN(n) ? null : n;
+  }
+
   function create() {
     return {
       phase: 'idle',
@@ -55,6 +66,7 @@
       steps: {},
       order: [],
       log: [],
+      variables: {},
     };
   }
 
@@ -65,7 +77,7 @@
   }
 
   function pushLog(state, entry) {
-    entry.t = entry.t || now();
+    entry.t = entry.t || evTime || now();
     state.log.push(entry);
     if (state.log.length > LOG_CAP) state.log.splice(0, state.log.length - LOG_CAP);
   }
@@ -101,6 +113,7 @@
     if (!ev || !ev.type) return state;
     var d = ev.data || {};
     var type = ev.type;
+    evTime = eventTime(ev);
 
     switch (type) {
       case 'job.start': {
@@ -132,6 +145,7 @@
         sd.durationMs = (d.durationMs != null) ? d.durationMs : sd.durationMs;
         sd.finishedAt = now();
         if (sd.status === 'error' && !sd.error) sd.error = d.error || d.message || 'failed';
+        if (d.variables && typeof d.variables === 'object') state.variables = d.variables;
         pushLog(state, { type: type, index: d.index, action: d.action, text: 'step done' });
         break;
       }
@@ -152,12 +166,26 @@
         break;
       }
       case 'job.error': {
-        state.phase = 'error';
+        // A deliberate cancel is NOT a failure: say "Stopped", not "Error".
+        // (quota_exhausted and every other reason stay real errors.)
+        state.phase = (d.reason === 'cancelled') ? 'stopped' : 'error';
         state.finishedAt = now();
         state.error = d.message || d.reason || 'failed';
+        if (state.phase === 'stopped') closeRunningSteps(state);
         state.durationMs = (d.durationMs != null) ? d.durationMs
           : (state.startedAt ? state.finishedAt - state.startedAt : null);
         pushLog(state, { type: type, text: state.error });
+        break;
+      }
+      case 'step.retry': {
+        pushLog(state, { type: type, index: d.index, action: d.action,
+          text: 'retry ' + (d.attempt != null ? d.attempt : '?') + '/' + (d.maxTries != null ? d.maxTries : '?') +
+            (d.error ? ': ' + d.error : '') });
+        break;
+      }
+      case 'step.path': {
+        pushLog(state, { type: type, index: d.index, action: d.action,
+          text: 'path ' + (d.name || d.path || '') });
         break;
       }
       case 'log': {
@@ -170,6 +198,43 @@
       }
     }
     return state;
+  }
+
+  // A step still "running" when the run is stopped will never get its
+  // step.done; leaving it spinning would make the canvas lie.
+  function closeRunningSteps(state) {
+    state.order.forEach(function (idx1) {
+      var s = state.steps[String(idx1)];
+      if (s && s.status === 'running') {
+        s.status = 'stopped';
+        if (s.finishedAt == null) s.finishedAt = now();
+      }
+    });
+  }
+
+  // The user pressed Stop (client side). Idempotent; only a RUNNING run can be
+  // stopped, so a finished run keeps its true result.
+  function markStopped(state) {
+    if (!state || state.phase !== 'running') return state;
+    state.phase = 'stopped';
+    state.finishedAt = now();
+    if (state.startedAt != null) state.durationMs = state.finishedAt - state.startedAt;
+    closeRunningSteps(state);
+    pushLog(state, { type: 'job.stopped', text: 'stopped by user' });
+    return state;
+  }
+
+  // The ONE honest label for a run. `done` only means "the job finished":
+  // under continueOnFail steps may have failed on the way, and that is not a
+  // clean "Success".
+  //   idle | running | success | partial | error | stopped
+  function outcome(state) {
+    if (!state) return 'idle';
+    if (state.phase === 'running') return 'running';
+    if (state.phase === 'error') return 'error';
+    if (state.phase === 'stopped') return 'stopped';
+    if (state.phase === 'done') return counts(state).error > 0 ? 'partial' : 'success';
+    return 'idle';
   }
 
   // ---- selectors ------------------------------------------------------------
@@ -208,7 +273,7 @@
   }
 
   function isTerminal(state) {
-    return !!state && (state.phase === 'done' || state.phase === 'error');
+    return !!state && (state.phase === 'done' || state.phase === 'error' || state.phase === 'stopped');
   }
 
   window.RunState = {
@@ -220,5 +285,7 @@
     nodeStatusMap: nodeStatusMap,
     counts: counts,
     isTerminal: isTerminal,
+    markStopped: markStopped,
+    outcome: outcome,
   };
 })();
