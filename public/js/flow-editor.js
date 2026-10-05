@@ -1759,11 +1759,44 @@
       col.appendChild(empty);
       return;
     }
+    // Screenshots: an item may carry { image: { url } } (see core/JobArtifacts).
+    // Show the picture itself - the JSON below only names it.
+    items.forEach(function (it) {
+      var img = it && it.image;
+      if (img && window.API && window.API.isArtifactUrl && window.API.isArtifactUrl(img.url)) {
+        col.appendChild(buildArtifactImage(img.url));
+      }
+    });
     var pre = document.createElement('pre');
     pre.className = 'ndv-json';
     try { pre.textContent = JSON.stringify(items, null, 2).slice(0, 4000); }
     catch (e) { pre.textContent = String(items); }
     col.appendChild(pre);
+  }
+
+  // A thumbnail that opens full size in a new tab. Loaded with the API key
+  // (an <img src> cannot send one), so it shows a placeholder until ready and
+  // an honest message if the file is gone (swept, or the run was on another box).
+  function buildArtifactImage(url) {
+    var wrap = document.createElement('a');
+    wrap.className = 'ndv-shot';
+    wrap.target = '_blank';
+    wrap.rel = 'noopener';
+    var status = document.createElement('span');
+    status.className = 'muted small';
+    status.textContent = t('ndv.shotLoading');
+    wrap.appendChild(status);
+    window.API.loadArtifactImage(url).then(function (blobUrl) {
+      wrap.href = blobUrl;
+      var im = document.createElement('img');
+      im.className = 'ndv-shot-img';
+      im.alt = t('ndv.shotAlt');
+      im.src = blobUrl;
+      wrap.replaceChild(im, status);
+    }).catch(function () {
+      status.textContent = t('ndv.shotGone');
+    });
+    return wrap;
   }
 
   // Build one parameter control row (rich type + Fixed/Expression toggle).

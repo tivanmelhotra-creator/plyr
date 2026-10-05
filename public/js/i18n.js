@@ -1078,6 +1078,9 @@
       'ndv.output': 'خروجی',
       'ndv.noInput': 'هنوز داده‌ای از نود قبلی وجود ندارد. پس از اجرا اینجا نمایش داده می‌شود (می‌توانید فیلدها را بکشید).',
       'ndv.noOutput': 'هنوز خروجی‌ای ثبت نشده است. این نود را اجرا کنید تا نتیجه اینجا دیده شود.',
+      'ndv.shotLoading': 'در حال بارگذاری تصویر…',
+      'ndv.shotAlt': 'اسکرین‌شات این مرحله',
+      'ndv.shotGone': 'تصویر دیگر در دسترس نیست (پاک شده یا اجرا روی سرور دیگری بوده).',
       // NDV modal + Aria shell + Condition Builder
       'ndv.runNode': 'اجرای نود',
       'ndv.close': 'بستن',
@@ -2847,6 +2850,9 @@
       'ndv.output': 'OUTPUT',
       'ndv.noInput': 'No data from the previous node yet. It appears here after a run (drag fields into expressions).',
       'ndv.noOutput': 'No output captured yet. Run this node to see its result here.',
+      'ndv.shotLoading': 'Loading image…',
+      'ndv.shotAlt': 'Screenshot of this step',
+      'ndv.shotGone': 'The image is no longer available (cleaned up, or the run was on another server).',
       // NDV modal + Aria shell + Condition Builder
       'ndv.runNode': 'Run node',
       'ndv.open': 'Open settings',
