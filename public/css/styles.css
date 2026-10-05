@@ -6230,6 +6230,21 @@ body.route-fullbleed .fe-mm-restore {
 }
 .wfm-ed-status.dirty { color: var(--primary); }
 .wfm-ed-status.err { color: var(--danger); }
+/* ---- the Local Browser switch: the workflow editor's drawer only -----------
+ * One row under the drawer's head: a dot (grey = off, green = running, orange
+ * while a press is in flight), the state in words, and ONE button. The notepad
+ * takes the whole drawer while a file is open, so the row steps aside then. */
+.wfm-browser {
+  display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;
+  padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border);
+  font-size: 0.78rem; color: var(--text);
+}
+.wfm-br-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-dim); }
+.wfm-browser.is-on .wfm-br-dot { background: var(--success, #3fb950); }
+.wfm-browser.is-busy .wfm-br-dot { background: var(--primary); }
+.wfm-br-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfm-br-btn { flex: none; }
+.wfm-drawer.is-editing .wfm-browser { display: none; }
 /* Batch delete only makes sense once something is picked, and it must never
  * sit at the same weight as Select — it destroys, Select delivers. */
 .wfm-delsel { display: none; }

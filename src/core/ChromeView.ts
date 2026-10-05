@@ -3156,7 +3156,10 @@ function ask(text, initial) {
 
 function isTestPrompt() {
   try {
-    return typeof prompt === 'function' && !/\{\s*\[native code\]\s*\}/.test(Function.prototype.toString.call(prompt));
+    // Plain string test on purpose: this whole page is ONE template literal, which
+    // drops the backslash from regex escapes before the browser ever sees them.
+    return typeof prompt === 'function' &&
+      Function.prototype.toString.call(prompt).indexOf('[native code]') === -1;
   } catch (e) { return false; }
 }
 

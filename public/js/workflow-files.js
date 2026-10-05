@@ -65,6 +65,15 @@
    is answered), and the row menu's Edit opens it instead. Binary files never
    reach it.
 
+   A LOCAL BROWSER SWITCH
+   ----------------------
+   In the workflow editor's drawer (browseOnly) one button shows whether the
+   Local Browser is up and turns it on or off: off by default, "Turn on" starts
+   it and shows it in a new tab (the same remote view the element picker opens,
+   but without the picker's "Connect this browser to a field?" alert), "Turn
+   off" closes it. The state is read from GET /browser/real/health, never
+   remembered. See browserRow() and toggleBrowser().
+
    CSP-safe: no inline handlers, no eval, textContent for every name.
    ============================================ */
 (function () {
@@ -270,6 +279,7 @@
     if (!panel) return;
     var s = state;
     closeMenu();
+    stopBrowserWatch(s);
     if (panel.parentNode) panel.parentNode.removeChild(panel);
     panel = null;
     state = null;
@@ -1612,6 +1622,157 @@
       });
   }
 
+  // ── The Local Browser switch (the workflow editor's drawer only) ────────
+  //
+  // ONE button in the drawer that says whether the Local Browser is up, and
+  // turns it on or off. Default is OFF: nothing is started until it is pressed.
+  //
+  //   off -> [Turn on]   starts the Local Browser and shows it in a NEW tab, the
+  //                      same remote view the element picker opens, but WITHOUT
+  //                      the picker's "Connect this browser to a field?" alert:
+  //                      that alert belongs to a pending field request, and this
+  //                      path never makes one (it calls openRealBrowser(), not
+  //                      requestPick()).
+  //   on  -> [Turn off]  closes the browser (POST /browser/real/close, the same
+  //                      close the picker uses).
+  //
+  // The state is READ from the server (GET /browser/real/health -> `running`),
+  // never remembered here, so a browser started or stopped elsewhere is shown as
+  // it is. It is read on open, after every press, and every few seconds while
+  // the drawer is up. Turning off uses /browser/real/close and NOT /browser/stop:
+  // Stop also switches self-healing off, and a later "Turn on" would then be
+  // refused.
+  //
+  // Only offered where the page can open the viewer (BrowserView, from
+  // browser-view.js): a switch that cannot do its job is worse than none.
+
+  var BROWSER_POLL_MS = 6000;
+
+  function canOpenBrowser() {
+    return !!(window.BrowserView && typeof window.BrowserView.openRealBrowser === 'function');
+  }
+
+  /** The switch's row, appended to the drawer; null when the page cannot open the viewer. */
+  function browserRow(into) {
+    if (!canOpenBrowser()) return null;
+    var el = document.createElement('div');
+    el.className = 'wfm-browser is-off';
+    var dot = document.createElement('span');
+    dot.className = 'wfm-br-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    el.appendChild(dot);
+    var label = document.createElement('span');
+    label.className = 'wfm-br-label';
+    el.appendChild(label);
+    var grow = document.createElement('span');
+    grow.className = 'wfm-grow';
+    el.appendChild(grow);
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm wfm-br-btn';
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      void toggleBrowser();
+    });
+    el.appendChild(btn);
+    into.appendChild(el);
+    return { el: el, label: label, btn: btn };
+  }
+
+  /** Draw the row from state.browser = { running, busy: '' | 'start' | 'stop' }. */
+  function paintBrowser() {
+    if (!state || !state.browser || !state.els.browser) return;
+    var b = state.browser;
+    var ui = state.els.browser;
+    ui.el.classList.toggle('is-on', b.running);
+    ui.el.classList.toggle('is-off', !b.running);
+    ui.el.classList.toggle('is-busy', !!b.busy);
+    ui.label.textContent = t('wfm.browserLabel', 'Local Browser') + ' \u00b7 ' +
+      (b.running ? t('wfm.browserOn', 'Running') : t('wfm.browserOff', 'Off'));
+    ui.btn.disabled = !!b.busy;
+    ui.btn.classList.toggle('btn-primary', !b.running);
+    ui.btn.classList.toggle('btn-ghost', b.running);
+    ui.btn.textContent = b.busy === 'start' ? t('wfm.browserStarting', 'Starting\u2026')
+      : b.busy === 'stop' ? t('wfm.browserStopping', 'Stopping\u2026')
+      : b.running ? t('wfm.browserStop', 'Turn off')
+      : t('wfm.browserStart', 'Turn on');
+  }
+
+  /** Ask the server whether the Local Browser is up, and repaint. Never rejects. */
+  function readBrowser() {
+    if (!state || !state.browser) return Promise.resolve();
+    var s = state;
+    return call('/browser/real/health')
+      .then(function (d) {
+        // A press in flight owns the display until it finishes.
+        if (state !== s || s.browser.busy) return;
+        s.browser.running = !!(d && d.running);
+        paintBrowser();
+      })
+      .catch(function () { /* a status we cannot read changes nothing on screen */ });
+  }
+
+  function startBrowserWatch() {
+    if (!state || !state.els.browser) return;
+    var s = state;
+    s.browser = { running: false, busy: '' };
+    paintBrowser();
+    void readBrowser();
+    s.browserTimer = setInterval(function () {
+      if (state !== s) { stopBrowserWatch(s); return; }
+      void readBrowser();
+    }, BROWSER_POLL_MS);
+  }
+
+  function stopBrowserWatch(s) {
+    if (s && s.browserTimer) {
+      try { clearInterval(s.browserTimer); } catch (e) { /* fine */ }
+      s.browserTimer = 0;
+    }
+  }
+
+  /**
+   * The press. ON opens the viewer tab in THIS click (a popup opened after an
+   * await would be blocked), through the same openRealBrowser() the picker
+   * uses, so the cold-start retries, the workflow binding and the viewer URL
+   * are exactly the ones that already work. OFF is one POST.
+   */
+  function toggleBrowser() {
+    if (!state || !state.browser || state.browser.busy) return Promise.resolve();
+    var s = state;
+    var b = s.browser;
+    var wasRunning = b.running;
+
+    function done(ok, err) {
+      if (state !== s) return null;
+      b.busy = '';
+      if (ok) b.running = !wasRunning;
+      paintBrowser();
+      if (!ok) say((err && err.message) || t('wfm.browserFailed', 'Could not change the Local Browser.'), true);
+      // Whatever the press said, the server has the last word.
+      return readBrowser();
+    }
+
+    b.busy = wasRunning ? 'stop' : 'start';
+    paintBrowser();
+
+    if (wasRunning) {
+      return call('/browser/real/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      }).then(function () { return done(true); }, function (e) { return done(false, e); });
+    }
+
+    var started;
+    try {
+      started = window.BrowserView.openRealBrowser('', null, { workflowId: s.workflowId });
+    } catch (e) {
+      started = Promise.reject(e);
+    }
+    return Promise.resolve(started).then(function () { return done(true); }, function (e) { return done(false, e); });
+  }
+
   /** Start the operator's own native picker, targeting `into`. */
   function askForUpload(into) {
     if (!state) return;
@@ -1890,7 +2051,7 @@
     return b;
   }
 
-  function build(host) {
+  function build(host, opts) {
     var root = document.createElement('div');
     // `is-opening` for one frame, then removed: the drawer slides in from the
     // side it is docked to rather than appearing, which is the only cue that
@@ -1935,6 +2096,10 @@
     x.addEventListener('click', function () { close('closed'); });
     head.appendChild(x);
     root.appendChild(head);
+
+    // ── Local Browser switch: the workflow editor's drawer only. browserRow()
+    // returns null on a page that cannot open the viewer, so no dead button.
+    var browserEls = (opts && opts.browseOnly) ? browserRow(root) : null;
 
     // ── toolbar: the five actions from upload-ui/, icon-only
     var bar = document.createElement('div');
@@ -2157,7 +2322,8 @@
       compressSel: footCompress, moveSel: footMove, copySel: footCopy,
       down: down, del: del,
       editor: editor, edName: edNameEl, edText: edTextEl, edGutter: edGutterEl,
-      edSave: edSaveBtn, edStatus: edStatusEl, edMeta: edMetaEl
+      edSave: edSaveBtn, edStatus: edStatusEl, edMeta: edMetaEl,
+      browser: browserEls
     };
   }
 
@@ -2206,7 +2372,7 @@
       return false;
     }
     var host = o.host || document.body;
-    var els = build(host);
+    var els = build(host, o);
     panel = els.root;
     // No page is asking for a file (the editor): hide Select, which could only
     // ever end in "No live browser is open". Done with a class, not `hidden`,
@@ -2233,6 +2399,7 @@
     els.foot.classList.toggle('is-multi', !!state.multiple);
     render();
     void expand('');
+    startBrowserWatch();
     // Let the class that starts the slide be painted before it is removed.
     try {
       setTimeout(function () { if (panel === els.root) els.root.classList.remove('is-opening'); }, 0);
