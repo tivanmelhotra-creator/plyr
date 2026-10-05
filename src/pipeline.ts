@@ -33,6 +33,7 @@ import {
 import { browserModes } from './core/BrowserMode';
 import { saveArtifact, screenshotFileName } from './core/JobArtifacts';
 import { acquireContext } from './core/BrowserAdapter';
+import { Desktop } from './core/Desktop';
 import { withUtf8Locale } from './core/BrowserProfile';
 import {
   emptyStream,
@@ -675,6 +676,20 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
   log('[BROWSER] Launching new VIP browser...');
 
+  // A VISIBLE browser (Live browser on) needs an X display. On a server there
+  // is none until we start one, and without it Playwright dies with the opaque
+  // "Missing X server or $DISPLAY". Same degrade-never-throw rule as RealChrome:
+  // if provisioning is impossible a display may still exist, and the launch
+  // error below then says what is missing.
+  if (!headless) {
+    try {
+      await Desktop.ensureDisplay();
+      log(`[BROWSER] Live browser: using display ${process.env.DISPLAY || '(default)'}`);
+    } catch (err: any) {
+      log(`[BROWSER] Live browser requested but no display could be prepared automatically: ${err.message}`);
+    }
+  }
+
   try {
     const browserContext = await chromium.launchPersistentContext(profileDir, {
       headless,
@@ -809,6 +824,11 @@ async function ensureFreeContext(context: AutomationContext): Promise<void> {
     }
   }
 
+  // Say so instead of silently ignoring the choice: free-tier jobs share one
+  // headless pool, so "Live browser" cannot apply to them.
+  if (context.headless === false) {
+    log('[BROWSER] Live browser is not available on this plan (shared headless pool) - running headless.');
+  }
   log('[BROWSER] Acquiring Free Context...');
 
   let browserContext: any;

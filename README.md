@@ -1,4 +1,4 @@
-# automation-backend (v37 → بازیابی و توسعه)
+# Plyr (پیش‌تر automation-backend v37)
 
 Backend اتوماسیون مرورگر مبتنی بر **Node.js + TypeScript** — **رایگان، متن‌باز، و Self-Hosted**.
 
@@ -296,7 +296,7 @@ pm2 start ecosystem.config.js
 بدون هیچ دانشِ قبلی از اینکه روی آن ماشین چه چیزی دستی نصب شده:
 
 ```bash
-git clone <repo> && cd automation-backend-v37
+git clone <repo> && cd plyr
 npm ci                          # همهٔ وابستگی‌ها + مرورگر، از روی lockfile
 cp .env.example .env            # فقط REDIS_URL و API_TOKEN را ست کنید
 echo "APP_ENV=server" >> .env   # profile سرور: headed + Xvfb + افزونه‌ها
