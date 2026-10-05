@@ -6,7 +6,10 @@
 > document disagree, **this file wins** — and the other document should be
 > corrected or deleted.
 >
-> Package: `automation-backend-v37` · version `37.1.0` · license MIT
+> Names: the product and npm package are **Plyr** (`plyr`); the repository was
+> formerly called `automation-backend` / `automation-backend-v37`; the editor UI
+> shows the brand **Aria Automate** (a locked design decision, see `docs/uiux/`).
+> Version `37.1.0` · license MIT
 
 ---
 

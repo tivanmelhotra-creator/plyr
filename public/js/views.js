@@ -943,6 +943,15 @@
             // ONE slot, TWO states: orange ▶ Test Workflow while idle, solid
             // red ■ Stop while a run is live (that is why the two reference
             // images disagree about this button — they show the two states).
+            // Run-state switches. Active = the workflow's triggers/schedules may
+            // run it (a saved workflow only); Live browser = Test Workflow (and
+            // the saved run) opens a VISIBLE browser instead of headless.
+            '<button type="button" class="al-switch fe-toggle" id="fe-active" role="switch" aria-checked="false">' +
+              '<span class="al-sw-label">' + esc(t('fe.activeLabel')) + '</span>' +
+              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
+            '<button type="button" class="al-switch fe-toggle" id="fe-live" role="switch" aria-checked="false">' +
+              '<span class="al-sw-label">' + esc(t('fe.liveLabel')) + '</span>' +
+              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
             '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
             '<button class="fe-icobtn" id="fe-bell" title="' + esc(t('sh.notifications')) + '" aria-label="' + esc(t('sh.notifications')) + '">' + IC('bell', 15) + '</button>' +
             '<button class="fe-icobtn" id="fe-gear" title="' + esc(t('sh.settings')) + '" aria-label="' + esc(t('sh.settings')) + '">' + IC('settings', 15) + '</button>' +
@@ -1191,6 +1200,7 @@
       }
       refreshStatusBar();
       reconcileFiles();
+      if (typeof refreshToggles === 'function') refreshToggles();
     }
     refreshWfLabel();
 
@@ -1243,7 +1253,7 @@
       btn.textContent = t('fe.running');
       resultEl.innerHTML = '';
 
-      API.runFlow({ userId: uid, steps: steps, headless: true })
+      API.runFlow({ userId: uid, steps: steps, headless: !wantLiveBrowser() })
         .then(function (data) {
           resultEl.innerHTML =
             '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('fe.queued') +
@@ -1782,6 +1792,71 @@
           '<span class="fe-ri-val">' + esc(String(rs.variables || 0)) + '</span></span>';
     }
 
+    // ---- Active / Live browser switches ---------------------------------
+    // Active:   server flag, saved workflows only (a draft has no record to
+    //           flip). It does NOT affect "Test Workflow" -- a manual test
+    //           always runs, like n8n; it gates triggers/schedules/API runs.
+    // Live:     server flag for a saved workflow; a session-local choice for a
+    //           draft. Test Workflow sends `headless: !live`.
+    var activeBtn = root.querySelector('#fe-active');
+    var liveBtn = root.querySelector('#fe-live');
+    var draftLive = false;
+    var toggleBusy = false;
+    function savedWf() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      return cur && cur.id ? cur : null;
+    }
+    function wantLiveBrowser() {
+      var cur = savedWf();
+      return cur ? cur.liveBrowser === true : draftLive;
+    }
+    function paintSwitch(btn, on, disabled, title) {
+      if (!btn) return;
+      btn.classList.toggle('on', !!on);
+      btn.setAttribute('aria-checked', on ? 'true' : 'false');
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.disabled = !!disabled;
+      btn.title = title || '';
+    }
+    function refreshToggles() {
+      var cur = savedWf();
+      var busy = toggleBusy;
+      paintSwitch(activeBtn, cur ? cur.active !== false : false, !cur || busy,
+        t(cur ? (cur.active !== false ? 'fe.activeOnHint' : 'fe.activeOffHint') : 'fe.needSaved'));
+      paintSwitch(liveBtn, wantLiveBrowser(), busy, t('fe.liveHint'));
+    }
+    function flipState(patch) {
+      var cur = savedWf();
+      var uid = effectiveUserId();
+      if (!cur || !uid || toggleBusy) return;
+      toggleBusy = true;
+      refreshToggles();
+      API.setWorkflowState(uid, cur.id, patch)
+        .then(function (data) {
+          var w = data && data.workflow ? data.workflow : null;
+          if (w && FE.patchCurrentWorkflow) {
+            FE.patchCurrentWorkflow({ active: w.active, liveBrowser: w.liveBrowser });
+          }
+          var key = Object.prototype.hasOwnProperty.call(patch, 'active')
+            ? (patch.active ? 'ws.activated' : 'ws.deactivated')
+            : (patch.liveBrowser ? 'ws.lbOn' : 'ws.lbOff');
+          U().toast(t(key), 'success');
+        })
+        .catch(function (err) {
+          U().toast((err && err.message) || t('ws.stateFailed'), 'error');
+        })
+        .then(function () { toggleBusy = false; refreshToggles(); refreshRunInfo(); });
+    }
+    if (activeBtn) activeBtn.addEventListener('click', function () {
+      var cur = savedWf();
+      if (cur) flipState({ active: !(cur.active !== false) });
+    });
+    if (liveBtn) liveBtn.addEventListener('click', function () {
+      var cur = savedWf();
+      if (cur) flipState({ liveBrowser: !(cur.liveBrowser === true) });
+      else { draftLive = !draftLive; refreshToggles(); }
+    });
+
     // ---- Run / Stop: ONE slot, TWO states -------------------------------
     // This is why the two reference images disagree about the button: the
     // launcher screen was captured mid-run (solid red Stop), the other while
@@ -1817,6 +1892,7 @@
       if (olOpen) renderOutline();
       refreshRunInfo();
       refreshRunSlot();
+      refreshToggles();
     }
     var offChange = FE.onChange ? FE.onChange(refreshShell) : null;
     // The run panel republishes its state whenever a live event lands, so the

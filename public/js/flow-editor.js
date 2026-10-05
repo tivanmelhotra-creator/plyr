@@ -424,6 +424,8 @@
         version: meta.version,
         headless: meta.headless,
         webhookUrl: meta.webhookUrl,
+        active: meta.active,
+        liveBrowser: meta.liveBrowser,
       };
     } catch (e) { return null; }
   }
@@ -2430,6 +2432,13 @@
     trigger_schedule: 'nk.scheduleTrigger',
     trigger_telegram: 'nk.telegramTrigger',
   };
+  // Triggers that wait for an outside event. In a manual run they are skipped
+  // (pass-through); the value is the i18n key of the note shown on the node.
+  var EVENT_TRIGGERS = {
+    trigger_schedule: 'ndv.trigNoteSchedule',
+    trigger_webhook: 'ndv.trigNoteWebhook',
+    trigger_telegram: 'ndv.trigNoteTelegram',
+  };
   /** Human name of an action id, falling back to the id itself. */
   function actionLabel(actionId) {
     var key = NODE_DISPLAY_NAMES[actionId];
@@ -2535,6 +2544,17 @@
 
     var ndv = document.createElement('div');
     ndv.className = 'ndv';
+
+    // Event-driven triggers do nothing in a manual run: Test Workflow starts the
+    // chain straight away (Manual Trigger data, else one empty item). Say so on
+    // the node itself instead of letting a cron/webhook look like it was tested.
+    if (EVENT_TRIGGERS[node.action]) {
+      var trigNote = document.createElement('div');
+      trigNote.className = 'ndv-note ndv-trigger-note';
+      trigNote.setAttribute('role', 'note');
+      trigNote.textContent = t(EVENT_TRIGGERS[node.action]);
+      body.appendChild(trigNote);
+    }
 
     var cols = document.createElement('div');
     cols.className = 'ndv-cols';
@@ -5138,6 +5158,10 @@
             version: meta.version,
             headless: meta.headless,
             webhookUrl: meta.webhookUrl,
+            // The two run-state switches live on the server record; keep them
+            // so the editor header can show (and flip) the REAL values.
+            active: meta.active,
+            liveBrowser: meta.liveBrowser,
           }
         : null;
       loadSteps(steps || []);
@@ -5159,6 +5183,13 @@
       if (dom) renderAll();
     },
     getCurrentWorkflow: function () { return currentWorkflow; },
+    // Merge server-confirmed fields (e.g. {active, liveBrowser}) into the open
+    // workflow's identity WITHOUT marking the graph dirty or bumping version.
+    patchCurrentWorkflow: function (fields) {
+      if (!currentWorkflow || !fields) return false;
+      Object.keys(fields).forEach(function (k) { currentWorkflow[k] = fields[k]; });
+      return true;
+    },
     setCurrentWorkflow: function (meta) { markPersisted(meta); },
     autosaveNow: function () { return autosaveRequest(); },
     onAutosaveStatus: function (fn) {

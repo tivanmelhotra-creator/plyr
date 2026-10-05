@@ -1,5 +1,5 @@
 {
-  "name": "automation-backend-v37",
+  "name": "plyr",
   "version": "37.1.0",
   "description": "Enterprise Automation Backend — v37.1 — Flow Engine & Secured",
   "main": "dist/index.js",
