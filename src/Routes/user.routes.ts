@@ -26,7 +26,8 @@ import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
 import { WorkflowStorage } from '../core/WorkflowStorage';
-import type { AuthenticatedRequest } from '../middleware/auth';
+import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
+import type { JobWorkspace } from '../core/WorkflowOutputs';
 
 /**
  * Give a freshly saved workflow its file workspace NOW -- `uploads/` and
@@ -95,6 +96,29 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   const router = Router();
   const { queue, connection, profileManager, quotaManager } = deps;
   const workflowService = new WorkflowService(connection);
+
+  /**
+   * Whose workspace, and is it really theirs? Mirrors workflow-files.routes
+   * (`resolveOwner`): in single-user mode the workspace owner is the fixed
+   * local user, otherwise the API-key-bound user. The workflow must EXIST for
+   * that owner -- the same gate every Workflow Files verb uses -- so naming
+   * somebody else's workflow id yields no workspace at all rather than a write
+   * into their files. Returns undefined (never throws): a run without a
+   * workspace still works, its outputs just stay in the per-job store.
+   */
+  function workspaceFor(userId: string, workflowId: string): JobWorkspace {
+    return { owner: config.IS_SINGLE_USER ? SINGLE_USER_ID : userId, workflowId };
+  }
+  async function resolveJobWorkspace(userId: string, workflowId: unknown): Promise<JobWorkspace | undefined> {
+    if (typeof workflowId !== 'string' || !isValidWorkflowId(workflowId)) return undefined;
+    try {
+      const ws = workspaceFor(userId, workflowId);
+      const wf = await workflowService.get(ws.owner, workflowId);
+      return wf ? ws : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   // ══════════════════════
   // GET /me - identity probe for the UI login flow.
@@ -191,10 +215,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
       }
 
+      // A run that names a saved workflow files its node outputs in THAT
+      // workflow's workspace (only if the caller really owns it).
+      const workspace = await resolveJobWorkspace(userId, body.workflowId);
+
       // Add job to queue
       const job = await queue.add(
         'run',
-        { userId, steps, headless, webhookUrl, triggerData },
+        { userId, steps, headless, webhookUrl, triggerData, ...(workspace ? { __workspace: workspace } : {}) },
         { priority: plan.priority }
       );
 
@@ -326,9 +354,15 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
       }
 
+      // Output files only: still NO `__workflowId`, so a node test is not
+      // filed as an execution. The workspace is where its files belong.
+      const nodeWorkspace = await resolveJobWorkspace(userId, body.workflowId);
       const job = await queue.add(
         'run',
-        { userId, steps, headless, triggerData, __runNode: true, __nodeIndex: nodeIndex },
+        {
+          userId, steps, headless, triggerData, __runNode: true, __nodeIndex: nodeIndex,
+          ...(nodeWorkspace ? { __workspace: nodeWorkspace } : {}),
+        },
         { priority: plan.priority }
       );
       const activeKey = getUserActiveJobsKey(userId);
@@ -419,6 +453,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const steps = validateSteps(body.steps, plan);
       const webhookUrl = validateWebhookUrl(req.body.webhookUrl);
 
+      // Scheduled runs file their node outputs in the workflow's workspace too.
+      const scheduleWorkspace = await resolveJobWorkspace(userId, body.workflowId);
+
       // ── Create Schedule ID ──
       const scheduleId = `${SCHEDULE_PREFIX}:${userId}:${Date.now()}:${scheduleName}`;
 
@@ -432,7 +469,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           webhookUrl,
           __scheduled: true,
           __scheduleName: scheduleName,
-          __scheduleId: scheduleId
+          __scheduleId: scheduleId,
+          ...(scheduleWorkspace ? { __workspace: scheduleWorkspace } : {})
         },
         {
           priority: plan.priority,
@@ -1176,7 +1214,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Enqueue, tagging the job with its source workflow for traceability.
       const job = await queue.add(
         'run',
-        { userId, steps, headless, webhookUrl, triggerData, __workflowId: workflowId, __workflowVersion: wf.version },
+        {
+          userId, steps, headless, webhookUrl, triggerData,
+          __workflowId: workflowId, __workflowVersion: wf.version,
+          // Verified above: `wf` was fetched for this very user.
+          __workspace: workspaceFor(userId, workflowId),
+        },
         { priority: plan.priority }
       );
       await connection.sadd(activeKey, job.id!);

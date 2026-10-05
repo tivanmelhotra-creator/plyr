@@ -274,17 +274,44 @@
     return fetch(path, Object.assign({}, opts, { headers: headers, credentials: 'same-origin' }));
   }
 
-  // ---- step artifacts (screenshots) -----------------------------------------
-  // The server keeps an image a step produced and hands out a RELATIVE url:
-  //   /job/<user>/<job>/artifact/step-<n>.png
+  // ---- node output images (screenshots) --------------------------------------
+  // A node's image is referenced by a RELATIVE url of exactly one of two shapes:
+  //
+  //   WORKFLOW WORKSPACE (a run of a saved workflow - the normal case):
+  //     /browser/workflow-files/<wf_id>/download?path=downloads/<NN-node>/<file>.png&userId=<u>
+  //   PER-JOB STORE (an unsaved canvas / ad-hoc run - no workspace exists):
+  //     /job/<user>/<job>/artifact/step-<n>.png
+  //
   // An <img src> cannot send the API key, so the bytes are fetched with the
-  // key and shown through a blob: URL. Only that exact url shape is accepted:
-  // the key must never be sent to anything a workflow's output merely NAMED.
-  var ARTIFACT_URL = /^\/job\/[^/?#]+\/[^/?#]+\/artifact\/step-\d{1,6}\.(png|jpg)$/;
-  var artifactCache = {};   // url -> Promise<blob: url>
+  // key and handed to the <img> as a data: URL. NOT a blob: URL: the page's
+  // Content-Security-Policy is `img-src 'self' data:`, and a blob: source is
+  // refused by it - which is exactly why the output panel used to show only the
+  // alt text and no picture. Widening the CSP would trade a cosmetic bug for an
+  // exfiltration surface, so the bytes travel as data: instead.
+  //
+  // Only those exact shapes are accepted: the key must never be sent to
+  // anything a workflow's output merely NAMED.
+  var JOB_ARTIFACT_URL = /^\/job\/[^/?#]+\/[^/?#]+\/artifact\/step-\d{1,6}\.(png|jpg)$/;
+  var WORKSPACE_IMAGE_URL = /^\/browser\/workflow-files\/[A-Za-z0-9_-]{1,64}\/download\?path=downloads%2F[A-Za-z0-9_-]{1,60}%2F(?:[A-Za-z0-9._()-]|%(?!2[Ff]|5[Cc])){1,300}\.(png|jpg|jpeg)&userId=[A-Za-z0-9_%-]{1,100}$/i;
+  var artifactCache = {};   // url -> Promise<data: url>
 
   function isArtifactUrl(url) {
-    return typeof url === 'string' && ARTIFACT_URL.test(url);
+    return typeof url === 'string' && (JOB_ARTIFACT_URL.test(url) || WORKSPACE_IMAGE_URL.test(url));
+  }
+
+  // The download route answers application/octet-stream (it is a download), so
+  // the type the <img> needs comes from the file extension we already vetted.
+  function imageMimeOf(url) {
+    return /\.png(&|$)/i.test(url) ? 'image/png' : 'image/jpeg';
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result)); };
+      fr.onerror = function () { reject(fr.error || new Error('read failed')); };
+      fr.readAsDataURL(blob);
+    });
   }
 
   function loadArtifactImage(url) {
@@ -294,7 +321,8 @@
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.blob();
       }).then(function (blob) {
-        return URL.createObjectURL(blob);
+        // Re-type: the download route answers application/octet-stream.
+        return blobToDataUrl(blob.slice(0, blob.size, imageMimeOf(url)));
       });
       // A failed load must be retryable (the file may not be flushed yet).
       artifactCache[url].catch(function () { delete artifactCache[url]; });
@@ -302,7 +330,22 @@
     return artifactCache[url];
   }
 
+  // Browsers refuse a top-level navigation to a data: URL, so "open full size"
+  // converts the bytes to a blob: URL first. A blob: URL opened as a TAB is not
+  // governed by img-src (only <img> loads are), so this is safe and CSP-clean.
+  function openDataUrlInTab(dataUrl) {
+    var m = /^data:([^;,]+);base64,(.*)$/.exec(String(dataUrl || ''));
+    if (!m) return false;
+    var bin = atob(m[2]);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var href = URL.createObjectURL(new Blob([bytes], { type: m[1] }));
+    window.open(href, '_blank', 'noopener');
+    return true;
+  }
+
   window.API = {
+    openDataUrlInTab: openDataUrlInTab,
     isArtifactUrl: isArtifactUrl,
     loadArtifactImage: loadArtifactImage,
     getRaw: getRaw,

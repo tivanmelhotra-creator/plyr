@@ -32,6 +32,13 @@ import {
 // because both end up as an ordinary Playwright BrowserContext.
 import { browserModes } from './core/BrowserMode';
 import { saveArtifact, screenshotFileName } from './core/JobArtifacts';
+import {
+  workspaceOf,
+  saveNodeBytes,
+  saveNodeFileFrom,
+  fileStamp,
+  type NodeFileRef,
+} from './core/WorkflowOutputs';
 import { acquireContext } from './core/BrowserAdapter';
 import { Desktop } from './core/Desktop';
 import { withUtf8Locale } from './core/BrowserProfile';
@@ -1136,6 +1143,51 @@ async function runPipelineImpl(params: {
     });
   };
 
+  // ── Where this run's node OUTPUT FILES go ────────────────────────────────
+  // A run started from a saved workflow carries `job.data.__workspace`
+  // (stamped by the route that verified ownership). Its files then live in the
+  // workflow's own workspace, one folder per node under `downloads/`
+  // (core/WorkflowOutputs). Without it (unsaved canvas, ad-hoc API call) there
+  // is no workspace and screenshots keep using the per-job artifact store.
+  const workspace = workspaceOf((job as { data?: unknown } | undefined)?.data);
+  // Stable node identity = the step's place in the workflow DEFINITION (depth
+  // first), not how many steps happened to run before it. A node inside a loop
+  // therefore keeps ONE folder across iterations and across runs.
+  const nodeSlot = new Map<AutomationStep, number>();
+  {
+    let n = 0;
+    const walk = (list: AutomationStep[] | undefined): void => {
+      if (!Array.isArray(list)) return;
+      for (const st of list) {
+        if (!st || typeof st !== 'object') continue;
+        nodeSlot.set(st, ++n);
+        walk(st.then);
+        walk(st.else);
+        walk(st.steps);
+        for (const p of st.paths ?? []) walk((p as ConditionPath).steps);
+        for (const c of Object.values(st.cases ?? {})) walk(c);
+        walk(st.catch);
+        walk(st.finally);
+      }
+    };
+    walk(steps);
+  }
+  const nodeOf = (st: AutomationStep, fallbackNumber: number) =>
+    ({ stepNumber: nodeSlot.get(st) ?? fallbackNumber, action: st.action });
+  /** A failed workspace write must never fail a step that itself succeeded. */
+  const toWorkspace = async (
+    run: (ws: NonNullable<typeof workspace>) => Promise<NodeFileRef>,
+    label: string
+  ): Promise<NodeFileRef | undefined> => {
+    if (!workspace) return undefined;
+    try {
+      return await run(workspace);
+    } catch (e: any) {
+      log(`[${label}] Could not save into the workflow workspace: ${e.message}`);
+      return undefined;
+    }
+  };
+
   const executeStepGroup = async (
     stepsToRun: AutomationStep[]
   ): Promise<{ break?: boolean; continue?: boolean; return?: boolean; returnValue?: any } | void> => {
@@ -2041,13 +2093,25 @@ async function runPipelineImpl(params: {
           // Keep the image so the panel can SHOW it. Best-effort: a full disk
           // or an oversized capture must never fail a step that succeeded.
           // The step result carries a small reference, never the bytes.
-          let image: { url: string; mimeType: string; size: number } | undefined;
+          let image: Record<string, unknown> | undefined;
           if (buffer.length <= config.ARTIFACT_MAX_BYTES) {
-            try {
-              const ref = await saveArtifact(userId, jobId, screenshotFileName(globalStepNumber, type), buffer);
-              image = { url: ref.url, mimeType: ref.mimeType, size: ref.size };
-            } catch (e: any) {
-              log(`[SCREENSHOT] Could not keep the image for the UI: ${e.message}`);
+            // 1) The workflow's own workspace: downloads/<NN>-screenshot/.
+            const ext = type === 'jpeg' ? 'jpg' : 'png';
+            const saved = await toWorkspace(
+              (ws) => saveNodeBytes(ws, nodeOf(step, globalStepNumber), `screenshot-${fileStamp()}.${ext}`, buffer),
+              'SCREENSHOT'
+            );
+            if (saved) {
+              image = { ...saved, storage: 'workflow' };
+              log(`[SCREENSHOT] Saved to workflow files: ${saved.path}`);
+            } else {
+              // 2) No workspace (or it failed): the per-job store, as before.
+              try {
+                const ref = await saveArtifact(userId, jobId, screenshotFileName(globalStepNumber, type), buffer);
+                image = { url: ref.url, mimeType: ref.mimeType, size: ref.size, storage: 'job' };
+              } catch (e: any) {
+                log(`[SCREENSHOT] Could not keep the image for the UI: ${e.message}`);
+              }
             }
           } else {
             log(`[SCREENSHOT] ${sizeKB}KB is over ARTIFACT_MAX_BYTES; not kept for the UI`);
@@ -2177,11 +2241,18 @@ async function runPipelineImpl(params: {
 
           log(`[DOWNLOAD] Saved: ${sanitizedFileName} (${fileSizeKB}KB)`);
 
+          const savedFile = await toWorkspace(
+            (ws) => saveNodeFileFrom(ws, nodeOf(step, globalStepNumber + 1), sanitizedFileName, finalPath),
+            'DOWNLOAD'
+          );
+          if (savedFile) log(`[DOWNLOAD] Saved to workflow files: ${savedFile.path}`);
+
           const resultData = {
             fileName: sanitizedFileName,
             path: finalPath,
             sizeKB: fileSizeKB,
-            suggestedName
+            suggestedName,
+            ...(savedFile ? { file: { ...savedFile, storage: 'workflow' } } : {})
           };
 
           if (step.saveAs) {
@@ -3150,7 +3221,18 @@ async function runPipelineImpl(params: {
           await fs.promises.writeFile(outPath, content, 'utf-8');
           log(`[EXPORT] ${format} -> ${baseName} (${content.length} bytes)`);
 
-          const resultData = { file: baseName, format, bytes: content.length };
+          const savedExport = await toWorkspace(
+            (ws) => saveNodeFileFrom(ws, nodeOf(step, globalStepNumber + 1), baseName, outPath),
+            'EXPORT'
+          );
+          if (savedExport) log(`[EXPORT] Saved to workflow files: ${savedExport.path}`);
+
+          const resultData = {
+            file: baseName,
+            format,
+            bytes: content.length,
+            ...(savedExport ? { saved: { ...savedExport, storage: 'workflow' } } : {})
+          };
           if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, resultData, log);
 
           globalStepNumber++;
