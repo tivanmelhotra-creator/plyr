@@ -72,7 +72,10 @@
    it and shows it in a new tab (the same remote view the element picker opens,
    but without the picker's "Connect this browser to a field?" alert), "Turn
    off" closes it. The state is read from GET /browser/real/health, never
-   remembered. See browserRow() and toggleBrowser().
+   remembered. While it is running a second button, "Show browser", sits next
+   to "Turn off": it opens the remote view in a new tab again, for when the tab
+   was closed on the operator's own machine while the browser itself stayed up.
+   See browserRow(), toggleBrowser() and showBrowser().
 
    CSP-safe: no inline handlers, no eval, textContent for every name.
    ============================================ */
@@ -1633,8 +1636,18 @@
   //                      that alert belongs to a pending field request, and this
   //                      path never makes one (it calls openRealBrowser(), not
   //                      requestPick()).
-  //   on  -> [Turn off]  closes the browser (POST /browser/real/close, the same
-  //                      close the picker uses).
+  //   on  -> [Show browser] [Turn off]
+  //                      [Turn off] closes the browser (POST /browser/real/close,
+  //                      the same close the picker uses).
+  //                      [Show browser] brings the remote view back in a NEW tab
+  //                      WITHOUT touching the browser: the operator may have
+  //                      closed only the tab that displayed it (on their own
+  //                      machine) while the Local Browser stayed up, and Turn off
+  //                      would be the wrong way to get it back. It goes through
+  //                      the same openRealBrowser(), which reuses the running
+  //                      Chrome and only opens a viewer; if the browser died in
+  //                      the meantime it simply starts it, and the next health
+  //                      read says so. Only drawn while the server says running.
   //
   // The state is READ from the server (GET /browser/real/health -> `running`),
   // never remembered here, so a browser started or stopped elsewhere is shown as
@@ -1667,6 +1680,19 @@
     var grow = document.createElement('span');
     grow.className = 'wfm-grow';
     el.appendChild(grow);
+    // "Show browser": only while the browser is running (paintBrowser decides),
+    // and a DIFFERENT class from the on/off button so the two can never be
+    // mistaken for each other.
+    var show = document.createElement('button');
+    show.type = 'button';
+    show.className = 'btn btn-sm btn-ghost wfm-br-show';
+    show.hidden = true;
+    show.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      // Synchronously: showBrowser() calls window.open() inside this click.
+      void showBrowser();
+    });
+    el.appendChild(show);
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'btn btn-sm wfm-br-btn';
@@ -1676,7 +1702,7 @@
     });
     el.appendChild(btn);
     into.appendChild(el);
-    return { el: el, label: label, btn: btn };
+    return { el: el, label: label, show: show, btn: btn };
   }
 
   /** Draw the row from state.browser = { running, busy: '' | 'start' | 'stop' }. */
@@ -1689,7 +1715,14 @@
     ui.el.classList.toggle('is-busy', !!b.busy);
     ui.label.textContent = t('wfm.browserLabel', 'Local Browser') + ' \u00b7 ' +
       (b.running ? t('wfm.browserOn', 'Running') : t('wfm.browserOff', 'Off'));
-    ui.btn.disabled = !!b.busy;
+    // "Show browser" exists only while the browser is up, and waits while any
+    // press (on/off, or a show already opening a tab) is in flight.
+    ui.show.hidden = !b.running;
+    ui.show.disabled = !!b.busy || !!b.showing;
+    ui.show.textContent = b.showing
+      ? t('wfm.browserShowing', 'Opening\u2026')
+      : t('wfm.browserShow', 'Show browser');
+    ui.btn.disabled = !!b.busy || !!b.showing;
     ui.btn.classList.toggle('btn-primary', !b.running);
     ui.btn.classList.toggle('btn-ghost', b.running);
     ui.btn.textContent = b.busy === 'start' ? t('wfm.browserStarting', 'Starting\u2026')
@@ -1715,7 +1748,7 @@
   function startBrowserWatch() {
     if (!state || !state.els.browser) return;
     var s = state;
-    s.browser = { running: false, busy: '' };
+    s.browser = { running: false, busy: '', showing: false };
     paintBrowser();
     void readBrowser();
     s.browserTimer = setInterval(function () {
@@ -1738,7 +1771,7 @@
    * are exactly the ones that already work. OFF is one POST.
    */
   function toggleBrowser() {
-    if (!state || !state.browser || state.browser.busy) return Promise.resolve();
+    if (!state || !state.browser || state.browser.busy || state.browser.showing) return Promise.resolve();
     var s = state;
     var b = s.browser;
     var wasRunning = b.running;
@@ -1771,6 +1804,43 @@
       started = Promise.reject(e);
     }
     return Promise.resolve(started).then(function () { return done(true); }, function (e) { return done(false, e); });
+  }
+
+  /**
+   * "Show browser": put the remote view of the RUNNING Local Browser back on
+   * screen in a new tab. Nothing is started or stopped by the operator's
+   * intent: this is for the tab that displayed the browser having been closed
+   * while the browser itself stayed up.
+   *
+   * Like Turn on it opens the tab in THIS click (a popup opened after an await
+   * would be blocked) through openRealBrowser(), which reuses the running
+   * Chrome. `showing` is its own flag, not `busy`: busy means the browser is
+   * changing state, and a show never changes it.
+   */
+  function showBrowser() {
+    if (!state || !state.browser || state.browser.busy || state.browser.showing) return Promise.resolve();
+    var s = state;
+    var b = s.browser;
+
+    function done(err) {
+      if (state !== s) return null;
+      b.showing = false;
+      paintBrowser();
+      if (err) say((err && err.message) || t('wfm.browserShowFailed', 'Could not show the Local Browser.'), true);
+      // The server has the last word, as after every press.
+      return readBrowser();
+    }
+
+    b.showing = true;
+    paintBrowser();
+
+    var shown;
+    try {
+      shown = window.BrowserView.openRealBrowser('', null, { workflowId: s.workflowId });
+    } catch (e) {
+      shown = Promise.reject(e);
+    }
+    return Promise.resolve(shown).then(function () { return done(null); }, function (e) { return done(e || new Error('')); });
   }
 
   /** Start the operator's own native picker, targeting `into`. */

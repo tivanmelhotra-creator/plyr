@@ -9,6 +9,12 @@
  * field?" alert has nothing to show. Turning it off closes the browser with
  * POST /browser/real/close (NOT /browser/stop, which also disables self-heal and
  * would make the next "Turn on" refuse).
+ *
+ * While the browser is running a second button, "Show browser", sits beside
+ * "Turn off". It is for the operator who closed only the TAB that displayed the
+ * Local Browser (on their own machine): the browser is still up, so Turn off
+ * would be wrong and Turn on is not offered. Show opens the viewer again through
+ * the same openRealBrowser(), without closing or restarting anything.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -71,6 +77,7 @@ afterEach(() => { try { b?.w.WorkflowFiles.close(); } catch { /* already gone */
 
 const rowEl = () => b.stage.querySelector('.wfm-browser') as HTMLElement | null;
 const btn = () => b.stage.querySelector('.wfm-br-btn') as HTMLButtonElement;
+const showBtn = () => b.stage.querySelector('.wfm-br-show') as HTMLButtonElement;
 const label = () => (b.stage.querySelector('.wfm-br-label') as HTMLElement).textContent;
 const openEditorDrawer = async (o: Opts = {}) => {
   b = boot(o);
@@ -145,10 +152,94 @@ describe('the Local Browser switch', () => {
   });
 });
 
+describe('the Show browser button', () => {
+  it('is not shown while the browser is off', async () => {
+    await openEditorDrawer();
+    expect(showBtn()).not.toBeNull();
+    expect(showBtn().hidden).toBe(true);
+  });
+
+  it('appears next to \"Turn off\" when the browser is running', async () => {
+    await openEditorDrawer({ running: true });
+    expect(showBtn().hidden).toBe(false);
+    expect(showBtn().textContent).toBe('Show browser');
+    expect(btn().textContent).toBe('Turn off');
+    // Side by side, Show first: the harmless action before the destructive one.
+    expect(showBtn().nextElementSibling).toBe(btn());
+  });
+
+  it('opens the viewer again through openRealBrowser for THIS workflow, and leaves the browser running', async () => {
+    await openEditorDrawer({ running: true });
+    showBtn().click();
+    // window.open() must happen inside the click: openRealBrowser was already called.
+    expect(b.opened).toEqual([{ url: '', target: null, opts: { workflowId: 'wf_abc123' } }]);
+    // Opening, and a second press cannot start a second tab meanwhile.
+    expect(showBtn().disabled).toBe(true);
+    expect(showBtn().textContent).toBe('Opening\u2026');
+    expect(btn().disabled).toBe(true);
+    await b.settle();
+    expect(b.opened).toHaveLength(1);
+    // Nothing was closed or stopped, and it still reads Running.
+    expect(b.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(label()).toBe('Local Browser \u00b7 Running');
+    expect(btn().textContent).toBe('Turn off');
+    expect(showBtn().hidden).toBe(false);
+    expect(showBtn().disabled).toBe(false);
+    expect(showBtn().textContent).toBe('Show browser');
+    // No pick was begun, so the extension has no consent alert to draw.
+    expect(b.calls.some((c) => /inspector|targeting|consent/.test(c.url))).toBe(false);
+  });
+
+  it('can be used again and again (the tab can be closed again)', async () => {
+    await openEditorDrawer({ running: true });
+    showBtn().click();
+    await b.settle();
+    showBtn().click();
+    await b.settle();
+    expect(b.opened).toHaveLength(2);
+    expect(label()).toBe('Local Browser \u00b7 Running');
+  });
+
+  it('a failed show says why in the drawer, and the browser still reads Running', async () => {
+    await openEditorDrawer({ running: true, openFails: 'remote_browser_starting' });
+    showBtn().click();
+    await b.settle();
+    const note = b.stage.querySelector('.wfm-note') as HTMLElement;
+    expect(note.textContent).toBe('remote_browser_starting');
+    expect(note.classList.contains('err')).toBe(true);
+    expect(showBtn().disabled).toBe(false);
+    expect(btn().textContent).toBe('Turn off');
+  });
+
+  it('goes away again after \"Turn off\", and returns after \"Turn on\"', async () => {
+    await openEditorDrawer({ running: true });
+    btn().click();
+    await b.settle();
+    expect(label()).toBe('Local Browser \u00b7 Off');
+    expect(showBtn().hidden).toBe(true);
+    btn().click();
+    await b.settle();
+    expect(label()).toBe('Local Browser \u00b7 Running');
+    expect(showBtn().hidden).toBe(false);
+  });
+
+  it('is not offered where the page cannot open the viewer, nor in the file-picker drawer', async () => {
+    await openEditorDrawer({ browserView: false });
+    expect(showBtn()).toBeNull();
+    b.w.WorkflowFiles.close();
+
+    b = boot();
+    b.w.WorkflowFiles.open({ host: b.stage });
+    await b.settle();
+    expect(showBtn()).toBeNull();
+  });
+});
+
 describe('wiring', () => {
   it('both languages carry every key the switch asks for', () => {
     for (const k of ['wfm.browserLabel', 'wfm.browserOn', 'wfm.browserOff', 'wfm.browserStart',
-      'wfm.browserStop', 'wfm.browserStarting', 'wfm.browserStopping', 'wfm.browserFailed']) {
+      'wfm.browserStop', 'wfm.browserStarting', 'wfm.browserStopping', 'wfm.browserFailed',
+      'wfm.browserShow', 'wfm.browserShowing', 'wfm.browserShowFailed']) {
       expect(moduleSrc.includes(`'${k}'`), `${k} is asked for`).toBe(true);
       expect(i18n.split(`'${k}':`).length - 1, k).toBe(2);
     }
@@ -156,6 +247,7 @@ describe('wiring', () => {
 
   it('the row is styled and steps aside while a file is open in the notepad', () => {
     expect(css).toContain('.wfm-browser');
+    expect(css).toContain('.wfm-br-show');
     expect(css).toMatch(/\.wfm-drawer\.is-editing \.wfm-browser\s*\{[^}]*display:\s*none/s);
   });
 });
