@@ -1083,6 +1083,7 @@
       'ndv.noOutput': 'هنوز خروجی‌ای ثبت نشده است. این نود را اجرا کنید تا نتیجه اینجا دیده شود.',
       'ndv.shotLoading': 'در حال بارگذاری تصویر…',
       'ndv.shotAlt': 'اسکرین‌شات این مرحله',
+      'ndv.shotSavedIn': 'ذخیره‌شده در فایل‌های ورکفلو:',
       'ndv.shotGone': 'تصویر دیگر در دسترس نیست (پاک شده یا اجرا روی سرور دیگری بوده).',
       // NDV modal + Aria shell + Condition Builder
       'ndv.runNode': 'اجرای نود',
@@ -2867,6 +2868,7 @@
       'ndv.noOutput': 'No output captured yet. Run this node to see its result here.',
       'ndv.shotLoading': 'Loading image…',
       'ndv.shotAlt': 'Screenshot of this step',
+      'ndv.shotSavedIn': 'Saved in Workflow Files:',
       'ndv.shotGone': 'The image is no longer available (cleaned up, or the run was on another server).',
       // NDV modal + Aria shell + Condition Builder
       'ndv.runNode': 'Run node',

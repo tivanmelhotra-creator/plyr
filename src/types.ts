@@ -253,6 +253,9 @@ export interface JobData {
   __scheduled?: boolean;
   __scheduleName?: string;
   __scheduleId?: string;
+  // Set by the route that verified ownership; node output files are filed in
+  // this workflow's workspace (core/WorkflowOutputs).
+  __workspace?: { owner: string; workflowId: string };
 }
 
 // ============================================

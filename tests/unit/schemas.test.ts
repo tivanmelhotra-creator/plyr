@@ -86,18 +86,24 @@ describe('runNodeBodySchema', () => {
     expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, nodeIndex: -1 }).success).toBe(false);
     expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, nodeIndex: 1.5 }).success).toBe(false);
   });
-  it('carries NO webhookUrl and NO workflowId — a node test must not fire a webhook or be attributed', () => {
+  it('carries NO webhookUrl — a node test must not fire a webhook', () => {
     // The schema is non-strict like its siblings, so unknown keys are dropped
     // rather than rejected; what matters is that they never reach the handler.
     const r = runNodeBodySchema.safeParse({
-      userId: 'u1', steps: validSteps,
-      webhookUrl: 'https://example.com/hook', workflowId: 'wf_1',
+      userId: 'u1', steps: validSteps, webhookUrl: 'https://example.com/hook',
     });
     expect(r.success).toBe(true);
-    if (r.success) {
-      expect(r.data).not.toHaveProperty('webhookUrl');
-      expect(r.data).not.toHaveProperty('workflowId');
-    }
+    if (r.success) expect(r.data).not.toHaveProperty('webhookUrl');
+  });
+  it('accepts workflowId ONLY to pick the workspace the output files go to', () => {
+    // It is NOT attribution: the handler verifies ownership and stamps
+    // `__workspace`, and still never stamps `__workflowId`, so a node test is
+    // not counted as an execution (asserted in run-node.test.ts and
+    // job-workspace-binding.test.ts).
+    const r = runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, workflowId: 'wf_1' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.workflowId).toBe('wf_1');
+    expect(runNodeBodySchema.safeParse({ userId: 'u1', steps: validSteps, workflowId: 'x'.repeat(65) }).success).toBe(false);
   });
   it('accepts triggerData so the prefix can be seeded like a real run', () => {
     const r = runNodeBodySchema.safeParse({

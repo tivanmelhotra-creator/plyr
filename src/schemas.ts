@@ -32,6 +32,11 @@ const triggerDataLoose = z
   .optional()
   .nullable();
 
+// Optional: the saved workflow this run belongs to. It only selects WHICH
+// workspace the node output files go to; the route verifies the caller owns it
+// (see resolveJobWorkspace in user.routes.ts). Never a path.
+const workflowIdOptional = z.string().trim().min(1).max(64).optional().nullable();
+
 export const runBodySchema = z.object({
   userId: z.union([z.string(), z.number()], {
     required_error: 'userId is required',
@@ -41,6 +46,7 @@ export const runBodySchema = z.object({
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
   triggerData: triggerDataLoose,
+  workflowId: workflowIdOptional,
 });
 
 // Basic cron shape check (5 or 6 space-separated fields). Detailed scheduling
@@ -67,6 +73,7 @@ export const scheduleBodySchema = z.object({
   steps: stepsEnvelope,
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
+  workflowId: workflowIdOptional,
 });
 
 // [G2] Saved-workflow create/update envelope (Step 17). userId is taken from the
@@ -116,6 +123,7 @@ export const runNodeBodySchema = z.object({
   nodeIndex: z.number().int().min(0).optional(),
   headless: headlessLoose,
   triggerData: triggerDataLoose,
+  workflowId: workflowIdOptional,
 });
 
 export type RunBody = z.infer<typeof runBodySchema>;

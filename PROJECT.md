@@ -200,6 +200,34 @@ resolved real path is checked against the modules directory, so a crafted name
 cannot traverse out. `modules/detect-red-circles/` is the in-repo example and
 the only consumer of the `jimp` dependency.
 
+**Where a node's output files go** (`src/core/WorkflowOutputs.ts`) — a run of a
+*saved* workflow files what its nodes produce (screenshot, download,
+export-data) in that workflow's own workspace (`core/WorkflowStorage`, the
+"Workflow Files" drawer), never in an anonymous per-job directory:
+
+```
+<WORKFLOW_STORAGE_ROOT>/<owner>/<workflowId>/downloads/<NN>-<action>/<file>
+```
+
+- One folder per node. `<NN>` is the node's position in the workflow
+  *definition* (depth-first), so the same node keeps the same folder across
+  runs and across loop iterations. The folder is created on first use and
+  reused afterwards; files are never overwritten (`a (2).png`).
+- The workflow is chosen by the **route**, which verifies the caller owns it and
+  stamps `job.data.__workspace = { owner, workflowId }` (`POST /run`,
+  `/run-node`, `/schedule` accept an optional `workflowId`; `POST
+  /workflows/:u/:id/run` always sets it). The worker re-validates the stamp
+  (`workspaceOf`). A foreign, missing or malformed id yields **no** workspace;
+  nothing about the target workspace is ever taken from a page or an expression.
+- The output item carries `{ path, folder, name, size, mimeType, url, storage:
+  'workflow' }`. `url` is the existing `/browser/workflow-files/:id/download`
+  route, so the same ownership and path checks apply — there is no second door.
+- A run with no saved workflow (unsaved canvas, ad-hoc API call) has no
+  workspace; screenshots then fall back to `core/JobArtifacts`
+  (`/job/:u/:jobId/artifact/:file`, `storage: 'job'`), swept by the GC.
+- The UI loads these images with the API key and shows them as `data:` URLs.
+  Do **not** switch back to `blob:` — the CSP is `img-src 'self' data:`.
+
 ---
 
 ## 6. Browser Automation

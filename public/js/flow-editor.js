@@ -1767,6 +1767,14 @@
       var img = it && it.image;
       if (img && window.API && window.API.isArtifactUrl && window.API.isArtifactUrl(img.url)) {
         col.appendChild(buildArtifactImage(img.url));
+        // Say WHERE the file lives: for a saved workflow it is a real file in
+        // its Workflow Files > downloads/<node> folder, not a hidden temp path.
+        if (img.storage === 'workflow' && img.path) {
+          var where = document.createElement('div');
+          where.className = 'muted small ndv-shot-where';
+          where.textContent = t('ndv.shotSavedIn') + ' ' + img.path;
+          col.appendChild(where);
+        }
       }
     });
     var pre = document.createElement('pre');
@@ -1782,18 +1790,21 @@
   function buildArtifactImage(url) {
     var wrap = document.createElement('a');
     wrap.className = 'ndv-shot';
-    wrap.target = '_blank';
+    wrap.href = '#';
     wrap.rel = 'noopener';
     var status = document.createElement('span');
     status.className = 'muted small';
     status.textContent = t('ndv.shotLoading');
     wrap.appendChild(status);
-    window.API.loadArtifactImage(url).then(function (blobUrl) {
-      wrap.href = blobUrl;
+    window.API.loadArtifactImage(url).then(function (dataUrl) {
       var im = document.createElement('img');
       im.className = 'ndv-shot-img';
       im.alt = t('ndv.shotAlt');
-      im.src = blobUrl;
+      im.src = dataUrl;
+      wrap.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        window.API.openDataUrlInTab(dataUrl);
+      });
       wrap.replaceChild(im, status);
     }).catch(function () {
       status.textContent = t('ndv.shotGone');
@@ -2842,7 +2853,8 @@
     var uid = runUserId();
     if (!uid) { if (U() && U().toast) U().toast(t('fe.needUserId'), 'error'); return false; }
     setNodeStatus(nodeId, 'running');
-    API.runNode(uid, { steps: steps, nodeIndex: idx, headless: true })
+    var wfId = (currentWorkflow && currentWorkflow.id) || '';
+    API.runNode(uid, Object.assign({ steps: steps, nodeIndex: idx, headless: true }, wfId ? { workflowId: wfId } : {}))
       .then(function (data) {
         if (U() && U().toast) U().toast(t('fe.runNodeQueued'), 'ok');
         var RP = window.RunPanel;

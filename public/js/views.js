@@ -1253,7 +1253,12 @@
       btn.textContent = t('fe.running');
       resultEl.innerHTML = '';
 
-      API.runFlow({ userId: uid, steps: steps, headless: !wantLiveBrowser() })
+      var runWf = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      var runPayload = { userId: uid, steps: steps, headless: !wantLiveBrowser() };
+      // A saved workflow files its node outputs in ITS OWN workspace
+      // (Workflow Files > downloads/<node>); the server verifies ownership.
+      if (runWf && runWf.id) runPayload.workflowId = runWf.id;
+      API.runFlow(runPayload)
         .then(function (data) {
           resultEl.innerHTML =
             '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('fe.queued') +
