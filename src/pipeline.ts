@@ -512,6 +512,8 @@ async function smartWait(
 // STEP OUTPUT HELPER
 // ════════════════════════════════════════════════════════════════
 
+const EXTRACT_ACTIONS: ReadonlySet<string> = new Set(['extract', 'scrape', 'get-data', 'extract-data']);
+
 function createStepOutput(
   stepNumber: number,
   action: string,
@@ -1021,9 +1023,40 @@ async function runPipelineImpl(params: {
   // once. The WeakSet keeps container steps (if/loop/try...) from re-announcing
   // the last output their children already reported.
   const __doneEmitted = new WeakSet<object>();
-  const emitStepDone = (out: StepOutput): void => {
+
+  // Step 21: maintain the uniform item stream for EVERY step. A step's result
+  // is normalised into items; when it yields nothing usable (a click that
+  // returns null) the previous stream passes through unchanged. A trigger's
+  // data was injected before the run, so it forwards the stream as it is.
+  // Runs once per StepOutput (children of a container are already done).
+  const applyItemFlow = (out: StepOutput, stepKey: string | undefined): void => {
+    if (!out.success || out.inputItemCount !== undefined) return;
+    const inputItems: WorkflowItem[] = context.items;
+    let outputItems: WorkflowItem[];
+    if (isTriggerAction(out.action)) {
+      outputItems = inputItems;
+    } else {
+      // The extract family wraps a list as { count, data } for display; the
+      // items are the list itself, one per element.
+      const r: any = out.result;
+      const raw = (EXTRACT_ACTIONS.has(out.action) && r && Array.isArray(r.data)) ? r.data : out.result;
+      const produced = normalizeToItems(raw);
+      outputItems = produced.length > 0 ? produced : inputItems;
+    }
+    context.items = outputItems;
+    // Remember this node's output for future $node["key"].json refs.
+    context.nodeOutputs[stepKey || `${out.action}#${out.step}`] = outputItems;
+    const sum = summarizeItems(outputItems);
+    out.inputItemCount = inputItems.length;
+    out.outputItemCount = sum.itemCount;
+    out.outputSample = sum.sample;
+    out.outputTruncated = sum.truncated;
+  };
+
+  const emitStepDone = (out: StepOutput, stepKey?: string): void => {
     if (__doneEmitted.has(out)) return;
     __doneEmitted.add(out);
+    applyItemFlow(out, stepKey);
     context.onEvent?.('step.done', {
       index: out.step,
       action: out.action,
@@ -3081,26 +3114,8 @@ async function runPipelineImpl(params: {
         globalStepNumber++;
         stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, result, stepStartTime));
 
-        // Step 21: maintain the uniform item stream. Normalize this
-        // step's result into items; when a step yields nothing usable
-        // (e.g. a click) the previous stream passes through unchanged.
-        {
-          const __inputItems: WorkflowItem[] = context.items;
-          const __produced = normalizeToItems(result);
-          const __outputItems: WorkflowItem[] =
-            __produced.length > 0 ? __produced : __inputItems;
-          context.items = __outputItems;
-          // Remember this node's output for future $node["key"].json refs.
-          const __nodeKey = step.saveAs || `${step.action}#${globalStepNumber}`;
-          context.nodeOutputs[__nodeKey] = __outputItems;
-          // Attach item-flow metadata to the StepOutput we just pushed.
-          const __so = stepOutputs[stepOutputs.length - 1];
-          const __sum = summarizeItems(__outputItems);
-          __so.inputItemCount = __inputItems.length;
-          __so.outputItemCount = __sum.itemCount;
-          __so.outputSample = __sum.sample;
-          __so.outputTruncated = __sum.truncated;
-        }
+        // Step 21 (item flow) is applied centrally in emitStepDone, for every
+        // step - not just module steps. See applyItemFlow.
 
         if (step.saveAs) {
           safeStoreVariable(context.variables, step.saveAs, result, log);
@@ -3158,12 +3173,12 @@ async function runPipelineImpl(params: {
         // don't double-report it.
         if (!__errored) {
           if (stepOutputs.length > __outLenBefore) {
-            emitStepDone(stepOutputs[stepOutputs.length - 1]!);
+            emitStepDone(stepOutputs[stepOutputs.length - 1]!, step.saveAs);
           } else {
             // Produced no output of its own (an `if` with no matching path,
             // break/continue/return...). Close the `step.start` we opened so
             // the UI never leaves it spinning.
-            context.onEvent?.('step.done', { index: __startIndex, action: step.action, success: true, durationMs: Date.now() - stepStartTime });
+            context.onEvent?.('step.done', { index: __startIndex, action: step.action, success: true, durationMs: Date.now() - stepStartTime, inputItemCount: context.items.length, outputItemCount: context.items.length });
           }
         }
       }
