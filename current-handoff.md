@@ -6,6 +6,8 @@ LATEST HANDOFF: handoffs/2026-10-05_S21_test-workflow-audit.md
 BRANCH / HEAD:  main (all work is merged; open a fresh branch for new work). PRs #62-#65 and the editor/live-browser PR described in the handoff are the Test Workflow audit.
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 
+PLAN:           docs/PLAN-node-logic-v2.md (node logic v2 + production roadmap; start with milestone M1).
+
 NEXT ACTION: manual check of the editor on a real run - Test Workflow with Live browser ON (needs a display / Xvfb) and OFF; Activate toggle on a saved workflow; Logs / Variables tabs; screenshot shown in the node output panel.
 
 Layout:
