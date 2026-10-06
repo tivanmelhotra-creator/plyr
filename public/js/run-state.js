@@ -142,6 +142,7 @@
         sd.outputItemCount = (d.outputItemCount != null) ? d.outputItemCount : sd.outputItemCount;
         sd.outputSample = (d.outputSample != null) ? d.outputSample : sd.outputSample;
         sd.outputTruncated = !!d.outputTruncated;
+        if (Array.isArray(d.consoleLogs)) sd.consoleLogs = d.consoleLogs.slice(0, 200);
         sd.durationMs = (d.durationMs != null) ? d.durationMs : sd.durationMs;
         sd.finishedAt = now();
         if (sd.status === 'error' && !sd.error) sd.error = d.error || d.message || 'failed';

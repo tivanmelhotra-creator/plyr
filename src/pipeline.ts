@@ -14,6 +14,7 @@ import {
   retryDelayMs,
   isStopAndError,
 } from './core/ErrorPolicy';
+import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './core/CodeNode';
 import { isTriggerAction } from './core/TriggerEngine';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
@@ -42,6 +43,10 @@ import {
 import { acquireContext } from './core/BrowserAdapter';
 import { Desktop } from './core/Desktop';
 import { withUtf8Locale } from './core/BrowserProfile';
+import {
+  findLaunchOptions, optionsOfStep, planFor, effectiveHeadless, describeOptions, allActions,
+  diagnoseBrowserOptions,
+} from './core/BrowserOptions';
 import {
   emptyStream,
   normalizeToItems,
@@ -553,6 +558,9 @@ async function smartWait(
 // ════════════════════════════════════════════════════════════════
 
 const EXTRACT_ACTIONS: ReadonlySet<string> = new Set(['extract', 'scrape', 'get-data', 'extract-data']);
+// Actions whose output REPLACES the stream even when it is empty. A Code node
+// that returns [] means "no items", not "pass the input through" (n8n rule).
+const NO_PASSTHROUGH_ACTIONS: ReadonlySet<string> = new Set(['code']);
 
 function createStepOutput(
   stepNumber: number,
@@ -632,8 +640,23 @@ export function toCsv(data: any): string {
 // VIP BROWSER SETUP
 // ════════════════════════════════════════════════════════════════
 
+// What each user's persistent (VIP) browser was last built with. A persistent
+// context is reused across jobs, so without this a changed Launch Browser option
+// would be "applied" to a browser that was opened with the old one: a control
+// that changes nothing. Keyed by userId, value is the BrowserOptions plan hash.
+const vipOptionHash = new Map<string, string>();
+
+/** Tell the user which options could not apply to the browser they are on. */
+function logIgnoredOptions(context: AutomationContext, plan: { ignored: Array<{ id: string; reason: string }> }): void {
+  for (const ig of plan.ignored) {
+    context.log(`[BROWSER] Option "${ig.id}" ignored: ${ig.reason}`);
+  }
+}
+
 async function ensureVipBrowser(context: AutomationContext): Promise<void> {
   const { userId, profileManager, log, userPlan, jobId, headless } = context;
+  const optPlan = planFor(context.browserOptions, 'vip');
+  const wantHash = optPlan.hash;
   const profileDir = path.join(config.PROFILES_DIR, userId, 'chrome-profile');
 
   await fs.promises.mkdir(profileDir, { recursive: true });
@@ -644,7 +667,9 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
   if (existing) {
     try {
-      if (await checkBrowserHealth(existing.context, log)) {
+      const optionsChanged = (vipOptionHash.get(userId) ?? '') !== wantHash;
+      if (optionsChanged) log('[BROWSER] Browser options changed - relaunching with the new options');
+      if (!optionsChanged && await checkBrowserHealth(existing.context, log)) {
         const pages = existing.context.pages();
         const currentPageCount = pages.length;
 
@@ -698,18 +723,29 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
   }
 
   try {
+    const baseArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage'
+    ];
+    const extraArgs: string[] = (optPlan.launch.args || []).filter((a: string) => !baseArgs.includes(a));
+    if (context.browserOptions && Object.keys(context.browserOptions).length) {
+      log(`[BROWSER] Applying browser options: ${describeOptions(context.browserOptions)}`);
+    }
+    logIgnoredOptions(context, optPlan);
     const browserContext = await chromium.launchPersistentContext(profileDir, {
-      headless,
       viewport: { width: 1280, height: 720 },
       timeout: config.BROWSER_LAUNCH_TIMEOUT_MS,
       // Use a system Chrome only if CHROME_EXE is set; otherwise Playwright bundled Chromium.
       ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage'
-      ],
+      // Per-run options (core/BrowserOptions). `headless` is the EFFECTIVE value
+      // (Launch node option over the run switch) and always comes last.
+      ...(optPlan.launch.slowMo ? { slowMo: optPlan.launch.slowMo } : {}),
+      ...(optPlan.launch.proxy ? { proxy: optPlan.launch.proxy } : {}),
+      ...optPlan.context,
+      headless,
+      args: [...baseArgs, ...extraArgs],
       // A UTF-8 locale, or a downloaded file whose name is not pure ASCII
       // loses that name AND its extension to the literal string `download`.
       // See withUtf8Locale in core/BrowserProfile for the measurement.
@@ -735,6 +771,8 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
     profileManager.setVipContext(userId, browserContext, jobId);
     profileManager.registerPage(jobId, page);
+    vipOptionHash.set(userId, wantHash);
+    context.browserOptionsHash = wantHash;
 
     context.browserContext = browserContext;
     context.page = page;
@@ -773,6 +811,8 @@ async function ensureLocalContext(context: AutomationContext): Promise<void> {
   context.browserContext = acquired.context;
   context.browserMode = acquired.mode;
   context.browserShared = acquired.shared;
+  // The user's own browser is driven as-is: say so instead of pretending.
+  logIgnoredOptions(context, planFor(context.browserOptions, 'attached'));
 
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
@@ -800,6 +840,7 @@ async function ensureExtensionContext(context: AutomationContext): Promise<void>
   // Real Chrome is shared with the viewer, so the run only ever sees, and may
   // only close, tabs it opened itself (see confineContextToOwnedPages).
   context.data[EXT_BROWSER_FLAG] = true;
+  logIgnoredOptions(context, planFor(context.browserOptions, 'attached'));
   context.browserContext = confineContextToOwnedPages(real, context.data);
   context.browserMode = 'remote';
   context.browserShared = true; // never ours to close
@@ -840,8 +881,17 @@ async function ensureFreeContext(context: AutomationContext): Promise<void> {
 
   let browserContext: any;
 
+  // Shared pool: only context-scope options can apply (the browser process is
+  // not ours to relaunch). The rest are reported, never silently dropped.
+  const freePlan = planFor(context.browserOptions, 'free');
+  if (context.browserOptions && Object.keys(context.browserOptions).length) {
+    log(`[BROWSER] Applying browser options: ${describeOptions(context.browserOptions)}`);
+  }
+  logIgnoredOptions(context, freePlan);
+  context.browserOptionsHash = freePlan.hash;
+
   try {
-    browserContext = await GlobalBrowser.getContext();
+    browserContext = await GlobalBrowser.getContext(freePlan.context);
   } catch (err: any) {
     throw new BrowserError(`Failed to get free context: ${err.message}`);
   }
@@ -971,6 +1021,17 @@ async function runPipelineImpl(params: {
     return { success: false, message: 'CANCELLED_BY_USER', durationMs: 0 };
   }
 
+  // Options the workflow's Launch Browser node asks for (validated; the first
+  // node that carries any). Undefined when nothing is configured.
+  const launchOptions = findLaunchOptions(steps);
+  if (launchOptions) {
+    // Non-fatal incompatibilities (proxy user without server, headless + extension...)
+    for (const d of diagnoseBrowserOptions(launchOptions, allActions(steps))) {
+      if (d.level === 'warn') log(`[BROWSER] Option warning: ${d.en}`);
+    }
+  }
+
+
   const stepOutputs = profileManager.getJobOutputs(jobId);
 
   const context: AutomationContext = {
@@ -980,7 +1041,8 @@ async function runPipelineImpl(params: {
     jobId,
     job,
     getModule: (name) => moduleLoader.load(name),
-    headless,
+    headless: effectiveHeadless(launchOptions, headless),
+    browserOptions: launchOptions,
     stepOutputs,
     isCancelled: isCancelled ?? (async () => false),
     browserContext: undefined as any,
@@ -1100,7 +1162,7 @@ async function runPipelineImpl(params: {
       const r: any = out.result;
       const raw = (EXTRACT_ACTIONS.has(out.action) && r && Array.isArray(r.data)) ? r.data : out.result;
       const produced = normalizeToItems(raw);
-      outputItems = produced.length > 0 ? produced : inputItems;
+      outputItems = (produced.length > 0 || NO_PASSTHROUGH_ACTIONS.has(out.action)) ? produced : inputItems;
     }
     context.items = outputItems;
     // Remember this node's output for future $node["key"].json refs.
@@ -1139,6 +1201,8 @@ async function runPipelineImpl(params: {
       outputItemCount: out.outputItemCount,
       outputSample: out.outputSample,
       outputTruncated: out.outputTruncated,
+      // Code node: what console.log printed, for the NDV OUTPUT column.
+      ...(out.consoleLogs ? { consoleLogs: out.consoleLogs } : {}),
       variables: variablesForEvent()
     });
   };
@@ -1165,6 +1229,7 @@ async function runPipelineImpl(params: {
         walk(st.else);
         walk(st.steps);
         for (const p of st.paths ?? []) walk((p as ConditionPath).steps);
+        walk(st.fallback);
         for (const c of Object.values(st.cases ?? {})) walk(c);
         walk(st.catch);
         walk(st.finally);
@@ -1195,6 +1260,9 @@ async function runPipelineImpl(params: {
     stepLoop:
     for (let i = 0; i < stepsToRun.length; i++) {
       const step = stepsToRun[i];
+      // A step switched off in the saved workflow (or imported disabled, as every
+      // Code node is) does nothing at all: no event, no output, no quota.
+      if (step.disabled === true) continue;
       const stepStartTime = Date.now();
       // Step 16: live event - announce this step starting.
       const __outLenBefore = stepOutputs.length;
@@ -1311,6 +1379,42 @@ async function runPipelineImpl(params: {
             continue stepLoop;
           }
           break stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // 3b. ROUTER
+        // ════════════════════════════════════════════════════════════════
+        // Same first-match-wins evaluation as a multi-path `if`, with two
+        // differences that make it a node of its own:
+        //   · it has an explicit DEFAULT (`fallback`) branch for "nothing
+        //     matched", instead of overloading the `next` port;
+        //   · it NEVER leaves the group: after the chosen branch (or the
+        //     fallback) the steps that follow the router run — that is what a
+        //     join after a router means on the canvas.
+        // Only the first matching path runs ("first match" — documented in
+        // PROJECT.md); there is no "run all matches" mode.
+        if (step.action === 'router') {
+          const paths = Array.isArray(step.paths) ? step.paths : [];
+          const taken = await pickConditionPath(paths, (c) => engine.evaluate(c));
+          let branch: AutomationStep[] | undefined;
+          if (taken >= 0) {
+            const p = paths[taken];
+            const label = p.name || p.id || `path ${taken + 1}`;
+            log(`[ROUTER] Path ${taken + 1}/${paths.length} matched: ${pipelineSafeLog(String(label))}`);
+            context.onEvent?.('step.path', { index: globalStepNumber + 1, action: 'router', path: p.id || `p${taken + 1}`, name: p.name || '', priority: taken + 1 });
+            branch = p.steps;
+          } else {
+            log(`[ROUTER] No path matched — taking the default branch`);
+            context.onEvent?.('step.path', { index: globalStepNumber + 1, action: 'router', path: 'default', name: 'default', priority: 0 });
+            branch = step.fallback;
+          }
+          if (Array.isArray(branch) && branch.length) {
+            const rres = await executeStepGroup(branch);
+            if (rres) return rres;
+          }
+          // No output of its own (like `if`): the `finally` below closes the
+          // `step.start` we opened, so the numbering of nested steps is intact.
+          continue stepLoop;
         }
 
         if (step.action === 'if' && step.condition) {
@@ -2702,7 +2806,19 @@ async function runPipelineImpl(params: {
         if (step.action === 'launch' || step.action === 'launch-browser' || step.action === 'launch_browser') {
           let launchAction = 'reused';
 
-          if (!context.browserContext || !isPageValid(context.page, context)) {
+          // This node's own options. When the browser is being (re)opened they are
+          // what it is built with; when it is already open they cannot be applied
+          // retroactively, and saying so beats a control that silently does nothing.
+          const nodeOptions = optionsOfStep(step);
+          const needsOpen = !context.browserContext || !isPageValid(context.page, context);
+          if (nodeOptions && needsOpen) {
+            context.browserOptions = nodeOptions;
+            context.headless = effectiveHeadless(nodeOptions, headless);
+          } else if (nodeOptions && planFor(nodeOptions, 'vip').hash !== planFor(context.browserOptions, 'vip').hash) {
+            log('[BROWSER] This Launch node has browser options that differ from the open browser - they were NOT applied. Put a Close Browser node before it to relaunch with them.');
+          }
+
+          if (needsOpen) {
             log('[BROWSER] Launch requested — opening a fresh context');
             if (browserModes.modeOf(userId) === 'local') {
               await ensureLocalContext(context);
@@ -2728,7 +2844,7 @@ async function runPipelineImpl(params: {
 
           const launchResult = {
             action: launchAction,
-            headless: !!headless,
+            headless: !!context.headless,
             url: context.page ? context.page.url() : null,
           };
           if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, launchResult, log);
@@ -3255,6 +3371,63 @@ async function runPipelineImpl(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'notification', true, resultData, stepStartTime));
+          continue stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // 42b. CODE — the operator's own JavaScript (core/CodeNode.ts).
+        // Not a sandbox. Without `useBrowser` it runs in a killable worker;
+        // with it, in this process (Playwright objects cannot cross threads).
+        // ════════════════════════════════════════════════════════════════
+        if (step.action === 'code') {
+          if (!config.CODE_NODE_ENABLED) {
+            throw new Error(config.IS_SINGLE_USER
+              ? 'The Code node is disabled (CODE_NODE_ENABLED=false)'
+              : 'The Code node is not available in DEPLOYMENT_MODE=multi');
+          }
+          // `code` is read RAW: {{ }} inside JavaScript is the user's own text
+          // (template literals, regexes), not a workflow variable.
+          const rawCode = String((step.params as any)?.code ?? '');
+          const useBrowser = parseBoolean(finalParams.useBrowser);
+          if (useBrowser && !isPageValid(context.page, context)) {
+            throw new Error('Code node needs a browser page, but none is open');
+          }
+          const consoleLines: string[] = [];
+          let codeRes;
+          try {
+            codeRes = await runCodeNode({
+              code: rawCode,
+              mode: String(finalParams.mode || 'runOnceForAllItems'),
+              items: context.items,
+              vars: varsToObject(context.variables),
+              nodeOutputs: context.nodeOutputs,
+              executionId: jobId,
+              timeoutMs: finalParams.timeoutMs !== undefined ? parseInt(finalParams.timeoutMs) : config.CODE_NODE_TIMEOUT_MS,
+              useBrowser,
+              page: context.page,
+              browserContext: context.browserContext,
+              allowModules: parseAllowModules(config.CODE_NODE_ALLOW_MODULES),
+              maxMemoryMb: config.CODE_NODE_MAX_MEMORY_MB,
+              onLog: (line) => {
+                const text = `[${line.level}] ${line.text}`;
+                consoleLines.push(text);
+                log(`[CODE] ${pipelineSafeLog(text)}`);
+              },
+            });
+          } catch (e: any) {
+            const msg = e instanceof CodeNodeError ? e.message : String(e?.message || e);
+            throw new Error(`Code node: ${msg}`);
+          }
+          for (const [k, v] of Object.entries(codeRes.changedVars)) {
+            safeStoreVariable(context.variables, k, v, log);
+          }
+          log(`[CODE] ${codeRes.items.length} item(s) in ${codeRes.durationMs}ms`);
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, codeRes.items.map((it) => it.json), log);
+
+          globalStepNumber++;
+          const codeOut = createStepOutput(globalStepNumber, 'code', true, codeRes.items, stepStartTime);
+          if (consoleLines.length) codeOut.consoleLogs = consoleLines.slice(0, 200);
+          stepOutputs.push(codeOut);
           continue stepLoop;
         }
 

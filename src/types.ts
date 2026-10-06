@@ -23,6 +23,8 @@ export interface StepOutput {
   outputItemCount?: number;
   outputSample?: Record<string, unknown>[];
   outputTruncated?: boolean;
+  /** Code node only: captured console output (`[level] text`). */
+  consoleLogs?: string[];
 }
 
 // ============================================
@@ -79,6 +81,12 @@ export interface ConditionPath {
 
 export interface AutomationStep {
   action: string;
+  /**
+   * Switched off in the editor (or arrived disabled from an imported file, which
+   * is how a Code node enters). The runtime skips it entirely: no event, no
+   * output, no quota. It is part of the SAVED document so "off" is not "deleted".
+   */
+  disabled?: boolean;
   params?: Record<string, unknown>;
   saveAs?: string;
   condition?: Condition;
@@ -86,6 +94,8 @@ export interface AutomationStep {
   else?: AutomationStep[];
   /** Mission 7: ordered, first-match-wins branches of an `if` step. */
   paths?: ConditionPath[];
+  /** Router: steps run when NO path matched (the `default` port). */
+  fallback?: AutomationStep[];
   steps?: AutomationStep[];
   catch?: AutomationStep[];
   finally?: AutomationStep[];
@@ -116,6 +126,12 @@ export interface AutomationContext {
   getModule: (name: string) => unknown;
   isCancelled: CancelChecker;
   headless: boolean;
+  // Per-run browser options (core/BrowserOptions), taken from the Launch Browser
+  // node. `browserOptionsHash` is the fingerprint of what the OPEN browser was
+  // really built with, so a later Launch node can tell "already applied" from
+  // "browser is open with different options".
+  browserOptions?: Record<string, unknown>;
+  browserOptionsHash?: string;
   stepOutputs: StepOutput[];
   browserContext?: BrowserContext;
   // Which browser this run is driving: the one on the server ('remote') or the

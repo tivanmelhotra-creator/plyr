@@ -19,7 +19,9 @@
 #      (Coolify will request a Let's Encrypt certificate automatically).
 #   4. Add environment variables (Coolify UI → Environment Variables):
 #        DEPLOYMENT_MODE=single
-#        API_TOKEN=tok_xxxxxxxx...   (or leave empty -> auto-generated at boot)
+#        API_TOKEN=tok_xxxxxxxx...   (REQUIRED: with APP_ENV=server an empty
+#                                     token falls back to the public admin123,
+#                                     and the server refuses to start with it)
 #        NODE_ENV=production
 #        APP_ENV=server            (headed browser -> extensions load)
 #        PUBLIC_DOMAIN=https://your-domain   <-- the domain you attached in 3.
@@ -74,6 +76,8 @@ services:
       # Override to `production` only if this instance runs the job queue and
       # nothing else.
       APP_ENV: ${APP_ENV:-server}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-sqlite}
+      SQLITE_PATH: /app/data/plyr.db
       # --- Set these in the Coolify Environment Variables UI ---
       # Defaults provided here so the stack boots even before you
       # customise them; override in Coolify for production.
@@ -117,6 +121,8 @@ services:
       - app-profiles:/app/profiles
       - app-uploads:/app/uploads
       - app-downloads:/app/downloads
+      - app-data:/app/data
+      - app-workflow-files:/app/workflow-files
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
@@ -130,3 +136,5 @@ volumes:
   app-profiles:
   app-uploads:
   app-downloads:
+  app-data:
+  app-workflow-files:

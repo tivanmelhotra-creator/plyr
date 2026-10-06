@@ -6,6 +6,9 @@ logs
 profiles
 uploads
 downloads
+data
+backups
+workflow-files
 Redis
 chromium
 .env

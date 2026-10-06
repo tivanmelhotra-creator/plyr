@@ -47,6 +47,15 @@ ensure_env() {
     [[ -f "$ROOT_DIR/.env.example" ]] || fail ".env.example is missing"
     cp "$ROOT_DIR/.env.example" "$ENV_FILE"
     chmod 600 "$ENV_FILE" 2>/dev/null || true
+    # .env.example ships the PUBLIC token admin123, and the server refuses to
+    # start with it under APP_ENV=server/production. A freshly created .env gets
+    # its own random token so the first `./plyr start` just works.
+    local fresh_token
+    fresh_token="$( (openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n') | head -c 48)"
+    if [[ -n "$fresh_token" ]]; then
+      sed -i.bak "s|^API_TOKEN=admin123\r\{0,1\}$|API_TOKEN=${fresh_token}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+      say "generated a random API_TOKEN in $ENV_FILE (the panel login key)"
+    fi
     say "created $ENV_FILE from .env.example (existing state was preserved)"
   fi
 }
@@ -542,7 +551,7 @@ dev_docker() {
   if ! "${dc[@]}" exec -T app node -e "require('http').get('http://127.0.0.1:3000/health/browser',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
     error "Browser runtime is not ready; inspect dev Compose logs"; return 1
   fi
-  ready "Development Docker stack: http://localhost:3000 (API_TOKEN=admin123; loopback only)"
+  ready "Development Docker stack: http://localhost:3000 (API_TOKEN=admin123, dev-only via ALLOW_DEFAULT_API_TOKEN; loopback only)"
 }
 
 stop_native() {
@@ -608,6 +617,26 @@ status_docker() {
   not_ready "Docker requires running app/redis services and /health/browser"; return 1
 }
 
+run_storage_cli() {
+  # Prefer the compiled CLI (production); fall back to tsx for a source checkout.
+  if [[ -f "$ROOT_DIR/dist/cli/storage.js" ]]; then (cd "$ROOT_DIR" && node dist/cli/storage.js "$@");
+  else (cd "$ROOT_DIR" && npx --no-install tsx src/cli/storage.ts "$@"); fi
+}
+
+sqlite_ready() {
+  local db="${SQLITE_PATH:-$ROOT_DIR/data/plyr.db}"
+  [[ "$db" = /* ]] || db="$ROOT_DIR/$db"
+  local dir; dir="$(dirname "$db")"
+  mkdir -p "$dir" 2>/dev/null && [[ -w "$dir" ]] && { [[ ! -e "$db" ]] || [[ -w "$db" ]]; }
+}
+
+redis_aof_enabled() {
+  have redis-cli || return 2
+  local v; v="$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" CONFIG GET appendonly 2>/dev/null | tail -n 1)"
+  [[ -n "$v" ]] || return 2
+  [[ "$v" == yes ]]
+}
+
 doctor() {
   local deep=false; [[ "${1:-}" == --deep ]] && deep=true
   load_env
@@ -621,6 +650,20 @@ doctor() {
   if [[ -z "$native_missing" ]]; then printf '[PASS] Native dependencies: required executables/files are present\n'; else printf '[FAIL] Native dependencies: missing %s; run ./plyr install\n' "${native_missing//$'\n'/, }"; failed_checks=$((failed_checks+1)); fi
   if http_ready; then printf '[PASS] Application: /health responds\n'; else printf '[FAIL] Application: expected /health 200; actual unavailable; start the selected mode\n'; failed_checks=$((failed_checks+1)); fi
   if storage_ready; then printf '[PASS] Workflow Storage: writable\n'; else printf '[FAIL] Workflow Storage: expected writable WORKFLOW_STORAGE_ROOT; check path/permissions\n'; failed_checks=$((failed_checks+1)); fi
+  if [[ "${STORAGE_DRIVER:-sqlite}" == redis ]]; then
+    printf '[PASS] Database: STORAGE_DRIVER=redis (no SQLite file used)\n'
+  elif sqlite_ready; then
+    local dbinfo; dbinfo="$(run_storage_cli info 2>&1 | tail -n 1)" || true
+    printf '[PASS] Database: SQLite writable (%s)\n' "${dbinfo:-unknown}"
+  else
+    printf '[FAIL] Database: SQLITE_PATH directory is not writable; check path/permissions or the data volume\n'; failed_checks=$((failed_checks+1))
+  fi
+  local aof=0; redis_aof_enabled || aof=$?
+  case $aof in
+    0) printf '[PASS] Redis persistence: appendonly=yes\n' ;;
+    1) printf '[WARN] Redis persistence: appendonly=no — queued/scheduled jobs are lost on a Redis restart; run redis-server with --appendonly yes\n' ;;
+    *) printf '[WARN] Redis persistence: could not read CONFIG appendonly (redis-cli missing or CONFIG disabled)\n' ;;
+  esac
   if [[ "$REAL_CHROME_HEADLESS" == true ]]; then printf '[PASS] Display: headless mode selected\n'; else [[ -e "/tmp/.X${REAL_CHROME_DISPLAY#:}-lock" ]] && printf '[PASS] Display: %s available\n' "$REAL_CHROME_DISPLAY" || { printf '[FAIL] Display: expected %s; actual display lock missing; start desktop stack\n' "$REAL_CHROME_DISPLAY"; failed_checks=$((failed_checks+1)); }; fi
   if [[ "$REAL_CHROME_HEADLESS" == true ]] || port_open 127.0.0.1 "$DESKTOP_NOVNC_PORT"; then printf '[PASS] Viewer: available or not required\n'; else printf '[FAIL] Viewer: expected noVNC on port %s; start scripts/desktop.sh\n' "$DESKTOP_NOVNC_PORT"; failed_checks=$((failed_checks+1)); fi
   if browser_ready; then printf '[PASS] Playwright/Chromium: launch probe succeeded\n'; else printf '[FAIL] Playwright/Chromium: expected launchable browser; run npx playwright install chromium and inspect DISPLAY\n'; failed_checks=$((failed_checks+1)); fi
@@ -642,6 +685,8 @@ doctor_docker() {
   http_ready && printf '[PASS] Application: /health responds\n' || { printf '[FAIL] Application: expected /health 200\n'; failed_checks=$((failed_checks+1)); }
   browser_http_ready && printf '[PASS] Browser readiness: /health/browser responds\n' || { printf '[FAIL] Browser readiness: expected /health/browser 200\n'; failed_checks=$((failed_checks+1)); }
   docker_storage_ready && printf '[PASS] Workflow Storage: writable in app container\n' || { printf '[FAIL] Workflow Storage: expected writable app storage path\n'; failed_checks=$((failed_checks+1)); }
+  (cd "$ROOT_DIR" && docker compose exec -T app node dist/cli/storage.js info) 2>/dev/null | tail -n 1 | sed 's/^/[PASS] Database: /' || { printf '[FAIL] Database: SQLite not readable in app container (check the ./data volume)\n'; failed_checks=$((failed_checks+1)); }
+  [[ "$(cd "$ROOT_DIR" && docker compose exec -T redis redis-cli CONFIG GET appendonly 2>/dev/null | tail -n 1)" == yes ]] && printf '[PASS] Redis persistence: appendonly=yes\n' || printf '[WARN] Redis persistence: appendonly is not yes\n'
   if (( failed_checks == 0 )); then ready "Docker runtime checks passed"; return 0; fi
   not_ready "$failed_checks Docker check(s) failed"; return 1
 }
@@ -667,6 +712,9 @@ Commands:
   restart [--native|--docker]
   status [--native|--docker]
   doctor [--deep]
+  backup [dir]            Consistent copy of the SQLite database (default ./backups)
+  restore <file.db>       Replace the database with a backup (stop Plyr first;
+                          the current file is kept as <db>.pre-restore-<time>)
   logs
 
 Policy: auto uses Docker only when Docker and Compose are usable; otherwise native.
@@ -708,6 +756,8 @@ main() {
       local doctor_mode; doctor_mode="$(active_mode 2>/dev/null || true)"
       [[ "$doctor_mode" == docker ]] && doctor_docker "${1:-}" || doctor "${1:-}"
       ;;
+    backup) load_env; run_storage_cli backup "$@" ;;
+    restore) load_env; run_storage_cli restore "$@" ;;
     logs) tail -n 200 -f "$LOG_DIR/app.log" ;;
     help|-h|--help) usage ;;
     *) usage; return 2 ;;

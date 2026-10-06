@@ -38,11 +38,6 @@
     actionById: function () { return null; },
   };
 
-  // Actions whose ports are self-contained groups but the MAIN chain may
-  // continue after them via an implicit 'next' port.
-  var CONTINUE_AFTER = { if: true, switch: true, try: true };
-  // Actions whose continuation lives on a dedicated 'done' port.
-  var DONE_PORT = { loop: true, foreach: true, while: true };
 
   function strictAction(id) {
     var a = CAT.actionById ? CAT.actionById(id) : null;
@@ -195,10 +190,11 @@
   // graph-serialize.js is the boundary the backend sees and is unit-tested on
   // its own, so it must be able to read a graph without the NDV layer loaded.
   var PATH_ID_RE = /^[A-Za-z0-9_-]{1,24}$/;
-  function parsePaths(params) {
+  function parsePaths(params, allowSingle) {
     params = params || {};
     var raw = params.paths;
-    if (!raw) return null;
+    // A Router with no stored list yet is one path built from the flat fields.
+    if (!raw) return allowSingle ? [{ id: 'p1', name: '', groups: parseGroups(params.groups) }] : null;
     var arr = raw;
     if (typeof raw === 'string') {
       try { arr = JSON.parse(raw); } catch (e) { return null; }
@@ -218,7 +214,9 @@
       });
     });
     // A single path IS the classic true/false node — do not switch shapes.
-    return out.length > 1 ? out : null;
+    // The Router has no true/false form, so one path is a perfectly valid
+    // Router (`allowSingle`).
+    return (out.length > 1 || (allowSingle && out.length > 0)) ? out : null;
   }
 
   // The canvas port id that carries a path's branch.
@@ -306,94 +304,248 @@
   }
 
   // -------- graph -> steps[] (serialize) -------------------------------------
-  // Walks a chain starting from the node reached via `startEdgePort` of
-  // `fromId`. `seen` guards against cycles within a single chain walk.
-  function walkChain(graph, fromId, startPort, seen) {
+  //
+  // The editor's graph is a DAG-ish canvas; the backend wants NESTED steps[].
+  // The conversion rules (task 3 — see docs/uiux/20-HANDOFF-conditional-nodes.md):
+  //
+  //  1. JOIN.  When the branches of an `if` / `router` / `switch` converge on a
+  //     node, that node is emitted ONCE, AFTER the branching step, in the
+  //     parent chain — not copied into every branch. Two ways to say "join":
+  //       a) wire the node's own `next` port to it (explicit), or
+  //       b) wire every non-empty branch to the same node (inferred; the
+  //          nearest node reachable from ALL branches is the join point).
+  //     Branch walks STOP at the join (`stops`), so nested joins compose.
+  //  2. CYCLES are rejected. A loop is a `loop`/`foreach`/`while` node, never a
+  //     back-edge; an edge to a node that is already on the way down the
+  //     current descent is reported as `cycle` (error), not silently cut.
+  //  3. A node reachable from several branches that do NOT all converge (a
+  //     "partial join") is emitted in each branch that reaches it — faithful
+  //     for exclusive branches — and reported as the warning `duplicated`.
+  //  4. Two edges leaving the SAME port (`fanout`) and edges to a missing node
+  //     (`dangling`) are errors: the runtime can only follow one.
+  //
+  // `analyze()` is the single implementation; graphToSteps()/validateGraph()
+  // are views of it, so the canvas, the run button and the tests can never
+  // disagree about what a graph means.
+  var LOOP_LIKE = { loop: true, foreach: true, while: true };
+
+  // The port a node continues through once its own work (and branches) is done.
+  function continuationPort(action) { return LOOP_LIKE[action] ? 'done' : 'next'; }
+
+  // Ports of `node` that carry a nested group (everything except the
+  // continuation port). Only branching actions have any.
+  function branchPortsOf(graph, node) {
+    var action = node.action;
+    var out = [];
+    if (action === 'if') {
+      var ip = parsePaths(node.params || {});
+      if (ip) ip.forEach(function (p) { out.push(pathPortId(p.id)); });
+      else out.push('then', 'else');
+    } else if (action === 'router') {
+      var rp = parsePaths(node.params || {}, true) || [];
+      rp.forEach(function (p) { out.push(pathPortId(p.id)); });
+      out.push('default');
+    } else if (action === 'switch') {
+      out.push('default');
+      edgesFrom(graph, node.id).forEach(function (e) {
+        if ((e.port || '').indexOf('case:') === 0 && out.indexOf(e.port) < 0) out.push(e.port);
+      });
+    } else if (action === 'try') {
+      out.push('try', 'catch', 'finally');
+    } else if (LOOP_LIKE[action]) {
+      out.push('body');
+    }
+    return out;
+  }
+
+  // Nodes reachable from `startId` (inclusive), in depth-first pre-order.
+  function reachOrder(graph, startId) {
+    var order = [];
+    var seen = {};
+    (function visit(id) {
+      if (!id || seen[id] || !graph.nodes[id] || order.length > 5000) return;
+      seen[id] = true;
+      order.push(id);
+      edgesFrom(graph, id).forEach(function (e) { visit(e.to); });
+    })(startId);
+    return { order: order, set: seen };
+  }
+
+  // The node the main chain continues with after `node` (and its branches).
+  // `explicit` is true when the user wired the continuation port themselves.
+  function joinTarget(graph, node) {
+    var cont = portTarget(graph, node.id, continuationPort(node.action));
+    if (cont) return cont;
+    // `try` and loops never converge their branches; only the sequential
+    // branchers (if / router / switch) infer a join.
+    if (node.action !== 'if' && node.action !== 'router' && node.action !== 'switch') return null;
+    var reaches = [];
+    branchPortsOf(graph, node).forEach(function (port) {
+      var to = portTarget(graph, node.id, port);
+      if (to && graph.nodes[to]) reaches.push(reachOrder(graph, to));
+    });
+    if (reaches.length < 2) return null;
+    for (var i = 0; i < reaches[0].order.length; i++) {
+      var id = reaches[0].order[i];
+      var inAll = true;
+      for (var j = 1; j < reaches.length; j++) {
+        if (!reaches[j].set[id]) { inAll = false; break; }
+      }
+      if (inAll) return id;
+    }
+    return null;
+  }
+
+  function withStop(stops, id) {
+    var out = {};
+    Object.keys(stops).forEach(function (k) { out[k] = true; });
+    if (id) out[id] = true;
+    return out;
+  }
+
+  // Walks a chain starting from the node reached via `startPort` of `fromId`.
+  // `ctx.active` holds the ids on the current descent (cycle detection);
+  // `stops` are join points owned by an ENCLOSING branching node.
+  function walkChain(graph, fromId, startPort, ctx, stops) {
     var steps = [];
+    var visited = [];
+    var prevFrom = fromId;
+    var prevPort = startPort;
     var nextId = portTarget(graph, fromId, startPort);
     var guard = 0;
     while (nextId && guard < 5000) {
       guard += 1;
-      if (seen[nextId]) break;        // cycle within this chain -> stop
+      if (stops[nextId]) break;                 // reached the enclosing join
       var node = graph.nodes[nextId];
-      if (!node) break;
-      seen[nextId] = true;
-      // A node flagged `disabled` (context-menu item J / group toolbar item I)
-      // is SKIPPED exactly the way n8n skips a deactivated node: it emits no
-      // step and the chain continues through its MAIN `next` port, so switching
-      // one node off does not tear the rest of the flow apart. Consequence to
-      // keep in mind: disabling a BRANCHING node (if/switch/loop/try) also
-      // drops everything that hangs off its branch ports, because those
-      // children are only reachable through the node being skipped.
-      if (node.disabled === true) {
+      if (!node) {
+        ctx.errors.push({ code: 'dangling', nodeId: prevFrom, edge: { from: prevFrom, to: nextId, port: prevPort }, message: 'val.dangling' });
+        break;
+      }
+      if (ctx.active[nextId]) {
+        ctx.errors.push({ code: 'cycle', nodeId: nextId, edge: { from: prevFrom, to: nextId, port: prevPort }, message: 'val.cycle' });
+        break;
+      }
+      ctx.active[nextId] = true;
+      visited.push(nextId);
+      if (ctx.emitted[nextId]) {
+        if (!ctx.dupSeen[nextId]) {
+          ctx.dupSeen[nextId] = true;
+          ctx.warnings.push({ code: 'duplicated', nodeId: nextId, message: 'val.duplicated' });
+        }
+      }
+      ctx.emitted[nextId] = true;
+      prevFrom = node.id;
+      // A node flagged `disabled` is SKIPPED exactly the way n8n skips a
+      // deactivated node: it emits no step and the chain continues through its
+      // MAIN `next` port, so switching one node off does not tear the rest of
+      // the flow apart. Disabling a BRANCHING node also drops everything that
+      // hangs off its branch ports (they are only reachable through it).
+      if (node.disabled === true && !ctx.keepDisabled) {
+        prevPort = 'next';
         nextId = portTarget(graph, node.id, 'next');
         continue;
       }
-      var built = buildNode(graph, node, seen);
+      var built = buildNode(graph, node, ctx, stops);
       if (built.step) {
         applyErrorPolicy(built.step, node);
+        // DOCUMENT mode (save / export): the node stays in the workflow and is
+        // flagged, so switching a node off is not the same as deleting it. The
+        // runtime skips a `disabled` step; RUN mode never sees one (above).
+        if (node.disabled === true) built.step.disabled = true;
         steps.push(built.step);
       }
-      // Determine the continuation node id.
+      prevPort = continuationPort(node.action);
       nextId = built.continueId;
     }
+    visited.forEach(function (id) { delete ctx.active[id]; });
     return steps;
   }
 
   // Builds the AutomationStep for one node and returns the id of the node the
   // MAIN chain should continue to (or null to stop).
-  function buildNode(graph, node, seen) {
+  function buildNode(graph, node, ctx, stops) {
     var action = node.action;
     var params = coerceParams(action, node.params);
 
-    if (action === 'if') {
-      // Mission 7 — N prioritised paths. The runtime evaluates `paths` in
-      // order and takes the FIRST true one; `then`/`else` are not emitted at
-      // all in that shape, so there is no way for both routings to fire.
-      var paths = parsePaths(node.params || {});
-      if (paths) {
-        var pStep = {
-          action: 'if',
-          condition: buildCondition({ groups: JSON.stringify(paths[0].groups || []) }),
-          paths: paths.map(function (p) {
-            var entry = {
+    if (action === 'if' || action === 'router' || action === 'switch') {
+      // A multi-path `if` keeps its Mission-7 semantics: the runtime LEAVES the
+      // group once a path matched, and `next` is the neutral "nothing matched"
+      // port — so no join may be inferred or stopped at (the node after a join
+      // would never run). Router / two-way if / switch continue after their
+      // branch, which is exactly what a join means.
+      var multiIf = action === 'if' && !!parsePaths(node.params || {});
+      var join = multiIf ? portTarget(graph, node.id, 'next') : joinTarget(graph, node);
+      var inner = multiIf ? stops : withStop(stops, join);
+
+      if (action === 'if') {
+        // Mission 7 — N prioritised paths. The runtime evaluates `paths` in
+        // order and takes the FIRST true one; `then`/`else` are not emitted at
+        // all in that shape, so there is no way for both routings to fire.
+        var paths = parsePaths(node.params || {});
+        if (paths) {
+          var pStep = {
+            action: 'if',
+            condition: buildCondition({ groups: JSON.stringify(paths[0].groups || []) }),
+            paths: paths.map(function (p) {
+              var entry = {
+                id: p.id,
+                condition: buildCondition({ groups: JSON.stringify(p.groups || []) }),
+              };
+              if (p.name) entry.name = p.name;
+              var psteps = walkChain(graph, node.id, pathPortId(p.id), ctx, inner);
+              if (psteps.length) entry.steps = psteps;
+              return entry;
+            }),
+          };
+          return { step: pStep, continueId: join };
+        }
+        var step = { action: 'if', condition: buildCondition(node.params || {}) };
+        var thenSteps = walkChain(graph, node.id, 'then', ctx, inner);
+        var elseSteps = walkChain(graph, node.id, 'else', ctx, inner);
+        if (thenSteps.length) step.then = thenSteps;
+        if (elseSteps.length) step.else = elseSteps;
+        return { step: step, continueId: join };
+      }
+
+      if (action === 'router') {
+        // Router = N prioritised paths + a DEFAULT (fallback) port. First match
+        // wins; when nothing matches the `default` branch runs; either way the
+        // run then continues with whatever follows the router (the join).
+        var rpaths = parsePaths(node.params || {}, true) || [];
+        var rStep = {
+          action: 'router',
+          paths: rpaths.map(function (p) {
+            var rentry = {
               id: p.id,
               condition: buildCondition({ groups: JSON.stringify(p.groups || []) }),
             };
-            if (p.name) entry.name = p.name;
-            var steps = walkChain(graph, node.id, pathPortId(p.id), {});
-            if (steps.length) entry.steps = steps;
-            return entry;
+            if (p.name) rentry.name = p.name;
+            var rsteps = walkChain(graph, node.id, pathPortId(p.id), ctx, inner);
+            if (rsteps.length) rentry.steps = rsteps;
+            return rentry;
           }),
         };
-        return { step: pStep, continueId: portTarget(graph, node.id, 'next') };
+        var fb = walkChain(graph, node.id, 'default', ctx, inner);
+        if (fb.length) rStep.fallback = fb;
+        return { step: rStep, continueId: join };
       }
-      var step = { action: 'if', condition: buildCondition(node.params || {}) };
-      var thenSteps = walkChain(graph, node.id, 'then', {});
-      var elseSteps = walkChain(graph, node.id, 'else', {});
-      if (thenSteps.length) step.then = thenSteps;
-      if (elseSteps.length) step.else = elseSteps;
-      return { step: step, continueId: portTarget(graph, node.id, 'next') };
-    }
 
-    if (action === 'switch') {
       var sStep = { action: 'switch', params: { variable: params.variable }, cases: {} };
       // default port
-      var def = walkChain(graph, node.id, 'default', {});
+      var def = walkChain(graph, node.id, 'default', ctx, inner);
       if (def.length) sStep.cases['default'] = def;
       // explicit case ports: edges with port 'case:<value>'
       var es = edgesFrom(graph, node.id);
       for (var i = 0; i < es.length; i++) {
         var p = es[i].port || 'next';
         if (p.indexOf('case:') === 0) {
-          var caseVal = p.slice(5);
-          sStep.cases[caseVal] = walkChain(graph, node.id, p, {});
+          sStep.cases[p.slice(5)] = walkChain(graph, node.id, p, ctx, inner);
         }
       }
-      return { step: sStep, continueId: portTarget(graph, node.id, 'next') };
+      return { step: sStep, continueId: join };
     }
 
-    if (action === 'loop' || action === 'foreach' || action === 'while') {
+    if (LOOP_LIKE[action]) {
       var loopStep = { action: action, params: params };
       if (action === 'while') {
         loopStep.condition = buildCondition(node.params || {});
@@ -404,17 +556,16 @@
         // backend would receive params it does not understand.
         CONDITION_ONLY_PARAMS.forEach(function (k) { delete loopStep.params[k]; });
       }
-      var body = walkChain(graph, node.id, 'body', {});
-      if (body.length) loopStep.steps = body;
-      else loopStep.steps = [];
+      var body = walkChain(graph, node.id, 'body', ctx, stops);
+      loopStep.steps = body.length ? body : [];
       return { step: loopStep, continueId: portTarget(graph, node.id, 'done') };
     }
 
     if (action === 'try') {
       var tStep = { action: 'try' };
-      var tryS = walkChain(graph, node.id, 'try', {});
-      var catchS = walkChain(graph, node.id, 'catch', {});
-      var finallyS = walkChain(graph, node.id, 'finally', {});
+      var tryS = walkChain(graph, node.id, 'try', ctx, stops);
+      var catchS = walkChain(graph, node.id, 'catch', ctx, stops);
+      var finallyS = walkChain(graph, node.id, 'finally', ctx, stops);
       tStep.steps = tryS;
       if (catchS.length) tStep.catch = catchS;
       if (finallyS.length) tStep.finally = finallyS;
@@ -428,9 +579,45 @@
     };
   }
 
+  // Structural problems that exist regardless of how the walk goes.
+  function edgeIssues(graph, errors) {
+    var count = {};
+    graph.edges.forEach(function (e) {
+      if (!e) return;
+      var key = e.from + '\u0000' + (e.port || 'next');
+      count[key] = (count[key] || 0) + 1;
+      if (count[key] === 2) {
+        errors.push({
+          code: 'fanout', nodeId: e.from,
+          edge: { from: e.from, to: e.to, port: e.port || 'next' },
+          message: 'val.fanout',
+        });
+      }
+    });
+  }
+
+  function analyze(graph, opts) {
+    var ctx = { errors: [], warnings: [], active: {}, emitted: {}, dupSeen: {}, keepDisabled: !!(opts && opts.keepDisabled) };
+    if (!graph || !graph.nodes || !Array.isArray(graph.edges)) {
+      return { steps: [], errors: ctx.errors, warnings: ctx.warnings };
+    }
+    edgeIssues(graph, ctx.errors);
+    var steps = walkChain(graph, 'start', 'next', ctx, {});
+    return { steps: steps, errors: ctx.errors, warnings: ctx.warnings };
+  }
+
   function graphToSteps(graph) {
-    if (!graph || !graph.nodes || !graph.edges) return [];
-    return walkChain(graph, 'start', 'next', {});
+    return analyze(graph).steps;
+  }
+
+  /**
+   * The DOCUMENT form of the graph (what is saved and exported): same as
+   * graphToSteps(), but a node switched off stays in the list, flagged
+   * `disabled: true`. graphToSteps() (what RUNS) still leaves it out, so the
+   * editor's step-index mapping is untouched.
+   */
+  function graphToDocumentSteps(graph) {
+    return analyze(graph, { keepDisabled: true }).steps;
   }
 
   // -------- steps[] -> graph (deserialize) -----------------------------------
@@ -481,17 +668,22 @@
         if (!s || !s.action) return;
         var id = mkId();
         var node = { id: id, action: s.action, params: {}, x: curX, y: y };
+        if (s.disabled === true) node.disabled = true;
         // copy scalar params back as strings (editor stores strings)
         if (s.params && typeof s.params === 'object') {
           Object.keys(s.params).forEach(function (k) {
-            node.params[k] = String(s.params[k]);
+            // Object params (Launch Browser `browserOptions`) are kept as JSON text:
+            // String({}) would be "[object Object]" and the options would be lost.
+            var pv = s.params[k];
+            node.params[k] = (pv !== null && typeof pv === 'object') ? JSON.stringify(pv) : String(pv);
           });
         }
         // Mission 7 — a multi-path `if` round-trips through `params.paths`.
         // Each path's backend condition is turned back into builder groups, so
         // re-opening an imported workflow shows the same ordered list.
         var importedPaths = null;
-        if (s.action === 'if' && Array.isArray(s.paths) && s.paths.length > 1) {
+        if ((s.action === 'router' && Array.isArray(s.paths) && s.paths.length > 0) ||
+            (s.action === 'if' && Array.isArray(s.paths) && s.paths.length > 1)) {
           importedPaths = s.paths.map(function (p, pi) {
             var pg = (p && p.condition) ? conditionToGroups(p.condition) : null;
             if (!pg && p && p.condition) pg = [[simpleRowFromCondition(p.condition)]];
@@ -559,10 +751,11 @@
           branchY = r.nextY;
           if (r.right > branchRight) branchRight = r.right;
         }
-        if (s.action === 'if' && importedPaths) {
+        if ((s.action === 'if' || s.action === 'router') && importedPaths) {
           importedPaths.forEach(function (p, pi) {
             lane(s.paths[pi] && s.paths[pi].steps, 'path:' + p.id);
           });
+          if (s.action === 'router') lane(s.fallback, 'default');
         } else if (s.action === 'if') {
           lane(s.then, 'then');
           lane(s.else, 'else');
@@ -614,6 +807,14 @@
     if (!graph || !graph.nodes) {
       return { ok: false, errors: [{ code: 'no-graph', message: 'val.noGraph' }], warnings: warnings };
     }
+
+    // Structural verdict of the very walk graphToSteps() performs: cycles,
+    // two edges on one port, edges to a missing node, partial joins. A graph
+    // with an error here CANNOT be turned into steps[] faithfully, so the run
+    // button refuses it (flow-editor) and the offending node/edge is marked.
+    var an = analyze(graph);
+    an.errors.forEach(function (e) { errors.push(e); });
+    an.warnings.forEach(function (w) { warnings.push(w); });
 
     var startEdge = null;
     for (var i = 0; i < graph.edges.length; i++) {
@@ -675,6 +876,19 @@
           if (!anyPath) warnings.push({ code: 'empty-if', nodeId: id, message: 'val.emptyIf' });
         } else if (!portTarget(graph, id, 'then') && !portTarget(graph, id, 'else')) {
           warnings.push({ code: 'empty-if', nodeId: id, message: 'val.emptyIf' });
+        }
+      }
+      // router: at least one path, and at least one branch wired
+      if (node.action === 'router') {
+        var rps = parsePaths(node.params || {}, true) || [];
+        if (!rps.length) {
+          errors.push({ code: 'router-paths', nodeId: id, message: 'val.routerPaths' });
+        } else {
+          var anyR = !!portTarget(graph, id, 'default');
+          for (var ri = 0; ri < rps.length && !anyR; ri++) {
+            if (portTarget(graph, id, pathPortId(rps[ri].id))) anyR = true;
+          }
+          if (!anyR) warnings.push({ code: 'empty-if', nodeId: id, message: 'val.emptyIf' });
         }
       }
       // switch needs a variable
@@ -759,6 +973,12 @@
             });
           }
         }
+        if (node.action === 'router') {
+          branchPorts = (parsePaths(node.params || {}, true) || []).map(function (p) {
+            return { id: pathPortId(p.id), label: 'port.path' };
+          });
+          branchPorts.push({ id: 'default', label: 'port.default' });
+        }
         // `switch` fans out through dynamic `case:<value>` ports, which are not
         // declared in the catalog — read them off the edges instead.
         if (node.action === 'switch') {
@@ -789,7 +1009,7 @@
 
         // Continue the chain: branching nodes carry on via 'next' (if/switch/
         // try) or 'done' (loop/foreach/while) — same rule as buildNode().
-        var contPort = DONE_PORT[node.action] ? 'done' : 'next';
+        var contPort = LOOP_LIKE[node.action] ? 'done' : 'next';
         id = portTarget(graph, id, contPort);
       }
     }
@@ -800,6 +1020,7 @@
 
   window.GraphSerialize = {
     graphToSteps: graphToSteps,
+    graphToDocumentSteps: graphToDocumentSteps,
     stepsToGraph: stepsToGraph,
     validateGraph: validateGraph,
     outlineTree: outlineTree,
@@ -809,6 +1030,8 @@
     conditionToGroups: conditionToGroups,
     parsePaths: parsePaths,
     pathPortId: pathPortId,
+    analyze: analyze,
+    branchPortsOf: branchPortsOf,
     CONDITION_ONLY_PARAMS: CONDITION_ONLY_PARAMS,
     OUTLINE_MAX_ROWS: OUTLINE_MAX_ROWS,
   };

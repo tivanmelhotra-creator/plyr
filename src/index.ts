@@ -32,6 +32,9 @@ import { isVipUser } from './utils/helpers';
 import { STATS_KEY, getUserActiveJobsKey, getLiveChannel } from './utils/redis-keys';
 import { sendWebhook, sendStepWebhook } from './services/webhook.service';
 import { persistJob } from './services/job.service';
+import { initStorage, executionsFor } from './services/storage';
+import { closeSharedSqlite } from './core/SqliteStore';
+import type { ExecutionStatus } from './services/execution.repository';
 
 // Step 16: Live Channel (WebSocket + SSE) live job events.
 import { LiveBus, JobLivePublisher } from './core/LiveBus';
@@ -41,6 +44,8 @@ import { LiveBrowserManager } from './core/LiveBrowser';
 import { setLiveSessionProvider } from './core/LiveSessions';
 import { BrowserStreamServer } from './core/BrowserStreamServer';
 import { DesktopProxy } from './core/DesktopProxy';
+import { JobScreencastHub } from './core/JobScreencast';
+import { createLiveFramesRouter } from './Routes/live-frames.routes';
 import { classifyFault, FaultReporter } from './core/ProcessGuard';
 import { enforceStartupValidation } from './core/StartupValidation';
 // Dual browser mode: the reverse tunnel to a user's own Chrome, and the
@@ -558,6 +563,13 @@ app.get('/live/view/:userId/:jobId', (_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'live-view.html'));
 });
 
+// View-only picture of the job's page (CDP screencast, server -> client only).
+// Same gate as /live/sse: a share token bound to this job, or an API key.
+// In-process by design: the page lives in THIS process's ProfileManager, so a
+// split web/worker deployment would need the worker to serve this route.
+const jobScreencast = new JobScreencastHub({ getPage: (jobId) => profileManager.getPage(jobId) as any });
+app.use('/live/frames', createLiveFramesRouter({ hub: jobScreencast, authorize: authorizeLive }));
+
 app.get('/live/sse/:userId/:jobId', async (req, res) => {
   const userId = String(req.params.userId);
   const jobId = String(req.params.jobId);
@@ -686,6 +698,33 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
   // Step 16: per-job live publisher (best-effort fan-out to subscribers).
   const livePub = new JobLivePublisher(liveBus, userId, job.id!);
 
+  // Execution history (SQLite). StepOutputs carry no item counts/samples;
+  // those arrive on `step.done`, so they are collected here by step index.
+  const stepItems = new Map<number, Record<string, unknown>>();
+  const startedIso = new Date().toISOString();
+  const recordExecution = (status: ExecutionStatus, error?: string | null) => {
+    const repo = executionsFor(connection);
+    if (!repo || job.data.__runNode) return; // a per-node test is not an execution
+    try {
+      const outs = profileManager.getJobOutputs(job.id!) || [];
+      repo.record({
+        jobId: String(job.id),
+        userId,
+        workflowId: job.data.__workflowId ? String(job.data.__workflowId) : null,
+        workflowVersion: typeof job.data.__workflowVersion === 'number' ? job.data.__workflowVersion : null,
+        trigger: job.data.__scheduled ? 'schedule' : (job.data.__workflowId ? 'workflow' : 'manual'),
+        status,
+        startedAt: startedIso,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - Date.parse(startedIso),
+        error: error ?? null,
+        steps: outs.map((o) => ({ ...o, ...(stepItems.get(o.step) || {}) })),
+      });
+    } catch (e) {
+      console.warn(`[JOB:${job.id}] could not record execution history: ${(e as Error).message}`);
+    }
+  };
+
   const log = (msg: string) => {
     const safe = sanitizeLogMessage(msg);
     console.log(`[JOB:${job.id}] ${safe}`);
@@ -753,6 +792,13 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       // (channel 1 of two-channel live reporting) when enabled.
       onEvent: (type: string, data?: Record<string, unknown>) => {
         livePub.emit(type as Parameters<typeof livePub.emit>[0], data);
+        if (type === 'step.done' && data && typeof data.index === 'number') {
+          stepItems.set(data.index, {
+            inputItemCount: data.inputItemCount,
+            outputItemCount: data.outputItemCount,
+            outputSample: data.outputSample,
+          });
+        }
         if (webhookUrl && config.STEP_WEBHOOK_ENABLED && shouldDeliverStepEvent(type)) {
           const stepPayload = buildStepWebhookPayload({ type, jobId: job.id!, userId, data });
           if (stepPayload) {
@@ -769,6 +815,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
 
     const outputs = profileManager.getJobOutputs(job.id!);
     await persistJob(userId, job.id!, outputs, { ...result, success: true });
+    recordExecution('success');
 
     if (webhookUrl) {
       sendWebhook(webhookUrl, {
@@ -806,6 +853,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
         cancelledByUser: cancelled,
         userCancelled: cancelled
       });
+      recordExecution(cancelled ? 'cancelled' : 'error', error.message);
 
       if (webhookUrl) {
         sendWebhook(webhookUrl, {
@@ -847,6 +895,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       success: false,
       message: error.message
     });
+    recordExecution('error', error.message);
 
     if (webhookUrl) {
       sendWebhook(webhookUrl, {
@@ -968,6 +1017,8 @@ const shutdown = async (signal: string) => {
     console.log('[SHUTDOWN] Closing Redis connection...');
     await connection.quit();
 
+    try { closeSharedSqlite(); } catch { /* best-effort */ }
+
     console.log('[SHUTDOWN] Closing all browsers...');
     await profileManager.shutdownAll();
 
@@ -1048,6 +1099,10 @@ const startServer = async () => {
   // dashboard and the job queue keep working and SelfHeal can repair the
   // browser at runtime. See StartupValidation for that distinction.
   await enforceStartupValidation();
+
+  // Durable storage first: routes below read workflows through it, and the
+  // one-time Redis -> SQLite import must finish before the first request.
+  await initStorage(connection);
 
   await cleanupSystem();
   await apiKeyManager.initialize();

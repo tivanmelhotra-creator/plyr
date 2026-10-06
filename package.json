@@ -41,6 +41,7 @@
   "author": "Dev Team",
   "license": "MIT",
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "bullmq": "^5.13.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -62,6 +63,7 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^4.17.21",
     "@types/fs-extra": "^11.0.4",
     "@types/glob": "^8.1.0",

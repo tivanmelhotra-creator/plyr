@@ -112,6 +112,8 @@ const STEERING = [
   'DEPLOYMENT_MODE', 'API_TOKEN', 'API_KEYS', 'API_KEYS_ENABLED',
   'ADMIN_SECRET', 'RATE_LIMIT_ENABLED', 'REQUIRE_BROWSER_RUNTIME',
   'BROWSER_MODE_DEFAULT', 'LOCAL_BROWSER_ENABLED',
+  'ALLOW_DEFAULT_API_TOKEN', 'REAL_CHROME_DEBUG_BIND', 'PUBLIC_DOMAIN', 'BASE_URL',
+  'WEBHOOK_SECRET', 'LIVE_SHARE_TTL_SEC', 'REDIS_URL',
 ];
 
 /**
@@ -251,7 +253,7 @@ describe('2. default env behaviour', () => {
 // ===========================================================================
 describe('3. production config', () => {
   it('production still resolves deterministically with an empty environment', async () => {
-    await withEnv({ APP_ENV: 'production' }, async ({ config, startup }) => {
+    await withEnv({ APP_ENV: 'production', API_TOKEN: 'a-real-secret-token' }, async ({ config, startup }) => {
       expect(config.APP_PROFILE).toBe('production');
       expect(config.APP_PROFILE_SOURCE).toBe('APP_ENV');
       const report = await startup.validateStartup();
@@ -259,14 +261,39 @@ describe('3. production config', () => {
     });
   });
 
-  it('warns — loudly and in writing — that the public default token is in use', async () => {
-    // A weak default is defensible. A weak default that says nothing is not.
-    await withEnv({ APP_ENV: 'production' }, async ({ startup }) => {
+  it('REFUSES to start with the public default token under server/production', async () => {
+    // A weak default is defensible on a laptop. On a profile that means
+    // "reachable" it is a published credential, so it is a refusal, in writing.
+    for (const profile of ['production', 'server']) {
+      await withEnv({ APP_ENV: profile }, async ({ startup }) => {
+        const report = await startup.validateStartup();
+        const issue = report.issues.find((i) => i.id === 'default_token_in_production');
+        expect(issue, profile).toBeDefined();
+        expect(issue!.severity).toBe('fatal');
+        expect(issue!.problem).toMatch(/admin123/);
+        expect(issue!.fix).toMatch(/API_TOKEN/);
+        expect(report.ok).toBe(false);
+      });
+    }
+  });
+
+  it('only warns for admin123 on development, and for the dev compose opt-out', async () => {
+    await withEnv({ APP_ENV: 'development' }, async ({ startup }) => {
+      const report = await startup.validateStartup();
+      expect(report.issues.find((i) => i.id === 'default_token_in_production')).toBeUndefined();
+    });
+    await withEnv({ APP_ENV: 'server', ALLOW_DEFAULT_API_TOKEN: 'true' }, async ({ startup }) => {
       const report = await startup.validateStartup();
       const issue = report.issues.find((i) => i.id === 'default_token_in_production');
-      expect(issue).toBeDefined();
       expect(issue!.severity).toBe('warn');
-      expect(issue!.problem).toMatch(/admin123/);
+      expect(report.ok).toBe(true);
+    });
+  });
+
+  it('accepts a custom token under production', async () => {
+    await withEnv({ APP_ENV: 'production', API_TOKEN: 'a-real-secret-token' }, async ({ startup }) => {
+      const report = await startup.validateStartup();
+      expect(report.issues.find((i) => i.id === 'default_token_in_production')).toBeUndefined();
     });
   });
 
@@ -615,7 +642,7 @@ describe('10. extension loading configuration', () => {
 // ===========================================================================
 describe('11. startup readiness', () => {
   it('produces the operator-facing report shape the task specified', async () => {
-    await withEnv({ APP_ENV: 'server', CHROME_EXE: '/nonexistent/chrome' }, async ({ startup }) => {
+    await withEnv({ APP_ENV: 'server', API_TOKEN: 'a-real-secret-token', CHROME_EXE: '/nonexistent/chrome' }, async ({ startup }) => {
       const text = startup.formatStartupReport(await startup.validateStartup());
       expect(text).toMatch(/server/);          // which environment
       expect(text).toMatch(/Remote Browser/);  // which capability

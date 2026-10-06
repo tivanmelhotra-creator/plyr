@@ -25,6 +25,8 @@ import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValid
 import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
+import { parseExchange, buildNativeEnvelope } from '../core/WorkflowExchange';
+import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 import type { JobWorkspace } from '../core/WorkflowOutputs';
@@ -95,7 +97,7 @@ const waitForJobResult = async (
 export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   const router = Router();
   const { queue, connection, profileManager, quotaManager } = deps;
-  const workflowService = new WorkflowService(connection);
+  const workflowService = new WorkflowService(workflowStoreFor(connection));
 
   /**
    * Whose workspace, and is it really theirs? Mirrors workflow-files.routes
@@ -133,7 +135,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       isAdmin: config.IS_SINGLE_USER ? false : userId === 'env_root',
       keyPrefix: req.apiKeyPrefix || null,
       mode: config.DEPLOYMENT_MODE,
-      isSingleUser: config.IS_SINGLE_USER
+      isSingleUser: config.IS_SINGLE_USER,
+      codeNodeEnabled: config.CODE_NODE_ENABLED
     });
   });
 
@@ -777,6 +780,43 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   // ══════════════════════════════════════════
   // GET /jobs/:userId - List user's jobs
   // ══════════════════════════════════════════
+  // ══════════════════════════════════════════
+  // GET /executions/:userId[?workflowId=&limit=&before=] - durable execution
+  // history (SQLite). Unlike /jobs it survives BullMQ's job retention and a
+  // Redis flush. 501 under STORAGE_DRIVER=redis (there is no history there).
+  // GET /executions/:userId/:jobId - one execution with its per-step summary.
+  // ══════════════════════════════════════════
+  router.get('/executions/:userId', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const repo = executionsFor(connection);
+      if (!repo) return res.status(501).json({ success: false, error: 'Execution history needs STORAGE_DRIVER=sqlite' });
+      const workflowId = typeof req.query.workflowId === 'string' && req.query.workflowId ? String(req.query.workflowId) : null;
+      if (workflowId !== null && !isValidWorkflowId(workflowId)) {
+        return res.status(400).json({ success: false, error: 'Invalid workflow id' });
+      }
+      const before = typeof req.query.before === 'string' && req.query.before ? String(req.query.before) : null;
+      const limit = parseInt(String(req.query.limit || ''), 10) || 50;
+      const executions = repo.list(userId, { workflowId, limit, before });
+      res.json({ success: true, userId, total: executions.length, executions });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  });
+
+  router.get('/executions/:userId/:jobId', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const repo = executionsFor(connection);
+      if (!repo) return res.status(501).json({ success: false, error: 'Execution history needs STORAGE_DRIVER=sqlite' });
+      const rec = repo.get(userId, String(req.params.jobId));
+      if (!rec) return res.status(404).json({ success: false, error: 'Execution not found' });
+      res.json({ success: true, execution: rec });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  });
+
   router.get('/jobs/:userId', async (req: AuthenticatedRequest, res) => {
     try {
       const userId = sanitizeUserId(req.params.userId);
@@ -996,6 +1036,48 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
     }
   });
 
+  // POST /workflows/:userId/import/preview — read a workflow FILE and say what
+  // saving it would do. Nothing is stored. The same parse + Code-node disabling
+  // as /import, so the summary the user confirms is exactly what gets saved.
+  router.post('/workflows/:userId/import/preview', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const parsed = parseExchange(req.body);
+      if (!parsed.ok) return res.status(400).json({ success: false, code: parsed.code, error: parsed.message });
+      const plan = await UserManager.getUserPlan(connection, userId);
+      validateSteps(parsed.workflow.steps as any, plan);
+      return res.json({ success: true, summary: parsed.summary, codeDisabled: parsed.codeDisabled, startsInactive: true });
+    } catch (e: unknown) {
+      res.status(400).json({ success: false, code: 'steps', error: (e as Error).message });
+    }
+  });
+
+  // POST /workflows/:userId/import — save a workflow file. Code nodes are stored
+  // DISABLED and the workflow starts INACTIVE (no schedule/webhook fires until
+  // the operator has read it and switched it on). The envelope carries no
+  // webhookUrl on purpose: a file must not be able to point results elsewhere.
+  router.post('/workflows/:userId/import', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const parsed = parseExchange(req.body);
+      if (!parsed.ok) return res.status(400).json({ success: false, code: parsed.code, error: parsed.message });
+      const plan = await UserManager.getUserPlan(connection, userId);
+      const steps = validateSteps(parsed.workflow.steps as any, plan);
+      const wf = await workflowService.create(userId, {
+        name: parsed.workflow.name,
+        description: parsed.workflow.description,
+        steps,
+        headless: (parsed.workflow.headless as any) ?? null,
+        webhookUrl: null,
+        active: false,
+      });
+      await provisionWorkspace(userId, wf.id);
+      return res.status(201).json({ success: true, workflow: wf, summary: parsed.summary, codeDisabled: parsed.codeDisabled });
+    } catch (e: unknown) {
+      res.status(400).json({ success: false, code: 'steps', error: (e as Error).message });
+    }
+  });
+
   // GET /workflows/:userId — list the user's saved workflows (newest first).
   router.get('/workflows/:userId', async (req: AuthenticatedRequest, res) => {
     try {
@@ -1023,7 +1105,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const filename = String(wf.name || workflowId).replace(/[^A-Za-z0-9_-]+/g, '_') + '.json';
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.send(JSON.stringify(wf, null, 2));
+      // ?format=native → the portable `plyr-workflow` file (secrets blanked).
+      // The default stays the raw stored record for existing API/CLI users.
+      const out = req.query.format === 'native' ? buildNativeEnvelope(wf as any) : wf;
+      res.send(JSON.stringify(out, null, 2));
     } catch (e: unknown) {
       const error = e as Error;
       res.status(500).json({ success: false, error: error.message });

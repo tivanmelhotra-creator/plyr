@@ -179,7 +179,7 @@
   function currentDocument() {
     var cur = currentWorkflow || {};
     return { name: cur.name || 'Untitled workflow', description: cur.description || null,
-      steps: toSteps(), headless: cur.headless == null ? true : cur.headless,
+      steps: toDocumentSteps(), headless: cur.headless == null ? true : cur.headless,
       webhookUrl: cur.webhookUrl || null };
   }
   function markPersisted(meta, persistedSnapshot) {
@@ -326,6 +326,13 @@
   // and nests them into the backend's then/else/cases/steps/catch/finally shape.
   function GS() { return window.GraphSerialize; }
 
+  // What gets SAVED: like toSteps(), but a disabled node stays in the list,
+  // flagged. toSteps() is what RUNS and still leaves it out.
+  function toDocumentSteps() {
+    if (GS() && GS().graphToDocumentSteps) return GS().graphToDocumentSteps(state);
+    return toSteps();
+  }
+
   function toSteps() {
     if (GS()) return GS().graphToSteps(state);
     // Fallback (serializer not loaded): linear walk.
@@ -348,6 +355,47 @@
   function validate() {
     if (GS()) return GS().validateGraph(state);
     return { ok: true, errors: [], warnings: [] };
+  }
+
+  // Graph problems that make the canvas impossible to turn into steps[]
+  // (cycle / two edges on one port / dangling edge / router without paths).
+  // They are indexed once per paint so every node card and edge can ask
+  // "am I the culprit?" without re-walking the graph.
+  var issueIndex = { nodes: {}, edges: {}, list: [] };
+  function refreshIssueIndex() {
+    issueIndex = { nodes: {}, edges: {}, list: [] };
+    if (!state || !GS()) return issueIndex;
+    var res = validate();
+    (res.errors || []).forEach(function (e) {
+      issueIndex.list.push(e);
+      if (e.nodeId) issueIndex.nodes[e.nodeId] = e;
+      if (e.edge) issueIndex.edges[e.edge.from + '\u0000' + e.edge.port + '\u0000' + e.edge.to] = e;
+    });
+    return issueIndex;
+  }
+  // The reason the graph cannot run, as an i18n key + the node to point at, or
+  // null when it is fine. Used by every Run entry point (header Run, Run node).
+  function runBlocker() {
+    if (!GS()) return null;
+    var res = validate();
+    var errs = res.errors || [];
+    for (var i = 0; i < errs.length; i++) {
+      if (errs[i].code === 'empty') continue;       // "no nodes" has its own message
+      return errs[i];
+    }
+    return null;
+  }
+  // Toast the blocker, select the offending node and report true when blocked.
+  function explainRunBlocker() {
+    var b = runBlocker();
+    if (!b) return false;
+    var node = b.nodeId && state.nodes[b.nodeId];
+    var label = node ? (nodeTitle(node) + ': ') : '';
+    if (U() && U().toast) U().toast(label + t(b.message), 'error');
+    if (b.nodeId && state.nodes[b.nodeId] && typeof selectNode === 'function') {
+      try { selectNode(b.nodeId); } catch (e) { /* selection is a courtesy */ }
+    }
+    return true;
   }
 
   // Rebuild a laid-out graph from a (possibly nested) steps[] array.
@@ -602,8 +650,9 @@
     // then/else with one `path:<id>` port per path, in priority order, and
     // keeps `next` as the NEUTRAL fallback taken when no path matches.
     var gs = GS();
-    if (node.action === 'if' && gs && gs.parsePaths) {
-      var mp = gs.parsePaths(node.params || {});
+    if ((node.action === 'if' || node.action === 'router') && gs && gs.parsePaths) {
+      var isRouterNode = node.action === 'router';
+      var mp = gs.parsePaths(node.params || {}, isRouterNode);
       if (mp) {
         var pports = mp.map(function (p, i) {
           return {
@@ -620,7 +669,11 @@
               : (t('cb.path') + ' ' + (i + 1)),
           };
         });
-        pports.push({ id: 'next', label: 'port.next' });
+        // A multi-path `if` closes with the neutral `next`; a Router closes with
+        // its explicit `default`, then `next` — the optional explicit join (when
+        // it is left empty the join is inferred from the branches).
+        pports.push(isRouterNode ? { id: 'default', label: 'port.default' } : { id: 'next', label: 'port.next' });
+        if (isRouterNode) pports.push({ id: 'next', label: 'port.next' });
         return pports;
       }
     }
@@ -958,6 +1011,7 @@
 
   function renderEdges() {
     var svgns = 'http://www.w3.org/2000/svg';
+    refreshIssueIndex();
     while (dom.svg.firstChild) dom.svg.removeChild(dom.svg.firstChild);
     clearEdgePills();
     state.edges.forEach(function (e, idx) {
@@ -970,7 +1024,9 @@
       var path = document.createElementNS(svgns, 'path');
       path.setAttribute('d', curvePath(p1.x, p1.y, p2.x, p2.y));
       // Step 24: colour-code branch edges (then=green, else/catch=red, etc.).
-      path.setAttribute('class', 'flow-edge edge-' + port.replace(/[^a-z0-9]+/gi, '-'));
+      var edgeBad = !!issueIndex.edges[e.from + '\u0000' + port + '\u0000' + e.to];
+      path.setAttribute('class', 'flow-edge edge-' + port.replace(/[^a-z0-9]+/gi, '-') +
+        (edgeBad ? ' is-invalid' : ''));
       path.setAttribute('data-edge', String(idx));
       // click an edge to delete it
       path.addEventListener('click', function (ev) {
@@ -1035,11 +1091,11 @@
   // rather than a raw param dump — for if/while the Condition Builder model can
   // render its groups as one readable statement (NdvModel.conditionSummary).
   function nodeCardSummary(node, act) {
-    if (node.action === 'if' || node.action === 'while') {
+    if (node.action === 'if' || node.action === 'router' || node.action === 'while') {
       if (window.NdvModel && window.NdvModel.conditionSummary) {
         // A multi-path `if` summarises EVERY path in priority order, so the
         // card cannot claim to test only the first one.
-        var s = (node.action === 'if' && window.NdvModel.pathsSummary)
+        var s = ((node.action === 'if' || node.action === 'router') && window.NdvModel.pathsSummary)
           ? window.NdvModel.pathsSummary(node.params || {}, t)
           : window.NdvModel.conditionSummary(node.params || {}, t);
         if (s) return s;
@@ -1061,7 +1117,11 @@
     var card = document.createElement('div');
     card.className = 'flow-node' + (isStart ? ' is-start' : '') +
       (selected ? ' selected' : '') + ' status-' + status +
-      (node.disabled === true ? ' is-off' : '');
+      (node.disabled === true ? ' is-off' : '') +
+      (issueIndex.nodes[node.id] ? ' has-issue' : '');
+    if (issueIndex.nodes[node.id]) {
+      card.setAttribute('title', t(issueIndex.nodes[node.id].message));
+    }
     card.setAttribute('data-node', node.id);
     card.style.left = node.x + 'px';
     card.style.top = node.y + 'px';
@@ -1747,6 +1807,24 @@
     col.appendChild(list);
   }
 
+  /** The "Run this node" button shown inside an empty OUTPUT (never a no-op). */
+  function buildEmptyRunButton(nodeId) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ndv-run-btn ndv-empty-run';
+    b.innerHTML = '<span class="ndv-run-play">' + IC('play', 12) + '</span>' + esc(t('ndv.runNode'));
+    var why = runNodeBlockedReason(nodeId);
+    if (why) {
+      b.disabled = true;
+      b.setAttribute('aria-disabled', 'true');
+      b.title = t(why);
+    } else {
+      b.title = t('fe.runNodeHint');
+      b.addEventListener('click', function () { runNode(nodeId); });
+    }
+    return b;
+  }
+
   function renderOutputColumn(col, nodeId) {
     col.innerHTML = '';
     var head = document.createElement('div');
@@ -1754,11 +1832,29 @@
     head.textContent = t('ndv.output');
     col.appendChild(head);
     var items = outputItemsFor(nodeId);
+    // Code node: what console.log printed, above the items it returned.
+    var res0 = nodeResults[nodeId];
+    var consoleLines = res0 && Array.isArray(res0.consoleLogs) ? res0.consoleLogs : [];
+    if (consoleLines.length) {
+      var cHead = document.createElement('div');
+      cHead.className = 'ndv-subhead';
+      cHead.textContent = t('ndv.console');
+      col.appendChild(cHead);
+      var cPre = document.createElement('pre');
+      cPre.className = 'ndv-json ndv-console';
+      cPre.setAttribute('dir', 'ltr');
+      cPre.textContent = consoleLines.join('\n');
+      col.appendChild(cPre);
+    }
     if (!items.length) {
+      var ran = !!nodeResults[nodeId];
       var empty = document.createElement('div');
       empty.className = 'muted small ndv-empty';
-      empty.textContent = t('ndv.noOutput');
+      empty.textContent = ran ? t('ndv.outRanEmpty') : t('ndv.noOutput');
       col.appendChild(empty);
+      // Never executed: offer the one action that fills this column, wired to
+      // the same guarded runner the header button uses (or say why it cannot).
+      if (!ran) col.appendChild(buildEmptyRunButton(nodeId));
       return;
     }
     // Screenshots: an item may carry { image: { url } } (see core/JobArtifacts).
@@ -1879,7 +1975,9 @@
         input.className = 'field ndv-field';
         (f.options || []).forEach(function (opt) {
           var o = document.createElement('option');
-          o.value = opt; o.textContent = opt === '' ? '—' : opt;
+          o.value = opt;
+          o.textContent = opt === '' ? '—'
+            : (f.optionLabels && f.optionLabels[opt] ? t(f.optionLabels[opt]) : opt);
           input.appendChild(o);
         });
         input.value = node.params[f.k] != null ? node.params[f.k] : (f.options ? f.options[0] : '');
@@ -1896,9 +1994,23 @@
       } else if (ft.input === 'textarea' || ft.input === 'json' || ft.input === 'code') {
         input = document.createElement('textarea');
         input.className = 'field ndv-field' + (ft.input === 'code' ? ' ndv-code' : ft.input === 'json' ? ' ndv-jsonin' : '');
-        input.rows = ft.input === 'textarea' ? 2 : 4;
+        input.rows = typeof f.rows === 'number' ? f.rows : (ft.input === 'textarea' ? 2 : 4);
         input.placeholder = f.ph || '';
         input.value = node.params[f.k] != null ? String(node.params[f.k]) : '';
+        if (ft.input === 'code') {
+          input.spellcheck = false;
+          input.setAttribute('dir', 'ltr');
+          input.setAttribute('autocapitalize', 'off');
+          // Tab indents instead of leaving the editor (Shift+Tab still leaves).
+          input.addEventListener('keydown', function (ev) {
+            if (ev.key !== 'Tab' || ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+            ev.preventDefault();
+            var s = input.selectionStart, e = input.selectionEnd;
+            input.value = input.value.slice(0, s) + '  ' + input.value.slice(e);
+            input.selectionStart = input.selectionEnd = s + 2;
+            commit(input.value);
+          });
+        }
         input.addEventListener('input', function () { commit(input.value); });
       } else {
         input = document.createElement('input');
@@ -1921,6 +2033,37 @@
       row.appendChild(input);
     }
     buildControl();
+
+    // Dropping an INPUT field on a FIXED-mode control used to do nothing at all
+    // (only the expression textarea listened), so a drag that looked valid was
+    // silently lost. n8n flips the field to Expression and inserts the token;
+    // so does this. Only for expression-capable types: a toggle/select has no
+    // place to put text, and refusing the drop (no preventDefault) says so.
+    if (ft.expressionable) {
+      row.addEventListener('dragover', function (ev) {
+        if (exprMode) return;                 // the textarea handles its own
+        var types = ev.dataTransfer && ev.dataTransfer.types;
+        if (types && Array.prototype.indexOf.call(types, 'text/x-expr') < 0) return;
+        ev.preventDefault();
+        row.classList.add('drag-over');
+      });
+      row.addEventListener('dragleave', function () { row.classList.remove('drag-over'); });
+      row.addEventListener('drop', function (ev) {
+        row.classList.remove('drag-over');
+        if (exprMode) return;
+        var tok = ev.dataTransfer && ev.dataTransfer.getData('text/x-expr');
+        if (!tok) return;
+        ev.preventDefault();
+        var cur = node.params[f.k];
+        var next = (cur != null && String(cur) !== '') ? String(cur) + tok : tok;
+        exprMode = true;
+        node._expr[f.k] = true;
+        if (toggle) { toggle.textContent = t('expr.expression'); toggle.classList.add('on'); }
+        buildControl();
+        input.value = next;
+        commit(next);
+      });
+    }
 
     if (toggle) {
       toggle.addEventListener('click', function () {
@@ -2367,6 +2510,7 @@
       return node.params && node.params.selector ? String(node.params.selector) : t('nk.click');
     }
     if (node.action === 'if') return t('nk.condition');
+    if (node.action === 'router') return t('nk.router');
     if (node.action === 'while') return t('nk.loopCondition');
     var cat = categoryOf(node.action) || { label: 'cat.other' };
     return t(cat.label || 'cat.other');
@@ -2418,6 +2562,7 @@
     extract: 'nk.extractText',
     'extract-data': 'nk.extractData',
     'parse-json': 'nk.parseJson',
+    code: 'nk.code',
     'export-data': 'nk.exportData',
     screenshot: 'nk.screenshot',
     download: 'nk.downloadFile',
@@ -2432,6 +2577,7 @@
     // flow
     if: 'nk.condition',
     switch: 'nk.switchCase',
+    router: 'nk.router',
     loop: 'nk.loop',
     foreach: 'nk.forEach',
     while: 'nk.whileLoop',
@@ -2559,6 +2705,15 @@
     // Event-driven triggers do nothing in a manual run: Test Workflow starts the
     // chain straight away (Manual Trigger data, else one empty item). Say so on
     // the node itself instead of letting a cron/webhook look like it was tested.
+    // The Code node runs real JavaScript with this server's privileges. Say so
+    // where the code is written, every time — not in a doc nobody opens.
+    if (node.action === 'code') {
+      var codeNote = document.createElement('div');
+      codeNote.className = 'ndv-note ndv-code-note';
+      codeNote.setAttribute('role', 'note');
+      codeNote.textContent = t('ndv.codeWarning');
+      body.appendChild(codeNote);
+    }
     if (EVENT_TRIGGERS[node.action]) {
       var trigNote = document.createElement('div');
       trigNote.className = 'ndv-note ndv-trigger-note';
@@ -2629,11 +2784,32 @@
       // `internal: true` fields are owned by a bespoke NDV design; the generic
       // fallback editor must not expose them as raw inputs.
       var visible = (act ? act.fields : []).filter(function (f) { return !f.internal; });
-      if (!visible.length) {
+      var hasBrowserOptions = (act ? act.fields : []).some(function (f) { return f.k === 'browserOptions'; });
+      if (!visible.length && !hasBrowserOptions) {
         paramCol.appendChild(emptyPane('fe.noParams'));
       } else {
         visible.forEach(function (f) {
           paramCol.appendChild(buildFieldRow(node, f));
+        });
+      }
+      // Launch Browser: the searchable "Add option" panel (browser-options-ui.js).
+      if (hasBrowserOptions && window.BrowserOptionsUI && window.BROWSER_OPTIONS) {
+        var boHost = document.createElement('div');
+        boHost.className = 'bo-host';
+        paramCol.appendChild(boHost);
+        window.BrowserOptionsUI.render(boHost, {
+          value: node.params.browserOptions,
+          t: t,
+          lang: function () { return window.I18N ? window.I18N.getLang() : 'fa'; },
+          actions: function () {
+            return Object.keys(state.nodes).map(function (id) { return state.nodes[id].action; });
+          },
+          onChange: function (text) {
+            if (node.params.browserOptions !== text) pushHistory();
+            node.params.browserOptions = text;
+            renderNodes();
+            emitChange();
+          }
         });
       }
       // Step 27: per-node error-handling settings (Continue/Retry On Fail).
@@ -2673,7 +2849,7 @@
         'multipleMatches', 'highlightElement', 'visibleOnly', 'stableForMs',
         'offsetX', 'offsetY', 'modAlt', 'modCtrl', 'modShift', 'human', 'force'];
     }
-    if (action === 'if' || action === 'while') {
+    if (action === 'if' || action === 'router' || action === 'while') {
       // `maxDepth` / `evaluateMode` were dropped: the audit found no backend
       // reader for either, so they were controls that could not change a run.
       // They stay in graph-serialize's CONDITION_ONLY_PARAMS strip list only so
@@ -2697,7 +2873,7 @@
       var step = null;
       if (gs && gs.coerceParams) {
         step = { action: node.action, params: gs.coerceParams(node.action, node.params) };
-        if ((node.action === 'if' || node.action === 'while') && gs.buildCondition) {
+        if ((node.action === 'if' || node.action === 'router' || node.action === 'while') && gs.buildCondition) {
           step.condition = gs.buildCondition(node.params || {});
           ['selector', 'operator', 'value', 'expected', 'source', 'attribute', 'groups']
             .forEach(function (k) { delete step.params[k]; });
@@ -2721,6 +2897,9 @@
       inputItems: input,
       outputItems: outputItemsFor(node.id),
       meta: nodeMeta[node.id] || { status: nodeStatus[node.id] || 'idle' },
+      // "Never executed" (offer Run) vs "executed, produced nothing" (say so).
+      executed: !!nodeResults[node.id],
+      runButton: function () { return buildEmptyRunButton(node.id); },
       exprContext: {
         json: (input[0] && input[0].json) ? input[0].json : (input[0] || {}),
         index: 0,
@@ -2847,6 +3026,7 @@
    */
   function runNode(nodeId) {
     if (runNodeBlockedReason(nodeId)) return false;   // guarded: row is disabled
+    if (explainRunBlocker()) return false;
     var idx = chainStepIndex(nodeId);
     var steps = toSteps().slice(0, idx + 1);
     if (!steps.length) return false;
@@ -4984,6 +5164,7 @@
     mount: mount,
     unmount: unmount,
     toSteps: toSteps,
+    toDocumentSteps: toDocumentSteps,
     loadSteps: loadSteps,
     saveLocal: saveLocal,
     loadLocal: function () { var ok = loadLocal(); clearHistory(); if (dom) renderAll(); return ok; },
@@ -5124,6 +5305,7 @@
       nodeResults[id] = {
         input: Array.isArray(res.input) ? res.input : prev.input,
         output: Array.isArray(res.output) ? res.output : (prev.output || []),
+        consoleLogs: Array.isArray(res.consoleLogs) ? res.consoleLogs : prev.consoleLogs,
       };
       if (res.meta) nodeMeta[id] = res.meta;
       if (dom) {
@@ -5157,6 +5339,8 @@
     // { ok, errors:[{code,nodeId?,message}], warnings:[...] } — message values
     // are i18n keys (val.*) the caller can translate.
     validate: validate,
+    runBlocker: runBlocker,
+    explainRunBlocker: explainRunBlocker,
 
     // ---- Step 22: saved-workflow context ----------------------------------
     // Open a saved workflow: rebuild the graph from its steps and remember its

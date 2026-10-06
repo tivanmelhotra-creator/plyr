@@ -45,7 +45,9 @@
  * laptop.
  */
 
+import path from 'node:path';
 import { config } from '../config';
+import { runSecurityChecks, probeTcp, type CheckLine } from './SecurityChecks';
 import {
   inspectBrowserRuntime,
   formatRuntimeReport,
@@ -167,16 +169,29 @@ export async function validateStartup(): Promise<StartupReport> {
   // The public default credential, on a profile that means "reachable".
   // A warning rather than fatal: an operator running production behind a VPN
   // is making a defensible choice, and refusing to boot would strand them.
-  if (config.API_TOKEN_IS_DEFAULT && config.APP_PROFILE === 'production') {
+  // `admin123` is for the disposable dev compose stack and for a laptop. On a
+  // profile that means "deployed" (server/production) it is REFUSED: the token
+  // is in the source and in .env.example, and it drives a real browser. The one
+  // legitimate server-profile use (docker-compose.dev.yml, loopback-only, wiped
+  // on every run) opts in explicitly with ALLOW_DEFAULT_API_TOKEN=true, so the
+  // exception is visible in the file that needs it instead of being implicit.
+  if (config.API_TOKEN_IS_DEFAULT && (config.APP_PROFILE === 'production' || config.APP_PROFILE === 'server')) {
+    const allowed = config.ALLOW_DEFAULT_API_TOKEN === true;
     issues.push({
       id: 'default_token_in_production',
-      severity: 'warn',
+      severity: allowed ? 'warn' : 'fatal',
       feature: 'Authentication',
-      problem: 'API_TOKEN is the built-in public default (admin123) and the profile is production. '
-        + 'This token is in .env.example and in the source; it grants full control of this instance.',
-      fix: 'Set your own API_TOKEN in .env and restart.',
+      problem: `API_TOKEN is the built-in public default (admin123) and the profile is ${config.APP_PROFILE}. `
+        + 'This token is in .env.example and in the source; it grants full control of this instance.'
+        + (allowed ? ' (Allowed only because ALLOW_DEFAULT_API_TOKEN=true — the dev compose stack.)' : ''),
+      fix: 'Set your own API_TOKEN in .env (e.g. `openssl rand -hex 24`) and restart. '
+        + 'Only a disposable, loopback-only dev stack may set ALLOW_DEFAULT_API_TOKEN=true.',
     });
   }
+
+  // ── Security minimums (Redis exposure, DevTools bind, HTTPS, webhooks, …) ──
+  const security = await collectSecurity();
+  issues.push(...security.issues);
 
   // Worth more alarm than it first appears, which is why the consequence is
   // spelled out rather than left as "change your secret": `/admin` sits behind
@@ -336,3 +351,29 @@ export async function enforceStartupValidation(
   if (!report.ok) exit(1);
   return report;
 }
+
+/**
+ * The security-minimums section of the verdict, shared by boot and `doctor`.
+ *
+ * Network probing (is Redis answering on this host's external addresses?) only
+ * happens on a profile that means "reachable". On `development` and `test` the
+ * answer would be noise, and a unit test must never open sockets.
+ */
+export async function collectSecurity() {
+  const reachable = config.APP_PROFILE === 'server' || config.APP_PROFILE === 'production';
+  return runSecurityChecks({
+    profile: config.APP_PROFILE,
+    debugBind: config.REAL_CHROME_DEBUG_BIND,
+    chromeEnabled: config.REAL_CHROME_ENABLED === true,
+    redisUrl: config.REDIS_URL,
+    publicDomain: config.PUBLIC_DOMAIN,
+    webhookSecret: config.WEBHOOK_SECRET,
+    storageDriver: config.STORAGE_DRIVER,
+    sqlitePath: config.SQLITE_PATH,
+    liveShareTtlSec: config.LIVE_SHARE_TTL_SEC,
+    composeDir: path.resolve(__dirname, '..', '..'),
+    ...(reachable ? { probe: probeTcp } : {}),
+  });
+}
+
+export type { CheckLine };

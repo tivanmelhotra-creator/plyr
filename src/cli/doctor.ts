@@ -42,7 +42,8 @@
 import { config } from '../config';
 import { describeProfile, PROFILES } from '../core/EnvProfile';
 import { inspectBrowserRuntime, formatRuntimeReport } from '../core/BrowserRuntime';
-import { validateStartup } from '../core/StartupValidation';
+import { validateStartup, collectSecurity } from '../core/StartupValidation';
+import { runHttpsProbe, type CheckLine } from '../core/SecurityChecks';
 
 const BAR = '═'.repeat(72);
 const DASH = '─'.repeat(72);
@@ -116,6 +117,11 @@ async function main(): Promise<void> {
     + (config.API_TOKEN_IS_DEFAULT ? '   ⚠️  SHIPPED DEFAULT' : ''));
   out.push(`  ADMIN_SECRET               = ${mask(config.ADMIN_SECRET)}`);
   out.push(`  API_KEYS                   = ${config.API_KEYS.size} key(s) in .env`);
+  out.push(`  REAL_CHROME_DEBUG_BIND     = ${config.REAL_CHROME_DEBUG_BIND}`);
+  out.push(`  REDIS_URL                  = ${config.REDIS_URL.replace(/\/\/[^@/]*@/, '//***@')}`);
+  out.push(`  PUBLIC_DOMAIN              = ${config.PUBLIC_DOMAIN || '(unset)'}`);
+  out.push(`  WEBHOOK_SECRET             = ${config.WEBHOOK_SECRET ? mask(config.WEBHOOK_SECRET) : '(empty — outgoing webhooks are unsigned)'}`);
+  out.push(`  LIVE_SHARE_TTL_SEC         = ${config.LIVE_SHARE_TTL_SEC}`);
 
   // ── 4. Can the browser actually run? ─────────────────────────────────────
   out.push('');
@@ -124,8 +130,30 @@ async function main(): Promise<void> {
   const runtime = await inspectBrowserRuntime();
   out.push(formatRuntimeReport(runtime).split('\n').map((l) => `  ${l}`).join('\n'));
 
-  // ── 5. The verdict, in the same words the server will use at boot ────────
+  // ── 5. Security minimums ─────────────────────────────────────────────────
+  // The same rules the server prints at boot (validateStartup runs them), shown
+  // here as a checklist, plus the one probe that does not belong in a boot:
+  // a real TLS handshake against PUBLIC_DOMAIN.
+  const security = await collectSecurity();
+  const https = await runHttpsProbe(config.PUBLIC_DOMAIN);
+  out.push('');
+  out.push('SECURITY MINIMUMS');
+  out.push(DASH);
+  const mark = (c: CheckLine) => (c.state === 'ok' ? '✓' : c.state === 'warn' ? '⚠️ ' : '·');
+  for (const c of [...security.checks, ...https.checks]) {
+    out.push(`  ${mark(c)} ${c.label.padEnd(38)} ${c.detail}`);
+  }
+  if (config.API_TOKEN_IS_DEFAULT) {
+    const refused = (config.APP_PROFILE === 'server' || config.APP_PROFILE === 'production') && !config.ALLOW_DEFAULT_API_TOKEN;
+    out.push(`  ${refused ? '✗' : '⚠️ '} ${'API_TOKEN is not the public default'.padEnd(38)} admin123`
+      + (refused ? ` — REFUSED under profile ${config.APP_PROFILE}` : ' — acceptable only on a machine nobody else can reach'));
+  } else {
+    out.push(`  ✓ ${'API_TOKEN is not the public default'.padEnd(38)} custom token`);
+  }
+
+  // ── 6. The verdict, in the same words the server will use at boot ────────
   const startup = await validateStartup();
+  startup.issues.push(...https.issues);
   out.push('');
   out.push('VERDICT');
   out.push(DASH);

@@ -623,7 +623,16 @@ export const config = {
     || API_TOKEN
     || '',
   // Default share-link lifetime (seconds). 0 = never expires.
-  LIVE_SHARE_TTL_SEC: parseInt(cleanEnv(process.env.LIVE_SHARE_TTL_SEC) || '86400', 10),
+  // 2 h: longer than the longest run (MAX_JOB_DURATION_MINUTES=90), short enough
+  // that a leaked link is dead the same afternoon. It was 24 h.
+  LIVE_SHARE_TTL_SEC: (() => {
+    const n = parseInt(cleanEnv(process.env.LIVE_SHARE_TTL_SEC) || '7200', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 7200;
+  })(),
+
+  // Lets the built-in public token admin123 pass the server/production startup
+  // check. Set ONLY by docker-compose.dev.yml (disposable, loopback-only).
+  ALLOW_DEFAULT_API_TOKEN: cleanEnv(process.env.ALLOW_DEFAULT_API_TOKEN) === 'true',
 
   // ============================================
   // API Integration (F3)
@@ -643,6 +652,18 @@ export const config = {
   // How many past versions to keep per workflow. Oldest snapshots beyond this
   // are pruned on each update. 0 disables history pruning (keep everything).
   WORKFLOW_MAX_VERSIONS: parseInt(cleanEnv(process.env.WORKFLOW_MAX_VERSIONS) || '20', 10),
+
+  // ── Durable storage (src/services/storage.ts) ─────────────────────────
+  // sqlite (default): workflows, versions and execution history in one WAL
+  // file. redis: the previous layout (no execution history). Redis stays
+  // mandatory either way — it is the queue, Pub/Sub, idempotency and cron.
+  STORAGE_DRIVER: ((cleanEnv(process.env.STORAGE_DRIVER) || 'sqlite').toLowerCase() === 'redis'
+    ? 'redis' : 'sqlite') as 'sqlite' | 'redis',
+  // Keep it on a persistent volume (Docker: ./data is mounted).
+  SQLITE_PATH: path.resolve(cleanEnv(process.env.SQLITE_PATH) || './data/plyr.db'),
+  // Execution history retention: whichever limit is reached first. 0 = no limit.
+  EXECUTION_RETENTION_DAYS: parseInt(cleanEnv(process.env.EXECUTION_RETENTION_DAYS) || '30', 10),
+  EXECUTION_MAX_ROWS: parseInt(cleanEnv(process.env.EXECUTION_MAX_ROWS) || '10000', 10),
 
   // ============================================
   // Security
@@ -667,6 +688,21 @@ export const config = {
   // race is the only escape, so the value must stay well under the step
   // timeout to leave room for the engine to report the unmet condition.
   CONDITION_CODE_TIMEOUT_MS: parseInt(cleanEnv(process.env.CONDITION_CODE_TIMEOUT_MS) || '5000', 10),
+
+  // ============================================
+  // Code node (src/core/CodeNode.ts) — runs the operator's own JavaScript.
+  // NOT a security sandbox: in `single` mode the author owns the server.
+  // Always OFF in `multi` mode, whatever the env says (other tenants' code
+  // would run with this server's privileges).
+  // ============================================
+  CODE_NODE_ENABLED: DEPLOYMENT_MODE === 'single'
+    && (cleanEnv(process.env.CODE_NODE_ENABLED) || 'true').toLowerCase() !== 'false',
+  // Comma list of module roots `require()` may load. Empty = every module.
+  CODE_NODE_ALLOW_MODULES: cleanEnv(process.env.CODE_NODE_ALLOW_MODULES) || '',
+  // Default per-node timeout when the node does not set its own.
+  CODE_NODE_TIMEOUT_MS: parseInt(cleanEnv(process.env.CODE_NODE_TIMEOUT_MS) || '30000', 10),
+  // Heap cap of the worker thread (no-browser mode). 0 = Node's default.
+  CODE_NODE_MAX_MEMORY_MB: parseInt(cleanEnv(process.env.CODE_NODE_MAX_MEMORY_MB) || '512', 10),
   USE_LUA_QUOTA: cleanEnv(process.env.USE_LUA_QUOTA) !== 'false',
 
   // ============================================

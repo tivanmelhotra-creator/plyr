@@ -18,8 +18,10 @@ module.exports = {
     // If this instance serves the Remote Browser, run it with instances: 1
     // (exec_mode: "fork"). Use the cluster only for queue/API-only deployments,
     // where APP_ENV=production (headless) is also the right profile.
-    instances: 4,
-    exec_mode: "cluster",
+    // ONE instance: the SQLite file (and the Remote Browser profile lock)
+    // belong to a single process. instances > 1 is not supported.
+    instances: 1,
+    exec_mode: "fork",
     
     // ✅ اضافه شده: نمایش زمان در لاگ‌های PM2
     time: true,

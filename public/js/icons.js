@@ -230,6 +230,7 @@
     extract: 'download',
     'extract-data': 'database',
     'parse-json': 'braces',
+    code: 'terminal',
     'export-data': 'save',
     screenshot: 'camera',
     download: 'arrow-down',
@@ -245,6 +246,7 @@
     // flow control
     if: 'git-branch',
     switch: 'shuffle',
+    router: 'git-branch',
     loop: 'rotate-cw',
     foreach: 'repeat',
     while: 'infinity',

@@ -92,7 +92,7 @@ COPY public ./public
 COPY extension ./extension
 
 # Runtime data directories
-RUN mkdir -p logs profiles uploads downloads
+RUN mkdir -p logs profiles uploads downloads data workflow-files
 
 EXPOSE 3000
 

@@ -151,7 +151,9 @@ export function shouldDeliverStepEvent(
 // split. `exp` is unix-seconds; 0 means "no expiry".
 // ════════════════════════════════════════════════════════════════
 
-export const DEFAULT_SHARE_TTL_SEC = 24 * 60 * 60; // 24h
+// 2h (was 24h): longer than a run (MAX_JOB_DURATION_MINUTES=90), short enough
+// that a leaked link is dead the same afternoon. Mirrors LIVE_SHARE_TTL_SEC.
+export const DEFAULT_SHARE_TTL_SEC = 2 * 60 * 60;
 export const MAX_SHARE_TTL_SEC = 30 * 24 * 60 * 60; // 30d hard cap
 
 function b64urlEncode(s: string): string {

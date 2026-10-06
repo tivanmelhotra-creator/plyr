@@ -73,3 +73,10 @@ downloads/
 
 # Persistent per-workflow file workspace (see WORKFLOW_STORAGE_ROOT).
 workflow-files/
+
+# SQLite storage (SQLITE_PATH) and `./plyr backup` output.
+data/
+backups/
+*.db
+*.db-wal
+*.db-shm

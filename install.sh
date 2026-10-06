@@ -556,8 +556,8 @@ install_server_docker() {
     PANEL_URL="http://localhost:3000"
   fi
   if [ -f .env ] && grep -q '^API_TOKEN=$' .env 2>/dev/null; then
-    warn "API_TOKEN is empty in .env — a random one is generated at boot."
-    info "Reveal it with: ${COMPOSE} logs app | grep API_TOKEN"
+    warn "API_TOKEN is empty in .env — the server falls back to the public admin123 and REFUSES to start."
+    info "Set one:  openssl rand -hex 24   (then API_TOKEN=<value> in .env)"
   fi
   info "Follow logs:    ./plyr logs"
   info "Stop the stack: ./plyr stop --docker"
@@ -585,7 +585,7 @@ ${BOLD}Deploy on Coolify (each app runs isolated; Coolify handles domain + TLS):
      Coolify requests a Let's Encrypt certificate automatically.
   ${BOLD}5.${RESET} Environment Variables (Coolify UI):
        ${CYAN}DEPLOYMENT_MODE=single${RESET}
-       ${CYAN}API_TOKEN=$(gen_token)${RESET}   ${DIM}# or leave empty -> auto at boot${RESET}
+       ${CYAN}API_TOKEN=$(gen_token)${RESET}   ${DIM}# required: the public default admin123 is refused${RESET}
        ${CYAN}NODE_ENV=production${RESET}
   ${BOLD}6.${RESET} Deploy, then open ${BOLD}https://your-domain/${RESET} and log in with the API_TOKEN.
 

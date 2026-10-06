@@ -81,6 +81,7 @@ import path from 'path';
 import { config } from '../config';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 import { WorkflowService } from '../services/workflow.service';
+import { workflowStoreFor } from '../services/storage';
 import { isValidWorkflowId } from '../utils/redis-keys';
 import {
   WorkflowStorage,
@@ -127,7 +128,7 @@ function resolveOwner(req: AuthenticatedRequest): string | null {
 
 export const createWorkflowFilesRoutes = ({ connection }: Deps): Router => {
   const router = Router();
-  const workflows = new WorkflowService(connection);
+  const workflows = new WorkflowService(workflowStoreFor(connection));
   // The Local Browser's binding lives in the same Redis as the workflow it
   // names (see WorkflowBinding.ts, "WHERE THE LOCAL BROWSER'S BINDING LIVES"),
   // so it survives a restart and is shared by every pm2 worker.

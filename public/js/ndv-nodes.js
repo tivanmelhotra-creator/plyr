@@ -82,9 +82,18 @@
         var tok = ev.dataTransfer.getData('text/x-expr') || ev.dataTransfer.getData('text/plain');
         if (!tok) return;
         var pos = input.selectionStart != null ? input.selectionStart : input.value.length;
-        input.value = input.value.slice(0, pos) + tok + input.value.slice(pos);
-        opts.onChange(input.value);
-        renderPreview(input.value);
+        var next = input.value.slice(0, pos) + tok + input.value.slice(pos);
+        if (!isExpr) {
+          // A token in a Fixed field is only text; flip to Expression (as n8n does).
+          isExpr = true;
+          fx.classList.add('on');
+          build();
+          input = host.querySelector('textarea, input');
+        }
+        input.value = next;
+        opts.value = next;
+        opts.onChange(next);
+        renderPreview(next);
       });
     }
 
@@ -420,10 +429,17 @@
             codePreview = JSON.stringify(M().clickPayloadPreview(ctx.node.params), null, 1)
               .replace(/\n\s*/g, ' ');
           } catch (e) { codePreview = null; }
-        } else if (ctx.node && (ctx.node.action === 'if' || ctx.node.action === 'while')) {
+        } else if (ctx.node && (ctx.node.action === 'if' || ctx.node.action === 'router' || ctx.node.action === 'while')) {
           codePreview = '{ "result": true, "matchedGroup": "A", "evaluatedConditions": [] }';
         }
-        body.appendChild(ui.outputEmpty(t('ndv.outEmptyTitle'), t('ndv.outEmptySub'), codePreview));
+        if (ctx.executed) {
+          // It ran and returned nothing: say THAT, not "run to see output".
+          body.appendChild(ui.outputEmpty(t('ndv.outRanEmpty'), '', null));
+          return;
+        }
+        var emptyEl = ui.outputEmpty(t('ndv.outEmptyTitle'), t('ndv.outEmptySub'), codePreview);
+        if (typeof ctx.runButton === 'function') emptyEl.appendChild(ctx.runButton());
+        body.appendChild(emptyEl);
         return;
       }
       if (view === 'json' || view === 'table') {
@@ -631,8 +647,11 @@
     var m = M();
     var node = ctx.node;
     var exprCtx = ctx.exprContext || { json: {}, index: 0 };
-    // `while` loops on ONE condition — prioritised paths are an `if` feature.
-    var multiCapable = node.action === 'if';
+    // `while` loops on ONE condition — prioritised paths are an `if` / `router`
+    // feature. A Router is ALWAYS in the path-list shape (even with one path),
+    // because it has no true/false form: its fallback is the `default` port.
+    var isRouter = node.action === 'router';
+    var multiCapable = node.action === 'if' || isRouter;
     var paths = multiCapable ? m.readPaths(node.params)
       : [{ id: 'p1', name: '', groups: m.readGroups(node.params) }];
     var nodeKey = node.id || node.action;
@@ -642,7 +661,7 @@
     var groups = paths[active].groups;
 
     function commit() {
-      if (multiCapable) m.writePaths(node.params, paths);
+      if (multiCapable) m.writePaths(node.params, paths, isRouter);
       else m.writeGroups(node.params, groups);
       if (ctx.onParamsChange) ctx.onParamsChange();
     }
@@ -661,7 +680,8 @@
     // silent switch would look like the conditions had been rewritten.
     var head = ui.el('div', 'cb-head');
     var headTitle = t('cb.builder');
-    if (multiCapable && paths.length > 1) {
+    var pathShape = multiCapable && (isRouter || paths.length > 1);
+    if (pathShape) {
       headTitle += ' — ' + m.pathLabel(paths[active], active, t);
     }
     head.appendChild(ui.el('div', 'cb-head-title', headTitle));
@@ -749,14 +769,14 @@
       var neutral = ui.el('div', 'cb-pathitem is-neutral');
       neutral.appendChild(ui.el('span', 'cb-path-pill neutral', '—'));
       var ntext = ui.el('div', 'cb-path-neutral-text');
-      ntext.appendChild(ui.el('span', 'cb-path-neutral-title', t('cb.neutralPath')));
-      ntext.appendChild(ui.el('span', 'cb-path-neutral-sub', t('cb.neutralPathSub')));
+      ntext.appendChild(ui.el('span', 'cb-path-neutral-title', t(isRouter ? 'cb.defaultPath' : 'cb.neutralPath')));
+      ntext.appendChild(ui.el('span', 'cb-path-neutral-sub', t(isRouter ? 'cb.defaultPathSub' : 'cb.neutralPathSub')));
       neutral.appendChild(ntext);
       list.appendChild(neutral);
     }
     pathRow.appendChild(list);
-    if (multiCapable && paths.length > 1) {
-      pathRow.appendChild(ui.el('div', 'cb-path-hint', t('cb.pathOrder')));
+    if (pathShape) {
+      pathRow.appendChild(ui.el('div', 'cb-path-hint', t(isRouter ? 'cb.routerOrder' : 'cb.pathOrder')));
     }
     col.appendChild(pathRow);
 
@@ -848,12 +868,12 @@
     //              `next` card: exactly the ports the canvas draws.
     var isIf = node.action === 'if';
     var res = ui.el('div', 'cb-results');
-    if (multiCapable && paths.length > 1) {
+    if (pathShape) {
       res.classList.add('is-paths');
       paths.forEach(function (p, i) {
         res.appendChild(pathResultCard(p, i, i === active));
       });
-      res.appendChild(neutralResultCard());
+      res.appendChild(neutralResultCard(isRouter));
     } else {
       res.appendChild(resultCard(true, isIf));
       res.appendChild(resultCard(false, isIf));
@@ -912,14 +932,14 @@
 
   // The neutral fallback: taken when NO path matched. Non-configurable by
   // design — it is the absence of a match, not a condition of its own.
-  function neutralResultCard() {
+  function neutralResultCard(isRouter) {
     var ui = UI();
     var card = ui.el('div', 'cb-result-card neutral');
     card.appendChild(ui.el('span', 'cb-result-prio', '—'));
     var texts = ui.el('div', 'cb-result-texts');
-    texts.appendChild(ui.el('div', 'cb-result-title', t('cb.neutralPath')));
-    texts.appendChild(ui.el('div', 'cb-result-sub', t('cb.neutralPathSub')));
-    texts.appendChild(ui.el('span', 'cb-result-pill', t('cb.outputPort') + ' ' + t('port.next')));
+    texts.appendChild(ui.el('div', 'cb-result-title', t(isRouter ? 'cb.defaultPath' : 'cb.neutralPath')));
+    texts.appendChild(ui.el('div', 'cb-result-sub', t(isRouter ? 'cb.defaultPathSub' : 'cb.neutralPathSub')));
+    texts.appendChild(ui.el('span', 'cb-result-pill', t('cb.outputPort') + ' ' + t(isRouter ? 'port.default' : 'port.next')));
     card.appendChild(texts);
     return card;
   }
@@ -1197,7 +1217,7 @@
     var action = ctx.node && ctx.node.action;
     if (!M().isDesigned(action)) return false;
     if (action === 'click') return renderClick(col, ctx);
-    if (action === 'if' || action === 'while') return renderCondition(col, ctx);
+    if (action === 'if' || action === 'router' || action === 'while') return renderCondition(col, ctx);
     return false;
   }
 

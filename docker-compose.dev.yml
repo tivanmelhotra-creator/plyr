@@ -22,10 +22,15 @@ services:
       APP_ENV: server
       DEPLOYMENT_MODE: single
       API_TOKEN: admin123
+      # The ONLY place the public default token is acceptable under APP_ENV=server:
+      # this stack is disposable and bound to 127.0.0.1. Anywhere else the server
+      # refuses to start with admin123 (see src/core/StartupValidation.ts).
+      ALLOW_DEFAULT_API_TOKEN: "true"
       REDIS_URL: redis://redis:6379
       PORT: "3000"
       PUBLIC_DOMAIN: http://localhost:3000
       WORKFLOW_STORAGE_ROOT: /app/workflow-files
+      SQLITE_PATH: /app/data/plyr.db
     ports:
       - "127.0.0.1:3000:3000"
     shm_size: "1gb"
