@@ -1,0 +1,141 @@
+name: Docker package
+
+# Builds the image once per pushed commit and publishes it to GHCR as
+#   ghcr.io/<owner>/<repo>:<full-commit-sha>   (immutable, used by ./plyr dev-docker)
+#   ghcr.io/<owner>/<repo>:<branch>            (moving, for humans)
+#   ghcr.io/<owner>/<repo>:latest              (default branch only)
+# `./plyr dev-docker` pulls the SHA tag of a clean checkout instead of building
+# the Playwright image locally, so every commit must get a SHA tag: pushes have
+# no path filter. The GitHub Actions layer cache keeps unchanged layers fast.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    paths:
+      - Dockerfile
+      - docker-compose.dev.yml
+      - docker-compose.yml
+      - .dockerignore
+      - package.json
+      - package-lock.json
+      - scripts/**
+      - src/**
+      - public/**
+      - extension/**
+      - .github/workflows/docker-package.yml
+  workflow_dispatch:
+
+concurrency:
+  group: docker-package-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    # Same-repo PR commits are already built and published by the push event;
+    # only fork PRs (which cannot publish) are built here, as a check.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate development package
+        run: |
+          bash -n scripts/plyr.sh
+          docker compose -p plyr-dev -f docker-compose.dev.yml config --quiet
+
+      - name: Compute image name (GHCR requires lowercase)
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Build ONCE into the local Docker engine as plyr-dev:local — the exact tag
+      # docker-compose.dev.yml runs — so the smoke test below boots the very
+      # image that is published afterwards.
+      - name: Build production-parity image from Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          pull: true
+          load: true
+          push: false
+          tags: |
+            plyr-dev:local
+            ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Boot the image exactly like `./plyr dev-docker` does (same Compose file,
+      # same env) and use it. A green build alone is not enough: an image that
+      # builds but cannot start (e.g. a native addon missing its binding) used
+      # to be published, and `dev-docker --ref` then pulled a broken image.
+      # Nothing is pushed unless this passes.
+      - name: Smoke test - start the dev stack like ./plyr dev-docker
+        run: |
+          set -euo pipefail
+          dc="docker compose -p plyr-ci -f docker-compose.dev.yml"
+          $dc up -d --no-build --wait --wait-timeout 180
+          id="$(scripts/ci/dev-docker-smoke.sh write)"
+          # Restart the app (Redis untouched) — the workflow must come back
+          # from the durable store, not from process memory.
+          $dc restart app
+          $dc up -d --no-build --wait --wait-timeout 180
+          scripts/ci/dev-docker-smoke.sh read "$id"
+          # The SQLite file really is where the compose file says.
+          $dc exec -T app node -e "const D=require('better-sqlite3');const db=new D('/app/data/plyr.db',{readonly:true});const n=db.prepare('SELECT COUNT(*) n FROM workflows').get().n;console.log('workflows in SQLite:',n);process.exit(n>0?0:1)"
+
+      - name: Smoke test logs (on failure)
+        if: failure()
+        run: docker compose -p plyr-ci -f docker-compose.dev.yml logs --no-color --tail=300 || true
+
+      - name: Smoke test teardown
+        if: always()
+        run: docker compose -p plyr-ci -f docker-compose.dev.yml down --volumes --remove-orphans || true
+
+      - name: Publish the tested image
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker push "$tag"
+          done <<< "$TAGS"
+
+      - name: How to run this exact image
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Image published"
+            echo '```bash'
+            echo "./plyr dev-docker --ref ${GITHUB_SHA}"
+            echo "docker pull ${{ steps.image.outputs.name }}:${GITHUB_SHA}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
