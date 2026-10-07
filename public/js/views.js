@@ -3308,11 +3308,14 @@
             '</div>' +
           '</div>' +
         '</div>' +
+        // Server configuration (what used to require editing .env): public/js/settings-ui.js
+        '<section id="server-settings" class="server-settings"></section>' +
       '</section>';
 
     root.querySelector('#set-lang').addEventListener('click', function () {
       if (window.I18N) window.I18N.toggle();
     });
+    if (window.SettingsUI) window.SettingsUI.render(root.querySelector('#server-settings'));
   }
 
   function render(route, root) {

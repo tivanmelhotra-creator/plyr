@@ -89,6 +89,7 @@
 // RuntimeSettings before config would snapshot an environment with no `.env` in
 // it and silently resolve every setting to its default.
 import 'dotenv/config';
+import './PersistedSettings';
 import { promises as fs } from 'fs';
 import path from 'path';
 

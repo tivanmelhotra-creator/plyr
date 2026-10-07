@@ -17,6 +17,29 @@ const API_KEY_REVOKED_CHANNEL = 'api_key:revoked';
 // [H — Step 18] Fixed identity for single-user self-hosted mode.
 export const SINGLE_USER_ID = 'local';
 
+/** A loopback peer, read from the SOCKET (never from X-Forwarded-For, which a client writes). */
+export function isLoopbackAddress(addr: string | undefined): boolean {
+  if (!addr) return false;
+  const a = addr.replace(/^::ffff:/, '');
+  return a === '127.0.0.1' || a === '::1' || a.startsWith('127.');
+}
+
+/**
+ * Does AUTH_MODE=open apply to THIS request?
+ *
+ * Open mode is only ever in force on a development profile (config.AUTH_OPEN).
+ * Even then it covers only callers that cannot be anyone but the owner: a
+ * connection from this same machine, or any caller on a stack that is
+ * loopback-only by construction and says so with ALLOW_OPEN_AUTH=true
+ * (docker-compose.dev.yml publishes 127.0.0.1:3000 only). A dev box on a LAN
+ * therefore still asks a colleague's laptop for the token.
+ */
+export function isOpenAuthRequest(req: { socket?: { remoteAddress?: string } }): boolean {
+  if (!config.AUTH_OPEN) return false;
+  if (config.ALLOW_OPEN_AUTH) return true;
+  return isLoopbackAddress(req.socket?.remoteAddress);
+}
+
 // Interface for metadata
 export interface ApiKeyMetadata {
   userId: string;
@@ -330,6 +353,14 @@ export const requireApiKey = async (
   // multi-user strict binding.
   // ============================================
   if (config.IS_SINGLE_USER) {
+    // AUTH_MODE=open (development only): a keyless request IS the owner.
+    if (!apiKey && isOpenAuthRequest(req)) {
+      req.apiKey = config.API_TOKEN;
+      req.apiKeyPrefix = 'open';
+      req.apiKeyUserId = (process.env.API_TOKEN_USER_ID) || SINGLE_USER_ID;
+      next();
+      return;
+    }
     if (!apiKey) {
       res.status(401).json({
         success: false,

@@ -56,6 +56,8 @@ const JS_ALL = [
   'workflow-files.js', 'workflow-exchange.js',
   // Per-run browser option catalog + its "Add option" panel (Launch Browser node).
   'browser-options.js', 'browser-options-ui.js',
+  // Server settings (Settings page): every label, badge and button is user-visible copy.
+  'settings-ui.js',
 ];
 
 /**

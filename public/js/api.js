@@ -134,6 +134,12 @@
    * so any valid key resolves to its owner.
    * Resolves with { valid, userId, isAdmin } — rejects only on network errors.
    */
+  /** Public: does this server want a login at all? (AUTH_MODE, see settings.routes.ts) */
+  function authMode() {
+    return fetch('/auth/mode', { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : { mode: 'token' }; });
+  }
+
   function validateKey(key) {
     return fetch('/me', {
       headers: { 'x-api-key': key, Accept: 'application/json' },
@@ -402,5 +408,6 @@
     del: del,
     health: health,
     validateKey: validateKey,
+    authMode: authMode,
   };
 })();

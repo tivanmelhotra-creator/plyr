@@ -64,6 +64,7 @@ import { setLiveSessionRebuilder } from './Routes/browser.routes';
 
 // Routes
 import { createAllRoutes } from './Routes';
+import { createSettingsRoutes } from './Routes/settings.routes';
 
 // ============================================
 // EXPRESS SETUP
@@ -322,6 +323,8 @@ app.use('/browser', asyncAuthMiddleware);
 // inspector routes carry element data read off logged-in pages. Neither may be
 // reachable without a key.
 app.use('/browser-mode', asyncAuthMiddleware);
+// Settings page: everything but GET /auth/mode needs a key (see settings.routes.ts).
+app.use('/settings', asyncAuthMiddleware);
 
 /**
  * INSPECTOR AUTH — an API key, OR a credential the Inspector itself issued.
@@ -516,6 +519,9 @@ app.use('/', routes.browser);
 app.use('/', routes.mode);
 app.use('/', routes.workflowFiles);
 app.use('/admin', routes.admin);
+const settingsRoutes = createSettingsRoutes();
+app.use('/', settingsRoutes.publicRouter);
+app.use('/', settingsRoutes.router);
 
 // ============================================
 // LIVE CHANNEL - SSE fallback (Step 16)

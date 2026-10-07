@@ -21,6 +21,10 @@ ready() { printf '[plyr] READY: %s\n' "$*"; }
 not_ready() { printf '[plyr] NOT READY: %s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Launch questions (numbered choices) for start/install/setup/dev-docker.
+# shellcheck source=scripts/setup-wizard.sh
+source "$ROOT_DIR/scripts/setup-wizard.sh"
+
 STARTED_APP_PID=''
 REDIS_STARTED_THIS_RUN=0
 DESKTOP_STARTED_THIS_RUN=0
@@ -56,6 +60,7 @@ ensure_env() {
       sed -i.bak "s|^API_TOKEN=admin123\r\{0,1\}$|API_TOKEN=${fresh_token}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
       say "generated a random API_TOKEN in $ENV_FILE (the panel login key)"
     fi
+    PLYR_ENV_FRESH=1
     say "created $ENV_FILE from .env.example (existing state was preserved)"
   fi
 }
@@ -204,8 +209,13 @@ system_install() {
 }
 
 install_native() {
-  ensure_env; load_env
-  if [[ -f "$ROOT_DIR/scripts/ask-domain.sh" ]]; then
+  ensure_env
+  local wizard_asked=0
+  if _wz_tty; then plyr_setup "$ROOT_DIR" "$ENV_FILE" --if-needed; wizard_asked=1; fi
+  load_env
+  if [[ "$wizard_asked" == 1 ]]; then
+    : # the setup questions already covered the public address
+  elif [[ -f "$ROOT_DIR/scripts/ask-domain.sh" ]]; then
     # shellcheck disable=SC1090
     source "$ROOT_DIR/scripts/ask-domain.sh"
     if [[ -z "${AB_NO_PROMPT:-}" ]]; then
@@ -491,18 +501,31 @@ dev_docker_build_local() {
 }
 
 dev_docker() {
-  local source=auto ref='' fresh=0
+  local source=auto ref='' fresh=0 dev_mode='' dev_token=''
   while (( $# )); do
     case "$1" in
+      --mode) [[ $# -ge 2 ]] || fail "--mode needs dev or prod"; dev_mode="$2"; shift ;;
+      --mode=*) dev_mode="${1#--mode=}" ;;
+      --dev) dev_mode=dev ;;
+      --prod) dev_mode=prod ;;
+      --token) [[ $# -ge 2 ]] || fail "--token needs new, keep or a value"; dev_token="$2"; shift ;;
+      --token=*) dev_token="${1#--token=}" ;;
+      --yes|-y) PLYR_YES=1 ;;
       --build) source=build ;;
       --fresh) source=build; fresh=1 ;;
       --prebuilt) source=prebuilt ;;
       --ref) [[ $# -ge 2 ]] || fail "--ref needs a branch, tag, SHA or pr-N"; ref="$2"; source=prebuilt; shift ;;
       --ref=*) ref="${1#--ref=}"; source=prebuilt ;;
-      *) fail "unknown dev-docker option: $1 (use --build, --fresh, --prebuilt or --ref <branch|sha|pr-N>)" ;;
+      *) fail "unknown dev-docker option: $1 (use --build, --fresh, --prebuilt, --ref <branch|sha|pr-N>, --dev, --prod, --token new|keep|<value>, --yes)" ;;
     esac
     shift
   done
+  case "$dev_mode" in ''|dev|prod) ;; development) dev_mode=dev ;; production|server) dev_mode=prod ;; *) fail "--mode must be dev or prod" ;; esac
+  [[ -z "$dev_token" || "$dev_mode" != dev ]] || fail "--token only applies to --prod (development needs no login)"
+  [[ -z "$dev_token" || -n "$dev_mode" ]] || dev_mode=prod
+  # Questions first, before the (slow) image pull/build.
+  local DEV_ENV_FILE='' DEV_SUMMARY_MODE='' DEV_SUMMARY_TOKEN='' DEV_SUMMARY_NOTE=''
+  dev_docker_setup "$dev_mode" "$dev_token" "$ROOT_DIR/.plyr" || return 1
   [[ -f "$DEV_COMPOSE_FILE" ]] || fail "Missing docker-compose.dev.yml"
   have docker || install_dev_docker_engine || return 1
   local docker_cmd=(docker)
@@ -524,7 +547,7 @@ dev_docker() {
     error "Docker Compose plugin is missing: https://docs.docker.com/compose/install/linux/"
     return 1
   fi
-  local dc=("${docker_cmd[@]}" compose --project-name "$DEV_PROJECT" --file "$DEV_COMPOSE_FILE")
+  local dc=("${docker_cmd[@]}" compose --project-name "$DEV_PROJECT" --env-file "$DEV_ENV_FILE" --file "$DEV_COMPOSE_FILE")
   "${dc[@]}" config --quiet || { error "Invalid development Compose configuration"; return 1; }
 
   # Obtain the image first: a failed pull/build must leave the previous working
@@ -551,7 +574,14 @@ dev_docker() {
   if ! "${dc[@]}" exec -T app node -e "require('http').get('http://127.0.0.1:3000/health/browser',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
     error "Browser runtime is not ready; inspect dev Compose logs"; return 1
   fi
-  ready "Development Docker stack: http://localhost:3000 (API_TOKEN=admin123, dev-only via ALLOW_DEFAULT_API_TOKEN; loopback only)"
+  if [[ "$DEV_SUMMARY_MODE" == prod ]]; then
+    ready "Development Docker stack (production-like login): http://localhost:3000"
+    printf '[plyr]        API token: %s%s\n' "$DEV_SUMMARY_TOKEN" "$([[ "$DEV_SUMMARY_NOTE" == kept ]] && echo '  (same as last time)')"
+    printf '[plyr]        Change it any time in the panel: Settings > Server settings.\n'
+  else
+    ready "Development Docker stack: http://localhost:3000 (no login needed; loopback only)"
+  fi
+  printf '[plyr]        Next time, skip the question:  ./plyr dev-docker %s--%s\n' "$([[ -n "$ref" ]] && printf -- '--ref %s ' "$ref")" "$DEV_SUMMARY_MODE"
 }
 
 stop_native() {
@@ -701,13 +731,20 @@ Examples:
   ./plyr doctor --deep
   ./plyr dev-docker     # disposable, loopback-only test stack (pulls CI image when available)
   ./plyr dev-docker --ref pr-47   # test a pushed branch/PR/SHA without checking it out
+  ./plyr dev-docker --ref pr-47 --prod --token new   # same, no questions, real token
+  ./plyr setup          # environment, login/token, domain — numbered choices
 
 Commands:
-  dev-docker [--build|--fresh|--prebuilt|--ref <branch|sha|pr-N>]
+  dev-docker [--build|--fresh|--prebuilt|--ref <branch|sha|pr-N>] [--dev|--prod] [--token new|keep|<value>] [--yes]
                           Get image (CI-built for clean HEAD, else cached local build),
                           replace dev stack, wait for health. --fresh = --no-cache --pull.
+                          Asks: development (no login) or production-like (real token).
+  setup                   Environment, login/token, domain as numbered choices.
+                          Same values as the panel: Settings > Server settings.
   install                 Bootstrap .env, dependencies, browsers and build
-  start [--dev|--build|--native|--docker]
+  start [--dev|--build|--native|--docker] [--yes]
+                          First start asks the setup questions; later starts offer
+                          "start with current settings" (Enter). --yes = no questions.
   stop [--native|--docker]
   restart [--native|--docker]
   status [--native|--docker]
@@ -729,8 +766,20 @@ main() {
     dev-docker) dev_docker "$@" ;;
     install) [[ "${1:-}" == "--docker" ]] && { ensure_env; load_env; docker_available || fail "Docker/Compose is not available"; (cd "$ROOT_DIR" && docker compose build); return; }; install_native ;;
     install-and-start-dev) install_native; start_native dev ;;
+    setup)
+      ensure_env
+      if ! _wz_tty; then
+        info "setup needs an interactive terminal — or change the same values in the panel: Settings → Server settings"
+        return 0
+      fi
+      plyr_setup "$ROOT_DIR" "$ENV_FILE"
+      if [[ -n "$(active_mode 2>/dev/null || true)" ]]; then info "restart to apply: ./plyr restart"; fi
+      ;;
     start)
-      local mode=auto active=''; for arg in "$@"; do case "$arg" in --dev) mode=dev;; --build) mode=build;; --native) mode=native;; --docker) mode=docker;; esac; done
+      local mode=auto active=''; for arg in "$@"; do case "$arg" in --dev) mode=dev;; --build) mode=build;; --native) mode=native;; --docker) mode=docker;; --yes|-y) PLYR_YES=1;; esac; done
+      # Ask before anything starts (first run: full setup; later: Enter = same settings).
+      ensure_env
+      plyr_setup "$ROOT_DIR" "$ENV_FILE" --if-needed
       active="$(active_mode 2>/dev/null || true)"
       mode="$(select_mode "$mode")"
       if [[ -n "$active" && "$active" != "$mode" ]]; then stop_runtime "$active"; fi

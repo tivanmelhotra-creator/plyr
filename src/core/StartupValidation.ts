@@ -189,6 +189,19 @@ export async function validateStartup(): Promise<StartupReport> {
     });
   }
 
+  // AUTH_MODE=open outside development is IGNORED (the token stays required);
+  // say so, so the operator is not surprised by a login screen.
+  if (config.AUTH_MODE_REQUESTED === 'open' && !config.AUTH_OPEN_ALLOWED) {
+    issues.push({
+      id: 'open_auth_ignored',
+      severity: 'warn',
+      feature: 'Authentication',
+      problem: `AUTH_MODE=open was requested but the profile is ${config.APP_PROFILE}: login without a token `
+        + 'is only honoured in development. The API token is required.',
+      fix: 'Remove AUTH_MODE=open, or run with APP_ENV=development on a machine only you can reach.',
+    });
+  }
+
   // ── Security minimums (Redis exposure, DevTools bind, HTTPS, webhooks, …) ──
   const security = await collectSecurity();
   issues.push(...security.issues);

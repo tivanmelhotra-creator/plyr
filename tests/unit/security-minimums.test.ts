@@ -267,7 +267,7 @@ describe('LIVE_SHARE_TTL_SEC', () => {
     expect(DEFAULT_LIVE_SHARE_TTL_SEC).toBe(7200);
     const example = fs.readFileSync(path.join(REPO, '.env.example'), 'utf8');
     expect(example).toMatch(/^LIVE_SHARE_TTL_SEC=7200\r?$/m);
-    expect(fs.readFileSync(path.join(REPO, 'src/config.ts'), 'utf8')).toMatch(/'7200'/);
+    expect(fs.readFileSync(path.join(REPO, 'src/config.ts'), 'utf8')).toMatch(/intNow\('LIVE_SHARE_TTL_SEC', 7200,/);
   });
 
   it('is longer than the longest default run, so a link never dies mid-run', () => {
@@ -289,7 +289,8 @@ describe('dev-only admin123 — repository wiring', () => {
     const files = fs.readdirSync(REPO).filter((n) => /^docker-compose.*\.ya?ml$/.test(n));
     for (const f of files) {
       const text = read(f);
-      const sets = /^\s*API_TOKEN:\s*admin123/m.test(text);
+      // Literal, or as the bare-compose fallback of ./plyr dev-docker's own token.
+      const sets = /^\s*API_TOKEN:\s*(admin123|\$\{PLYR_DEV_API_TOKEN:-admin123\})/m.test(text);
       if (f === 'docker-compose.dev.yml') {
         expect(sets).toBe(true);
         expect(text).toMatch(/ALLOW_DEFAULT_API_TOKEN:\s*"true"/);
@@ -297,6 +298,9 @@ describe('dev-only admin123 — repository wiring', () => {
       } else {
         expect(sets, f).toBe(false);
         expect(text, f).not.toMatch(/ALLOW_DEFAULT_API_TOKEN:\s*"?true/);
+        // Login without a token is allowed only on the loopback-only dev stack.
+        expect(text, f).not.toMatch(/ALLOW_OPEN_AUTH:\s*"?true/);
+        expect(text, f).not.toMatch(/AUTH_MODE:\s*"?open/);
       }
     }
   });

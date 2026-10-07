@@ -21,10 +21,18 @@ services:
       NODE_ENV: production
       APP_ENV: server
       DEPLOYMENT_MODE: single
-      API_TOKEN: admin123
-      # The ONLY place the public default token is acceptable under APP_ENV=server:
-      # this stack is disposable and bound to 127.0.0.1. Anywhere else the server
-      # refuses to start with admin123 (see src/core/StartupValidation.ts).
+      # `./plyr dev-docker` asks "development (no login) or production-like
+      # (real token)" and passes the answer through --env-file
+      # .plyr/dev-docker.env. Both modes get a random token; the fallbacks below
+      # only apply to a bare `docker compose -f docker-compose.dev.yml up`.
+      API_TOKEN: ${PLYR_DEV_API_TOKEN:-admin123}
+      AUTH_MODE: ${PLYR_DEV_AUTH_MODE:-open}
+      # Open login is otherwise refused under APP_ENV=server. Allowed here only
+      # because this stack is disposable and published on 127.0.0.1 alone.
+      ALLOW_OPEN_AUTH: "true"
+      # The ONLY place the public default token is acceptable under APP_ENV=server
+      # (the bare-compose fallback above). Anywhere else the server refuses to
+      # start with admin123 (see src/core/StartupValidation.ts).
       ALLOW_DEFAULT_API_TOKEN: "true"
       REDIS_URL: redis://redis:6379
       PORT: "3000"

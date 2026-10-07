@@ -7882,3 +7882,44 @@ textarea.ndv-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 
 .ndv-empty-run { margin-top: 12px; align-self: flex-start; }
 .aria-out-empty .ndv-empty-run { align-self: center; }
 .ndv-row.drag-over { outline: 1px dashed var(--primary); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+/* ============================================
+   Server settings (public/js/settings-ui.js)
+   ============================================ */
+.server-settings { display: grid; gap: 16px; margin-top: 16px; }
+.set-row { padding: 14px 0; border-top: 1px solid var(--border); }
+.set-row:first-of-type { border-top: 0; padding-top: 4px; }
+.set-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.set-row-title { font-weight: 600; }
+.set-row-hint { margin: 4px 0 10px; }
+.set-seg {
+  display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 3px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+.set-seg-btn {
+  padding: 7px 14px; background: transparent; border: 0; border-radius: 7px;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--text-dim); cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.set-seg-btn:hover:not(:disabled) { color: var(--text); }
+.set-seg-btn.on { background: var(--primary-soft); color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.set-seg-btn:disabled { opacity: .45; cursor: not-allowed; }
+.set-select, .set-input {
+  padding: 8px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font: inherit; font-size: 14px; min-width: 220px;
+}
+.set-text, .set-own { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.set-own { margin-top: 8px; }
+.set-own .set-input { flex: 1 1 260px; }
+.set-secret-val {
+  display: inline-block; max-width: 100%; overflow-wrap: anywhere; direction: ltr;
+  padding: 6px 10px; margin-bottom: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.set-big { display: block; font-size: 15px; padding: 10px 12px; user-select: all; }
+.set-warn { color: var(--warn); font-size: 13px; margin: 8px 0 0; }
+.set-opt-hint { margin: 8px 0 0; }
+.set-modal {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center;
+  background: rgba(0, 0, 0, .55); padding: 16px;
+}
+.set-modal-card { max-width: 560px; width: 100%; }
