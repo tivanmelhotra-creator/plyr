@@ -102,10 +102,32 @@ export function migrate(db: SqliteDb): number {
   return schemaVersionOf(db);
 }
 
+/**
+ * better-sqlite3 is a native addon. When its compiled binding is missing
+ * (`npm ci --ignore-scripts`, a Node upgrade, copying node_modules between
+ * machines) the raw error is a 30-line "Could not locate the bindings file"
+ * trace that names neither the feature nor the fix.
+ */
+export function describeOpenError(e: unknown, file: string): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/bindings file|NODE_MODULE_VERSION|was compiled against a different Node|invalid ELF|better_sqlite3\.node/i.test(msg)) {
+    return 'SQLite storage is unavailable: the native better-sqlite3 binding is missing or was built for another '
+      + `Node.js (${process.version}). Fix: run \`npm rebuild better-sqlite3\` (Docker: rebuild the image), `
+      + 'or set STORAGE_DRIVER=redis to keep the previous Redis-only storage. '
+      + `Original error: ${msg.split('\n')[0]}`;
+  }
+  return `Could not open the SQLite database at ${file}: ${msg}`;
+}
+
 /** Open (creating if needed) the DB file in WAL mode and migrate it. */
 export function openSqlite(file: string): SqliteDb {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
+  let db: SqliteDb;
+  try {
+    db = new Database(file);
+  } catch (e) {
+    throw new Error(describeOpenError(e, file));
+  }
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');

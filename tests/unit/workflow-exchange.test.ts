@@ -67,6 +67,15 @@ describe('workflow-exchange (shared module)', () => {
     expect((steps[1] as any).disabled).toBeUndefined(); // input untouched
   });
 
+  it('recognises a Code node by its normalised name (" code", "CODE")', () => {
+    const r = X.disableCodeNodes([{ action: ' code' }, { action: 'CODE\n' }, { action: 'codex' }, { action: 'goto' }]);
+    expect(r.count).toBe(2);
+    expect(r.steps[0].disabled).toBe(true);
+    expect(r.steps[1].disabled).toBe(true);
+    expect(r.steps[2].disabled).toBeUndefined();
+    expect(r.steps[3].disabled).toBeUndefined();
+  });
+
   it('client parse() classifies bad files', () => {
     expect(X.parse('{nope').code).toBe('json');
     expect(X.parse('[]').code).toBe('shape');

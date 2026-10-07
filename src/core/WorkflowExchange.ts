@@ -90,6 +90,20 @@ export function buildNativeEnvelope(wf: { name: string; description?: string | n
   return api.buildEnvelope(wf);
 }
 
+/**
+ * Second, authoritative pass of the "imported Code nodes arrive disabled" rule,
+ * run on the steps AFTER validateSteps() — i.e. on exactly what will be stored.
+ * parseExchange() already disabled them on the raw file, but validateSteps()
+ * normalises (trims `action`), so any normalisation it gains later can never
+ * again turn a step the first pass did not recognise into a live Code node.
+ */
+export function enforceImportedCodeDisabled<T>(steps: T[]): { steps: T[]; count: number } {
+  const api = load();
+  if (!api) throw new Error(loadError || 'workflow exchange unavailable');
+  const r = api.disableCodeNodes(steps);
+  return { steps: r.steps as T[], count: r.count };
+}
+
 const envelopeSchema = z.object({
   format: z.literal(EXCHANGE_FORMAT),
   version: z.number().int().min(1),

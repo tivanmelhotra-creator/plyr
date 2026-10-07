@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
-  openSqlite, migrate, schemaVersionOf, SCHEMA_VERSION, backupSqlite, inspectSqliteFile, getMeta,
+  openSqlite, migrate, schemaVersionOf, SCHEMA_VERSION, backupSqlite, inspectSqliteFile, getMeta, describeOpenError,
 } from '../../src/core/SqliteStore';
 import { SqliteWorkflowRepository, RedisWorkflowRepository } from '../../src/services/workflow.repository';
 import { ExecutionRepository, summarizeSteps } from '../../src/services/execution.repository';
@@ -225,5 +225,25 @@ describe('Redis repository still satisfies the same contract', () => {
     const svc = new WorkflowService({ get: async () => null } as never);
     expect(svc.driver).toBe('redis');
     expect(new RedisWorkflowRepository({} as never).driver).toBe('redis');
+  });
+});
+
+// The Docker image once shipped without the compiled binding (`npm ci
+// --ignore-scripts`): boot then died with a bare "Could not locate the bindings
+// file". The message must name the feature, the fix and the escape hatch.
+describe('describeOpenError', () => {
+  it('turns a missing native binding into an actionable message', () => {
+    const m = describeOpenError(new Error('Could not locate the bindings file. Tried:\n → /x/better_sqlite3.node'), '/d/plyr.db');
+    expect(m).toMatch(/native better-sqlite3 binding/);
+    expect(m).toMatch(/npm rebuild better-sqlite3/);
+    expect(m).toMatch(/STORAGE_DRIVER=redis/);
+    expect(m).not.toMatch(/\n/);
+  });
+  it('recognises an ABI mismatch after a Node upgrade', () => {
+    const m = describeOpenError(new Error('was compiled against a different Node.js version using NODE_MODULE_VERSION 115'), 'f');
+    expect(m).toMatch(/native better-sqlite3 binding/);
+  });
+  it('keeps the path for an ordinary open error', () => {
+    expect(describeOpenError(new Error('SQLITE_CANTOPEN'), '/ro/plyr.db')).toBe('Could not open the SQLite database at /ro/plyr.db: SQLITE_CANTOPEN');
   });
 });

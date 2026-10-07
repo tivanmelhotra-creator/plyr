@@ -173,12 +173,19 @@
 
   // ---- Code nodes arrive switched off --------------------------------------
 
+  /** A Code step, by the name the server will end up storing (it trims). */
+  function isCodeAction(action) {
+    return typeof action === 'string' && action.trim().toLowerCase() === 'code';
+  }
+
   /** Copy of steps with every `code` step flagged disabled. -> { steps, count } */
   function disableCodeNodes(steps) {
     var copy = clone(Array.isArray(steps) ? steps : []);
     var count = 0;
     walk(copy, function (s) {
-      if (s.action === 'code') { s.disabled = true; count++; }
+      // Compare the NORMALISED name: validateSteps() trims `action` after this
+      // runs, so " code" must already count as a Code node here.
+      if (isCodeAction(s.action)) { s.disabled = true; count++; }
     });
     return { steps: copy, count: count };
   }
@@ -192,7 +199,7 @@
     walk(wf.steps, function (s) {
       nodes++;
       counts[s.action] = (counts[s.action] || 0) + 1;
-      if (s.action === 'code') code++;
+      if (isCodeAction(s.action)) code++;
       if (s.disabled === true) disabled++;
       if (isObj(s.params) && s.params.browserOptions !== undefined && s.params.browserOptions !== null && s.params.browserOptions !== '') launchOpts++;
     });

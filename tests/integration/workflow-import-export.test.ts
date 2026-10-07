@@ -96,6 +96,42 @@ describe('POST /workflows/:u/import', () => {
     expect(got.body.workflow.steps[1].disabled).toBe(true);
   });
 
+  // Regression: `disableCodeNodes` compared the RAW action, validateSteps() then
+  // trimmed it, so " code" was stored as an ENABLED Code node. Every child list
+  // the runtime walks is covered, because each one was a way in.
+  it.each([' code', 'code ', '\tcode\n', ' code '])(
+    'action %j is stored as a DISABLED Code node, at every depth', async (action) => {
+      const c = () => ({ action, params: { code: 'return 1' } });
+      const steps = [
+        c(),
+        { action: 'if', condition: { left: 'a', operator: 'equals', right: 'a' }, then: [c()], else: [c()] },
+        { action: 'router', paths: [{ id: 'p1', condition: { left: 'a', operator: 'equals', right: 'a' }, steps: [c()] }], fallback: [c()] },
+        { action: 'switch', cases: { x: [c()] } },
+        { action: 'try', steps: [c()], catch: [c()], finally: [c()] },
+      ];
+      const pre = await request(app).post('/workflows/mallory/import/preview').send(file(steps));
+      expect(pre.status).toBe(200);
+      expect(pre.body.codeDisabled).toBe(9);
+
+      const res = await request(app).post('/workflows/mallory/import').send(file(steps));
+      expect(res.status).toBe(201);
+      expect(res.body.codeDisabled).toBe(9);
+      const got = await request(app).get(`/workflows/mallory/${res.body.workflow.id}`);
+      const stored: any[] = [];
+      const walk = (list: any) => {
+        if (!Array.isArray(list)) return;
+        for (const s of list) {
+          if (s.action === 'code') stored.push(s);
+          ['then', 'else', 'steps', 'catch', 'finally', 'fallback'].forEach((k) => walk(s[k]));
+          (s.paths || []).forEach((p: any) => walk(p.steps));
+          Object.values(s.cases || {}).forEach(walk);
+        }
+      };
+      walk(got.body.workflow.steps);
+      expect(stored).toHaveLength(9);             // normalised to `code`...
+      for (const s of stored) expect(s.disabled).toBe(true); // ...and none of them live
+    });
+
   it('an old plyr export still imports (wrapped), also with Code disabled', async () => {
     const res = await request(app).post('/workflows/carol/import').send({ name: 'Old', steps: [codeStep()] });
     expect(res.status).toBe(201);

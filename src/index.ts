@@ -1102,7 +1102,14 @@ const startServer = async () => {
 
   // Durable storage first: routes below read workflows through it, and the
   // one-time Redis -> SQLite import must finish before the first request.
-  await initStorage(connection);
+  // Without its store the server must not start: serving requests from an
+  // empty or different store would look like "all my workflows are gone".
+  try {
+    await initStorage(connection);
+  } catch (e) {
+    console.error(`[FATAL] [STORAGE] ${(e as Error).message}`);
+    process.exit(1);
+  }
 
   await cleanupSystem();
   await apiKeyManager.initialize();

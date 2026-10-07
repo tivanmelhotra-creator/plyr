@@ -25,7 +25,7 @@ import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValid
 import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
-import { parseExchange, buildNativeEnvelope } from '../core/WorkflowExchange';
+import { parseExchange, buildNativeEnvelope, enforceImportedCodeDisabled } from '../core/WorkflowExchange';
 import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
@@ -1045,8 +1045,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const parsed = parseExchange(req.body);
       if (!parsed.ok) return res.status(400).json({ success: false, code: parsed.code, error: parsed.message });
       const plan = await UserManager.getUserPlan(connection, userId);
-      validateSteps(parsed.workflow.steps as any, plan);
-      return res.json({ success: true, summary: parsed.summary, codeDisabled: parsed.codeDisabled, startsInactive: true });
+      // Same two passes as /import, so the count shown is what will be saved.
+      const checked = enforceImportedCodeDisabled(validateSteps(parsed.workflow.steps as any, plan));
+      return res.json({ success: true, summary: parsed.summary, codeDisabled: checked.count, startsInactive: true });
     } catch (e: unknown) {
       res.status(400).json({ success: false, code: 'steps', error: (e as Error).message });
     }
@@ -1062,7 +1063,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const parsed = parseExchange(req.body);
       if (!parsed.ok) return res.status(400).json({ success: false, code: parsed.code, error: parsed.message });
       const plan = await UserManager.getUserPlan(connection, userId);
-      const steps = validateSteps(parsed.workflow.steps as any, plan);
+      // Disable Code nodes AGAIN on the validated (normalised) steps — the ones
+      // actually stored. See enforceImportedCodeDisabled.
+      const { steps, count: codeDisabled } = enforceImportedCodeDisabled(validateSteps(parsed.workflow.steps as any, plan));
       const wf = await workflowService.create(userId, {
         name: parsed.workflow.name,
         description: parsed.workflow.description,
@@ -1072,7 +1075,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         active: false,
       });
       await provisionWorkspace(userId, wf.id);
-      return res.status(201).json({ success: true, workflow: wf, summary: parsed.summary, codeDisabled: parsed.codeDisabled });
+      return res.status(201).json({ success: true, workflow: wf, summary: parsed.summary, codeDisabled });
     } catch (e: unknown) {
       res.status(400).json({ success: false, code: 'steps', error: (e as Error).message });
     }
