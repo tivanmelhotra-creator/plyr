@@ -61,13 +61,6 @@
 
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
-      <div class="sidebar-brand">
-        <!-- G13: the product brand mark. `zap` was a stand-in and read as the
-             `Triggers` category glyph, which the palette also uses. -->
-        <span class="brand-logo" data-icon="aria-mark" data-icon-size="20"></span>
-        <span class="brand-text" data-i18n="app.title">Aria Automate</span>
-      </div>
-
       <!-- EXACTLY six entries — the locked information architecture
            (docs/uiux/workspace-overview.md § 3A). `Live View`, `Live Browser`,
            `Schedules` and `Active Flow` are NOT places in the product: they are
@@ -112,6 +105,13 @@
     <!-- Main -->
     <div class="main">
       <header class="topbar">
+        <!-- Brand: top-left of the full-width top bar (moved from the rail). -->
+        <div class="sidebar-brand topbar-brand">
+          <!-- G13: the product brand mark. `zap` was a stand-in and read as the
+               `Triggers` category glyph, which the palette also uses. -->
+          <span class="brand-logo" data-icon="aria-mark" data-icon-size="20"></span>
+          <span class="brand-text" data-i18n="app.title">Aria Automate</span>
+        </div>
         <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="menu" data-icon="panel-left"></button>
 
         <!-- App Launcher (docs/uiux/shell-editor-launcher-menu.md § 2).

@@ -912,32 +912,20 @@
       '<div class="fe-shell">' +
         // =================================================================
         // FOCUSED EDITOR SHELL (2026-10, docs/uiux/new ui.md + new ui.png).
-        //   start : hamburger (workflow files) · Extract · Save · Active
+        //   start : brand (logo + name) · workflow name
         //   centre: Editor · Extraction · Executions
-        //   end   : workflow name · brand
+        //   end   : Active · Save · Extract · hamburger (workflow files)
         // Everything that used to crowd this bar (undo/redo, Export, Live
         // browser, bell, gear, avatar, the workflow tab strip) moved to the
         // section it belongs to — the left rail, Extraction, Executions, or
         // the Workflow menu behind the hamburger — or was removed.
         // =================================================================
         '<header class="fe-topbar">' +
+          // start: brand (logo + name) and, quietly, the workflow's name
           '<div class="fe-tb-start">' +
-            '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
-              ' aria-haspopup="dialog" aria-expanded="false"' +
-              ' title="' + esc(t('rio.filesMenu')) + '" aria-label="' + esc(t('rio.filesMenu')) + '">' +
-              IC('menu', 16) + '</button>' +
-            '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
-              IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
-            '<button type="button" class="fe-tbbtn fe-savebtn" id="fe-savenow" data-state="draft"' +
-              ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
-              '<span>' + esc(t('sh.save')) + '</span>' +
-              '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
-            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
-            // Active = triggers / schedules may run this workflow in the
-            // BACKGROUND (hidden browser). Test runs never need it.
-            '<button type="button" class="al-switch fe-toggle" id="fe-active" role="switch" aria-checked="false">' +
-              '<span class="al-sw-label" id="fe-active-label">' + esc(t('fe.activeLabel')) + '</span>' +
-              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
+            '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
+              '<span class="fe-brand-name">' + esc(t('fe.brand')) + '</span></span>' +
+            '<span class="fe-wfname" id="fe-wfname" title=""></span>' +
           '</div>' +
           '<nav class="fe-modes" id="fe-modes" role="tablist" aria-label="' + esc(t('sh.modes')) + '">' +
             '<button type="button" role="tab" class="fe-mode is-active" id="fe-mode-editor"' +
@@ -948,10 +936,25 @@
               ' data-mode="exec" aria-selected="false"><span>' + esc(t('sh.modeExecutions')) + '</span>' +
               '<span class="fe-mode-live" aria-hidden="true"></span></button>' +
           '</nav>' +
+          // end: Active · Save · Extract · hamburger (workflow files), the
+          // hamburger outermost — the order of docs/uiux/new ui.png.
           '<div class="fe-tb-end">' +
-            '<span class="fe-wfname" id="fe-wfname" title=""></span>' +
-            '<span class="fe-brand"><span>' + esc(t('fe.brand')) + '</span>' +
-              '<span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span></span>' +
+            // Active = triggers / schedules may run this workflow in the
+            // BACKGROUND (hidden browser). Test runs never need it.
+            '<button type="button" class="al-switch fe-toggle" id="fe-active" role="switch" aria-checked="false">' +
+              '<span class="al-sw-label" id="fe-active-label">' + esc(t('fe.activeLabel')) + '</span>' +
+              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
+            '<button type="button" class="fe-tbbtn fe-savebtn" id="fe-savenow" data-state="draft"' +
+              ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
+              '<span>' + esc(t('sh.save')) + '</span>' +
+              '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
+            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
+            '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
+              IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
+            '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
+              ' aria-haspopup="dialog" aria-expanded="false"' +
+              ' title="' + esc(t('rio.filesMenu')) + '" aria-label="' + esc(t('rio.filesMenu')) + '">' +
+              IC('menu', 16) + '</button>' +
           '</div>' +
           // ---- kept in the DOM, never shown ------------------------------
           // These ids have listeners (and tests) that predate the redesign.
