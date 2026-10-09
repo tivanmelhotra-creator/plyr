@@ -174,6 +174,29 @@ describe('an extension export reaches <workflow>/downloads/', () => {
     expect(e!.name).toBe('evil.json');
     expect(e!.workflowPath).toBe('downloads/evil.json');
   });
+  it('the row reads "completed" only once the workflow copy exists (no early completed)', async () => {
+    // REPRODUCED in the real-Chromium tier under CPU load: the row flipped to
+    // completed BEFORE <workflow>/downloads/ had the file, so a reader that
+    // trusted the row (the UI, a node waiting for a download) found nothing.
+    // Hold the persist step and look at the row in between.
+    const shelf = new RealChromeShelf(REAL_CHROME_SHELF_USER);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    (shelf as unknown as { persistChain: Promise<unknown> }).persistChain = gate;
+
+    const pending = bridge(shelf).handle(report({ filePath: await chromeWrote('{"slow":1}'), requestedName: 'slow.json' }));
+    for (let i = 0; i < 50 && !shelf.list().length; i++) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 50));
+    const row = shelf.list().find((x) => x.name === 'slow.json');
+    expect(row?.state).toBe('inProgress');
+    expect(await workflowDownloads()).toEqual([]);
+
+    release();
+    const entry = await pending;
+    expect(entry!.state).toBe('completed');
+    expect(entry!.workflowPath).toBe('downloads/slow.json');
+    expect(await workflowDownloads()).toEqual(['slow.json']);
+  });
 });
 
 describe('no duplicates, no lost files', () => {

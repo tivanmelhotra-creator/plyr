@@ -183,6 +183,27 @@ it blocks any path to `constructor` / `__proto__` / prototype walking. This is a
 deliberate security posture, and `tests/unit/expression.test.ts` pins it —
 including the classic "reach `Function` via `.constructor` twice" escape.
 
+**Code node** (`src/core/CodeNode.ts`, action `code`, category Data) — runs
+the operator's own JavaScript. It is **not a security sandbox**: `require`,
+`fetch`, the filesystem and the network are reachable on purpose, because in
+`single` mode the author owns the server. Available names: `$input`
+(`all/first/last/item`), `$json`, `$item`, `$index`, `$items`, `$vars`
+(writes are copied back into run variables), `$node`, `$now`, `$execution`,
+`console` (shown in the step log and the NDV OUTPUT), `require`, `fetch`, and
+`page` / `context` when *Use browser* is on. Modes: run once for all items,
+or once per item. The return value is normalised into items (object → 1 item,
+array of objects → n items, `null`/`[]` → 0 items; no pass-through).
+Without *Use browser* the code runs in a `worker_thread` that is terminated on
+timeout (`CODE_NODE_TIMEOUT_MS`, default 30 s, per-node override) under a heap
+cap (`CODE_NODE_MAX_MEMORY_MB`). With *Use browser* it runs in the server
+process (Playwright objects cannot cross threads) and the timeout is a
+`Promise.race`: an **async** runaway is abandoned, but a **synchronous**
+infinite loop blocks the event loop and cannot be stopped. `CODE_NODE_ENABLED`
+(default on in `single`, always off in `multi`), `CODE_NODE_ALLOW_MODULES`
+(optional `require` allow-list). The `code` param is read raw: `{{ }}` inside
+JavaScript is not substituted. This is the one deliberate exception to the
+no-dynamic-code rule, which still applies in full to `public/js/expression.js`.
+
 **Error policy** (`src/core/ErrorPolicy.ts`) — per node: *Continue On Fail*,
 *Retry On Fail* (with backoff), or *Stop And Error*.
 
@@ -227,6 +248,83 @@ export-data) in that workflow's own workspace (`core/WorkflowStorage`, the
   (`/job/:u/:jobId/artifact/:file`, `storage: 'job'`), swept by the GC.
 - The UI loads these images with the API key and shows them as `data:` URLs.
   Do **not** switch back to `blob:` — the CSP is `img-src 'self' data:`.
+
+**Conditional nodes — If, Router, join and cycle rules** (`public/js/graph-serialize.js`,
+`src/pipeline.ts`, `docs/uiux/20-HANDOFF-conditional-nodes.md`)
+
+- `if` and `router` are separate nodes on purpose. `if` is "first match wins, then
+  leave the group" with a neutral `next`; `router` has an explicit `default`
+  output and **always continues after itself** (a join).
+- Serializer (`analyze(graph)` -> `{steps, errors, warnings}`): a branching node
+  closes at its join -- the explicit `next`/`done` target, otherwise the first
+  node every non-empty branch reaches. A shared node is emitted once, after the
+  branching step, never copied into each branch. Multi-path `if` never infers a
+  join (its `next` is the continuation).
+- Non-convertible graphs are rejected, not silently trimmed: `cycle` (use
+  Loop/ForEach/While), `fanout` (two edges on one port), `dangling` (edge to a
+  missing node). The editor marks the node/edge (`has-issue` / `is-invalid`) and
+  Run / Run node refuse with a toast. `duplicated` is a warning.
+- Runtime: `router` -> `{action:'router', paths:[{id,name?,condition,steps?}],
+  fallback?}`; conditions use the shared `ConditionEngine`, and the UI reuses the
+  Condition Builder NDV (`ndv-nodes.js`).
+
+**Launch Browser options** (`public/js/browser-options.js`, `src/core/BrowserOptions.ts`,
+`docs/uiux/21-HANDOFF-browser-options.md`)
+
+- One catalog of 31 per-run options (headless, viewport, userAgent, locale, timezone, geolocation,
+  permissions, colour scheme, proxy, headers, HTTP auth, JS on/off, HTTPS errors, slowMo, chrome
+  flags...). The editor panel, the server Zod whitelist and the tests all read the same file.
+- Stored as `params.browserOptions` on the Launch node; validated in `validateSteps`.
+- Applied by tier: persistent browser = launch + context; shared free browser = context only;
+  local / Real Chrome = none (logged as ignored). A reused persistent browser is relaunched when
+  the option set changes.
+- Real-Chromium proof per option: `tests/browser/browser-options.test.ts`.
+
+**Live run tab** (`public/js/live-tab.js`, `public/live-view.html`, `public/js/live-view.js`,
+`src/core/JobScreencast.ts`, `src/Routes/live-frames.routes.ts`, `docs/uiux/22-HANDOFF-live-run-tab.md`)
+
+- A **Test Run** with a **visible** browser (the run switch, or the Launch node's own `headless:false`,
+  which wins) opens a new tab. `LiveTab.launch()` calls `window.open` synchronously in the click,
+  before any `await`, then navigates the blank tab to the signed link. A blocked popup becomes a
+  visible link, never a silent no-op. Headless runs, saved runs and node tests open nothing.
+- The address is `/live/view/:user/:job?share=<token>`. The token comes from
+  `POST /live/share/:user/:job` (API key in the **header**), is bound to one job and expires
+  (`LIVE_SHARE_TTL_SEC`). No API key is ever placed in a URL.
+- The page is **view-only by construction**: `/live/sse` (run events, replayed by LiveBus on every
+  connect, de-duplicated by `seq`) and `/live/frames` (CDP screencast, one session per watched job,
+  max 5 viewers) are server -> client only. noVNC is deliberately not used: its `viewOnly` flag is
+  enforced by the client, so a share credential for it would grant control.
+  The screencast is served by the process that owns the job's page (in-process hub).
+- Step timeline on the left, browser picture and the clicked step's output on the right; a pinned
+  step stays on screen while newer ones arrive ("Follow latest" unpins).
+- Tests: `tests/unit/live-tab.test.ts`, `job-screencast.test.ts`, `live-view-page.test.ts`,
+  `tests/browser/job-screencast.test.ts` (real Chromium).
+
+**Workflow file (export / import) and the NDV** (`public/js/workflow-exchange.js`,
+`src/core/WorkflowExchange.ts`, `docs/uiux/23-HANDOFF-export-import-ndv.md`)
+
+- The file is `{format:"plyr-workflow", version:1, workflow:{name,description,headless,steps}}`
+  (+ `exportedAt`, `redacted`). ONE module (`workflow-exchange.js`) is loaded by the editor and
+  evaluated by the server (same technique as `actions.js` / `browser-options.js`), then wrapped in a
+  strict Zod envelope. Unknown `format` / newer `version` are refused, never guessed. No n8n importer.
+- **Export** blanks every `password`-type node field and every secret launch option (proxy / HTTP-auth
+  passwords) and lists them in `redacted`; it carries no `webhookUrl` and no `active` flag. The editor
+  Export menu exports the CANVAS (disabled nodes kept); the Workspace row exports the saved workflow.
+  `GET /workflows/:u/:id/export?format=native` is the same file for API/CLI (default unchanged).
+- **Import**: `POST /workflows/:u/import/preview` (stores nothing) returns the summary the dialog shows
+  (node count/kinds, Code nodes disabled, secrets to re-enter, launch options, legacy flag);
+  `POST /workflows/:u/import` saves. **Every Code node is forced `disabled:true` server-side at any
+  depth**, the workflow is saved **inactive**, and `webhookUrl` is dropped. An older plyr export
+  (bare `{name,steps}`) is wrapped and handled the same way.
+- `disabled` is now a real step flag: `validateSteps` keeps a literal `true`, the pipeline skips such a
+  step, and the graph has two serialisers: `graphToSteps` (run: skips disabled nodes) and
+  `graphToDocumentSteps` (save/export: keeps them flagged). Before this, autosave deleted disabled nodes.
+- NDV: a token dropped on a Fixed field flips it to Expression; an unexecuted node's OUTPUT offers Run
+  (guarded runner), an executed-but-empty one says so; in RTL the column order stays INPUT | Parameters
+  | OUTPUT (measured in Chromium: `tests/browser/ndv-rtl-order.test.ts`).
+- Tests: `tests/unit/workflow-exchange.test.ts`, `ndv-exchange-ui.test.ts`, `graph-serialize.test.ts`,
+  `pipeline-code-node.test.ts`, `tests/integration/workflow-import-export.test.ts`.
+
 
 ---
 
@@ -323,6 +421,40 @@ credential only — never from a client-supplied body field.
 
 Redis is **required** at runtime. Integration tests self-skip when it is absent.
 
+### Durable storage: SQLite
+
+Redis keeps the queue, Pub/Sub, idempotency keys and cron. What must survive a
+Redis flush lives in **SQLite** (`STORAGE_DRIVER=sqlite`, the default):
+saved workflows, their version history, and the **execution history**.
+
+- **Driver:** `better-sqlite3`. `node:sqlite` is experimental on Node 22 and
+  absent on Node 20 (still allowed by `engines`); better-sqlite3 is synchronous,
+  ships prebuilt binaries and exposes the online backup API.
+- **File:** `SQLITE_PATH` (default `./data/plyr.db`, Docker `/app/data/plyr.db`
+  on the `./data` volume), WAL mode. `data/` and `backups/` are git-ignored.
+- **Schema:** append-only numbered migrations in `src/core/SqliteStore.ts`,
+  tracked by `PRAGMA user_version`. A file from a newer build is refused.
+- **Layers:** `services/workflow.repository.ts` (`WorkflowRepository` with
+  Redis and SQLite implementations; no business rules), `WorkflowService`
+  (version bumps, history cap, state switches — unchanged),
+  `services/execution.repository.ts` (one row per finished job: workflow,
+  trigger, status, timings, error, per-step summary with at most 3 sample
+  items), `services/storage.ts` (driver choice + import).
+- **One-time import:** at boot, if the DB holds no workflow and the import
+  marker is absent, every `wf:meta:*` / `wf:ver:*` record is copied from Redis
+  (SCAN, never KEYS). Redis is **not** modified, so `STORAGE_DRIVER=redis`
+  still works afterwards.
+- **History API:** `GET /executions/:userId[?workflowId=&limit=&before=]`,
+  `GET /executions/:userId/:jobId`. Per-node test runs are not recorded.
+  Retention: `EXECUTION_RETENTION_DAYS` (30) and `EXECUTION_MAX_ROWS` (10000).
+- **Backup:** `./plyr backup [dir]` (online backup → one self-contained file,
+  safe while running), `./plyr restore <file>` (refuses while the server is up,
+  validates integrity + schema, keeps the old file as `.pre-restore-<time>`).
+- **doctor:** DB directory writable + schema/row counts; warns when Redis runs
+  without `appendonly yes`.
+- **One process per DB file.** PM2 `instances > 1` is not supported
+  (`ecosystem.config.js` is pinned to one fork-mode instance).
+
 ---
 
 ## 10. API / Routes
@@ -384,13 +516,52 @@ annotated reference — copy it to `.env`. Highlights:
 | `WORKFLOW_MAX_VERSIONS` | Versions retained per saved workflow (0 = all) |
 | `BROWSER_MODE_DEFAULT` | `remote` or `local` |
 | `LOCAL_BROWSER_ENABLED` | Enables the Local Browser agent tunnel |
-| `LIVE_SHARE_TTL_SEC` | Live share-link lifetime (0 = never expires) |
+| `LIVE_SHARE_TTL_SEC` | Live share-link lifetime in seconds. Default **7200** (2 h; was 24 h). 0 = never expires (doctor warns) |
+| `REAL_CHROME_DEBUG_BIND` | DevTools listen address. Default `127.0.0.1`; doctor/boot warn on anything else |
+| `ALLOW_DEFAULT_API_TOKEN` | Dev-compose-only opt-out of the `admin123` refusal (see §11.1) |
 | `MAX_TOTAL_EXECUTION_OPS` | Hard ceiling on operations per run |
 | `GOD_MODE_IPS` | Local privileged IPs |
 
 `npm run doctor` (`src/cli/doctor.ts`) checks the resolved environment.
 
 ---
+
+### 11.1 Security minimums
+
+One module, `src/core/SecurityChecks.ts` (pure functions + injectable probes), feeds
+**both** the boot log (`validateStartup()` → `issues[]`) and `npm run doctor`
+(section "SECURITY MINIMUMS"). Nothing writes; the workflow scan opens SQLite
+read-only and never creates the file.
+
+| Check | Rule | Severity |
+|---|---|---|
+| `default_token_in_production` | `API_TOKEN` is the public `admin123` under `APP_ENV=server` or `production` | **fatal** (server refuses to start). `warn` only with `ALLOW_DEFAULT_API_TOKEN=true`; ignored on development/test |
+| `debug_bind_exposed` | `REAL_CHROME_DEBUG_BIND` is not loopback (`0.0.0.0`, LAN IP). Default stays `127.0.0.1` | warn |
+| `redis_port_exposed` | a `docker-compose*.yml` publishes `6379` outside loopback, **or** (server/production) Redis answers on one of this host's non-loopback IPv4 addresses | warn |
+| `public_domain_not_https` | `PUBLIC_DOMAIN` is `http://` on a non-local host | warn |
+| `https_unreachable` | *doctor only*: no valid TLS handshake on the domain (no Caddy/proxy, bad or <14-day certificate) | warn |
+| `webhook_without_hmac` | server/production or public domain **and** an *active* workflow has a `trigger_webhook` with an empty `secret`, or workflows send to a `webhookUrl` while `WEBHOOK_SECRET` is empty | warn |
+| `live_share_ttl` | `LIVE_SHARE_TTL_SEC` is `0` or > 24 h | warn |
+
+Decisions worth knowing:
+
+* **admin123 is refused, not just warned**, because under `server`/`production`
+  the box is meant to be reachable and the token is public. The only compose file
+  that sets it is `docker-compose.dev.yml` (loopback-only, disposable), and it
+  opts out explicitly with `ALLOW_DEFAULT_API_TOKEN: "true"` so the exception is
+  visible where it is needed. `./plyr` now writes a random `API_TOKEN` into a
+  freshly created `.env`; `.env.example` keeps `admin123` only for local dev.
+* **Network probes only run on server/production**, and the TLS handshake only in
+  `doctor` (an outbound connection has no place in boot). Unit tests never touch
+  the network: the NIC list and TLS probe are injected; the Redis probe is tested
+  against a real loopback listener.
+* **Webhook scan scope.** There is no inbound webhook route yet
+  (`docs/PLAN-node-logic-v2.md`), so the warning is about the *configuration* that
+  will be public the moment the route lands, plus outgoing signing. It scans
+  SQLite only; with `STORAGE_DRIVER=redis` it reports "not scanned".
+* **`LIVE_SHARE_TTL_SEC` 24 h → 2 h.** A run is capped at 90 min and a fresh link
+  is minted per Test Run, so 2 h covers the longest run; a leaked link dies the
+  same afternoon. Per-request `ttlSec` is unchanged (hard cap 30 days).
 
 ## 12. Development
 
@@ -475,6 +646,8 @@ CI: `.github/workflows/ci.yml` (typecheck, tests, extension artifact checks).
 ## 14. Technical Constraints
 
 1. **Redis is mandatory.** No Redis, no queue, no scheduling, no live fan-out.
+   Saved workflows and execution history live in SQLite (`SQLITE_PATH`) by
+   default; run one Plyr process per database file.
 2. **Playwright is pinned to `1.56.1`** (exact, no caret). The measured CDP
    behaviour in `docs/MEASURED-DECISIONS.md` assumes that build.
 3. **CommonJS.** `module: commonjs` — do not introduce ESM-only dependencies
@@ -484,6 +657,8 @@ CI: `.github/workflows/ci.yml` (typecheck, tests, extension artifact checks).
    **not** destroy sockets it does not own.
 5. **No dynamic code execution.** The expression engine forbids `eval` and
    `Function` and blocks prototype access. Never "fix" it by reintroducing them.
+   The Code node (`src/core/CodeNode.ts`) is the single, explicit exception:
+   it runs operator-written JavaScript by design and is off in `multi` mode.
 6. **HMAC over exact bytes.** The webhook body must be serialised once and both
    signed and sent; re-serialising breaks receiver verification.
 7. **Ownership via path param.** `:userId` is authorised by middleware against

@@ -191,7 +191,9 @@ describe('2. PUBLIC_DOMAIN is the single source of truth in .env', () => {
     // key config.ts reads. A rename on either side breaks this test rather than
     // silently ignoring the operator's domain.
     const cfg = code(await read('src/config.ts'));
-    expect(cfg).toMatch(/PUBLIC_DOMAIN:\s*cleanEnv\(process\.env\.PUBLIC_DOMAIN\)/);
+    // A getter now (the Settings page can change it live), still reading the
+    // same PUBLIC_DOMAIN key first.
+    expect(cfg).toMatch(/get PUBLIC_DOMAIN\(\)[^\n]*cur\('PUBLIC_DOMAIN'\)\s*\|\|\s*cur\('BASE_URL'\)/);
     const { env } = domainWrite(null, ['https://panel.example.com']);
     expect(env).toMatch(/^PUBLIC_DOMAIN=/m);
   });
@@ -201,7 +203,9 @@ describe('2. PUBLIC_DOMAIN is the single source of truth in .env', () => {
     // the Extension's own field. It must stay READ-only: a second writable name
     // is precisely the duplicate configuration item 2 forbids.
     const cfg = await read('src/config.ts');
-    expect(cfg).toMatch(/process\.env\.BASE_URL/);
+    expect(cfg).toMatch(/cur\('BASE_URL'\)/);
+    // ...and BASE_URL is NOT a key the Settings page can write.
+    expect(await read('src/core/PersistedSettings.ts')).not.toMatch(/'BASE_URL'/);
 
     for (const rel of ['scripts/ask-domain.sh', 'install.sh', 'dev.sh', 'scripts/dev-server.sh']) {
       const text = code(await read(rel));

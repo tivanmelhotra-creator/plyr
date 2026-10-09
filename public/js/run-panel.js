@@ -76,6 +76,7 @@
       if (fe.setNodeResultsByIndex) {
         fe.setNodeResultsByIndex(nodeIndex0, {
           output: Array.isArray(s.outputSample) ? s.outputSample : (s.outputSample ? [s.outputSample] : []),
+          consoleLogs: Array.isArray(s.consoleLogs) ? s.consoleLogs : undefined,
           meta: { outputItemCount: s.outputItemCount, inputItemCount: s.inputItemCount,
                   durationMs: s.durationMs, status: s.status, error: s.error },
         });

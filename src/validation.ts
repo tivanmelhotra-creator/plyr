@@ -1,5 +1,6 @@
 import type { PlanConfig } from './config';
 import { config } from './config';
+import { parseBrowserOptions } from './core/BrowserOptions';
 
 // === REGEX PATTERNS ===
 const SAFE_MODULE_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]{0,49}$/;
@@ -31,6 +32,8 @@ const BLOCKED_HOSTNAMES = [
 // === INTERFACES ===
 export interface StepInput {
   action: string;
+  /** Skipped at run time; kept in the saved document (see AutomationStep). */
+  disabled?: boolean;
   params?: Record<string, any>;
   saveAs?: string;
   condition?: any;
@@ -42,6 +45,8 @@ export interface StepInput {
    * so this MUST stay in sync with the recursion at the bottom of this file.
    */
   paths?: { id?: string; name?: string; condition?: any; steps?: StepInput[] }[];
+  /** Router `default` port. */
+  fallback?: StepInput[];
   steps?: StepInput[];
   catch?: StepInput[];
   finally?: StepInput[];
@@ -217,12 +222,30 @@ export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[
         finally: ________,
         cases: _________,
         paths: __________,
+        fallback: _________f,
+        disabled: _________d,
+        continueOnFail: _c1,
+        retryOnFail: _c2,
+        maxTries: _c3,
+        waitBetweenTriesMs: _c4,
         ...rest
       } = step;
 
       if (Object.keys(rest).length > 0) {
         params = rest;
       }
+    }
+
+    // Launch Browser options: validated against the shared catalog at the API
+    // boundary, so a typo or an out-of-range value is a readable 400 now, not a
+    // silently ignored setting at run time.
+    if (/^launch([-_]browser)?$/.test(action) && params.browserOptions !== undefined
+        && params.browserOptions !== null && params.browserOptions !== '') {
+      const parsed = parseBrowserOptions(params.browserOptions);
+      if (!parsed.ok) {
+        throw new Error(`Step at index ${index}: invalid browser options - ${parsed.errors.join('; ')}`);
+      }
+      params = { ...params, browserOptions: parsed.options };
     }
 
     const cleanStep: StepInput = { action, params };
@@ -234,6 +257,19 @@ export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[
 
     if (step.condition) {
       cleanStep.condition = step.condition;
+    }
+
+    if (step.disabled === true) cleanStep.disabled = true;
+
+    // Per-node error policy (core/ErrorPolicy). These used to be dropped here,
+    // so Continue/Retry On Fail set in the editor never reached the runtime.
+    // Values are clamped later by normalizeErrorPolicy(); only the types are
+    // checked at this boundary.
+    if (step.continueOnFail === true) cleanStep.continueOnFail = true;
+    if (step.retryOnFail === true) cleanStep.retryOnFail = true;
+    if (typeof step.maxTries === 'number' && Number.isFinite(step.maxTries)) cleanStep.maxTries = step.maxTries;
+    if (typeof step.waitBetweenTriesMs === 'number' && Number.isFinite(step.waitBetweenTriesMs)) {
+      cleanStep.waitBetweenTriesMs = step.waitBetweenTriesMs;
     }
 
     if (step.cases && typeof step.cases === 'object') {
@@ -262,6 +298,11 @@ export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[
           if (!cleanPath.id) cleanPath.id = `p${pi + 1}`;
           return cleanPath;
         });
+    }
+
+    // Router `default` port — same recursive validation as any other branch.
+    if (Array.isArray(step.fallback)) {
+      cleanStep.fallback = step.fallback.map((s: any, i: number) => mapStep(s, i));
     }
 
     // Recursive validation for nested steps

@@ -527,14 +527,15 @@
   // `groups` + flat fields, so a single-path node serialises byte-identically
   // to what it did before this feature existed, and `params.paths` is removed
   // entirely in that case (rule: never persist redundant state).
-  function writePaths(params, paths) {
+  function writePaths(params, paths, keepSingle) {
     params = params || {};
     var used = {};
     var clean = (paths || []).slice(0, CONDITION_MAX_PATHS)
       .map(function (p) { return normalizePath(p, used); });
     if (!clean.length) clean = [{ id: 'p1', name: '', groups: [[blankRow()]] }];
     writeGroups(params, clean[0].groups);
-    if (clean.length > 1) {
+    // A Router has no true/false form: even ONE path stays a path list.
+    if (clean.length > 1 || keepSingle) {
       params.paths = JSON.stringify(clean.map(function (p) {
         return { id: p.id, name: p.name, groups: p.groups };
       }));
@@ -791,6 +792,7 @@
   var DESIGNED_NODES = {
     click: 'ndv-click-element-final',
     if: 'ndv-condition-final',
+    router: 'ndv-condition-final',
     while: 'ndv-condition-final',
   };
   function isDesigned(actionId) {

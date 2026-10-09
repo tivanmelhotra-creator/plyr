@@ -129,8 +129,8 @@ function graphWith(node: GraphNode): Graph {
 }
 
 describe('designed NDV nodes — which actions have a locked design', () => {
-  it('exactly click, if and while are marked as designed', () => {
-    expect(Object.keys(NM.DESIGNED_NODES).sort()).toEqual(['click', 'if', 'while']);
+  it('exactly click, if, router and while are marked as designed', () => {
+    expect(Object.keys(NM.DESIGNED_NODES).sort()).toEqual(['click', 'if', 'router', 'while']);
     expect(NM.isDesigned('click')).toBe(true);
     expect(NM.isDesigned('if')).toBe(true);
     expect(NM.isDesigned('while')).toBe(true);

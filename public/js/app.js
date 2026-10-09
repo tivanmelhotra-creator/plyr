@@ -130,7 +130,7 @@
     el.app.hidden = true;
     el.loginScreen.hidden = false;
     el.apiKeyInput.value = '';
-    el.loginError.hidden = true;
+    if (!el.loginError.dataset.sticky) el.loginError.hidden = true;
   }
 
   function showApp() {
@@ -868,6 +868,29 @@
     el.langToggleLogin.textContent = I18N.meta().label;
     bind();
 
+    // AUTH_MODE=open (development only): the server hands this machine the
+    // token and the panel signs itself in. Asked FIRST so a stale stored key
+    // from an earlier token never lands a developer on the login screen.
+    API.authMode()
+      .then(function (m) {
+        if (m && m.mode === 'open' && m.token) {
+          API.setKey(m.token);
+          API.setUserId('local');
+          sessionStorage.removeItem('ab_session_only');
+          showApp();
+          return;
+        }
+        if (m && m.openRefused && el.loginError) {
+          el.loginError.textContent = I18N.t(m.openRefused === 'profile' ? 'login.openRefusedProfile' : 'login.openRefusedRemote');
+          el.loginError.hidden = false;
+          el.loginError.dataset.sticky = '1';
+        }
+        bootWithStoredKey();
+      })
+      .catch(bootWithStoredKey);
+  }
+
+  function bootWithStoredKey() {
     var storedKey = API.getKey();
     if (storedKey) {
       // Re-validate the stored key once on boot so revoked/expired keys

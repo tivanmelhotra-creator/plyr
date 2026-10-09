@@ -3591,6 +3591,7 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
   font-size: 12px;
 }
 .ws-table tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+.ws-table tbody tr.ws-row-open { cursor: pointer; }
 .ws-table-wrap.compact td { height: 44px; padding: 6px 14px; }
 .ws-table-wrap.compact .ws-wf-desc { display: none; }
 
@@ -3700,10 +3701,13 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
 .ws-actions-cell { position: relative; text-align: end; }
 .ws-kebab { width: 30px; height: 30px; background: transparent; border-color: transparent; }
 .ws-row-menu {
-  position: absolute;
-  top: calc(100% - 8px);
-  inset-inline-end: 10px;
-  z-index: 40;
+  /* fixed, not absolute: .ws-table-wrap clips its overflow, and an absolute
+     menu was cut off (entirely so with a one-row list). views.js sets the
+     left/top from the ⋮ button's rectangle every time the menu opens. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
   width: 210px;
   padding: 6px;
   background: var(--bg-elev-2);
@@ -7783,3 +7787,143 @@ body.route-fullbleed .fe-mm-restore {
   background: rgba(255, 176, 32, 0.08);
   color: var(--text-dim); font-size: 12px; line-height: 1.5;
 }
+
+/* Code node (src/core/CodeNode.ts) */
+.ndv-code-note { border-color: rgba(239, 68, 68, 0.4); border-inline-start-color: var(--danger, #ef4444); background: rgba(239, 68, 68, 0.08); }
+textarea.ndv-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; tab-size: 2; white-space: pre; overflow: auto; direction: ltr; text-align: left; min-height: 220px; resize: vertical; }
+.ndv-subhead { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); margin: 6px 0 4px; }
+.ndv-console { max-height: 180px; overflow: auto; direction: ltr; text-align: left; }
+
+/* Task 3 — graph problems the serializer cannot represent (cycle, fan-out,
+   dangling edge): the culprit node and edge are drawn in the error colour. */
+.flow-node.has-issue {
+  border-color: #E45555;
+  box-shadow: 0 0 0 1px #E45555, 0 0 14px 2px rgba(228, 85, 85, 0.30);
+}
+.flow-edge.is-invalid {
+  stroke: #E45555;
+  stroke-dasharray: 6 4;
+}
+
+/* ---- Launch Browser: "Add option" panel (browser-options-ui.js) ---- */
+.bo-panel { margin-top: 14px; padding: 12px; border: 1px solid var(--border, #2b3040); border-radius: 10px; }
+.bo-title { margin: 0 0 2px; font-size: 14px; }
+.bo-row { padding: 10px 0; border-top: 1px solid var(--border, #2b3040); }
+.bo-row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.bo-row-label { font-weight: 600; flex: 1; }
+.bo-badge { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: rgba(245,166,35,.15); color: #f5a623; }
+.bo-help { margin-top: 4px; }
+.bo-error { color: #ef4444; margin-top: 4px; }
+.bo-invalid { border-color: #ef4444 !important; }
+.bo-add { margin-top: 10px; }
+.bo-picker { margin-top: 8px; border: 1px solid var(--border, #2b3040); border-radius: 8px; padding: 8px; }
+.bo-picker-list { max-height: 260px; overflow: auto; margin-top: 6px; }
+.bo-group { font-size: 11px; opacity: .7; margin: 8px 0 2px; text-transform: uppercase; }
+.bo-pick { display: flex; justify-content: space-between; width: 100%; gap: 8px; text-align: start; padding: 6px 8px; background: transparent; border: 0; border-radius: 6px; color: inherit; cursor: pointer; }
+.bo-pick:hover, .bo-pick:focus { background: rgba(79,140,255,.14); outline: none; }
+.bo-set { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.bo-set-item { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+.bo-diags { margin-top: 10px; display: grid; gap: 6px; }
+.bo-diag { display: flex; gap: 8px; font-size: 12px; padding: 6px 8px; border-radius: 6px; }
+.bo-diag-warn { background: rgba(245,166,35,.12); }
+.bo-diag-info { background: rgba(79,140,255,.10); }
+.bo-diag-tag { font-weight: 700; }
+
+/* ---- Task 4b: live run tab (timeline | browser + output) ---------------- */
+.live-view-wrap { max-width: none; }
+.lv-layout { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: start; }
+@media (max-width: 800px) { .lv-layout { grid-template-columns: 1fr; } }
+.lv-h { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .04em; opacity: .65; margin: 0 0 8px; font-weight: 600; }
+.lv-timeline { position: sticky; top: 12px; max-height: calc(100vh - 140px); overflow: auto; }
+.lv-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lv-stepitem { margin: 0; }
+.lv-empty { opacity: .6; font-size: .85rem; padding: 8px 0; list-style: none; }
+.lv-step { width: 100%; text-align: start; cursor: pointer; font: inherit; color: inherit; display: block; }
+.lv-step.is-selected { outline: 2px solid var(--primary); outline-offset: -1px; }
+.lv-step:focus-visible { outline: 2px solid var(--primary); }
+.lv-step-dur { display: block; margin-top: 4px; font-size: .72rem; opacity: .6; }
+.lv-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.lv-browser {
+  margin: 0; position: relative; min-height: 220px; border: 1px solid var(--border, #2a2d34);
+  border-radius: 10px; background: #0b0d12; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.lv-frame { display: block; width: 100%; height: auto; max-height: 70vh; object-fit: contain; pointer-events: none; user-select: none; }
+.lv-frame[hidden] { display: none; }
+.lv-browser-msg { padding: 24px; text-align: center; opacity: .75; font-size: .9rem; }
+.lv-browser.has-frame .lv-browser-msg { position: absolute; inset-inline: 0; bottom: 0; background: rgba(0,0,0,.65); padding: 6px 10px; }
+.lv-browser-msg[hidden] { display: none; }
+.lv-output { min-width: 0; }
+.lv-output-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.lv-follow {
+  margin-inline-start: auto; cursor: pointer; font: inherit; font-size: .75rem; color: inherit;
+  background: transparent; border: 1px solid var(--border, #2a2d34); border-radius: 6px; padding: 2px 8px;
+}
+.lv-sample { max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-word; direction: ltr; text-align: left; }
+
+/* ---- Workflow import summary (Task 5) ---- */
+.ex-overlay { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); padding: 16px; }
+.ex-dialog { width: min(480px, 100%); max-height: 90vh; overflow: auto; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 18px 20px; }
+.ex-dialog h3 { margin: 0 0 10px; font-size: 15px; }
+.ex-name { margin: 0; font-weight: 700; font-size: 15px; overflow-wrap: anywhere; }
+.ex-desc { margin: 4px 0 0; color: var(--text-dim); font-size: 12.5px; }
+.ex-count { margin: 10px 0 6px; color: var(--text-dim); font-size: 12.5px; }
+.ex-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ex-chip { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--primary-soft); color: var(--text); }
+.ex-note { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--info-soft); font-size: 12.5px; }
+.ex-note.ex-warn { background: var(--danger-soft); }
+.ex-note code { font-size: 11.5px; overflow-wrap: anywhere; }
+.ex-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* ---- NDV: the column ORDER is the data flow, not the reading direction ----
+ * INPUT is always on the left, OUTPUT on the right (as in n8n), in Persian too:
+ * a grid inherits `direction: rtl` and would swap them, and the physical
+ * border-right/-left hairlines (which assume the LTR order) would then sit on
+ * the wrong edges. The column ORDER is pinned to ltr; each column's own text
+ * goes back to the page direction, so labels and inputs still read right-to-left. */
+[dir="rtl"] .ndv-modal .ndv-cols { direction: ltr; }
+[dir="rtl"] .ndv-modal .ndv-cols > .ndv-col { direction: rtl; }
+.ndv-empty-run { margin-top: 12px; align-self: flex-start; }
+.aria-out-empty .ndv-empty-run { align-self: center; }
+.ndv-row.drag-over { outline: 1px dashed var(--primary); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+/* ============================================
+   Server settings (public/js/settings-ui.js)
+   ============================================ */
+.server-settings { display: grid; gap: 16px; margin-top: 16px; }
+.set-row { padding: 14px 0; border-top: 1px solid var(--border); }
+.set-row:first-of-type { border-top: 0; padding-top: 4px; }
+.set-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.set-row-title { font-weight: 600; }
+.set-row-hint { margin: 4px 0 10px; }
+.set-seg {
+  display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 3px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+.set-seg-btn {
+  padding: 7px 14px; background: transparent; border: 0; border-radius: 7px;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--text-dim); cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.set-seg-btn:hover:not(:disabled) { color: var(--text); }
+.set-seg-btn.on { background: var(--primary-soft); color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.set-seg-btn:disabled { opacity: .45; cursor: not-allowed; }
+.set-select, .set-input {
+  padding: 8px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font: inherit; font-size: 14px; min-width: 220px;
+}
+.set-text, .set-own { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.set-own { margin-top: 8px; }
+.set-own .set-input { flex: 1 1 260px; }
+.set-secret-val {
+  display: inline-block; max-width: 100%; overflow-wrap: anywhere; direction: ltr;
+  padding: 6px 10px; margin-bottom: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.set-big { display: block; font-size: 15px; padding: 10px 12px; user-select: all; }
+.set-warn { color: var(--warn); font-size: 13px; margin: 8px 0 0; }
+.set-opt-hint { margin: 8px 0 0; }
+.set-modal {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center;
+  background: rgba(0, 0, 0, .55); padding: 16px;
+}
+.set-modal-card { max-width: 560px; width: 100%; }

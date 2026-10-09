@@ -71,12 +71,19 @@ async function getWorkflows(port: number): Promise<{ success: boolean; workflows
   return response.json() as Promise<{ success: boolean; workflows?: Array<{ id: string }> }>;
 }
 
-describe.skipIf(!enabled)('Plyr Redis persistence', () => {
+// Both storage drivers. `sqlite` is the default since the SQLite storage
+// change: workflows live in SQLITE_PATH and NOT in Redis (this test used to
+// assert `wf:meta:*` in Redis unconditionally, which is only true for
+// STORAGE_DRIVER=redis). Under sqlite it additionally proves the workflow
+// survives a Redis FLUSHALL — the whole point of moving it out of Redis.
+describe.skipIf(!enabled).each(['sqlite', 'redis'] as const)('Plyr persistence (STORAGE_DRIVER=%s)', (driver) => {
   it('persists a real workflow and its workspace across stop/start', async () => {
     const testRoot = mkdtempSync(path.join(root, '.plyr-persistence-test-'));
     const stateDir = path.join(testRoot, 'state');
     const storageRoot = path.join(testRoot, 'workflow-files');
     const envFile = path.join(testRoot, '.env');
+    // Inside the temp dir, never the checkout's ./data/plyr.db.
+    const sqlitePath = path.join(testRoot, 'data', 'plyr.db');
     const port = 35000 + (process.pid % 1000);
     const redisPort = 36000 + (process.pid % 1000);
     const env = {
@@ -90,6 +97,8 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
       WORKFLOW_STORAGE_ROOT: storageRoot,
       API_TOKEN: 'admin123',
       REAL_CHROME_HEADLESS: 'true',
+      STORAGE_DRIVER: driver,
+      SQLITE_PATH: sqlitePath,
     };
 
     mkdirSync(stateDir, { recursive: true });
@@ -100,6 +109,8 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
       'API_TOKEN=admin123',
       'API_KEYS_ENABLED=false',
       'REAL_CHROME_HEADLESS=true',
+      `STORAGE_DRIVER=${driver}`,
+      `SQLITE_PATH=${sqlitePath}`,
       '',
     ].join('\n'));
 
@@ -120,7 +131,9 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
       const createdBody = await created.json() as { workflow: { id: string } };
       workflowId = createdBody.workflow.id;
 
-      expect(redis(['EXISTS', `wf:meta:local:${workflowId}`], redisPort)).toBe('1');
+      // Where the record lives depends on the driver — and ONLY there.
+      expect(redis(['EXISTS', `wf:meta:local:${workflowId}`], redisPort)).toBe(driver === 'redis' ? '1' : '0');
+      if (driver === 'sqlite') expect(existsSync(sqlitePath)).toBe(true);
       const workspace = path.join(storageRoot, 'local', workflowId);
       expect(existsSync(workspace)).toBe(true);
       expect(existsSync(path.join(workspace, 'uploads'))).toBe(true);
@@ -142,7 +155,14 @@ describe.skipIf(!enabled)('Plyr Redis persistence', () => {
       const listed = await getWorkflows(port);
       expect(listed.success).toBe(true);
       expect(listed.workflows?.some((workflow) => workflow.id === workflowId)).toBe(true);
-      expect(redis(['EXISTS', `wf:meta:local:${workflowId}`], redisPort)).toBe('1');
+      if (driver === 'redis') {
+        expect(redis(['EXISTS', `wf:meta:local:${workflowId}`], redisPort)).toBe('1');
+      } else {
+        // The durable store does not depend on Redis at all.
+        expect(redis(['FLUSHALL'], redisPort)).toBe('OK');
+        const afterFlush = await getWorkflows(port);
+        expect(afterFlush.workflows?.some((workflow) => workflow.id === workflowId)).toBe(true);
+      }
       expect(existsSync(path.join(storageRoot, 'local', workflowId, 'uploads'))).toBe(true);
       expect(existsSync(path.join(storageRoot, 'local', workflowId, 'downloads'))).toBe(true);
     } finally {

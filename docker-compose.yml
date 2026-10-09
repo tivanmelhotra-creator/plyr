@@ -59,7 +59,11 @@ services:
       # extensions — so NODE_ENV=production alone silently shipped a Remote
       # Browser with no Element Inspector. `server` is headed on a virtual
       # display and is what a deployed server almost always means.
-      APP_ENV: server
+      # Default `server`; `./plyr setup` / `./plyr start --docker` write the
+      # chosen environment to .env, which Compose substitutes here.
+      APP_ENV: "${APP_ENV:-server}"
+      STORAGE_DRIVER: "${STORAGE_DRIVER:-sqlite}"
+      SQLITE_PATH: /app/data/plyr.db
     ports:
       - "3000:3000"
     # Chrome needs more than the default 64MB of shared memory. Without this the
@@ -72,6 +76,9 @@ services:
       - ./profiles:/app/profiles
       - ./uploads:/app/uploads
       - ./downloads:/app/downloads
+      # SQLite: workflows, versions, execution history. Back up with ./plyr backup.
+      - ./data:/app/data
+      - ./workflow-files:/app/workflow-files
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s

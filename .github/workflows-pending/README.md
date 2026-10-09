@@ -80,3 +80,34 @@ Until it is activated, the same result is available locally with:
 ```bash
 npm ci && npm run build      # -> artifacts/element-inspector-extension/
 ```
+
+---
+
+# `docker-package.yml` — smoke-test the image BEFORE it is published
+
+`.github/workflows-pending/docker-package.yml` is a drop-in replacement for the
+live `.github/workflows/docker-package.yml`, parked here for the same reason
+(the automation account has no `workflows` permission).
+
+**What it fixes.** Today the live workflow only *builds* the image and pushes
+it. It never starts it, so an image that builds but cannot boot is published
+to GHCR, and `./plyr dev-docker` / `./plyr dev-docker --ref pr-N` then pull a
+broken image. That is exactly what happened on PR #69 before its Dockerfile
+fix: `npm ci --ignore-scripts` skipped `better-sqlite3`'s native binding and
+the server died at boot with the new default `STORAGE_DRIVER=sqlite`.
+
+**What the replacement does** — build once into the local engine as
+`plyr-dev:local` (the tag `docker-compose.dev.yml` runs) → `docker compose -f
+docker-compose.dev.yml up --wait` exactly like `./plyr dev-docker` →
+`scripts/ci/dev-docker-smoke.sh write` (health, browser readiness, save a
+workflow) → restart the app → `read` it back → check it is in
+`/app/data/plyr.db` → **only then** `docker push` the same tags. Timeout
+25 → 40 min.
+
+Activate:
+
+```bash
+git mv -f .github/workflows-pending/docker-package.yml .github/workflows/docker-package.yml
+git commit -m "ci: smoke-test the dev-docker image before publishing it"
+git push
+```

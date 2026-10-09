@@ -153,7 +153,7 @@ export class GlobalBrowser {
   /**
    * Get a new lightweight context from the shared browser
    */
-  static async getContext(): Promise<BrowserContext> {
+  static async getContext(overrides: Record<string, any> = {}): Promise<BrowserContext> {
     // ✅ Enhanced health check with retry
     if (!this.instance || !this.instance.isConnected()) {
       console.log('[GlobalBrowser] Browser not available, initializing...');
@@ -186,6 +186,9 @@ export class GlobalBrowser {
       ignoreHTTPSErrors: true,
       javaScriptEnabled: true,
       bypassCSP: false,
+      // Per-run browser options (context scope). Applied last so an explicit
+      // option beats the random fingerprint above.
+      ...overrides,
     });
 
     return context;

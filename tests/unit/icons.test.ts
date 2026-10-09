@@ -34,7 +34,7 @@ const INDEX_HTML = join(ROOT, 'public', 'index.html');
 const JS_ALL = [
   'actions.js', 'templates.js', 'i18n.js', 'api.js', 'expression.js',
   'graph-serialize.js', 'ndv-model.js', 'ndv-ui.js', 'ndv-nodes.js',
-  'flow-editor.js', 'live.js', 'live-view.js', 'run-state.js', 'run-panel.js',
+  'flow-editor.js', 'live.js', 'live-view.js', 'live-tab.js', 'run-state.js', 'run-panel.js',
   'browser-view.js', 'remote-io.js', 'real-chrome.js', 'views.js', 'app.js',
   // Element Inspector receiver: takes the extension's picked element and writes
   // it into the claimed node. Listed here so the emoji + icon-name guards below
@@ -53,7 +53,11 @@ const JS_ALL = [
   // The Workflow File Manager ("Add File -> Choose from Workflow Files" on the
   // canvas views). Renders folder rows, button labels and error sentences, so
   // it is user-visible copy and its icons must resolve like everyone else's.
-  'workflow-files.js',
+  'workflow-files.js', 'workflow-exchange.js',
+  // Per-run browser option catalog + its "Add option" panel (Launch Browser node).
+  'browser-options.js', 'browser-options-ui.js',
+  // Server settings (Settings page): every label, badge and button is user-visible copy.
+  'settings-ui.js',
 ];
 
 /**

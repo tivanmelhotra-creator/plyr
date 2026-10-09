@@ -7,6 +7,9 @@ import { detectProfile, profiledEnv } from './core/EnvProfile';
 // NOT import this module back (it keeps its own copy of cleanEnv's rule, and a
 // test asserts the two agree) because a cycle here would leave the getter
 // below undefined at the exact moment the object literal is evaluated.
+// MUST stay above RuntimeSettings: it overlays the Settings page's saved values
+// (data/settings.env) onto process.env before anything below reads it.
+import { liveRaw, envValueOf } from './core/PersistedSettings';
 import { settingValue, setOverride } from './core/RuntimeSettings';
 
 const cleanEnv = (val: string | undefined): string | undefined => {
@@ -130,6 +133,59 @@ const resolveApiToken = (): string => {
   return DEFAULT_SINGLE_USER_API_TOKEN;
 };
 const API_TOKEN = resolveApiToken();
+
+/**
+ * The value a setting has RIGHT NOW: a save in the Settings page during this
+ * process wins; `null` (reset) falls back to what .env/environment said; no
+ * runtime save at all means the boot value. See src/core/PersistedSettings.ts.
+ */
+const rawNow = (key: string): string | undefined => {
+  const r = liveRaw(key);
+  if (r === undefined) return cleanEnv(process.env[key]);
+  if (r === null) return cleanEnv(envValueOf(key));
+  return cleanEnv(r);
+};
+// process.env is snapshotted for these so a later `delete process.env.X` (tests,
+// tools) cannot silently change a running server — only a panel save can.
+const BOOT_RAW: Record<string, string | undefined> = {};
+for (const k of ['API_TOKEN', 'AUTH_MODE', 'PUBLIC_DOMAIN', 'BASE_URL', 'WEBHOOK_SECRET', 'LIVE_SHARE_SECRET',
+  'LIVE_SHARE_TTL_SEC', 'CODE_NODE_ENABLED', 'DEFAULT_HEADLESS', 'STEP_TIMEOUT_MS', 'DOWNLOAD_TTL_MINUTES',
+  'WORKFLOW_MAX_VERSIONS', 'ALLOW_OPEN_AUTH']) BOOT_RAW[k] = process.env[k];
+const cur = (key: string): string | undefined =>
+  liveRaw(key) === undefined ? cleanEnv(BOOT_RAW[key]) : rawNow(key);
+/**
+ * `config.X = v` — an in-process statement about THIS run (tests, code that
+ * decided something for the process lifetime). Memory only: persisting is the
+ * Settings page's job (PersistedSettings.saveSetting). Same split as
+ * RuntimeSettings.setOverride vs applySetting.
+ */
+const assigned = new Map<string, unknown>();
+const pick = <T>(key: string, compute: () => T): T => (assigned.has(key) ? (assigned.get(key) as T) : compute());
+const tokenNow = (): string => {
+  const v = cur('API_TOKEN');
+  if (v) return v;
+  return DEPLOYMENT_MODE === 'single' ? DEFAULT_SINGLE_USER_API_TOKEN : '';
+};
+const intNow = (key: string, dflt: number, min = 0): number => {
+  const n = parseInt(cur(key) || String(dflt), 10);
+  return Number.isFinite(n) && n >= min ? n : dflt;
+};
+
+/**
+ * AUTH_MODE=open — no login screen; the panel signs itself in.
+ *
+ * Only honoured where nobody else can reach the panel by design: a development
+ * profile, or a stack that opts in explicitly with ALLOW_OPEN_AUTH=true (only
+ * docker-compose.dev.yml, which binds 127.0.0.1). Anywhere else the request is
+ * ignored with a startup warning and the token is required — a setting must
+ * never be able to open a server to the internet by accident.
+ */
+const authOpenAllowed = (): boolean =>
+  DEPLOYMENT_MODE === 'single'
+  && (ACTIVE_PROFILE.id === 'development' || ACTIVE_PROFILE.id === 'test'
+    || (cleanEnv(BOOT_RAW.ALLOW_OPEN_AUTH) || '').toLowerCase() === 'true');
+const authModeRequested = (): 'open' | 'token' =>
+  (cur('AUTH_MODE') || 'token').toLowerCase() === 'open' ? 'open' : 'token';
 // Kept for the boot message and for anything that wants to nag the operator.
 // Renamed in spirit, not in name: it is still "the operator did not choose this
 // token", it just no longer means "and it is therefore unguessable".
@@ -176,9 +232,19 @@ export const config = {
   // ============================================
   DEPLOYMENT_MODE,
   IS_SINGLE_USER: DEPLOYMENT_MODE === 'single',
-  API_TOKEN,
+  // Getters: the Settings page can rotate the token with no restart.
+  get API_TOKEN(): string { return pick('API_TOKEN', () => tokenNow()); },
+  set API_TOKEN(v: string) { assigned.set('API_TOKEN', v); },
   API_TOKEN_AUTO_GENERATED,
-  API_TOKEN_IS_DEFAULT,
+  get API_TOKEN_IS_DEFAULT(): boolean { return tokenNow() === DEFAULT_SINGLE_USER_API_TOKEN; },
+  /** What the operator asked for (Settings page / .env AUTH_MODE). */
+  get AUTH_MODE_REQUESTED(): 'open' | 'token' { return authModeRequested(); },
+  /** May this instance run without a login at all? */
+  get AUTH_OPEN_ALLOWED(): boolean { return authOpenAllowed(); },
+  /** In force: no login screen, requests without a key are the owner. */
+  get AUTH_OPEN(): boolean { return authModeRequested() === 'open' && authOpenAllowed(); },
+  /** Set only by a stack that is loopback-only by construction (docker-compose.dev.yml). */
+  ALLOW_OPEN_AUTH: (cleanEnv(BOOT_RAW.ALLOW_OPEN_AUTH) || '').toLowerCase() === 'true',
   FULL_ACCESS_PLAN,
 
   // ============================================
@@ -202,7 +268,8 @@ export const config = {
   //
   // Not `profiled()`: a profile guessing a domain would silently advertise a
   // wrong address, and a wrong address is worse than an absent one.
-  PUBLIC_DOMAIN: cleanEnv(process.env.PUBLIC_DOMAIN) || cleanEnv(process.env.BASE_URL) || '',
+  get PUBLIC_DOMAIN(): string { return pick('PUBLIC_DOMAIN', () => cur('PUBLIC_DOMAIN') || cur('BASE_URL') || ''); },
+  set PUBLIC_DOMAIN(v: string) { assigned.set('PUBLIC_DOMAIN', v); },
   NODE_ENV: cleanEnv(process.env.NODE_ENV) || 'development',
   // Which profile filled in the gaps, and where that was read from. Surfaced
   // so the UI can say "development chose this for you" rather than leaving the
@@ -296,10 +363,8 @@ export const config = {
   // read within seconds of the download appearing, and 30 minutes is long
   // enough to survive a user who walked away mid-task without turning the temp
   // directory into permanent storage by another name.
-  DOWNLOAD_TTL_MINUTES: Math.max(
-    1,
-    parseInt(cleanEnv(process.env.DOWNLOAD_TTL_MINUTES) || '30', 10) || 30,
-  ),
+  get DOWNLOAD_TTL_MINUTES(): number { return pick('DOWNLOAD_TTL_MINUTES', () => Math.max(1, parseInt(cur('DOWNLOAD_TTL_MINUTES') || '30', 10) || 30)); },
+  set DOWNLOAD_TTL_MINUTES(v: number) { assigned.set('DOWNLOAD_TTL_MINUTES', v); },
 
   
   // ============================================
@@ -533,14 +598,16 @@ export const config = {
   // ============================================
   // Timeouts
   // ============================================
-  STEP_TIMEOUT_MS: parseInt(cleanEnv(process.env.STEP_TIMEOUT_MS) || '300000', 10),
+  get STEP_TIMEOUT_MS(): number { return pick('STEP_TIMEOUT_MS', () => intNow('STEP_TIMEOUT_MS', 300000, 1000)); },
+  set STEP_TIMEOUT_MS(v: number) { assigned.set('STEP_TIMEOUT_MS', v); },
   MAX_JOB_DURATION_MINUTES: parseInt(cleanEnv(process.env.MAX_JOB_DURATION_MINUTES) || '90', 10),
   BROWSER_LAUNCH_TIMEOUT_MS: parseInt(cleanEnv(process.env.BROWSER_LAUNCH_TIMEOUT_MS) || '30000', 10),
 
   // ============================================
   // Browser
   // ============================================
-  DEFAULT_HEADLESS: cleanEnv(process.env.DEFAULT_HEADLESS)?.toLowerCase() !== 'false',
+  get DEFAULT_HEADLESS(): boolean { return pick('DEFAULT_HEADLESS', () => cur('DEFAULT_HEADLESS')?.toLowerCase() !== 'false'); },
+  set DEFAULT_HEADLESS(v: boolean) { assigned.set('DEFAULT_HEADLESS', v); },
   // Profiled off in development: turbo trades diagnosability for speed, and
   // during development that trade is backwards.
   TURBO_MODE: profiled('TURBO_MODE') === 'true',
@@ -605,7 +672,8 @@ export const config = {
   // [F3] Optional shared secret. When set, every outgoing webhook is signed with
   // HMAC-SHA256 over the raw JSON body; the digest is sent in the
   // `X-Signature: sha256=<hex>` header (plus `X-Webhook-Timestamp`). Empty => unsigned.
-  WEBHOOK_SECRET: cleanEnv(process.env.WEBHOOK_SECRET) || '',
+  get WEBHOOK_SECRET(): string { return pick('WEBHOOK_SECRET', () => cur('WEBHOOK_SECRET') || ''); },
+  set WEBHOOK_SECRET(v: string) { assigned.set('WEBHOOK_SECRET', v); },
 
   // ============================================
   // Step 29: two-channel live reporting
@@ -617,13 +685,19 @@ export const config = {
   STEP_WEBHOOK_ENABLED: cleanEnv(process.env.STEP_WEBHOOK_ENABLED) === 'true',
   // Secret used to sign shareable live-view tokens. Falls back to
   // WEBHOOK_SECRET, then API_TOKEN, so a token can always be minted.
-  LIVE_SHARE_SECRET:
-    cleanEnv(process.env.LIVE_SHARE_SECRET)
-    || cleanEnv(process.env.WEBHOOK_SECRET)
-    || API_TOKEN
-    || '',
+  get LIVE_SHARE_SECRET(): string {
+    return pick('LIVE_SHARE_SECRET', () => cur('LIVE_SHARE_SECRET') || cur('WEBHOOK_SECRET') || tokenNow() || '');
+  },
+  set LIVE_SHARE_SECRET(v: string) { assigned.set('LIVE_SHARE_SECRET', v); },
   // Default share-link lifetime (seconds). 0 = never expires.
-  LIVE_SHARE_TTL_SEC: parseInt(cleanEnv(process.env.LIVE_SHARE_TTL_SEC) || '86400', 10),
+  // 2 h: longer than the longest run (MAX_JOB_DURATION_MINUTES=90), short enough
+  // that a leaked link is dead the same afternoon. It was 24 h.
+  get LIVE_SHARE_TTL_SEC(): number { return pick('LIVE_SHARE_TTL_SEC', () => intNow('LIVE_SHARE_TTL_SEC', 7200, 0)); },
+  set LIVE_SHARE_TTL_SEC(v: number) { assigned.set('LIVE_SHARE_TTL_SEC', v); },
+
+  // Lets the built-in public token admin123 pass the server/production startup
+  // check. Set ONLY by docker-compose.dev.yml (disposable, loopback-only).
+  ALLOW_DEFAULT_API_TOKEN: cleanEnv(process.env.ALLOW_DEFAULT_API_TOKEN) === 'true',
 
   // ============================================
   // API Integration (F3)
@@ -642,7 +716,20 @@ export const config = {
   // ============================================
   // How many past versions to keep per workflow. Oldest snapshots beyond this
   // are pruned on each update. 0 disables history pruning (keep everything).
-  WORKFLOW_MAX_VERSIONS: parseInt(cleanEnv(process.env.WORKFLOW_MAX_VERSIONS) || '20', 10),
+  get WORKFLOW_MAX_VERSIONS(): number { return pick('WORKFLOW_MAX_VERSIONS', () => intNow('WORKFLOW_MAX_VERSIONS', 20, 1)); },
+  set WORKFLOW_MAX_VERSIONS(v: number) { assigned.set('WORKFLOW_MAX_VERSIONS', v); },
+
+  // ── Durable storage (src/services/storage.ts) ─────────────────────────
+  // sqlite (default): workflows, versions and execution history in one WAL
+  // file. redis: the previous layout (no execution history). Redis stays
+  // mandatory either way — it is the queue, Pub/Sub, idempotency and cron.
+  STORAGE_DRIVER: ((cleanEnv(process.env.STORAGE_DRIVER) || 'sqlite').toLowerCase() === 'redis'
+    ? 'redis' : 'sqlite') as 'sqlite' | 'redis',
+  // Keep it on a persistent volume (Docker: ./data is mounted).
+  SQLITE_PATH: path.resolve(cleanEnv(process.env.SQLITE_PATH) || './data/plyr.db'),
+  // Execution history retention: whichever limit is reached first. 0 = no limit.
+  EXECUTION_RETENTION_DAYS: parseInt(cleanEnv(process.env.EXECUTION_RETENTION_DAYS) || '30', 10),
+  EXECUTION_MAX_ROWS: parseInt(cleanEnv(process.env.EXECUTION_MAX_ROWS) || '10000', 10),
 
   // ============================================
   // Security
@@ -667,6 +754,23 @@ export const config = {
   // race is the only escape, so the value must stay well under the step
   // timeout to leave room for the engine to report the unmet condition.
   CONDITION_CODE_TIMEOUT_MS: parseInt(cleanEnv(process.env.CONDITION_CODE_TIMEOUT_MS) || '5000', 10),
+
+  // ============================================
+  // Code node (src/core/CodeNode.ts) — runs the operator's own JavaScript.
+  // NOT a security sandbox: in `single` mode the author owns the server.
+  // Always OFF in `multi` mode, whatever the env says (other tenants' code
+  // would run with this server's privileges).
+  // ============================================
+  get CODE_NODE_ENABLED(): boolean {
+    return pick('CODE_NODE_ENABLED', () => DEPLOYMENT_MODE === 'single' && (cur('CODE_NODE_ENABLED') || 'true').toLowerCase() !== 'false');
+  },
+  set CODE_NODE_ENABLED(v: boolean) { assigned.set('CODE_NODE_ENABLED', v); },
+  // Comma list of module roots `require()` may load. Empty = every module.
+  CODE_NODE_ALLOW_MODULES: cleanEnv(process.env.CODE_NODE_ALLOW_MODULES) || '',
+  // Default per-node timeout when the node does not set its own.
+  CODE_NODE_TIMEOUT_MS: parseInt(cleanEnv(process.env.CODE_NODE_TIMEOUT_MS) || '30000', 10),
+  // Heap cap of the worker thread (no-browser mode). 0 = Node's default.
+  CODE_NODE_MAX_MEMORY_MB: parseInt(cleanEnv(process.env.CODE_NODE_MAX_MEMORY_MB) || '512', 10),
   USE_LUA_QUOTA: cleanEnv(process.env.USE_LUA_QUOTA) !== 'false',
 
   // ============================================

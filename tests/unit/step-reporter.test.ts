@@ -223,6 +223,6 @@ describe('buildShareToken / verifyShareToken', () => {
   });
 
   it('exposes a sane default TTL', () => {
-    expect(DEFAULT_SHARE_TTL_SEC).toBe(24 * 60 * 60);
+    expect(DEFAULT_SHARE_TTL_SEC).toBe(2 * 60 * 60);
   });
 });

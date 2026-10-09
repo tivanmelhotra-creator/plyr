@@ -134,6 +134,12 @@
    * so any valid key resolves to its owner.
    * Resolves with { valid, userId, isAdmin } — rejects only on network errors.
    */
+  /** Public: does this server want a login at all? (AUTH_MODE, see settings.routes.ts) */
+  function authMode() {
+    return fetch('/auth/mode', { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : { mode: 'token' }; });
+  }
+
   function validateKey(key) {
     return fetch('/me', {
       headers: { 'x-api-key': key, Accept: 'application/json' },
@@ -162,6 +168,14 @@
   // ---------------------------------------------
   function runFlow(payload) {
     return post('/run', payload);
+  }
+  /**
+   * Mint a signed, job-bound, expiring SHARE token for the live-view tab. The API
+   * key travels in the x-api-key HEADER (request() adds it); only the returned
+   * token ever appears in a URL.
+   */
+  function liveShare(userId, jobId) {
+    return post('/live/share/' + encodeURIComponent(userId) + '/' + encodeURIComponent(jobId), {});
   }
   /**
    * Item N — run ONE node: `steps` is the chain PREFIX up to and including it,
@@ -220,6 +234,14 @@
   }
   function createWorkflow(userId, body) {
     return post(wfBase(userId), body);
+  }
+  /** Dry run of a workflow FILE: what would saving it do? Stores nothing. */
+  function previewWorkflowImport(userId, envelope) {
+    return post(wfBase(userId) + '/import/preview', envelope);
+  }
+  /** Save a workflow FILE (Code nodes arrive disabled, workflow inactive). */
+  function importWorkflow(userId, envelope) {
+    return post(wfBase(userId) + '/import', envelope);
   }
   function updateWorkflow(userId, workflowId, body) {
     return put(wfBase(userId) + '/' + encodeURIComponent(workflowId), body);
@@ -357,6 +379,7 @@
     getAdminToken: getAdminToken,
     setAdminToken: setAdminToken,
     runFlow: runFlow,
+    liveShare: liveShare,
     runNode: runNode,
     listJobs: listJobs,
     getJob: getJob,
@@ -367,6 +390,8 @@
     listWorkflows: listWorkflows,
     getWorkflow: getWorkflow,
     createWorkflow: createWorkflow,
+    previewWorkflowImport: previewWorkflowImport,
+    importWorkflow: importWorkflow,
     updateWorkflow: updateWorkflow,
     deleteWorkflow: deleteWorkflow,
     listWorkflowVersions: listWorkflowVersions,
@@ -383,5 +408,6 @@
     del: del,
     health: health,
     validateKey: validateKey,
+    authMode: authMode,
   };
 })();

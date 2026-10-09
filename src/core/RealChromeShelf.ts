@@ -665,7 +665,12 @@ export class RealChromeShelf {
     const done = await finalizeDownloadName(target, url, contentType);
     entry.name = done.name;
     entry.size = done.size;
-    entry.state = 'completed';
+    // NOT 'completed' yet. The row is polled (the UI, nodes waiting for a
+    // download, the browser tests' settled()). Flipping it here, before the
+    // workflow copy below exists, let a reader see "completed" and then find
+    // nothing in <workflow>/downloads/. REPRODUCED under CPU load: a missing
+    // "x (3).json" and an ENOENT in the extension-download-export browser test.
+    // The state changes only once BOTH copies are in place.
 
     if (entry.size > MAX_DOWNLOAD_BYTES) {
       // Over the cap: delete it rather than silently keep a quarter-gigabyte
@@ -690,6 +695,7 @@ export class RealChromeShelf {
       });
       this.persistChain = run.catch(() => { /* keep the chain alive */ });
       await run;
+      entry.state = 'completed';
     }
 
     void sweepDownloads(this.userId).catch(() => { /* best-effort housekeeping */ });

@@ -14,6 +14,20 @@ ENV SKIP_BROWSER_INSTALL=1
 COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts
 
+# Native addons. `--ignore-scripts` above also skips their install step, and
+# better-sqlite3 (SQLite storage, the default STORAGE_DRIVER) is NOT usable
+# without its compiled binding: the server then dies at boot with
+# "Could not locate the bindings file". Fetch the prebuilt binary; if that
+# fails (offline / no prebuild for this Node), compile it from source. The
+# final `node -e` makes a missing binding fail THE BUILD, never a container.
+RUN (npm rebuild better-sqlite3 \
+      && node -e "new (require('better-sqlite3'))(':memory:').close()") \
+ || (apt-get update \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 make g++ \
+      && rm -rf /var/lib/apt/lists/* \
+      && npm rebuild better-sqlite3 --build-from-source) \
+ && node -e "new (require('better-sqlite3'))(':memory:').close(); console.log('better-sqlite3 native binding OK')"
+
 # npm run build compiles TypeScript AND packages/verifies the extension.
 # Both the build script and its extension source must be present in this stage.
 COPY tsconfig.json ./
@@ -92,7 +106,11 @@ COPY public ./public
 COPY extension ./extension
 
 # Runtime data directories
-RUN mkdir -p logs profiles uploads downloads
+RUN mkdir -p logs profiles uploads downloads data workflow-files
+
+# Fail the image build (not the first boot) if the SQLite binding did not
+# survive `npm prune` / the copy between stages.
+RUN node -e "new (require('better-sqlite3'))(':memory:').close()"
 
 EXPOSE 3000
 

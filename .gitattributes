@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings, even in a Windows checkout with
+# core.autocrlf=true: bash reads "\r" as part of every command.
+*.sh   text eol=lf
+plyr   text eol=lf
+dev.sh text eol=lf

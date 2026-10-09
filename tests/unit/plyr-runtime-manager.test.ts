@@ -77,7 +77,8 @@ describe('canonical Plyr runtime manager', () => {
     expect(manager).toContain('down --volumes --remove-orphans');
     expect(manager).toContain('up -d --no-build --force-recreate --wait --wait-timeout 180');
     expect(compose).toContain('127.0.0.1:3000:3000');
-    expect(compose).toContain('API_TOKEN: admin123');
+    // dev-docker passes the chosen token in; admin123 is only the bare-compose fallback.
+    expect(compose).toContain('API_TOKEN: ${PLYR_DEV_API_TOKEN:-admin123}');
     expect(compose).not.toContain('env_file:');
     expect(compose).not.toContain('volumes:');
     const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');

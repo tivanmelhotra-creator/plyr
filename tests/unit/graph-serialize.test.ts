@@ -33,6 +33,7 @@ interface GS {
   graphToSteps: (g: Graph) => Step[];
   stepsToGraph: (s: Step[]) => Graph;
   validateGraph: (g: Graph) => ValResult;
+  graphToDocumentSteps: (g: Graph) => Step[];
 }
 
 let GS: GS;
@@ -627,5 +628,51 @@ describe('graph-serialize — disabled nodes (item J)', () => {
     const row = outline.find((r) => r.nodeId === 'a');
     expect(row.disabled).toBe(true);
     expect(row.label).toBe('Login page');
+  });
+});
+
+/**
+ * Task 5 — the DOCUMENT path. Saving/exporting must keep a disabled node (as
+ * `disabled:true`), otherwise autosave silently deletes it; running must still
+ * skip it. Same graph, two serialisations.
+ */
+describe('graph-serialize — document mode keeps disabled nodes', () => {
+  const g = () => graph(
+    [
+      { id: 'a', action: 'goto', params: { url: 'https://x.com' } },
+      { id: 'b', action: 'code', params: { code: 'return 1' }, disabled: true },
+      { id: 'c', action: 'click', params: { selector: '.b' } },
+    ],
+    [{ from: 'start', to: 'a' }, { from: 'a', to: 'b' }, { from: 'b', to: 'c' }],
+  );
+
+  it('run path skips it, document path keeps it flagged', () => {
+    expect(GS.graphToSteps(g()).map((s) => s.action)).toEqual(['goto', 'click']);
+    const doc = GS.graphToDocumentSteps(g());
+    expect(doc.map((s) => s.action)).toEqual(['goto', 'code', 'click']);
+    expect((doc[1] as any).disabled).toBe(true);
+    expect((doc[0] as any).disabled).toBeUndefined();
+  });
+
+  it('round-trips: document steps -> graph -> document steps', () => {
+    const doc = GS.graphToDocumentSteps(g());
+    const back = GS.stepsToGraph(JSON.parse(JSON.stringify(doc)));
+    const code = Object.values(back.nodes).find((n) => n.action === 'code')!;
+    expect(code.disabled).toBe(true);
+    expect(GS.graphToDocumentSteps(back)).toEqual(doc);
+    expect(GS.graphToSteps(back).map((s) => s.action)).toEqual(['goto', 'click']);
+  });
+
+  it('keeps a disabled node nested inside a branch', () => {
+    const gg = graph(
+      [
+        { id: 'i', action: 'if', params: { left: '1', operator: 'equals', right: '1' } },
+        { id: 't', action: 'code', params: { code: 'x' }, disabled: true },
+      ],
+      [{ from: 'start', to: 'i' }, { from: 'i', to: 't', port: 'then' }],
+    );
+    const doc = GS.graphToDocumentSteps(gg);
+    expect((doc[0].then as any)[0].disabled).toBe(true);
+    expect(GS.graphToSteps(gg)[0].then ?? []).toEqual([]);
   });
 });

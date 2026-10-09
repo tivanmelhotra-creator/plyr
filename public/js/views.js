@@ -1244,6 +1244,10 @@
     root.querySelector('#fe-run').addEventListener('click', function () {
       var uid = effectiveUserId();
       if (!uid) { U().toast(t('fe.needUserId'), 'error'); return; }
+      // A graph the serializer cannot turn into steps[] faithfully (cycle,
+      // two edges on one output, dangling edge) is refused with the reason and
+      // the offending node selected — never silently run in a truncated form.
+      if (FE.explainRunBlocker && FE.explainRunBlocker()) return;
       var steps = FE.toSteps();
       if (!steps.length) { U().toast(t('fe.noSteps'), 'error'); return; }
 
@@ -1258,7 +1262,21 @@
       // A saved workflow files its node outputs in ITS OWN workspace
       // (Workflow Files > downloads/<node>); the server verifies ownership.
       if (runWf && runWf.id) runPayload.workflowId = runWf.id;
-      API.runFlow(runPayload)
+      // Test Run with a VISIBLE browser: open the live tab NOW. window.open must
+      // run synchronously in this click handler (before the first await/then) or
+      // the popup blocker eats it; LiveTab.launch does that, then navigates the
+      // blank tab to the signed share link once the job id is known.
+      var liveTab = window.LiveTab.launch({
+        win: window,
+        isTestRun: true,
+        runHeadless: runPayload.headless,
+        steps: steps,
+        userId: uid,
+        start: function () { return API.runFlow(runPayload); },
+        share: function (u, j) { return API.liveShare(u, j); },
+        labels: { title: t('lv.tabTitle'), loading: t('lv.tabLoading'), failed: t('lv.tabFailed') },
+      });
+      liveTab.run
         .then(function (data) {
           resultEl.innerHTML =
             '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('fe.queued') +
@@ -1288,6 +1306,25 @@
             esc(err && err.message ? err.message : String(err)) + '</div>';
         })
         .then(function () { btn.disabled = false; btn.textContent = label; });
+
+      // The popup was refused, or minting the link failed: say so and hand the
+      // user a plain link instead of a silent no-op (R3: no control that does
+      // nothing). `url` carries the share token, never the API key.
+      liveTab.tab.then(function (r) {
+        if (!r || (r.status !== 'blocked' && r.status !== 'share-failed')) return;
+        var box = document.createElement('div');
+        box.className = 'result-banner ' + (r.status === 'blocked' ? 'ok' : 'err');
+        if (r.status === 'blocked' && r.url) {
+          var a = document.createElement('a');
+          a.href = r.url; a.target = '_blank'; a.rel = 'noopener';
+          a.textContent = t('lv.openLive');
+          box.appendChild(document.createTextNode(t('lv.popupBlocked') + ' '));
+          box.appendChild(a);
+        } else {
+          box.textContent = t('lv.tabFailed') + ' ' + (r.error || '');
+        }
+        resultEl.appendChild(box);
+      });
     });
 
     // =====================================================================
@@ -1403,6 +1440,7 @@
       exportMenu.innerHTML =
         menuItem(t('sh.exportJson'), 'braces', { act: 'json' }) +
         menuItem(t('sh.exportTemplate'), 'file-text', { act: 'template' }) +
+        menuItem(t('ex.downloadFile'), 'download', { act: 'file' }) +
         // No PDF renderer, no share-link service, no template registry yet.
         menuItem(t('sh.exportPdf'), 'download', { disabled: true }) +
         '<div class="fe-mi-sep" role="separator"></div>' +
@@ -1417,6 +1455,16 @@
             var steps = FE.toSteps();
             resultEl.innerHTML = '<pre class="json-block">' +
               esc(JSON.stringify({ steps: steps }, null, 2)) + '</pre>';
+          } else if (a === 'file') {
+            // The native file, from the CURRENT canvas (disabled nodes kept).
+            var curf = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+            exportWorkflowJson({
+              id: curf && curf.id,
+              name: (curf && curf.name) || t('fe.untitled'),
+              description: (curf && curf.description) || '',
+              steps: FE.toDocumentSteps(),
+              headless: curf && curf.headless,
+            });
           } else if (a === 'template') {
             var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
             resultEl.innerHTML = '<pre class="json-block">' +
@@ -2115,7 +2163,61 @@
     location.hash = '#/editor';
   }
 
-  /** Import a workflow JSON file produced by the row menu's Export entry. */
+  function importErrorText(code, version) {
+    if (code === 'json') return t('ex.errJson');
+    if (code === 'format') return t('ex.errFormat');
+    if (code === 'version') return t('ex.errVersion').replace('{v}', String(version || '?'));
+    return t('ex.errShape');
+  }
+
+  /**
+   * The summary shown BEFORE an imported file is saved. Everything in it comes
+   * from the server's own preview, so it is what will really be stored: how
+   * many nodes, which kinds, how many Code nodes were switched off, which
+   * secrets the file did not carry, and that the workflow starts inactive.
+   */
+  function showImportSummary(sum, codeDisabled, onConfirm) {
+    var overlay = document.createElement('div');
+    overlay.className = 'ex-overlay';
+    var kinds = (sum.actions || []).slice(0, 8).map(function (a) {
+      return '<span class="ex-chip">' + U().esc(a.action) + ' <b>' + a.count + '</b></span>';
+    }).join('');
+    var notes = '';
+    if (codeDisabled > 0) {
+      notes += '<p class="ex-note ex-warn">' + U().esc(t('ex.codeOff').replace('{n}', String(codeDisabled))) + '</p>';
+    }
+    if (sum.redacted && sum.redacted.length) {
+      notes += '<p class="ex-note">' + U().esc(t('ex.redactedList').replace('{n}', String(sum.redacted.length))) +
+        '<br><code>' + U().esc(sum.redacted.slice(0, 6).join(', ')) + '</code></p>';
+    }
+    if (sum.launchOptionNodes > 0) {
+      notes += '<p class="ex-note">' + U().esc(t('ex.launchOpts').replace('{n}', String(sum.launchOptionNodes))) + '</p>';
+    }
+    if (sum.legacy) notes += '<p class="ex-note">' + U().esc(t('ex.legacy')) + '</p>';
+    notes += '<p class="ex-note">' + U().esc(t('ex.startsInactive')) + '</p>';
+    overlay.innerHTML =
+      '<div class="ex-dialog" role="dialog" aria-modal="true" aria-labelledby="ex-title">' +
+        '<h3 id="ex-title">' + U().esc(t('ex.title')) + '</h3>' +
+        '<p class="ex-name">' + U().esc(sum.name) + '</p>' +
+        (sum.description ? '<p class="ex-desc">' + U().esc(sum.description) + '</p>' : '') +
+        '<p class="ex-count">' + U().esc(t('ex.nodes').replace('{n}', String(sum.nodeCount))) + '</p>' +
+        '<div class="ex-chips">' + kinds + '</div>' + notes +
+        '<div class="ex-actions">' +
+          '<button type="button" class="btn" id="ex-cancel">' + U().esc(t('ex.cancel')) + '</button>' +
+          '<button type="button" class="btn primary" id="ex-confirm">' + U().esc(t('ex.confirm')) + '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    function close() { try { document.body.removeChild(overlay); } catch (e) { /* gone */ } document.removeEventListener('keydown', onKey); }
+    function onKey(ev) { if (ev.key === 'Escape') close(); }
+    document.addEventListener('keydown', onKey);
+    overlay.addEventListener('click', function (ev) { if (ev.target === overlay) close(); });
+    overlay.querySelector('#ex-cancel').addEventListener('click', close);
+    overlay.querySelector('#ex-confirm').addEventListener('click', function () { close(); onConfirm(); });
+    overlay.querySelector('#ex-confirm').focus();
+  }
+
+  /** Import a workflow file produced by Export (native), or an older plyr export. */
   function importWorkflowJson(uid, done) {
     var input = document.createElement('input');
     input.type = 'file';
@@ -2137,24 +2239,23 @@
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function () {
-        var body;
-        try { body = JSON.parse(String(reader.result)); }
-        catch (e) { U().toast(t('ws.importInvalid'), 'error'); return; }
-        if (!body || !Array.isArray(body.steps)) { U().toast(t('ws.importInvalid'), 'error'); return; }
-        API.createWorkflow(uid, {
-          name: body.name || 'Imported workflow',
-          description: body.description || null,
-          steps: body.steps,
-          headless: body.headless,
-          webhookUrl: body.webhookUrl,
-        })
-          .then(function () {
-            U().toast(t('ws.imported'), 'success');
-            if (done) done();
+        // 1) cheap local look -> a precise message for the common wrong files;
+        // 2) the SERVER previews (Zod + validateSteps + Code nodes disabled);
+        // 3) the user sees the summary and confirms; only then is anything saved.
+        var p = window.WorkflowExchange.parse(String(reader.result));
+        if (!p.ok) { U().toast(importErrorText(p.code, p.version), 'error'); return; }
+        API.previewWorkflowImport(uid, p.envelope)
+          .then(function (res) {
+            showImportSummary(res.summary, res.codeDisabled, function () {
+              API.importWorkflow(uid, p.envelope)
+                .then(function () {
+                  U().toast(t('ws.imported'), 'success');
+                  if (done) done();
+                })
+                .catch(function (err) { U().toast(err.message, 'error'); });
+            });
           })
-          .catch(function (err) {
-            U().toast(err.message, 'error');
-          });
+          .catch(function (err) { U().toast(err.message || t('ws.importInvalid'), 'error'); });
       };
       reader.onerror = function () {
         cleanup();
@@ -2211,15 +2312,18 @@
     if (!wf) return;
 
     function save(full) {
-      var payload = JSON.stringify({
+      // The NATIVE file: {format:"plyr-workflow", version, workflow}. Secret
+      // values (password fields, proxy / HTTP-auth passwords) are blanked and
+      // listed in `redacted`; webhookUrl and the active flag are deliberately
+      // not part of it (a file must not carry where results go, nor that it is
+      // already switched on).
+      var env = window.WorkflowExchange.buildEnvelope({
         name: full.name,
         description: full.description || null,
         steps: full.steps || [],
         headless: full.headless,
-        webhookUrl: full.webhookUrl,
-        active: full.active !== false,
-        liveBrowser: full.liveBrowser === true,
-      }, null, 2);
+      });
+      var payload = JSON.stringify(env, null, 2);
       var blob = new Blob([payload], { type: 'application/json' });
       var href = URL.createObjectURL(blob);
       var a = document.createElement('a');
@@ -2234,6 +2338,9 @@
       // Revoking in the same turn can cancel the download that just started.
       setTimeout(function () { try { URL.revokeObjectURL(href); } catch (e) {} }, 60000);
       U().toast(t('ws.exported'), 'success');
+      if (env.redacted && env.redacted.length) {
+        U().toast(t('ex.redactedNote').replace('{n}', String(env.redacted.length)), 'info');
+      }
     }
 
     // The list already carries `steps`, so this is the normal path.
@@ -2472,7 +2579,7 @@
       var st = statsByWf[wf.id];
       var active = wf.active !== false;
       var n = st ? st.scheduleCount : 0;
-      return '<tr data-row="' + esc(wf.id) + '">' +
+      return '<tr data-row="' + esc(wf.id) + '" class="ws-row-open" title="' + esc(t('ws.openHint')) + '">' +
         '<td>' +
           '<div class="ws-wf">' +
             '<span class="ws-wf-icon">' + IC('sitemap', 15) + '</span>' +
@@ -2591,6 +2698,26 @@
       bindWorkflowRows();
     }
 
+    /**
+     * The table wrapper clips its overflow (rounded corners + horizontal scroll),
+     * which used to cut the ⋮ menu off — completely, when the list had a single
+     * row. The menu is therefore laid out with `position: fixed` from the
+     * button's on-screen rectangle: nothing can clip it, and it flips upwards
+     * when there is no room below.
+     */
+    function placeRowMenu(menu, btn) {
+      var r = btn.getBoundingClientRect();
+      var w = menu.offsetWidth || 210;
+      var h = menu.offsetHeight || 0;
+      var rtl = getComputedStyle(btn).direction === 'rtl';
+      var left = rtl ? r.left : r.right - w;
+      left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+      var top = r.bottom + 4;
+      if (h && top + h > window.innerHeight - 8 && r.top - 4 - h >= 8) top = r.top - 4 - h;
+      menu.style.left = left + 'px';
+      menu.style.top = Math.max(8, top) + 'px';
+    }
+
     function closeRowMenus() {
       elPanel.querySelectorAll('.ws-row-menu').forEach(function (m) { m.hidden = true; });
       elPanel.querySelectorAll('[data-menu]').forEach(function (b) {
@@ -2686,6 +2813,18 @@
           paintPanel();
         });
       });
+      // Double-click a row to open that workflow (same as "Open in editor").
+      // Clicks on the switches, the schedules link, the ⋮ button and its menu
+      // are their own actions and never open the workflow.
+      elPanel.querySelectorAll('tr[data-row]').forEach(function (tr) {
+        tr.addEventListener('dblclick', function (ev) {
+          if (ev.target.closest && ev.target.closest('button, a, input, select, .ws-row-menu')) return;
+          var wf = findWf(tr.getAttribute('data-row'));
+          if (!wf) return;
+          closeRowMenus();
+          openInEditorFromWorkspace(wf);
+        });
+      });
       elPanel.querySelectorAll('[data-menu]').forEach(function (b) {
         b.addEventListener('click', function (ev) {
           ev.stopPropagation();
@@ -2695,6 +2834,7 @@
           closeRowMenus();
           if (menu && !wasOpen) {
             menu.hidden = false;
+            placeRowMenu(menu, b);
             b.setAttribute('aria-expanded', 'true');
           }
         });
@@ -3137,6 +3277,10 @@
         }
       });
     });
+    // A fixed-position menu would stay behind when the page moves under it.
+    function closeMenusOnMove() { if (elPanel && elPanel.isConnected) closeRowMenus(); }
+    window.addEventListener('resize', closeMenusOnMove);
+    window.addEventListener('scroll', closeMenusOnMove, true);
     // One document-level closer for every popover, so a stray click never
     // leaves a menu floating over the table.
     document.addEventListener('click', function () {
@@ -3201,11 +3345,14 @@
             '</div>' +
           '</div>' +
         '</div>' +
+        // Server configuration (what used to require editing .env): public/js/settings-ui.js
+        '<section id="server-settings" class="server-settings"></section>' +
       '</section>';
 
     root.querySelector('#set-lang').addEventListener('click', function () {
       if (window.I18N) window.I18N.toggle();
     });
+    if (window.SettingsUI) window.SettingsUI.render(root.querySelector('#server-settings'));
   }
 
   function render(route, root) {

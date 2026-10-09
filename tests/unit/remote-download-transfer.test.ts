@@ -512,6 +512,15 @@ describe('§2 — the shelf\'s "upload from your computer" button is reachable',
 });
 
 // ══════════════════════════════════════════════════════════════════════════
+/** The shipped native-file module, evaluated the way the page loads it. */
+function nativeExchange() {
+  const win: any = {};
+  for (const f of ['actions.js', 'browser-options.js', 'workflow-exchange.js']) {
+    new Function('window', read('public/js/' + f)).call(win, win);
+  }
+  return win.WorkflowExchange;
+}
+
 describe('§3 — Workspace export produces a real file', () => {
   /** Run the shipped exportWorkflowJson against stubs and report what it did. */
   function exportHarness(opts: {
@@ -562,6 +571,8 @@ describe('§3 — Workspace export produces a real file', () => {
         get location() {
           return { get href() { return ''; }, set href(v: string) { navigated = v; } };
         },
+        // export now writes the NATIVE file through the shared module
+        WorkflowExchange: nativeExchange(),
       },
       effectiveUserId: () => (opts.userId && opts.userId !== 'env_root' ? opts.userId : '0'),
       U: () => ({ toast: (msg: string, kind: string) => { toasts.push({ msg, kind }); } }),
@@ -621,10 +632,16 @@ describe('§3 — Workspace export produces a real file', () => {
     await settle();
 
     const parsed = JSON.parse(h.blobs[0].parts.join(''));
-    // The importer's one hard requirement (see importWorkflowJson).
-    expect(Array.isArray(parsed.steps)).toBe(true);
-    expect(parsed.steps).toEqual(wf.steps);
-    expect(parsed.name).toBe('Test WF');
+    // The native envelope (see public/js/workflow-exchange.js); the importer
+    // reads exactly this shape.
+    expect(parsed.format).toBe('plyr-workflow');
+    expect(parsed.version).toBe(1);
+    expect(Array.isArray(parsed.workflow.steps)).toBe(true);
+    expect(parsed.workflow.steps).toEqual(wf.steps);
+    expect(parsed.workflow.name).toBe('Test WF');
+    // A file must not carry where results go, nor that it is already switched on.
+    expect(parsed.workflow.webhookUrl).toBeUndefined();
+    expect(parsed.active).toBeUndefined();
     expect(h.blobs[0].type).toBe('application/json');
   });
 
@@ -636,7 +653,7 @@ describe('§3 — Workspace export produces a real file', () => {
     await settle();
 
     expect(h.getWorkflowCalls).toEqual([['0', 'wf_bare']]);  // '0', never ''
-    expect(JSON.parse(h.blobs[0].parts.join('')).steps).toEqual([{ action: 'goto' }]);
+    expect(JSON.parse(h.blobs[0].parts.join('')).workflow.steps).toEqual([{ action: 'goto' }]);
     expect(h.anchors[0].download).toBe('Bare.json');
   });
 

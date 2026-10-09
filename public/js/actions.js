@@ -60,6 +60,9 @@
       { k: 'url', label: 'p.url', type: 'string', ph: '(optional) https://example.com', expr: true, help: 'help.launchUrl' },
       { k: 'timeout', label: 'p.timeout', type: 'number', ph: '60000', min: 0 },
       { k: 'waitUntil', label: 'p.waitUntil', type: 'options', options: ['domcontentloaded', 'load', 'networkidle'] },
+      // JSON text of the per-run browser options (browser-options.js). Owned by
+      // the "Add option" panel (browser-options-ui.js), never a raw input.
+      { k: 'browserOptions', label: 'bo.title', type: 'json', internal: true },
     ] },
     { id: 'wait-element', icon: 'eye', cat: 'navigation', fields: [
       { k: 'selector', label: 'p.selector', type: 'string', ph: '#ready', expr: true, help: 'help.waitSelector' },
@@ -174,6 +177,16 @@
       { k: 'json', label: 'p.jsonInput', type: 'multiline', ph: '{{ $json.body }}', expr: true, help: 'help.parseJson' },
       { k: 'path', label: 'p.jsonPath', type: 'string', ph: '(optional) data.items[0].id', help: 'help.jsonPath' },
       { k: 'optional', label: 'p.optional', type: 'boolean', help: 'help.parseJsonOptional' },
+    ] },
+    // Code node (src/core/CodeNode.ts): the operator's own JavaScript. Not a
+    // sandbox — `require`, `fetch`, fs and network are reachable on purpose.
+    // `code` is read raw by the runtime (no {{ }} substitution inside JS).
+    { id: 'code', icon: 'terminal', cat: 'data', fields: [
+      { k: 'mode', label: 'p.codeMode', type: 'options', options: ['runOnceForAllItems', 'runOnceForEachItem'],
+        optionLabels: { runOnceForAllItems: 'code.modeAll', runOnceForEachItem: 'code.modeEach' }, help: 'help.codeMode' },
+      { k: 'code', label: 'p.code', type: 'code', rows: 14, ph: 'return $input.all().map(item => ({ ...item.json }));', help: 'help.code' },
+      { k: 'useBrowser', label: 'p.codeUseBrowser', type: 'boolean', help: 'help.codeUseBrowser' },
+      { k: 'timeoutMs', label: 'p.timeout', type: 'number', ph: '30000', min: 100, max: 600000, help: 'help.codeTimeout' },
     ] },
     { id: 'export-data', icon: 'save', cat: 'data', fields: [
       { k: 'format', label: 'p.format', type: 'options', options: ['json', 'csv'] },
@@ -298,6 +311,26 @@
         // there is no control for it (rule R3). Declared anyway because
         // coerceParams() copies only declared keys — without this line an
         // imported workflow would lose the field the moment it was saved.
+        { k: 'codeContext', label: 'cb.codeContext', type: 'string', internal: true },
+      ] },
+    // ROUTER — N prioritised paths + an explicit DEFAULT port. It shares the
+    // `if` Condition Builder and ConditionEngine; unlike a multi-path `if`, the
+    // run always CONTINUES after it (join), and "nothing matched" has its own
+    // `default` output instead of overloading `next`. First match wins — there
+    // is no "run every match" mode because the runtime has none (rule R3).
+    // `branches` is the port list of an EMPTY router; the real, per-path ports
+    // are computed from `params.paths` (flow-editor portsOf / GraphSerialize).
+    { id: 'router', icon: 'git-branch', cat: 'flow',
+      branches: [{ id: 'default', label: 'port.default' }],
+      fields: [
+        { k: 'groups', label: 'cb.builder', type: 'string', internal: true },
+        { k: 'paths', label: 'cb.paths', type: 'string', internal: true },
+        { k: 'source', label: 'cb.readWhat', type: 'options', options: ['text', 'attribute', 'value', 'html', 'variable', 'code'] },
+        { k: 'attribute', label: 'cb.attributeName', type: 'string', ph: 'textContent' },
+        { k: 'selector', label: 'p.selector', type: 'string', ph: '(optional) .el' },
+        { k: 'operator', label: 'p.operator', type: 'options', options: ['exists', 'not_exists', 'visible', 'hidden', 'in_screen', 'not_in_screen', 'equals', 'equals_i', 'not_equals', 'greater_than', 'greater_equal', 'less_than', 'less_equal', 'contains', 'contains_i', 'not_contains', 'not_contains_i', 'starts_with', 'ends_with', 'matches_regex', 'is_empty', 'not_empty', 'is_true', 'is_false', 'is_truthy', 'is_falsy', 'in_list', 'not_in_list'] },
+        { k: 'value', label: 'p.value', type: 'string', ph: '(optional) left/var value', expr: true },
+        { k: 'expected', label: 'p.expected', type: 'string', ph: '(optional) compare to', expr: true },
         { k: 'codeContext', label: 'cb.codeContext', type: 'string', internal: true },
       ] },
     { id: 'switch', icon: 'shuffle', cat: 'flow',
