@@ -473,7 +473,7 @@ dev_docker_use_ref_files() {
   local ref="$1"; shift
   [[ -z "${PLYR_REF_FILES:-}" ]] || return 0           # already running the ref's copy
   have git && git -C "$GIT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
-  local sha head spec dest
+  local sha head spec dest p
   sha="$(dev_docker_resolve_ref "$ref")" || { error "Cannot resolve '$ref' on origin (branch, tag, SHA or pr-N)"; return 1; }
   head="$(git -C "$GIT_ROOT" rev-parse HEAD 2>/dev/null || true)"
   [[ "$sha" != "$head" ]] || return 0                  # the checkout already is the ref
@@ -482,9 +482,12 @@ dev_docker_use_ref_files() {
   if [[ ! -f "$dest/docker-compose.dev.yml" ]]; then
     say "fetching ${ref} (${sha:0:7}) so its scripts match its image"
     git -C "$GIT_ROOT" fetch -q origin "$spec" || { error "Could not fetch '$ref' from origin"; return 1; }
+    local -a paths=()
+    for p in scripts docker-compose.dev.yml plyr; do   # older refs may lack some of them
+      git -C "$GIT_ROOT" cat-file -e "$sha:$p" 2>/dev/null && paths+=("$p")
+    done
     rm -rf "$dest.tmp"; mkdir -p "$dest.tmp"
-    git -C "$GIT_ROOT" archive --format=tar "$sha" scripts docker-compose.dev.yml plyr 2>/dev/null \
-      | tar -x -C "$dest.tmp" \
+    git -C "$GIT_ROOT" archive --format=tar "$sha" "${paths[@]}" | tar -x -C "$dest.tmp" \
       || { rm -rf "$dest.tmp"; error "Could not unpack '$ref' (${sha:0:7})"; return 1; }
     [[ -f "$dest.tmp/docker-compose.dev.yml" && -f "$dest.tmp/scripts/plyr.sh" ]] \
       || { rm -rf "$dest.tmp"; error "'$ref' has no dev-docker files"; return 1; }
