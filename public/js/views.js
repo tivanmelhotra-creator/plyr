@@ -915,6 +915,9 @@
     root.innerHTML =
       '<div class="fe-shell">' +
         '<div class="fe-topbar">' +
+          // Aria Compact: the bar is a 3-column grid — start · modes · actions —
+          // so the Editor | Executions switch sits in the true centre.
+          '<div class="fe-tb-start">' +
           // G13: the real brand mark, not the letter `A` in an orange tile.
           '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
             t('fe.brand') + '</span>' +
@@ -927,6 +930,7 @@
           '</div>' +
           // Workflow tab strip — real, from API.listWorkflows(); never faked.
           '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
+          '</div>' +
           // Aria Compact (2026-10): the editor has two MODES over the same
           // workflow. `Editor` = the canvas. `Executions` = the ACTIVITY LOG
           // (Runs · Execution · Variables · Logs) promoted to the full work
@@ -1060,6 +1064,8 @@
             '<button type="button" class="fe-exec-cta" id="fe-exec-cta" data-mode="run">' +
               IC('play', 14) + '<span>' + esc(t('sh.executeWorkflow')) + '</span></button>' +
           '</div>' +
+          '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
+        '</div>' +
           // Executions mode surface. The ACTIVITY LOG drawer (RunPanel, a body
           // singleton) is re-parented in here while the mode is active, so the
           // two modes share one log — no second renderer, no drift.
@@ -1072,8 +1078,6 @@
             '</header>' +
             '<div class="fe-ex-host" id="fe-ex-host"></div>' +
           '</section>' +
-          '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
-        '</div>' +
         // Status bar (shell previews): version · auto-save · last saved ·
         // workflow id · environment. Read-only telemetry, no controls.
         '<div class="fe-statusbar" id="fe-statusbar"></div>' +
