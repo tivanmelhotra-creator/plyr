@@ -2016,23 +2016,202 @@
       });
     }
 
-    // Editor | Executions. One workflow, two views; the log is the same DOM.
+    // ---- Editor · Extraction · Executions ---------------------------------
+    // One workflow, three views. The ACTIVITY LOG element is shared: in
+    // Executions it is docked into the selected run's detail; in the Editor
+    // it is not shown at all (the canvas is for building, not for logs).
     var modeBtns = root.querySelectorAll('.fe-mode');
     var execView = root.querySelector('#fe-execview');
     var execHost = root.querySelector('#fe-ex-host');
+    var xView = root.querySelector('#fe-xview');
     var layoutEl = root.querySelector('.fe-layout');
     var shellEl = root.querySelector('.fe-shell');
     var feMode = 'editor';
-    function refreshExecHeader() {
-      var wfEl = root.querySelector('#fe-ex-wf');
-      var statsEl = root.querySelector('#fe-ex-stats');
+    var MODES = { editor: 1, extract: 1, exec: 1 };
+
+    // -- run list (real jobs, GET /jobs/:userId?workflowId=) ----------------
+    var exRuns = [];             // newest first
+    var exFilter = 'all';        // all | success | error | running
+    var exSel = null;            // selected jobId (string) or null = live run
+    var exDetail = {};           // jobId -> GET /job payload (cache)
+    function curWfId() {
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
-      if (wfEl) wfEl.textContent = (cur && cur.name) || t('fe.untitled');
+      return cur && cur.id ? String(cur.id) : null;
+    }
+    function exTone(st) {
+      if (st === 'completed' || st === 'success') return 'green';
+      if (st === 'failed' || st === 'error') return 'red';
+      if (st === 'active' || st === 'waiting' || st === 'delayed' || st === 'running') return 'amber';
+      return 'muted';
+    }
+    function exWord(st) {
+      var tone = exTone(st);
+      return tone === 'green' ? t('ndv.statusSuccess') : tone === 'red' ? t('ndv.statusError')
+        : tone === 'amber' ? t('ndv.statusRunning') : (st || '—');
+    }
+    function exDur(ms) {
+      if (ms == null) return '—';
+      return ms < 1000 ? ms + ' ms' : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + ' s';
+    }
+    function exWhen(iso) {
+      if (!iso) return '—';
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '—';
+      function p2(n) { return (n < 10 ? '0' : '') + n; }
+      var today = new Date();
+      var same = d.toDateString() === today.toDateString();
+      return (same ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ') +
+        p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+    }
+    function loadRuns() {
+      var uid = effectiveUserId();
+      var wf = curWfId();
+      if (!uid || !API.listJobs) { exRuns = []; renderRunList(); return Promise.resolve(); }
+      // A draft has no history of its own; show nothing rather than everything.
+      if (!wf) { exRuns = []; renderRunList(); renderRunDetail(); return Promise.resolve(); }
+      return API.listJobs(uid, 50, wf)
+        .then(function (d) { exRuns = (d && d.jobs) || []; })
+        .catch(function () { exRuns = []; })
+        .then(function () { renderRunList(); renderRunDetail(); refreshExecHeader(); });
+    }
+    function renderRunFilters() {
+      var host = root.querySelector('#fe-ex-filters');
+      if (!host) return;
+      var counts = { all: exRuns.length, success: 0, error: 0, running: 0 };
+      exRuns.forEach(function (j) {
+        var tn = exTone(j.state);
+        if (tn === 'green') counts.success++; else if (tn === 'red') counts.error++;
+        else if (tn === 'amber') counts.running++;
+      });
+      var defs = [['all', t('sh.exAll')], ['success', t('ndv.statusSuccess')],
+        ['error', t('ndv.statusError')], ['running', t('ndv.statusRunning')]];
+      host.innerHTML = defs.map(function (d) {
+        return '<button type="button" role="radio" class="fe-ex-filter tone-' + d[0] +
+          (exFilter === d[0] ? ' is-on' : '') + '" aria-checked="' + (exFilter === d[0]) + '"' +
+          ' data-f="' + d[0] + '">' + esc(d[1]) + '<b>' + counts[d[0]] + '</b></button>';
+      }).join('');
+      host.querySelectorAll('[data-f]').forEach(function (b) {
+        b.addEventListener('click', function () { exFilter = b.getAttribute('data-f'); renderRunList(); });
+      });
+    }
+    function renderRunList() {
+      renderRunFilters();
+      var list = root.querySelector('#fe-ex-runs');
+      if (!list) return;
+      var rows = exRuns.filter(function (j) {
+        if (exFilter === 'all') return true;
+        var tn = exTone(j.state);
+        return (exFilter === 'success' && tn === 'green') || (exFilter === 'error' && tn === 'red') ||
+          (exFilter === 'running' && tn === 'amber');
+      });
+      if (!rows.length) {
+        list.innerHTML = '<li class="fe-ex-empty">' + esc(curWfId() ? t('al.noRuns') : t('sh.exNeedSaved')) + '</li>';
+        return;
+      }
+      list.innerHTML = rows.map(function (j) {
+        var id = String(j.jobId);
+        var on = exSel === id;
+        return '<li><button type="button" class="fe-ex-run' + (on ? ' is-on' : '') + '" data-job="' + esc(id) + '">' +
+          '<span class="fe-ex-dot tone-' + exTone(j.state) + '"></span>' +
+          '<span class="fe-ex-run-main"><span class="fe-ex-run-id">#' + esc(id) + '</span>' +
+            '<span class="fe-ex-run-word tone-' + exTone(j.state) + '">' + esc(exWord(j.state)) + '</span></span>' +
+          '<span class="fe-ex-run-meta"><span>' + esc(exWhen(j.startedAt || j.timestamp)) + '</span>' +
+            '<span>' + esc(exDur(j.durationMs)) + '</span></span>' +
+          (j.failedReason ? '<span class="fe-ex-run-err" title="' + esc(j.failedReason) + '">' + esc(String(j.failedReason).slice(0, 80)) + '</span>' : '') +
+          '</button></li>';
+      }).join('');
+      list.querySelectorAll('[data-job]').forEach(function (b) {
+        b.addEventListener('click', function () { selectRun(b.getAttribute('data-job')); });
+      });
+    }
+    function selectRun(jobId) {
+      exSel = jobId ? String(jobId) : null;
+      renderRunList();
+      renderRunDetail();
+      if (!exSel || exDetail[exSel]) return;
+      var uid = effectiveUserId();
+      if (!uid || !API.getJob) return;
+      API.getJob(uid, exSel).then(function (d) {
+        exDetail[exSel] = d || {};
+        renderRunDetail();
+      }).catch(function (err) {
+        exDetail[exSel] = { __error: (err && err.message) || String(err) };
+        renderRunDetail();
+      });
+    }
+    /** One row per step: status, action, timing, items, error and the output. */
+    function stepRowsHtml(outs) {
+      if (!outs || !outs.length) return '<div class="fe-ex-empty">' + esc(t('sh.exNoSteps')) + '</div>';
+      return '<ol class="fe-ex-steplist">' + outs.map(function (o, i) {
+        var ok = o.success !== false && !o.error;
+        var sample = o.outputSample != null ? o.outputSample : o.result;
+        var json = '';
+        try { json = sample == null ? '' : JSON.stringify(sample, null, 2); } catch (e) { json = String(sample); }
+        if (json.length > 4000) json = json.slice(0, 4000) + '\n…';
+        var label = (window.FlowEditor && FE.ACTIONS) ? null : null;
+        void label;
+        return '<li class="fe-ex-step tone-' + (ok ? 'green' : 'red') + '">' +
+          '<details' + (ok ? '' : ' open') + '>' +
+            '<summary>' +
+              '<span class="fe-ex-dot tone-' + (ok ? 'green' : 'red') + '"></span>' +
+              '<span class="fe-ex-step-n">' + (o.step || i + 1) + '</span>' +
+              '<span class="fe-ex-step-act">' + esc(o.action || '') + '</span>' +
+              (o.inputItemCount != null || o.outputItemCount != null
+                ? '<span class="fe-ex-step-items">' + esc((o.inputItemCount != null ? o.inputItemCount : '–') +
+                  ' → ' + (o.outputItemCount != null ? o.outputItemCount : '–') + ' ' + t('rp.items')) + '</span>' : '') +
+              '<span class="fe-ex-step-time">' + esc(exDur(o.durationMs)) + '</span>' +
+            '</summary>' +
+            (o.error ? '<div class="fe-ex-step-err">' + esc(String(o.error)) + '</div>' : '') +
+            (json ? '<pre class="fe-ex-json">' + esc(json) + '</pre>' : '') +
+          '</details></li>';
+      }).join('') + '</ol>';
+    }
+    function renderRunDetail() {
+      var title = root.querySelector('#fe-ex-title');
+      var stepsEl = root.querySelector('#fe-ex-steps');
+      var host = execHost;
+      if (!title || !stepsEl) return;
+      var RP = window.RunPanel;
+      var rs = RP && RP.getSummary ? RP.getSummary() : null;
+      var liveId = rs && rs.jobId ? String(rs.jobId) : null;
+      // The live / last run of THIS session is shown through the activity log
+      // itself (it has the event timeline); any other run through its stored
+      // step outputs.
+      var showLive = !exSel || (liveId && exSel === liveId);
+      if (host) host.hidden = !showLive;
+      if (showLive) {
+        title.innerHTML = liveId
+          ? '<span class="fe-ex-dot tone-' + exTone(rs.phase === 'done' ? (rs.error ? 'failed' : 'completed') : rs.phase) + '"></span>' +
+            '<span>' + esc(t('sh.exRun')) + ' #' + esc(liveId) + '</span>' +
+            '<span class="fe-pane-sub">' + esc(t('sh.exLive')) + '</span>'
+          : '<span>' + esc(t('sh.exNoSelection')) + '</span>';
+        stepsEl.innerHTML = '';
+        return;
+      }
+      var j = null;
+      exRuns.forEach(function (r) { if (String(r.jobId) === exSel) j = r; });
+      var d = exDetail[exSel];
+      title.innerHTML = '<span class="fe-ex-dot tone-' + exTone(j && j.state) + '"></span>' +
+        '<span>' + esc(t('sh.exRun')) + ' #' + esc(exSel) + '</span>' +
+        '<span class="fe-pane-sub">' + esc(exWord(j && j.state)) + ' · ' + esc(exWhen(j && (j.startedAt || j.timestamp))) +
+          ' · ' + esc(exDur(j && j.durationMs)) + ' · ' + esc((j && j.trigger) || 'manual') + '</span>';
+      if (!d) { stepsEl.innerHTML = '<div class="fe-ex-empty">' + esc(t('sh.exLoading')) + '</div>'; return; }
+      if (d.__error) { stepsEl.innerHTML = '<div class="fe-ex-step-err">' + esc(d.__error) + '</div>'; return; }
+      var err = (j && j.failedReason) || (d.success === false ? (d.error || d.message) : '');
+      stepsEl.innerHTML =
+        (err ? '<div class="fe-ex-banner tone-red">' + IC('alert-triangle', 14) + '<span>' + esc(String(err)) + '</span></div>' : '') +
+        stepRowsHtml(d.stepOutputs || []);
+    }
+    function refreshExecHeader() {
+      var statsEl = root.querySelector('#fe-ex-stats');
       var liveDot = root.querySelector('.fe-mode-live');
       var rs = window.RunPanel && window.RunPanel.getSummary ? window.RunPanel.getSummary() : null;
       if (liveDot) liveDot.classList.toggle('on', !!(rs && rs.phase === 'running'));
       if (!statsEl) return;
-      var runs = window.RunPanel && window.RunPanel.getRuns ? window.RunPanel.getRuns() : [];
+      // Real counts from the real job list (window.RunPanel.getRuns() mirrors
+      // the same /jobs query) — a chip only says what it counted.
+      var runs = exRuns.length ? exRuns
+        : (window.RunPanel && window.RunPanel.getRuns ? window.RunPanel.getRuns() : []);
       var ok = 0, bad = 0, busy = 0;
       runs.forEach(function (j) {
         var s = j.state;
@@ -2040,7 +2219,6 @@
         else if (s === 'failed') bad++;
         else if (s === 'active' || s === 'waiting' || s === 'delayed') busy++;
       });
-      // Real counts from the real job list — a chip only says what it counted.
       function chip(label, n, tone) {
         return '<span class="fe-ex-chip tone-' + tone + '"><b>' + n + '</b>' + esc(label) + '</span>';
       }
@@ -2050,32 +2228,155 @@
         chip(t('ndv.statusError'), bad, 'red') +
         chip(t('ndv.statusRunning'), busy, 'amber');
     }
+    var exRefresh = root.querySelector('#fe-ex-refresh');
+    if (exRefresh) exRefresh.addEventListener('click', function () { exDetail = {}; loadRuns(); });
+
+    // -- Extraction: the data this workflow's extract-type steps produced ----
+    // Source of truth: the stored step outputs of the latest finished run, and
+    // the live run's per-step samples. Nothing is re-run to show it.
+    var X_ACTIONS = { extract: 1, attribute: 1, extract_data: 1, 'extract-data': 1, extract_table: 1,
+      extract_links: 1, scrape: 1, get_text: 1, get_attribute: 1, code: 1 };
+    var xRows = [];   // [{ step, action, items: [] }]
+    var xJob = null;
+    function rowsFromOutputs(outs) {
+      var out = [];
+      (outs || []).forEach(function (o) {
+        if (!o || !X_ACTIONS[String(o.action)]) return;
+        var items = Array.isArray(o.outputSample) ? o.outputSample : (o.result != null ? [o.result] : []);
+        out.push({ step: o.step, action: o.action, items: items, truncated: !!o.outputTruncated });
+      });
+      return out;
+    }
+    function loadExtraction() {
+      var uid = effectiveUserId();
+      var wf = curWfId();
+      var body = root.querySelector('#fe-x-body');
+      if (!body) return;
+      if (!wf) { xRows = []; xJob = null; renderExtraction(); return; }
+      body.innerHTML = '<div class="fe-ex-empty">' + esc(t('sh.exLoading')) + '</div>';
+      API.listJobs(uid, 20, wf).then(function (d) {
+        var jobs = ((d && d.jobs) || []).filter(function (j) { return j.state === 'completed' || j.state === 'failed'; });
+        if (!jobs.length) { xRows = []; xJob = null; renderExtraction(); return null; }
+        xJob = jobs[0];
+        return API.getJob(uid, String(xJob.jobId)).then(function (jd) {
+          xRows = rowsFromOutputs(jd && jd.stepOutputs);
+          renderExtraction();
+        });
+      }).catch(function () { xRows = []; renderExtraction(); });
+    }
+    function flatKeys(items) {
+      var keys = [];
+      items.forEach(function (it) {
+        if (it && typeof it === 'object' && !Array.isArray(it)) {
+          Object.keys(it).forEach(function (k) { if (keys.indexOf(k) < 0 && keys.length < 12) keys.push(k); });
+        }
+      });
+      return keys;
+    }
+    function cell(v) {
+      if (v == null) return '';
+      if (typeof v === 'object') { try { v = JSON.stringify(v); } catch (e) { v = String(v); } }
+      v = String(v);
+      return v.length > 240 ? v.slice(0, 240) + '…' : v;
+    }
+    function renderExtraction() {
+      var body = root.querySelector('#fe-x-body');
+      var sub = root.querySelector('#fe-x-sub');
+      var act = root.querySelector('#fe-x-actions');
+      if (!body) return;
+      if (sub) sub.textContent = xJob ? t('sh.exRun') + ' #' + xJob.jobId + ' · ' + exWhen(xJob.finishedAt || xJob.startedAt) : '';
+      if (act) {
+        act.innerHTML = xRows.length
+          ? '<button type="button" class="fe-tbbtn" id="fe-x-json">' + IC('download', 13) + '<span>JSON</span></button>' +
+            '<button type="button" class="fe-tbbtn" id="fe-x-csv">' + IC('download', 13) + '<span>CSV</span></button>'
+          : '';
+        var bj = act.querySelector('#fe-x-json'), bc = act.querySelector('#fe-x-csv');
+        if (bj) bj.addEventListener('click', function () { downloadExtraction('json'); });
+        if (bc) bc.addEventListener('click', function () { downloadExtraction('csv'); });
+      }
+      if (!curWfId()) { body.innerHTML = '<div class="fe-x-empty">' + esc(t('sh.exNeedSaved')) + '</div>'; return; }
+      if (!xRows.length) {
+        body.innerHTML = '<div class="fe-x-empty">' + IC('database', 22) +
+          '<b>' + esc(t('sh.xEmptyTitle')) + '</b><span>' + esc(t('sh.xEmptyHint')) + '</span></div>';
+        return;
+      }
+      body.innerHTML = xRows.map(function (r) {
+        var keys = flatKeys(r.items);
+        var table;
+        if (keys.length) {
+          table = '<table class="fe-x-table"><thead><tr>' + keys.map(function (k) { return '<th>' + esc(k) + '</th>'; }).join('') +
+            '</tr></thead><tbody>' + r.items.map(function (it) {
+              return '<tr>' + keys.map(function (k) { return '<td>' + esc(cell(it && it[k])) + '</td>'; }).join('') + '</tr>';
+            }).join('') + '</tbody></table>';
+        } else {
+          table = '<pre class="fe-ex-json">' + esc(cell(r.items)) + '</pre>';
+        }
+        return '<article class="fe-x-card"><header><span class="fe-ex-step-n">' + esc(String(r.step || '')) + '</span>' +
+          '<span class="fe-ex-step-act">' + esc(r.action) + '</span>' +
+          '<span class="fe-pane-sub">' + r.items.length + ' ' + esc(t('rp.items')) + (r.truncated ? ' · ' + esc(t('sh.xTruncated')) : '') + '</span></header>' +
+          '<div class="fe-x-tablewrap">' + table + '</div></article>';
+      }).join('');
+    }
+    function downloadExtraction(kind) {
+      var name = 'extraction-' + (curWfId() || 'draft') + (xJob ? '-' + xJob.jobId : '');
+      var text, type;
+      if (kind === 'json') {
+        text = JSON.stringify(xRows.map(function (r) { return { step: r.step, action: r.action, items: r.items }; }), null, 2);
+        type = 'application/json'; name += '.json';
+      } else {
+        var all = [];
+        xRows.forEach(function (r) { r.items.forEach(function (it) { all.push(it); }); });
+        var keys = flatKeys(all);
+        var q = function (v) { v = cell(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+        text = keys.map(q).join(',') + '\n' + all.map(function (it) {
+          return keys.map(function (k) { return q(it && it[k]); }).join(',');
+        }).join('\n');
+        type = 'text/csv'; name += '.csv';
+      }
+      try {
+        var blob = new Blob([text], { type: type });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) { U().toast(t('sh.saveFailed'), 'error'); }
+    }
+
     function setMode(mode) {
-      feMode = mode === 'exec' ? 'exec' : 'editor';
+      feMode = MODES[mode] ? mode : 'editor';
       modeBtns.forEach(function (b) {
         var on = b.getAttribute('data-mode') === feMode;
         b.classList.toggle('is-active', on);
         b.setAttribute('aria-selected', on ? 'true' : 'false');
       });
-      if (shellEl) shellEl.classList.toggle('fe-mode-exec', feMode === 'exec');
-      if (layoutEl) layoutEl.hidden = feMode === 'exec';
+      if (shellEl) {
+        shellEl.classList.toggle('fe-mode-exec', feMode === 'exec');
+        shellEl.classList.toggle('fe-mode-extract', feMode === 'extract');
+      }
+      if (layoutEl) layoutEl.hidden = feMode !== 'editor';
       if (execView) execView.hidden = feMode !== 'exec';
+      if (xView) xView.hidden = feMode !== 'extract';
       var RP = window.RunPanel;
       if (feMode === 'exec') {
         if (RP && RP.dockInto) RP.dockInto(execHost);
-        refreshExecHeader();
+        loadRuns();
       } else {
         if (RP && RP.undock) RP.undock();
-        if (FE.syncDock) FE.syncDock();
+        if (feMode === 'editor' && FE.syncDock) FE.syncDock();
       }
+      if (feMode === 'extract') loadExtraction();
       if (AppUtil.setPref) AppUtil.setPref('feMode', feMode);
     }
     modeBtns.forEach(function (b) {
       b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); });
     });
-    // A run started from Executions view is still watched there; a run started
-    // from the canvas stays on the canvas. The mode is sticky across visits.
-    var initialMode = AppUtil.pref ? AppUtil.pref('feMode', 'editor') : 'editor';
+    // Extract (top bar) = the Extraction view of the open workflow.
+    var extractBtn = root.querySelector('#fe-extract');
+    if (extractBtn) extractBtn.addEventListener('click', function () { setMode('extract'); });
+    // The editor always opens on the canvas; the last mode is not restored
+    // (landing on a log after creating a workflow is disorienting).
+    var initialMode = 'editor';
 
     // ---- One subscription drives every derived surface ------------------
     function refreshShell() {
