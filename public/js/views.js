@@ -2579,7 +2579,7 @@
       var st = statsByWf[wf.id];
       var active = wf.active !== false;
       var n = st ? st.scheduleCount : 0;
-      return '<tr data-row="' + esc(wf.id) + '">' +
+      return '<tr data-row="' + esc(wf.id) + '" class="ws-row-open" title="' + esc(t('ws.openHint')) + '">' +
         '<td>' +
           '<div class="ws-wf">' +
             '<span class="ws-wf-icon">' + IC('sitemap', 15) + '</span>' +
@@ -2698,6 +2698,26 @@
       bindWorkflowRows();
     }
 
+    /**
+     * The table wrapper clips its overflow (rounded corners + horizontal scroll),
+     * which used to cut the ⋮ menu off — completely, when the list had a single
+     * row. The menu is therefore laid out with `position: fixed` from the
+     * button's on-screen rectangle: nothing can clip it, and it flips upwards
+     * when there is no room below.
+     */
+    function placeRowMenu(menu, btn) {
+      var r = btn.getBoundingClientRect();
+      var w = menu.offsetWidth || 210;
+      var h = menu.offsetHeight || 0;
+      var rtl = getComputedStyle(btn).direction === 'rtl';
+      var left = rtl ? r.left : r.right - w;
+      left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+      var top = r.bottom + 4;
+      if (h && top + h > window.innerHeight - 8 && r.top - 4 - h >= 8) top = r.top - 4 - h;
+      menu.style.left = left + 'px';
+      menu.style.top = Math.max(8, top) + 'px';
+    }
+
     function closeRowMenus() {
       elPanel.querySelectorAll('.ws-row-menu').forEach(function (m) { m.hidden = true; });
       elPanel.querySelectorAll('[data-menu]').forEach(function (b) {
@@ -2793,6 +2813,18 @@
           paintPanel();
         });
       });
+      // Double-click a row to open that workflow (same as "Open in editor").
+      // Clicks on the switches, the schedules link, the ⋮ button and its menu
+      // are their own actions and never open the workflow.
+      elPanel.querySelectorAll('tr[data-row]').forEach(function (tr) {
+        tr.addEventListener('dblclick', function (ev) {
+          if (ev.target.closest && ev.target.closest('button, a, input, select, .ws-row-menu')) return;
+          var wf = findWf(tr.getAttribute('data-row'));
+          if (!wf) return;
+          closeRowMenus();
+          openInEditorFromWorkspace(wf);
+        });
+      });
       elPanel.querySelectorAll('[data-menu]').forEach(function (b) {
         b.addEventListener('click', function (ev) {
           ev.stopPropagation();
@@ -2802,6 +2834,7 @@
           closeRowMenus();
           if (menu && !wasOpen) {
             menu.hidden = false;
+            placeRowMenu(menu, b);
             b.setAttribute('aria-expanded', 'true');
           }
         });
@@ -3244,6 +3277,10 @@
         }
       });
     });
+    // A fixed-position menu would stay behind when the page moves under it.
+    function closeMenusOnMove() { if (elPanel && elPanel.isConnected) closeRowMenus(); }
+    window.addEventListener('resize', closeMenusOnMove);
+    window.addEventListener('scroll', closeMenusOnMove, true);
     // One document-level closer for every popover, so a stray click never
     // leaves a menu floating over the table.
     document.addEventListener('click', function () {

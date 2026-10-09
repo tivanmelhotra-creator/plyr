@@ -3591,6 +3591,7 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
   font-size: 12px;
 }
 .ws-table tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+.ws-table tbody tr.ws-row-open { cursor: pointer; }
 .ws-table-wrap.compact td { height: 44px; padding: 6px 14px; }
 .ws-table-wrap.compact .ws-wf-desc { display: none; }
 
@@ -3700,10 +3701,13 @@ button.cb-path-pill:hover { color: var(--primary); border-color: rgba(255,138,31
 .ws-actions-cell { position: relative; text-align: end; }
 .ws-kebab { width: 30px; height: 30px; background: transparent; border-color: transparent; }
 .ws-row-menu {
-  position: absolute;
-  top: calc(100% - 8px);
-  inset-inline-end: 10px;
-  z-index: 40;
+  /* fixed, not absolute: .ws-table-wrap clips its overflow, and an absolute
+     menu was cut off (entirely so with a one-row list). views.js sets the
+     left/top from the ⋮ button's rectangle every time the menu opens. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
   width: 210px;
   padding: 6px;
   background: var(--bg-elev-2);

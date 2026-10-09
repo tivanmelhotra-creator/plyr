@@ -562,3 +562,28 @@ describe('Workspace / Home / Settings — style + i18n completeness', () => {
     expect(routes).toEqual(['workspace', 'dashboard', 'jobs', 'admin', 'settings']);
   });
 });
+
+describe('workspace rows: open by double-click, ⋮ menu is never clipped', () => {
+  const CSS = readFileSync(join(PUBLIC, 'css', 'styles.css'), 'utf8');
+
+  it('double-clicking a row opens the workflow, but not when the click was on a control', () => {
+    expect(VIEWS).toMatch(/addEventListener\('dblclick'/);
+    expect(VIEWS).toMatch(/closest\('button, a, input, select, \.ws-row-menu'\)/);
+    expect(VIEWS).toMatch(/dblclick[\s\S]{0,400}openInEditorFromWorkspace\(wf\)/);
+  });
+
+  it('the row menu is position:fixed (the table wrapper clips overflow) and placed from the button', () => {
+    const rule = /\.ws-row-menu\s*\{([^}]*)\}/.exec(CSS)![1];
+    expect(rule).toMatch(/position:\s*fixed/);
+    expect(rule).not.toMatch(/position:\s*absolute/);
+    expect(VIEWS).toMatch(/function placeRowMenu\(/);
+    expect(VIEWS).toMatch(/placeRowMenu\(menu, b\)/);
+    // it follows neither scroll nor resize, so it must close on both
+    expect(VIEWS).toMatch(/addEventListener\('scroll', closeMenusOnMove, true\)/);
+    expect(VIEWS).toMatch(/addEventListener\('resize', closeMenusOnMove\)/);
+  });
+
+  it('the open hint exists in both languages', () => {
+    expect((readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8').match(/'ws\.openHint'/g) || []).length).toBe(2);
+  });
+});
