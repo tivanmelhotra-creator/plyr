@@ -176,10 +176,17 @@ export const validateHeadless = (value: unknown, defaultValue: boolean = true): 
 
 // === STEPS VALIDATION ===
 
-export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[] => {
+export const validateSteps = (
+  input: unknown,
+  userPlan?: PlanConfig,
+  opts: { allowEmpty?: boolean } = {}
+): StepInput[] => {
   if (!Array.isArray(input)) {
     throw new Error('Steps must be an array');
   }
+
+  // A saved (not run) workflow may be empty; see workflowBodySchema.
+  if (input.length === 0 && opts.allowEmpty) return [];
 
   if (input.length === 0) {
     throw new Error('Steps cannot be empty');

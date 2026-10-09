@@ -1025,7 +1025,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       // Deep-validate the step tree against the user's plan (same pass as /run).
       const plan = await UserManager.getUserPlan(connection, userId);
-      const steps = validateSteps(body.steps, plan);
+      const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
       const wf = await workflowService.create(userId, {
@@ -1173,7 +1173,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!body) return;
 
       const plan = await UserManager.getUserPlan(connection, userId);
-      const steps = validateSteps(body.steps, plan);
+      const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
       const wf = await workflowService.update(userId, workflowId, {

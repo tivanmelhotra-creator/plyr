@@ -79,6 +79,13 @@ export const scheduleBodySchema = z.object({
 // [G2] Saved-workflow create/update envelope (Step 17). userId is taken from the
 // URL path (and auth-bound), so it is NOT part of the body. `steps` is asserted
 // here as a non-empty array and deep-validated by validateSteps() in the route.
+// A SAVED workflow may be empty: the editor persists a workflow the moment it
+// is created (so its id, and the workspace bound to that id, exist before the
+// first node). Running still needs at least one step — /run keeps
+// `stepsEnvelope`, and the workflow run endpoint re-validates with
+// validateSteps(), which still rejects an empty list.
+const savedStepsEnvelope = z.array(z.unknown(), { invalid_type_error: 'Steps must be an array' });
+
 export const workflowBodySchema = z.object({
   name: z
     .string({ required_error: 'name is required', invalid_type_error: 'name must be a string' })
@@ -86,7 +93,7 @@ export const workflowBodySchema = z.object({
     .min(1, 'name cannot be empty')
     .max(120, 'name must be at most 120 characters'),
   description: z.string().max(2000, 'description too long').optional().nullable(),
-  steps: stepsEnvelope,
+  steps: savedStepsEnvelope,
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
   profileId: z.string().trim().min(1).max(128).optional().nullable(),
