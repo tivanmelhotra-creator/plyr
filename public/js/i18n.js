@@ -1204,7 +1204,7 @@
       'fe.needSaved': 'Save the workflow first (it autosaves as soon as it has steps).',
       'fe.liveHint': 'On: Test Workflow opens a visible browser (needs a display / Xvfb). Off: headless.',
       'fe.emptyTitle': 'Start building your workflow',
-      'fe.emptySub': 'Add a node from the palette or drag one onto the canvas.',
+      'fe.emptySub': 'Press + (top right), Tab, or double-click the canvas to add your first node.',
       'fe.addFirstNode': 'Add First Node',
 
       // ---- Editor shell top bar (state-empty-canvas.webp, 2026-07-29 update)
