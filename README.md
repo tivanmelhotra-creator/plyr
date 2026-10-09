@@ -100,6 +100,8 @@ Workflow `Docker package` برای **هر commit پوش‌شده** (هر شاخ�
 ./plyr dev-docker --prebuilt      # فقط image منتشرشده؛ اگر نبود خطا بده
 ```
 
+**`--ref` همیشه فقط همین یک دستور است.** لازم نیست قبلش `git fetch` یا `git checkout` بزنید و checkout شما می‌تواند روی هر شاخه/commit قدیمی باشد: `./plyr dev-docker --ref pr-N` خودش آن PR را fetch می‌کند (بدون دست‌زدن به شاخه و فایل‌های شما)، `scripts/` و `docker-compose.dev.yml` همان PR را در `.plyr/ref/<sha>/` باز می‌کند و با همان‌ها اجرا می‌شود، تا image جدید با تنظیمات compose قدیمی اجرا نشود.
+
 layer cache داکر بر اساس **محتوای فایل‌ها** است؛ هر تغییر در `src/`، `package-lock.json`، `Dockerfile` و… آن مرحله و مراحل بعدی را دوباره می‌سازد، پس build با cache هم همیشه آخرین کد را تست می‌کند. `--fresh` فقط برای وقتی است که به خود cache شک دارید.
 
 **یک‌بار تنظیم:** بستهٔ GHCR بعد از اولین انتشار به‌صورت پیش‌فرض private است. یک‌بار در GitHub → Packages → `plyr` → Package settings → Change visibility آن را Public کنید (یا روی سیستم خودتان `docker login ghcr.io` بزنید). تا این کار انجام نشود، اسکریپت خودکار به build محلی برمی‌گردد. imageهای منتشرشده فقط `linux/amd64` هستند؛ روی ماشین‌های ARM (مثل Mac با Apple Silicon) build محلی انجام می‌شود.

@@ -307,7 +307,9 @@ describe('dev-only admin123 — repository wiring', () => {
 
   it('a fresh .env made by ./plyr gets a random token instead of admin123', () => {
     const sh = read('scripts/plyr.sh');
-    expect(sh).toMatch(/openssl rand -hex 24/);
+    // The token comes from the wizard's generator (openssl, with fallbacks).
+    expect(sh).toMatch(/fresh_token="\$\(wz_gen_token\)"/);
+    expect(read('scripts/setup-wizard.sh')).toMatch(/openssl rand -hex 24/);
     expect(sh).toMatch(/s\|\^API_TOKEN=admin123/);
   });
 

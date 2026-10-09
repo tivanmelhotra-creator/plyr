@@ -490,7 +490,7 @@ dev_docker_use_ref_files() {
       || { rm -rf "$dest.tmp"; error "'$ref' has no dev-docker files"; return 1; }
     rm -rf "$dest"; mv "$dest.tmp" "$dest"
   fi
-  PLYR_REF_FILES=1 PLYR_GIT_ROOT="$GIT_ROOT" PLYR_HOME="$PLYR_HOME" PLYR_STATE_DIR="$STATE_DIR" \
+  PLYR_REF_LABEL="$ref" PLYR_REF_FILES=1 PLYR_GIT_ROOT="$GIT_ROOT" PLYR_HOME="$PLYR_HOME" PLYR_STATE_DIR="$STATE_DIR" \
     PLYR_DEV_IMAGE_REPO="${PLYR_DEV_IMAGE_REPO:-$(dev_docker_registry_image 2>/dev/null || true)}" \
     exec bash "$dest/scripts/plyr.sh" dev-docker "${@}" --ref "$sha"
 }
@@ -632,7 +632,7 @@ dev_docker() {
   else
     ready "Development Docker stack: http://localhost:3000 (no login needed; loopback only)"
   fi
-  printf '[plyr]        Next time, skip the question:  ./plyr dev-docker %s--%s\n' "$([[ -n "$ref" ]] && printf -- '--ref %s ' "$ref")" "$DEV_SUMMARY_MODE"
+  printf '[plyr]        Next time, skip the question:  ./plyr dev-docker %s--%s\n' "$([[ -n "$ref" ]] && printf -- '--ref %s ' "${PLYR_REF_LABEL:-$ref}")" "$DEV_SUMMARY_MODE"
 }
 
 stop_native() {
