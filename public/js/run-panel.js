@@ -418,6 +418,7 @@
         alRuns = (data && data.jobs) || [];
         renderFilterRow();
         if (alTab === 'runs') renderBody();
+        emitUpdate();   // the Executions header counts follow the real list
       })
       .catch(function () { /* offline — the empty state already tells the truth */ });
   }
@@ -697,6 +698,43 @@
     if (dockPref(true)) open(false); else close(false);
   }
 
+  // ---- Executions mode (Aria Compact, 2026-10) ------------------------------
+  /**
+   * Re-parent the ONE drawer into `host` (the editor's Executions view) so the
+   * same log fills the work area instead of a 46vh dock. Nothing is re-created:
+   * the reducer state, the live client, the tab and the filter all survive the
+   * move, and `undock()` puts the very same element back on <body>.
+   */
+  var homeOpen = null;     // dock state to restore after undock()
+  function dockInto(host) {
+    if (!dom || !dom.drawer || !host) return false;
+    if (dom.drawer.parentNode === host) return true;
+    homeOpen = dom.drawer.classList.contains('open');
+    host.appendChild(dom.drawer);
+    dom.drawer.classList.add('is-docked-view');
+    dom.drawer.classList.add('open');
+    if (alTab === 'execution' && !(state && state.order.length) && alRuns.length) {
+      // An empty Execution tab is a poor landing page for a full-height view.
+      alTab = 'runs';
+    }
+    renderTabs();
+    renderBody();
+    refreshRuns();
+    return true;
+  }
+  function undock() {
+    if (!dom || !dom.drawer) return false;
+    if (dom.drawer.parentNode === document.body) return true;
+    document.body.appendChild(dom.drawer);
+    dom.drawer.classList.remove('is-docked-view');
+    // Restore the user's own preference, without recording it as a new choice.
+    if (homeOpen === false) close(false); else open(false);
+    homeOpen = null;
+    return true;
+  }
+  /** A copy of the real run history (never the live array). */
+  function getRuns() { return alRuns.slice(); }
+
   function unmount() {
     stop();
     if (dom && dom.drawer && dom.drawer.parentNode) dom.drawer.parentNode.removeChild(dom.drawer);
@@ -758,6 +796,9 @@
     unpin: unpin,
     getPins: getPins,
     getSummary: getSummary,
+    dockInto: dockInto,
+    undock: undock,
+    getRuns: getRuns,
     onUpdate: onUpdate,
     refreshRuns: refreshRuns,
   };

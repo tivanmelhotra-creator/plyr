@@ -927,6 +927,19 @@
           '</div>' +
           // Workflow tab strip — real, from API.listWorkflows(); never faked.
           '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
+          // Aria Compact (2026-10): the editor has two MODES over the same
+          // workflow. `Editor` = the canvas. `Executions` = the ACTIVITY LOG
+          // (Runs · Execution · Variables · Logs) promoted to the full work
+          // area instead of a drawer that competes with the graph for height.
+          '<div class="fe-modes" id="fe-modes" role="tablist" aria-label="' + esc(t('sh.modes')) + '">' +
+            '<button type="button" role="tab" class="fe-mode is-active" id="fe-mode-editor"' +
+              ' data-mode="editor" aria-selected="true">' + IC('git-branch', 13) +
+              '<span>' + esc(t('sh.modeEditor')) + '</span></button>' +
+            '<button type="button" role="tab" class="fe-mode" id="fe-mode-exec"' +
+              ' data-mode="exec" aria-selected="false">' + IC('history', 13) +
+              '<span>' + esc(t('sh.modeExecutions')) + '</span>' +
+              '<span class="fe-mode-live" aria-hidden="true"></span></button>' +
+          '</div>' +
           '<div class="fe-topbar-actions">' +
             '<div class="fe-hist" role="group">' +
               '<button class="fe-icobtn" id="fe-undo" title="' + esc(t('sh.undo')) + '" aria-label="' + esc(t('sh.undo')) + '">' + IC('rotate-ccw', 15) + '</button>' +
@@ -938,7 +951,15 @@
                 IC('download', 14) + '<span>' + esc(t('sh.export')) + '</span>' + IC('chevron-down', 13) + '</button>' +
               '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
             '</div>' +
-            // Workflow persistence is automatic; there is intentionally no Save control.
+            // Persistence is automatic (FlowEditor's debounced queue). The
+            // compact header still offers ONE explicit Save: it flushes that
+            // same queue now (FE.autosaveNow) instead of waiting for the
+            // debounce — there is still exactly one save path. Its dot mirrors
+            // the autosave status; the text status stays as the live region.
+            '<button type="button" class="fe-savebtn" id="fe-savenow" data-state="draft"' +
+              ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
+              '<span>' + esc(t('sh.save')) + '</span>' +
+              '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
             '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
             // ONE slot, TWO states: orange ▶ Test Workflow while idle, solid
             // red ■ Stop while a run is live (that is why the two reference
@@ -1032,7 +1053,25 @@
             // (the launcher-menu image shows exactly this affordance).
             '<button class="fe-ol-tab" id="fe-ol-tab" hidden title="' + esc(t('ol.open')) + '">' +
               '<span>' + esc(t('ol.title')) + '</span>' + IC('chevron-right', 12) + '</button>' +
+            // Aria Compact: the canvas' own primary action, bottom-centre, as
+            // in the compact reference. It is a PROXY for the one Run/Stop
+            // slot in the header (#fe-run) — it clicks it — so the run logic,
+            // the popup-blocker rule and the Stop capture handler stay single.
+            '<button type="button" class="fe-exec-cta" id="fe-exec-cta" data-mode="run">' +
+              IC('play', 14) + '<span>' + esc(t('sh.executeWorkflow')) + '</span></button>' +
           '</div>' +
+          // Executions mode surface. The ACTIVITY LOG drawer (RunPanel, a body
+          // singleton) is re-parented in here while the mode is active, so the
+          // two modes share one log — no second renderer, no drift.
+          '<section class="fe-execview" id="fe-execview" hidden aria-labelledby="fe-mode-exec">' +
+            '<header class="fe-ex-head">' +
+              '<div class="fe-ex-title">' + IC('history', 16) +
+                '<span>' + esc(t('sh.modeExecutions')) + '</span>' +
+                '<span class="fe-ex-wf" id="fe-ex-wf"></span></div>' +
+              '<div class="fe-ex-stats" id="fe-ex-stats"></div>' +
+            '</header>' +
+            '<div class="fe-ex-host" id="fe-ex-host"></div>' +
+          '</section>' +
           '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
         '</div>' +
         // Status bar (shell previews): version · auto-save · last saved ·
@@ -1939,22 +1978,142 @@
       refreshRunSlot();
     }, true);
 
+    // ---- Aria Compact: Save (flush), canvas CTA, Editor/Executions ------
+    var saveNowBtn = root.querySelector('#fe-savenow');
+    function refreshSaveBtn() {
+      if (!saveNowBtn) return;
+      var st = FE.getAutosaveStatus ? FE.getAutosaveStatus() : 'draft';
+      saveNowBtn.setAttribute('data-state', st || 'draft');
+      saveNowBtn.disabled = st === 'saving';
+    }
+    if (saveNowBtn) saveNowBtn.addEventListener('click', function () {
+      if (!FE.autosaveNow) return;
+      var before = FE.getAutosaveStatus ? FE.getAutosaveStatus() : '';
+      // Nothing dirty and already persisted: say so instead of a fake save.
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (before === 'saved' && cur && cur.id) { U().toast(t('sh.alreadySaved'), 'info'); return; }
+      if (FE.notifyDocumentChanged && !(cur && cur.id)) FE.notifyDocumentChanged();
+      FE.autosaveNow()
+        .then(function () { refreshSaveBtn(); refreshWfLabel(); })
+        .catch(function (err) {
+          U().toast((err && err.message) || t('sh.saveFailed'), 'error');
+          refreshSaveBtn();
+        });
+      refreshSaveBtn();
+    });
+    var removeSaveWatch = FE.onAutosaveStatus ? FE.onAutosaveStatus(refreshSaveBtn) : null;
+    refreshSaveBtn();
+
+    // The canvas CTA is a proxy: one Run/Stop slot, one handler set.
+    var execCta = root.querySelector('#fe-exec-cta');
+    function refreshExecCta() {
+      if (!execCta || !runSlot) return;
+      var stop = runSlot.getAttribute('data-mode') === 'stop';
+      execCta.setAttribute('data-mode', stop ? 'stop' : 'run');
+      execCta.classList.toggle('is-stop', stop);
+      execCta.disabled = !!runSlot.disabled;
+      execCta.innerHTML = IC(stop ? 'stop-circle' : 'play', 14) +
+        '<span>' + esc(t(stop ? 'sh.stop' : 'sh.executeWorkflow')) + '</span>';
+    }
+    if (execCta) {
+      execCta.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      execCta.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (runSlot) runSlot.click();
+        refreshExecCta();
+      });
+    }
+
+    // Editor | Executions. One workflow, two views; the log is the same DOM.
+    var modeBtns = root.querySelectorAll('.fe-mode');
+    var execView = root.querySelector('#fe-execview');
+    var execHost = root.querySelector('#fe-ex-host');
+    var layoutEl = root.querySelector('.fe-layout');
+    var shellEl = root.querySelector('.fe-shell');
+    var feMode = 'editor';
+    function refreshExecHeader() {
+      var wfEl = root.querySelector('#fe-ex-wf');
+      var statsEl = root.querySelector('#fe-ex-stats');
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (wfEl) wfEl.textContent = (cur && cur.name) || t('fe.untitled');
+      var liveDot = root.querySelector('.fe-mode-live');
+      var rs = window.RunPanel && window.RunPanel.getSummary ? window.RunPanel.getSummary() : null;
+      if (liveDot) liveDot.classList.toggle('on', !!(rs && rs.phase === 'running'));
+      if (!statsEl) return;
+      var runs = window.RunPanel && window.RunPanel.getRuns ? window.RunPanel.getRuns() : [];
+      var ok = 0, bad = 0, busy = 0;
+      runs.forEach(function (j) {
+        var s = j.state;
+        if (s === 'completed') ok++;
+        else if (s === 'failed') bad++;
+        else if (s === 'active' || s === 'waiting' || s === 'delayed') busy++;
+      });
+      // Real counts from the real job list — a chip only says what it counted.
+      function chip(label, n, tone) {
+        return '<span class="fe-ex-chip tone-' + tone + '"><b>' + n + '</b>' + esc(label) + '</span>';
+      }
+      statsEl.innerHTML =
+        chip(t('sh.exTotal'), runs.length, 'muted') +
+        chip(t('ndv.statusSuccess'), ok, 'green') +
+        chip(t('ndv.statusError'), bad, 'red') +
+        chip(t('ndv.statusRunning'), busy, 'amber');
+    }
+    function setMode(mode) {
+      feMode = mode === 'exec' ? 'exec' : 'editor';
+      modeBtns.forEach(function (b) {
+        var on = b.getAttribute('data-mode') === feMode;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      if (shellEl) shellEl.classList.toggle('fe-mode-exec', feMode === 'exec');
+      if (layoutEl) layoutEl.hidden = feMode === 'exec';
+      if (execView) execView.hidden = feMode !== 'exec';
+      var RP = window.RunPanel;
+      if (feMode === 'exec') {
+        if (RP && RP.dockInto) RP.dockInto(execHost);
+        refreshExecHeader();
+      } else {
+        if (RP && RP.undock) RP.undock();
+        if (FE.syncDock) FE.syncDock();
+      }
+      if (AppUtil.setPref) AppUtil.setPref('feMode', feMode);
+    }
+    modeBtns.forEach(function (b) {
+      b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); });
+    });
+    // A run started from Executions view is still watched there; a run started
+    // from the canvas stays on the canvas. The mode is sticky across visits.
+    var initialMode = AppUtil.pref ? AppUtil.pref('feMode', 'editor') : 'editor';
+
     // ---- One subscription drives every derived surface ------------------
     function refreshShell() {
       refreshHistoryBtns();
       if (olOpen) renderOutline();
       refreshRunInfo();
       refreshRunSlot();
+      refreshExecCta();
       refreshToggles();
     }
     var offChange = FE.onChange ? FE.onChange(refreshShell) : null;
     // The run panel republishes its state whenever a live event lands, so the
     // run-info strip and the Run/Stop slot follow the run without polling.
     var offRun = (window.RunPanel && window.RunPanel.onUpdate)
-      ? window.RunPanel.onUpdate(function () { refreshRunInfo(); refreshRunSlot(); })
+      ? window.RunPanel.onUpdate(function () {
+          refreshRunInfo(); refreshRunSlot(); refreshExecCta(); refreshExecHeader();
+        })
       : null;
     setOutlineOpen(olOpen, false);
     refreshShell();
+    if (initialMode === 'exec') setMode('exec');
+    // Ctrl/Cmd+S flushes the save queue (the browser's own Save Page is never
+    // what an editor user means). Registered through onDoc, so it is removed.
+    onDoc('keydown', function (ev) {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey &&
+          String(ev.key).toLowerCase() === 's') {
+        ev.preventDefault();
+        if (saveNowBtn && !saveNowBtn.disabled) saveNowBtn.click();
+      }
+    });
 
     // The full-bleed route docks the ACTIVITY LOG against the canvas' start
     // gutter, which is measured in px — so a window resize invalidates it.
@@ -1966,6 +2125,7 @@
     root.__feShellCleanup = function () {
       if (offChange) offChange();
       if (offRun) offRun();
+      if (removeSaveWatch) removeSaveWatch();
       window.removeEventListener('resize', onWinResize);
       shellListeners.forEach(function (p) { document.removeEventListener(p[0], p[1]); });
       shellListeners = [];
