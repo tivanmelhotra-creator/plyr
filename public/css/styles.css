@@ -8236,8 +8236,6 @@ textarea.ndv-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 
 .fe-exec-cta:disabled { opacity: .6; cursor: progress; }
 .fe-exec-cta.is-stop { background: linear-gradient(180deg, #F06464, #D94A4A); color: #fff; box-shadow: 0 0 0 1px rgba(255, 120, 120, .5), 0 0 26px rgba(228, 85, 85, .45); }
 .fe-exec-cta:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-body.route-fullbleed .fe-exec-cta { bottom: calc(var(--rp-head-h, 40px) + 18px); }
-body.route-fullbleed:has(.run-panel.open:not(.is-docked-view)) .fe-exec-cta { bottom: calc(46vh + 14px); }
 .fe-canvas.fe-locked .fe-exec-cta { opacity: .9; }
 
 /* ---- Executions mode -------------------------------------------------------- */
@@ -8316,8 +8314,8 @@ body.route-fullbleed .run-panel.is-docked-view {
 .fe-shell.fe-mode-exec .fe-wftabs { visibility: hidden; }
 /* CTA geometry on the full-bleed route: it sits in the band ABOVE the log
    dock rather than over the node row, and steps aside for an open dock. */
-body.route-fullbleed .fe-exec-cta { bottom: calc(var(--rp-head-h, 40px) + 22px); }
-body.route-fullbleed:has(.run-panel.open:not(.is-docked-view)) .fe-exec-cta {
-  bottom: auto;
-  top: 22px;
-}
+/* The CTA rides just above whatever the ACTIVITY LOG dock occupies. The dock's
+   height is content-driven, so views.js MEASURES it into --fe-cta-bottom
+   (ResizeObserver); the calc is only the pre-measure fallback. */
+body.route-fullbleed .fe-exec-cta { bottom: var(--fe-cta-bottom, calc(var(--rp-head-h, 42px) + 22px)); }
+

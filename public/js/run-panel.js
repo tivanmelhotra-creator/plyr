@@ -447,6 +447,9 @@
     renderAll();
     if (RS.isTerminal(state)) {
       persistLastRun();
+      // The run just entered the job history: re-read it, so the Runs tab and
+      // the Executions counts show it without a reload.
+      refreshRuns();
     }
   }
   function onStatus(status) {
@@ -513,7 +516,10 @@
   }
 
   function loadLastRun(workflowId) {
+    var changed = (workflowId || null) !== currentWfId;
     currentWfId = workflowId || null;
+    // The run history is per workflow: a different workflow needs its own list.
+    if (changed && dom) refreshRuns();
     try {
       var key = LAST_RUN_KEY + ':' + (currentWfId || '_local');
       var raw = localStorage.getItem(key);

@@ -234,6 +234,10 @@
   <script src="/js/live.js"></script>
   <script src="/js/run-state.js"></script>
   <script src="/js/run-panel.js"></script>
+  <!-- Test Workflow's live-tab decision logic (window.LiveTab). views.js calls
+       LiveTab.launch() inside the click handler, so it must load before views.js;
+       it was missing here, which made every Test Workflow click throw. -->
+  <script src="/js/live-tab.js"></script>
   <script src="/js/real-chrome.js"></script>
   <!-- The Workflow File Manager. Must precede remote-io.js, whose file prompt
        offers "Choose from Workflow Files" only when window.WorkflowFiles exists. -->

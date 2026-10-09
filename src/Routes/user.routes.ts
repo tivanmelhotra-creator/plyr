@@ -840,7 +840,13 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       const userJobs = jobs
         .filter(j => String(j.data?.userId) === userId)
-        .filter(j => wantWorkflow === null || String(j.data?.__workflowId || '') === wantWorkflow)
+        // A saved workflow's run is stamped `__workflowId`; an editor TEST run of
+        // that same workflow carries it only in its workspace binding
+        // (`__workspace.workflowId`). Both are runs OF this workflow, so the
+        // editor's Executions view must list both — otherwise every Test
+        // Workflow click vanished from its own history.
+        .filter(j => wantWorkflow === null ||
+          String(j.data?.__workflowId || j.data?.__workspace?.workflowId || '') === wantWorkflow)
         .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
         .slice(0, limit);
 
@@ -855,7 +861,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         // [Workspace] Execution provenance + duration for the Executions tab.
         // `__workflowId` is stamped by the workflow run endpoint; an ad-hoc
         // /run job has none, and the UI labels those as one-off runs.
-        workflowId: j.data.__workflowId ? String(j.data.__workflowId) : null,
+        workflowId: j.data.__workflowId ? String(j.data.__workflowId)
+          : (j.data.__workspace && j.data.__workspace.workflowId ? String(j.data.__workspace.workflowId) : null),
         workflowVersion: typeof j.data.__workflowVersion === 'number' ? j.data.__workflowVersion : null,
         // [Item N] A per-node test run is a PARTIAL execution: it is tagged
         // `__runNode` and carries no `__workflowId`, so the Executions tab and

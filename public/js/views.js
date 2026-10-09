@@ -2121,7 +2121,32 @@
 
     // The full-bleed route docks the ACTIVITY LOG against the canvas' start
     // gutter, which is measured in px — so a window resize invalidates it.
-    var onWinResize = function () { if (FE.syncDock) FE.syncDock(); };
+    // Keep the bottom-centre CTA clear of the ACTIVITY LOG dock, whose height
+    // follows its content and its open/closed state — measured, not guessed.
+    var canvasEl = root.querySelector('#fe-canvas');
+    function placeExecCta() {
+      if (!canvasEl) return;
+      var dock = document.getElementById('run-panel');
+      var gap = 22;
+      if (dock && dock.parentNode === document.body && dock.offsetHeight) {
+        var cr = canvasEl.getBoundingClientRect();
+        var dr = dock.getBoundingClientRect();
+        var overlap = cr.bottom - dr.top;
+        if (overlap > 0 && dr.left < cr.left + cr.width / 2 + 120 && dr.right > cr.left + cr.width / 2 - 120) {
+          gap = overlap + 14;
+        }
+      }
+      canvasEl.style.setProperty('--fe-cta-bottom', Math.round(gap) + 'px');
+    }
+    var ctaObs = null;
+    if (typeof ResizeObserver === 'function') {
+      ctaObs = new ResizeObserver(function () { placeExecCta(); });
+      var dockEl = document.getElementById('run-panel');
+      if (dockEl) ctaObs.observe(dockEl);
+      if (canvasEl) ctaObs.observe(canvasEl);
+    }
+    placeExecCta();
+    var onWinResize = function () { if (FE.syncDock) FE.syncDock(); placeExecCta(); };
     window.addEventListener('resize', onWinResize);
 
     // Tear-down: the editor view is re-rendered on every language switch and
@@ -2130,6 +2155,7 @@
       if (offChange) offChange();
       if (offRun) offRun();
       if (removeSaveWatch) removeSaveWatch();
+      if (ctaObs) ctaObs.disconnect();
       window.removeEventListener('resize', onWinResize);
       shellListeners.forEach(function (p) { document.removeEventListener(p[0], p[1]); });
       shellListeners = [];
