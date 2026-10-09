@@ -754,8 +754,28 @@
     document.documentElement.style.setProperty('--fe-dock-start', (start + olw) + 'px');
   }
 
+  // Subtle minimap (docs/uiux/new ui.md §8): it rests at low opacity and wakes
+  // for ~4.5 s after the VIEWPORT changes (pan / zoom / fit), then fades back.
+  // Hover keeps it fully visible (CSS). Driven only from applyViewTransform —
+  // the one place every viewport change already goes through.
+  var MINIMAP_WAKE_MS = 4500;
+  var minimapWakeTimer = null;
+  var lastViewKey = '';
+  function wakeMinimap() {
+    if (!dom || !dom.minimapWrap) return;
+    dom.minimapWrap.classList.add('is-awake');
+    if (minimapWakeTimer) clearTimeout(minimapWakeTimer);
+    minimapWakeTimer = setTimeout(function () {
+      minimapWakeTimer = null;
+      if (dom && dom.minimapWrap) dom.minimapWrap.classList.remove('is-awake');
+    }, MINIMAP_WAKE_MS);
+  }
+
   function applyViewTransform() {
     var v = state.view;
+    var viewKey = Math.round(v.x) + ',' + Math.round(v.y) + ',' + v.scale.toFixed(3);
+    if (lastViewKey && viewKey !== lastViewKey) wakeMinimap();
+    lastViewKey = viewKey;
     dom.world.style.transform =
       'translate(' + v.x + 'px,' + v.y + 'px) scale(' + v.scale + ')';
     dom.svg.style.transform = dom.world.style.transform;
@@ -5257,6 +5277,17 @@
 
     // ---- Step 23: viewport + visual node status ---------------------------
     fitToScreen: function () { fitToScreen(); },
+    /**
+     * The top-end `+`: the existing Add Node dialog (same one double-click and
+     * Tab open), centred in the VIEWPORT and wired after the selection like
+     * Tab. `openAddPalette` centres itself when no `at` is given.
+     */
+    openAddNodeCentered: function () {
+      if (!dom) return null;
+      var panel = openAddPaletteForSelection(null);
+      if (panel && panel.classList) panel.classList.add('is-centered');
+      return panel;
+    },
     zoomIn: function () { zoomBy(1.2); },
     zoomOut: function () { zoomBy(1 / 1.2); },
     // Paint a node's halo: ref = nodeId | chain step index; status =

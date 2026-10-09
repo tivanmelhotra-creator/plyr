@@ -1229,6 +1229,12 @@
         wfLabel.textContent = t('fe.untitled');
         wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
       }
+      var nameEl = root.querySelector('#fe-wfname');
+      if (nameEl) {
+        var nm = (cur && cur.name) || t('fe.untitled');
+        nameEl.textContent = nm;
+        nameEl.title = cur && cur.id ? nm + ' · ' + cur.id + (cur.version ? ' · v' + cur.version : '') : nm;
+      }
       refreshStatusBar();
       reconcileFiles();
       if (typeof refreshToggles === 'function') refreshToggles();
@@ -1289,6 +1295,10 @@
       resultEl.innerHTML = '';
 
       var runWf = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      // Execute Workflow is the TEST run: it always uses a visible browser so
+      // the read-only live tab has something to show (docs/uiux/new ui.md §9).
+      // Background runs (Active: triggers / schedules) keep the workflow's own
+      // headless setting — they never come through this handler.
       var runPayload = { userId: uid, steps: steps, headless: !wantLiveBrowser() };
       // A saved workflow files its node outputs in ITS OWN workspace
       // (Workflow Files > downloads/<node>); the server verifies ownership.
@@ -1891,8 +1901,10 @@
       return cur && cur.id ? cur : null;
     }
     function wantLiveBrowser() {
-      var cur = savedWf();
-      return cur ? cur.liveBrowser === true : draftLive;
+      // The per-workflow `Live browser` switch is gone from the focused
+      // header: a test run is ALWAYS observed live. (Kept as a function so the
+      // run handler and its test have one name for the decision.)
+      return true;
     }
     function paintSwitch(btn, on, disabled, title) {
       if (!btn) return;
@@ -1995,6 +2007,16 @@
     });
     var removeSaveWatch = FE.onAutosaveStatus ? FE.onAutosaveStatus(refreshSaveBtn) : null;
     refreshSaveBtn();
+
+    // Top-end `+` opens the SAME Add Node dialog as double-click, centred.
+    var addFab = root.querySelector('#fe-addnode-fab');
+    if (addFab) {
+      addFab.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      addFab.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (FE.openAddNodeCentered) FE.openAddNodeCentered();
+      });
+    }
 
     // The canvas CTA is a proxy: one Run/Stop slot, one handler set.
     var execCta = root.querySelector('#fe-exec-cta');
