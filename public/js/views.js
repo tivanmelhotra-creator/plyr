@@ -914,174 +914,162 @@
     // ---------------------------------------------------------------------
     root.innerHTML =
       '<div class="fe-shell">' +
-        '<div class="fe-topbar">' +
-          // Aria Compact: the bar is a 3-column grid — start · modes · actions —
-          // so the Editor | Executions switch sits in the true centre.
+        // =================================================================
+        // FOCUSED EDITOR SHELL (2026-10, docs/uiux/new ui.md + new ui.png).
+        //   start : hamburger (workflow files) · Extract · Save · Active
+        //   centre: Editor · Extraction · Executions
+        //   end   : workflow name · brand
+        // Everything that used to crowd this bar (undo/redo, Export, Live
+        // browser, bell, gear, avatar, the workflow tab strip) moved to the
+        // section it belongs to — the left rail, Extraction, Executions, or
+        // the Workflow menu behind the hamburger — or was removed.
+        // =================================================================
+        '<header class="fe-topbar">' +
           '<div class="fe-tb-start">' +
-          // G13: the real brand mark, not the letter `A` in an orange tile.
-          '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
-            t('fe.brand') + '</span>' +
-          // Editor-local App Launcher: the SAME six areas as the header/sidebar.
-          '<div class="fe-nav">' +
-            '<button class="fe-navlink" id="fe-nav-home" data-route="#/">' +
-              IC('home', 15) + '<span>' + esc(t('sh.home')) + '</span></button>' +
-            '<button class="fe-navlink" id="fe-nav-ws" data-route="#/workspace">' +
-              IC('layout', 15) + '<span>' + esc(t('sh.workspace')) + '</span>' + IC('chevron-down', 13) + '</button>' +
-          '</div>' +
-          // Workflow tab strip — real, from API.listWorkflows(); never faked.
-          '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
-          '</div>' +
-          // Aria Compact (2026-10): the editor has two MODES over the same
-          // workflow. `Editor` = the canvas. `Executions` = the ACTIVITY LOG
-          // (Runs · Execution · Variables · Logs) promoted to the full work
-          // area instead of a drawer that competes with the graph for height.
-          '<div class="fe-modes" id="fe-modes" role="tablist" aria-label="' + esc(t('sh.modes')) + '">' +
-            '<button type="button" role="tab" class="fe-mode is-active" id="fe-mode-editor"' +
-              ' data-mode="editor" aria-selected="true">' + IC('git-branch', 13) +
-              '<span>' + esc(t('sh.modeEditor')) + '</span></button>' +
-            '<button type="button" role="tab" class="fe-mode" id="fe-mode-exec"' +
-              ' data-mode="exec" aria-selected="false">' + IC('history', 13) +
-              '<span>' + esc(t('sh.modeExecutions')) + '</span>' +
-              '<span class="fe-mode-live" aria-hidden="true"></span></button>' +
-          '</div>' +
-          '<div class="fe-topbar-actions">' +
-            '<div class="fe-hist" role="group">' +
-              '<button class="fe-icobtn" id="fe-undo" title="' + esc(t('sh.undo')) + '" aria-label="' + esc(t('sh.undo')) + '">' + IC('rotate-ccw', 15) + '</button>' +
-              '<button class="fe-icobtn" id="fe-redo" title="' + esc(t('sh.redo')) + '" aria-label="' + esc(t('sh.redo')) + '">' + IC('rotate-cw', 15) + '</button>' +
-            '</div>' +
-            // Export ▾ — five items, divider before the last two (item B).
-            '<div class="fe-split" id="fe-export-wrap">' +
-              '<button class="fe-splitbtn" id="fe-export-btn" aria-haspopup="menu" aria-expanded="false">' +
-                IC('download', 14) + '<span>' + esc(t('sh.export')) + '</span>' + IC('chevron-down', 13) + '</button>' +
-              '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
-            '</div>' +
-            // Persistence is automatic (FlowEditor's debounced queue). The
-            // compact header still offers ONE explicit Save: it flushes that
-            // same queue now (FE.autosaveNow) instead of waiting for the
-            // debounce — there is still exactly one save path. Its dot mirrors
-            // the autosave status; the text status stays as the live region.
-            '<button type="button" class="fe-savebtn" id="fe-savenow" data-state="draft"' +
-              ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
-              '<span>' + esc(t('sh.save')) + '</span>' +
-              '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
-            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
-            // ONE slot, TWO states: orange ▶ Test Workflow while idle, solid
-            // red ■ Stop while a run is live (that is why the two reference
-            // images disagree about this button — they show the two states).
-            // Run-state switches. Active = the workflow's triggers/schedules may
-            // run it (a saved workflow only); Live browser = Test Workflow (and
-            // the saved run) opens a VISIBLE browser instead of headless.
-            '<button type="button" class="al-switch fe-toggle" id="fe-active" role="switch" aria-checked="false">' +
-              '<span class="al-sw-label">' + esc(t('fe.activeLabel')) + '</span>' +
-              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
-            '<button type="button" class="al-switch fe-toggle" id="fe-live" role="switch" aria-checked="false">' +
-              '<span class="al-sw-label">' + esc(t('fe.liveLabel')) + '</span>' +
-              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
-            '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
-            '<button class="fe-icobtn" id="fe-bell" title="' + esc(t('sh.notifications')) + '" aria-label="' + esc(t('sh.notifications')) + '">' + IC('bell', 15) + '</button>' +
-            '<button class="fe-icobtn" id="fe-gear" title="' + esc(t('sh.settings')) + '" aria-label="' + esc(t('sh.settings')) + '">' + IC('settings', 15) + '</button>' +
-            // Account menu. On the FULL-BLEED editor route the app header is
-            // hidden (app.js `FULLBLEED_ROUTES`), which took Language and
-            // Logout with it — so the avatar has to be a real menu, not the
-            // decorative <span> it used to be. Anything the avatar offers is
-            // wired to the shell's own handlers; nothing here is invented.
-            '<div class="fe-split fe-acct" id="fe-acct-wrap">' +
-              '<button class="fe-avatar" id="fe-avatar" type="button" aria-haspopup="menu"' +
-                ' aria-expanded="false" title="' + esc(t('sh.account')) + '"' +
-                ' aria-label="' + esc(t('sh.account')) + '">' + IC('user', 15) +
-                '<span class="fe-avatar-dot" aria-hidden="true"></span></button>' +
-              '<div class="fe-menu fe-menu-end" id="fe-acct-menu" role="menu" hidden></div>' +
-            '</div>' +
-            // Workflow Files hamburger: the SAME drawer the Live Browser View
-            // has, so the open workflow's file workspace is reachable without
-            // starting a browser. Beside the avatar, not instead of it -- the
-            // avatar is where Language and Logout live on this full-bleed route.
             '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
               ' aria-haspopup="dialog" aria-expanded="false"' +
               ' title="' + esc(t('rio.filesMenu')) + '" aria-label="' + esc(t('rio.filesMenu')) + '">' +
               IC('menu', 16) + '</button>' +
+            '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
+              IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
+            '<button type="button" class="fe-tbbtn fe-savebtn" id="fe-savenow" data-state="draft"' +
+              ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
+              '<span>' + esc(t('sh.save')) + '</span>' +
+              '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
+            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
+            // Active = triggers / schedules may run this workflow in the
+            // BACKGROUND (hidden browser). Test runs never need it.
+            '<button type="button" class="al-switch fe-toggle" id="fe-active" role="switch" aria-checked="false">' +
+              '<span class="al-sw-label" id="fe-active-label">' + esc(t('fe.activeLabel')) + '</span>' +
+              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
           '</div>' +
-          // Breadcrumb + badge moved to a hairline second line so the tab strip
-          // owns row one (the images never wrap the bar to two tall rows).
-          //
-          // G4 (handoff 11 §3.2): the row is now `hidden` by default. NO locked
-          // image has a second bar row — `state-empty-canvas.webp` starts the
-          // canvas immediately under the bar — and the row cost ~24px of canvas
-          // to restate what the active tab (name) and the status bar (version /
-          // draft state) already say. The element itself MUST stay in the DOM:
-          // `#fe-wf-label` / `#fe-wf-badge` are written by `refreshWfLabel()`
-          // and the six `.fe-legacy` ids have UNGUARDED listeners below — a
-          // missing id throws and blanks the whole editor. `hidden` is honoured
-          // because `.fe-crumbline[hidden] { display: none }` beats the
-          // `display:flex` base rule.
+          '<nav class="fe-modes" id="fe-modes" role="tablist" aria-label="' + esc(t('sh.modes')) + '">' +
+            '<button type="button" role="tab" class="fe-mode is-active" id="fe-mode-editor"' +
+              ' data-mode="editor" aria-selected="true"><span>' + esc(t('sh.modeEditor')) + '</span></button>' +
+            '<button type="button" role="tab" class="fe-mode" id="fe-mode-extract"' +
+              ' data-mode="extract" aria-selected="false"><span>' + esc(t('sh.modeExtraction')) + '</span></button>' +
+            '<button type="button" role="tab" class="fe-mode" id="fe-mode-exec"' +
+              ' data-mode="exec" aria-selected="false"><span>' + esc(t('sh.modeExecutions')) + '</span>' +
+              '<span class="fe-mode-live" aria-hidden="true"></span></button>' +
+          '</nav>' +
+          '<div class="fe-tb-end">' +
+            '<span class="fe-wfname" id="fe-wfname" title=""></span>' +
+            '<span class="fe-brand"><span>' + esc(t('fe.brand')) + '</span>' +
+              '<span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span></span>' +
+          '</div>' +
+          // ---- kept in the DOM, never shown ------------------------------
+          // These ids have listeners (and tests) that predate the redesign.
+          // They are inert hosts now: the run slot (#fe-run) is driven by
+          // the canvas `Execute Workflow` button, and the rest are reached
+          // through the hamburger's Workflow menu.
+          '<div class="fe-legacy-host" hidden>' +
+            '<div class="fe-tb-start-legacy"><span class="fe-nav">' +
+              '<button class="fe-navlink" id="fe-nav-home" data-route="#/"></button>' +
+              '<button class="fe-navlink" id="fe-nav-ws" data-route="#/workspace"></button></span>' +
+              '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
+            '</div>' +
+            '<div class="fe-topbar-actions">' +
+              '<button class="fe-icobtn" id="fe-undo"></button>' +
+              '<button class="fe-icobtn" id="fe-redo"></button>' +
+              '<div class="fe-split" id="fe-export-wrap">' +
+                '<button class="fe-splitbtn" id="fe-export-btn" aria-haspopup="menu" aria-expanded="false"></button>' +
+                '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
+              '</div>' +
+              '<button type="button" class="al-switch fe-toggle" id="fe-live" role="switch" aria-checked="false"></button>' +
+              '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
+              '<button class="fe-icobtn" id="fe-bell"></button>' +
+              '<button class="fe-icobtn" id="fe-gear"></button>' +
+              '<div class="fe-split fe-acct" id="fe-acct-wrap">' +
+                '<button class="fe-avatar" id="fe-avatar" type="button" aria-haspopup="menu" aria-expanded="false"></button>' +
+                '<div class="fe-menu fe-menu-end" id="fe-acct-menu" role="menu" hidden></div>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
           '<div class="fe-crumbline" id="fe-crumbline" hidden>' +
-            '<span class="fe-crumb-sep">/</span>' +
             '<span class="fe-wf-title" id="fe-wf-label"></span>' +
             '<span id="fe-wf-badge"></span>' +
-            // Legacy low-traffic actions keep their ids alive here; the split
-            // menus above drive the same handlers.
             '<span class="fe-legacy" hidden>' +
-              '<button id="fe-from-run" title="' + t('fe.fromRun') + '"></button>' +
-              '<button id="fe-load" title="' + t('fe.load') + '"></button>' +
-              '<button id="fe-json" title="' + t('fe.toJson') + '"></button>' +
-               '<button id="fe-clear" title="' + t('fe.clear') + '"></button>' +
-               // Compatibility hooks for older integrations; hidden and unwired.
-               '<button id="fe-save" hidden></button>' +
-               '<button id="fe-save-server" hidden></button>' +
-               '<button id="fe-save-btn" hidden></button>' +
-               '<div id="fe-save-menu" hidden></div>' +
-
-             '</span>' +
+              '<button id="fe-from-run"></button>' +
+              '<button id="fe-load"></button>' +
+              '<button id="fe-json"></button>' +
+              '<button id="fe-clear"></button>' +
+              '<button id="fe-save" hidden></button>' +
+              '<button id="fe-save-server" hidden></button>' +
+              '<button id="fe-save-btn" hidden></button>' +
+              '<div id="fe-save-menu" hidden></div>' +
+            '</span>' +
           '</div>' +
-        '</div>' +
+        '</header>' +
         '<div class="fe-layout">' +
-          '<aside class="fe-palette" id="fe-palette"></aside>' +
+          // The blocks palette is not part of the focused editor: nodes are
+          // added through the Add Node dialog (top-end `+`, double-click on
+          // empty canvas, Tab, or a port's `+`). The aside stays as FlowEditor's
+          // mount point — it is hidden by CSS, never rendered on screen.
+          '<aside class="fe-palette" id="fe-palette" aria-hidden="true"></aside>' +
           '<div class="fe-canvas" id="fe-canvas">' +
             '<svg class="fe-svg" id="fe-svg"></svg>' +
             '<div class="fe-world" id="fe-world"></div>' +
-            // Run-info strip (top-start of the canvas in the refreshed image):
-            //   Last Run: Success · Duration: 342 ms · Variables: 3
             '<div class="fe-runinfo" id="fe-runinfo" hidden></div>' +
-            // OUTLINE overlay (item C) — an absolutely positioned panel INSIDE
-            // the canvas, exactly like the minimap; NOT a third grid column
-            // (.fe-layout is `240px 1fr` and .fe-focus would fight a third one).
-            '<div class="fe-outline" id="fe-outline">' +
-              '<div class="fe-ol-head">' +
-                '<span class="fe-ol-title">' + esc(t('ol.title')) + '</span>' +
-                '<button class="fe-ol-close" id="fe-ol-close" title="' + esc(t('ol.close')) + '"' +
-                  ' aria-label="' + esc(t('ol.close')) + '">' + IC('x', 13) + '</button>' +
-              '</div>' +
+            // OUTLINE: removed from the focused editor (decorative, never
+            // used). The nodes stay because views.js still renders into them
+            // when it is asked to; CSS keeps both off screen.
+            '<div class="fe-outline" id="fe-outline" hidden>' +
+              '<div class="fe-ol-head"><span class="fe-ol-title"></span>' +
+                '<button class="fe-ol-close" id="fe-ol-close"></button></div>' +
               '<div class="fe-ol-body" id="fe-ol-body" role="tree"></div>' +
             '</div>' +
-            // Collapsed state: a vertical "OUTLINE" tab hugging the canvas edge
-            // (the launcher-menu image shows exactly this affordance).
-            '<button class="fe-ol-tab" id="fe-ol-tab" hidden title="' + esc(t('ol.open')) + '">' +
-              '<span>' + esc(t('ol.title')) + '</span>' + IC('chevron-right', 12) + '</button>' +
-            // Aria Compact: the canvas' own primary action, bottom-centre, as
-            // in the compact reference. It is a PROXY for the one Run/Stop
-            // slot in the header (#fe-run) — it clicks it — so the run logic,
-            // the popup-blocker rule and the Stop capture handler stay single.
+            '<button class="fe-ol-tab" id="fe-ol-tab" hidden></button>' +
+            // Top-end `+`: the SAME Add Node dialog double-click opens, but
+            // centred in the viewport (FE.openAddNodeCentered).
+            '<button type="button" class="fe-addnode-fab" id="fe-addnode-fab"' +
+              ' title="' + esc(t('sh.addNodeHint')) + '" aria-label="' + esc(t('an.title')) + '">' +
+              IC('plus', 18) + '</button>' +
+            // Bottom-centre primary action. A PROXY for the one Run/Stop slot
+            // (#fe-run): it clicks it, so run logic, the popup-blocker rule and
+            // the Stop capture handler stay single.
             '<button type="button" class="fe-exec-cta" id="fe-exec-cta" data-mode="run">' +
               IC('play', 14) + '<span>' + esc(t('sh.executeWorkflow')) + '</span></button>' +
           '</div>' +
           '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
         '</div>' +
-          // Executions mode surface. The ACTIVITY LOG drawer (RunPanel, a body
-          // singleton) is re-parented in here while the mode is active, so the
-          // two modes share one log — no second renderer, no drift.
-          '<section class="fe-execview" id="fe-execview" hidden aria-labelledby="fe-mode-exec">' +
-            '<header class="fe-ex-head">' +
-              '<div class="fe-ex-title">' + IC('history', 16) +
-                '<span>' + esc(t('sh.modeExecutions')) + '</span>' +
-                '<span class="fe-ex-wf" id="fe-ex-wf"></span></div>' +
-              '<div class="fe-ex-stats" id="fe-ex-stats"></div>' +
-            '</header>' +
-            '<div class="fe-ex-host" id="fe-ex-host"></div>' +
-          '</section>' +
-        // Status bar (shell previews): version · auto-save · last saved ·
-        // workflow id · environment. Read-only telemetry, no controls.
-        '<div class="fe-statusbar" id="fe-statusbar"></div>' +
-        '<div class="muted small fe-hint">' + t('fe.hint') + '</div>' +
+        // ---- Extraction: what this workflow's extract steps produced --------
+        '<section class="fe-xview" id="fe-xview" hidden aria-labelledby="fe-mode-extract">' +
+          '<header class="fe-pane-head">' +
+            '<div class="fe-pane-title"><span>' + esc(t('sh.modeExtraction')) + '</span>' +
+              '<span class="fe-pane-sub" id="fe-x-sub"></span></div>' +
+            '<div class="fe-pane-actions" id="fe-x-actions"></div>' +
+          '</header>' +
+          '<div class="fe-x-body" id="fe-x-body"></div>' +
+        '</section>' +
+        // ---- Executions: run list + the selected run's details --------------
+        // The ACTIVITY LOG (RunPanel, a body singleton) is re-parented in
+        // here as the live/selected run's detail — one log, no second renderer.
+        '<section class="fe-execview" id="fe-execview" hidden aria-labelledby="fe-mode-exec">' +
+          '<div class="fe-ex-split">' +
+            '<aside class="fe-ex-list" aria-label="' + esc(t('sh.exRuns')) + '">' +
+              '<header class="fe-ex-list-head">' +
+                '<span class="fe-pane-title"><span>' + esc(t('sh.exRuns')) + '</span></span>' +
+                '<button type="button" class="fe-ex-refresh" id="fe-ex-refresh" title="' + esc(t('sh.exRefresh')) + '"' +
+                  ' aria-label="' + esc(t('sh.exRefresh')) + '">' + IC('rotate-cw', 13) + '</button>' +
+              '</header>' +
+              '<div class="fe-ex-filters" id="fe-ex-filters" role="radiogroup"></div>' +
+              '<ol class="fe-ex-runs" id="fe-ex-runs"></ol>' +
+            '</aside>' +
+            '<section class="fe-ex-detail" id="fe-ex-detail">' +
+              '<header class="fe-ex-head">' +
+                '<div class="fe-ex-title" id="fe-ex-title"></div>' +
+                '<div class="fe-ex-stats" id="fe-ex-stats"></div>' +
+              '</header>' +
+              '<div class="fe-ex-steps" id="fe-ex-steps"></div>' +
+              '<div class="fe-ex-host" id="fe-ex-host"></div>' +
+            '</section>' +
+          '</div>' +
+          // kept for the header counts the earlier build wrote to
+          '<span class="fe-ex-wf" id="fe-ex-wf" hidden></span>' +
+        '</section>' +
+        // Status bar: hidden in the focused editor (CSS). Its cells are still
+        // rendered so the version / environment facts have one source.
+        '<div class="fe-statusbar" id="fe-statusbar" hidden></div>' +
         '<div id="fe-result"></div>' +
       '</div>';
 
