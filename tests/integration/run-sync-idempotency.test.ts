@@ -29,6 +29,7 @@ vi.mock('../../src/validation', () => ({
   validateSteps: (s: unknown) => s as unknown[],
   validateWebhookUrl: (u: unknown) => (u ? String(u) : null),
   validateHeadless: () => true,
+  validateBackgroundHeadless: () => true,
 }));
 
 // Control what the "persisted job file" returns per test.

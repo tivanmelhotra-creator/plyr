@@ -21,6 +21,7 @@ vi.mock('../../src/validation', () => ({
   validateSteps: (s: unknown) => s as unknown[],
   validateWebhookUrl: (u: unknown) => (u ? String(u) : null),
   validateHeadless: () => true,
+  validateBackgroundHeadless: () => true,
 }));
 
 const jobFiles = new Map<string, unknown>();

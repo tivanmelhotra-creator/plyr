@@ -156,6 +156,18 @@ export const validateWebhookUrl = (url: unknown): string | null => {
 
 // === HEADLESS VALIDATION ===
 
+/**
+ * Headless value for a BACKGROUND run (schedule, saved-workflow run from the
+ * API / a trigger). docs/uiux/new ui.md section 9: an Active workflow runs
+ * hidden, nobody is watching, so it must not open a visible window just
+ * because DEFAULT_HEADLESS is false on a development box. An explicit value
+ * (request body / saved workflow / the Launch node option, applied later in
+ * the pipeline) still wins, and extension runs keep their Real Chrome route.
+ * The visible, observed run is the editor's Execute Workflow (POST /run).
+ */
+export const validateBackgroundHeadless = (value: unknown): boolean => validateHeadless(value, true);
+
+
 export const validateHeadless = (value: unknown, defaultValue: boolean = true): boolean => {
   if (typeof value === 'boolean') {
     return value;

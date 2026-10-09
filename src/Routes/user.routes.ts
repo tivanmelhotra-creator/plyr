@@ -10,7 +10,8 @@ import {
   sanitizeUserId,
   validateSteps,
   validateWebhookUrl,
-  validateHeadless
+  validateHeadless,
+  validateBackgroundHeadless
 } from '../validation';
 import {
   runBodySchema,
@@ -452,7 +453,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       }
 
       // ── Validate Steps (deep) ──
-      const headless = validateHeadless(body.headless, config.DEFAULT_HEADLESS);
+      // A schedule is a background run: hidden unless explicitly asked otherwise.
+      const headless = validateBackgroundHeadless(body.headless);
       const steps = validateSteps(body.steps, plan);
       const webhookUrl = validateWebhookUrl(req.body.webhookUrl);
 
@@ -1239,9 +1241,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // override headless/webhookUrl for this run only.
       const plan = await UserManager.getUserPlan(connection, userId);
       const steps = validateSteps(wf.steps, plan);
-      const headless = validateHeadless(
-        req.body?.headless !== undefined ? req.body.headless : wf.headless,
-        config.DEFAULT_HEADLESS
+      // A saved-workflow run (API, trigger, Workspace) is a background run:
+      // hidden unless the request or the workflow says otherwise.
+      const headless = validateBackgroundHeadless(
+        req.body?.headless !== undefined ? req.body.headless : wf.headless
       );
       const webhookUrl = validateWebhookUrl(
         req.body?.webhookUrl !== undefined ? req.body.webhookUrl : wf.webhookUrl
