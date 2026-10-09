@@ -8613,3 +8613,84 @@ body.route-fullbleed .run-panel.is-docked-view {
   font-size: 10.5px; font-weight: 600; padding: 1px 8px;
   background: rgba(17, 18, 20, 0.85);
 }
+
+/* ============================================================================
+   APP FRAME (2026-10b) — top bar spans the full width; the rail starts BELOW it.
+   ----------------------------------------------------------------------------
+   Root cause of the old overlap: the rail was the first grid COLUMN of `.app`
+   and ran the full viewport height, while every top bar (shell `.topbar`, the
+   editor's `.fe-topbar`) lived inside `.main`, i.e. in the second column. No
+   z-index can make a bar in column 2 cover column 1. The fix is structural:
+   `.app` gets rows + named areas, and the wrappers between `.app` and the bars
+   are `display: contents`, so each bar is a real item of the `top` area.
+   The DOM (and therefore every selector / listener) is unchanged.
+   ========================================================================= */
+.app,
+body.route-fullbleed .app {
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top  top"
+    "rail main"
+    "rail extra";
+}
+.main { display: contents; }
+.sidebar { grid-area: rail; min-height: 0; }
+.topbar { grid-area: top; height: var(--tb-h); min-height: var(--tb-h); padding: 0 14px; gap: 12px; }
+.content { grid-area: main; min-width: 0; min-height: 0; }
+
+/* Editor: the shell bar is hidden; the editor's own bar takes `top` and its
+   panes take `main` (only one pane is ever shown — the others are [hidden]). */
+body.route-fullbleed .content,
+body.route-fullbleed .fe-shell { display: contents; }
+body.route-fullbleed .fe-shell .fe-topbar { grid-area: top; }
+body.route-fullbleed .fe-shell .fe-layout,
+body.route-fullbleed .fe-shell .fe-xview,
+body.route-fullbleed .fe-shell .fe-execview { grid-area: main; min-width: 0; min-height: 0; }
+body.route-fullbleed .fe-shell .fe-xview:not([hidden]),
+body.route-fullbleed .fe-shell .fe-execview:not([hidden]) { overflow: auto; }
+body.route-fullbleed #fe-result,
+body.route-fullbleed .fe-statusbar { grid-area: extra; }
+
+/* Brand: always the top-start of the top bar (logo, then the product name). */
+.topbar-brand { display: inline-flex; align-items: center; gap: 9px; padding: 0; margin: 0; }
+.topbar-brand .brand-text { display: inline; font-size: 13.5px; font-weight: 600; color: #E7E9EE; white-space: nowrap; }
+.topbar-brand .brand-logo { color: var(--primary); display: inline-flex; }
+.topbar .page-title { padding-inline-start: 12px; margin-inline-start: 4px; border-inline-start: 1px solid rgba(255, 255, 255, 0.08); font-size: 14px; }
+.topbar .launcher { display: none; }  /* the rail is the navigation now */
+
+/* Editor bar: brand · name at the start; actions at the end, hamburger last. */
+.fe-tb-start { gap: 12px; }
+.fe-brand { gap: 9px; }
+.fe-brand-name { white-space: nowrap; }
+.fe-wfname { padding-inline-start: 12px; border-inline-start: 1px solid rgba(255, 255, 255, 0.08); }
+.fe-tb-end { gap: 8px; }
+.fe-tb-end .fe-toggle { margin-inline-start: 0; margin-inline-end: 4px; }
+
+/* Rail: `+ New workflow` is its first item — same box and alignment as every
+   other rail icon (it is a <button>, so the UA chrome is reset). */
+.sidebar { padding-top: 10px; align-items: center; }
+.nav-new {
+  appearance: none; -webkit-appearance: none;
+  border: 0; background: transparent; font: inherit; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.nav-new:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+@media (max-width: 1280px) {
+  .fe-brand-name { display: none; }
+}
+@media (max-width: 960px) {
+  .fe-wfname { display: none; }
+  .fe-tbbtn > span { display: none; }
+  .fe-tbbtn { padding: 0 9px; }
+}
+/* Phone: the rail is the off-canvas drawer it already was, but it opens BELOW
+   the top bar, never over it. */
+@media (max-width: 820px) {
+  .app, body.route-fullbleed .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "top" "main" "extra";
+  }
+  .sidebar { top: var(--tb-h); }
+}
