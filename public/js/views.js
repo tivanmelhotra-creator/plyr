@@ -1315,17 +1315,10 @@
       });
       liveTab.run
         .then(function (data) {
-          resultEl.innerHTML =
-            '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('fe.queued') +
-            ' <code>' + esc(data.jobId) + '</code> ' +
-            '<button class="btn btn-ghost btn-sm" id="fe-goto-job" data-job="' +
-            esc(data.jobId) + '">' + t('run.viewJob') + '</button> ' +
-            '<span class="muted small">(' + steps.length + ' ' + t('fe.steps') + ')</span></div>';
-          var g = resultEl.querySelector('#fe-goto-job');
-          if (g) g.addEventListener('click', function () {
-            location.hash = '#/jobs?job=' + encodeURIComponent(data.jobId) +
-              '&user=' + encodeURIComponent(uid);
-          });
+          // Focused editor: no banner over the canvas. A short toast confirms
+          // the run; its details live in Executions (where the live log is).
+          resultEl.innerHTML = '';
+          U().toast(t('fe.queued') + ' #' + data.jobId + ' · ' + steps.length + ' ' + t('fe.steps'), 'ok');
           // Step 26: stream this job's live events into the bottom run/log
           // drawer — per-node halos, badges and the step timeline update live.
           if (window.RunPanel) {
@@ -2395,6 +2388,7 @@
     // The editor always opens on the canvas; the last mode is not restored
     // (landing on a log after creating a workflow is disorienting).
     var initialMode = 'editor';
+    var lastRunPhase = '';
 
     // ---- One subscription drives every derived surface ------------------
     function refreshShell() {
@@ -2411,6 +2405,15 @@
     var offRun = (window.RunPanel && window.RunPanel.onUpdate)
       ? window.RunPanel.onUpdate(function () {
           refreshRunInfo(); refreshRunSlot(); refreshExecCta(); refreshExecHeader();
+          // A run that just started or finished changes the history: re-read
+          // it once per phase change (not per event), while Executions shows.
+          var ph = window.RunPanel.getSummary ? window.RunPanel.getSummary().phase : '';
+          if (ph !== lastRunPhase) {
+            lastRunPhase = ph;
+            if (feMode === 'exec') loadRuns();
+            if (feMode === 'extract' && ph !== 'running') loadExtraction();
+          }
+          if (feMode === 'exec') renderRunDetail();
         })
       : null;
     setOutlineOpen(olOpen, false);
