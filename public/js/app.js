@@ -217,7 +217,7 @@
     if (d) parts.push(d + 'd');
     if (h) parts.push(h + 'h');
     if (m) parts.push(m + 'm');
-    parts.push(s + (I18N.getLang() === 'fa' ? '' : 's'));
+    parts.push(s + 's');
     return parts.join(' ');
   }
 

@@ -85,7 +85,7 @@
   function render(host, opts) {
     opts = opts || {};
     var t = opts.t || function (k) { return k; };
-    var lang = (opts.lang && opts.lang() === 'en') ? 'en' : 'fa';
+    var lang = 'en';   // English only (2026-10)
     var api = BO();
     var obj = parse(opts.value);
     var open = false;
