@@ -267,12 +267,11 @@ describe('node display names — product language, in both dictionaries', () => 
   }
 
   /** fa and en are separate objects; a key must be present in each. */
-  function dictSlices(): { fa: string; en: string } {
-    const faAt = I18N_SRC.indexOf('fa: {');
+  function dictSlices(): { en: string } {
+    // English-only dictionary (docs/uiux/new ui.md §2): one `en` block.
     const enAt = I18N_SRC.indexOf('en: {');
-    expect(faAt).toBeGreaterThan(-1);
-    expect(enAt).toBeGreaterThan(faAt);
-    return { fa: I18N_SRC.slice(faAt, enAt), en: I18N_SRC.slice(enAt) };
+    expect(enAt).toBeGreaterThan(-1);
+    return { en: I18N_SRC.slice(enAt) };
   }
 
   const NAMES = displayNames();
@@ -296,11 +295,6 @@ describe('node display names — product language, in both dictionaries', () => 
   it('points every entry at an `nk.` i18n key', () => {
     const odd = Object.entries(NAMES).filter(([, key]) => !key.startsWith('nk.'));
     expect(odd.map(([id, key]) => `${id} -> ${key}`)).toEqual([]);
-  });
-
-  it('resolves every key in the PERSIAN dictionary (default locale)', () => {
-    const missing = [...new Set(Object.values(NAMES))].filter((k) => !DICTS.fa.includes(`'${k}':`));
-    expect(missing, `nk keys missing from fa: ${missing.join(', ')}`).toEqual([]);
   });
 
   it('resolves every key in the ENGLISH dictionary', () => {

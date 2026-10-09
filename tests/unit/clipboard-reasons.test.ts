@@ -224,8 +224,8 @@ describe('§4 a clipboard failure names its cause', () => {
       'rio.copyManualTitle', 'rio.copyManualClose',
     ];
     for (const k of keys) {
-      it(`${k} is defined in both dictionaries`, () => {
-        expect(I18N.split(`'${k}':`).length - 1).toBe(2);
+      it(`${k} is defined exactly once (English-only dictionary)`, () => {
+        expect(I18N.split(`'${k}':`).length - 1).toBe(1);
       });
     }
     it('no new key carries a doubled unicode escape', () => {

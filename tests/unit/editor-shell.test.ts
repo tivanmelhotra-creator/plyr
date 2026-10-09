@@ -114,18 +114,17 @@ function loadActions(): { actions: any[]; categories: any[] } {
 const CATALOG = loadActions();
 
 /** i18n keys must exist in BOTH dictionaries — see the header note. */
-function dictSlices(): { fa: string; en: string } {
-  const faAt = I18N_SRC.indexOf('fa: {');
+function dictSlices(): { en: string } {
+  // English-only dictionary (docs/uiux/new ui.md §2): there is one `en` block
+  // and no `fa` block any more, so every key must live in `en`.
   const enAt = I18N_SRC.indexOf('en: {');
-  expect(faAt).toBeGreaterThan(-1);
-  expect(enAt).toBeGreaterThan(faAt);
-  return { fa: I18N_SRC.slice(faAt, enAt), en: I18N_SRC.slice(enAt) };
+  expect(enAt).toBeGreaterThan(-1);
+  return { en: I18N_SRC.slice(enAt) };
 }
 const DICTS = dictSlices();
 
 function expectKeyInBothDicts(key: string) {
   const needle = `'${key}':`;
-  expect(DICTS.fa.includes(needle), `fa is missing "${key}"`).toBe(true);
   expect(DICTS.en.includes(needle), `en is missing "${key}"`).toBe(true);
 }
 
@@ -147,7 +146,7 @@ const ROUTES = realRoutes();
 // ───────────────────────────────────────────────────────────────────────────
 describe('item A — editor top bar', () => {
   const bar = VIEWS.slice(
-    VIEWS.indexOf("'<div class=\"fe-topbar\">'"),
+    VIEWS.indexOf("'<header class=\"fe-topbar\">'"),
     VIEWS.indexOf("'<div class=\"fe-layout\">'")
   );
 
@@ -836,7 +835,7 @@ describe('shell parity items G4 / G6 / G1 / G8 / G13', () => {
 // exist), and `t()` cannot either (it returns what the dictionary holds), so
 // only a render or this guard catches it.
 // ───────────────────────────────────────────────────────────────────────────
-describe('G10 fa/RTL localisation of the editor chrome', () => {
+describe('G10 localisation of the editor chrome (English-only since new ui §2)', () => {
   const PERSIAN = /[\u0600-\u06FF]/;
   /**
    * `pl.shortcut` is the `K` of `Ctrl K` — a key cap, not a word. Anything else
@@ -844,13 +843,12 @@ describe('G10 fa/RTL localisation of the editor chrome', () => {
    */
   const LATIN_BY_DESIGN = new Set(['pl.shortcut']);
 
-  it('ships no English-only value for the shell chrome keys', () => {
-    const faEntries = [...DICTS.fa.matchAll(/'((?:al|ol|pl|sh)\.[A-Za-z0-9]+)':\s*'([^']*)'/g)];
-    expect(faEntries.length).toBeGreaterThan(60);
-    const leaks = faEntries
-      .filter(([, key, val]) => val && !LATIN_BY_DESIGN.has(key) && !PERSIAN.test(val))
-      .map(([, key, val]) => `${key} = "${val}"`);
-    expect(leaks, `untranslated fa values:\n  ${leaks.join('\n  ')}`).toEqual([]);
+  // The Persian dictionary was removed on purpose (docs/uiux/new ui.md §2), so
+  // there is no `fa` block left to audit; what must still hold is that no
+  // Persian leaked into the one English dictionary that ships.
+  it('ships no `fa` block at all (English-only UI)', () => {
+    expect(I18N_SRC.indexOf('fa: {')).toBe(-1);
+    expect(LATIN_BY_DESIGN.has('pl.shortcut')).toBe(true);
   });
 
   /** ...and the English dictionary must not have been Persian-ised by mistake. */
@@ -1162,11 +1160,10 @@ describe('G7 — Node Detail View (NDV)', () => {
       expect(FE).toMatch(/appendValidation\(body, designed \? node\.id : null\)/);
     });
 
-    it('has the new help string in BOTH dictionaries, translated', () => {
-      const { fa, en } = DICTS;
-      expect(fa).toMatch(/'help\.timeoutMs':/);
+    it('has the new help string in the dictionary', () => {
+      const { en } = DICTS;
       expect(en).toMatch(/'help\.timeoutMs':/);
-      const faVal = /'help\.timeoutMs':\s*'([^']*)'/.exec(fa)![1];
-    expect(faVal).not.toMatch(/^[\x20-\x7E]+$/); // must not be an English value in `fa`
+      const enVal = /'help\.timeoutMs':\s*'([^']*)'/.exec(en)![1];
+    expect(enVal).not.toMatch(/[\u0600-\u06FF]/); // English-only dictionary
   });
 });

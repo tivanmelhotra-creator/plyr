@@ -907,10 +907,9 @@ describe('tab strip UI contract', () => {
     expect(browserView).toMatch(/function navCmd/);
   });
 
-  it('every new bvp.* key exists in BOTH dictionaries', () => {
+  it('every new bvp.* key exists in the dictionary', () => {
     // The same guard element-picker.test.ts applies, restated for the keys this
     // change adds — a missing fa key ships an English string into an RTL UI.
-    const fa = i18n.slice(i18n.indexOf('\n    fa: {'), i18n.indexOf('\n    en: {'));
     const en = i18n.slice(i18n.indexOf('\n    en: {'));
     const keys = [
       'bvp.tabs', 'bvp.newTab', 'bvp.closeTab', 'bvp.blankTab',
@@ -918,7 +917,6 @@ describe('tab strip UI contract', () => {
       'bvp.reconnect', 'bvp.recovering', 'bvp.recovered', 'bvp.tabCrashed',
     ];
     for (const k of keys) {
-      expect(fa, `fa is missing ${k}`).toContain(`'${k}':`);
       expect(en, `en is missing ${k}`).toContain(`'${k}':`);
     }
   });

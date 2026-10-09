@@ -297,7 +297,7 @@ describe('browser-handoff — the strings it asks for exist in both languages', 
     keys.forEach((k) => {
       const defs = i18n.split(`'${k}'`).length - 1 + (i18n.split(`"${k}"`).length - 1);
       if (defs === 0) missing.push(k);
-      else if (defs !== 2) wrongCount.push(`${k}=${defs}`);
+      else if (defs !== 1) wrongCount.push(`${k}=${defs}`);
     });
 
     expect(missing).toEqual([]);

@@ -317,9 +317,9 @@ describe('RemoteIO is loaded and attached on both surfaces', () => {
     );
     expect(keys.size).toBeGreaterThanOrEqual(8);
     for (const key of keys) {
-      // Once per language block.
+      // English-only dictionary: exactly one definition.
       const hits = i18n.split(`'${key}':`).length - 1;
-      expect(hits, `${key} should be defined twice (fa + en), found ${hits}`).toBe(2);
+      expect(hits, `${key} should be defined once, found ${hits}`).toBe(1);
     }
   });
 

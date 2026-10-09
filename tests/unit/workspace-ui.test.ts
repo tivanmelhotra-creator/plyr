@@ -43,7 +43,15 @@ const CSS = readFileSync(join(PUBLIC, 'css', 'styles.css'), 'utf8');
 const I18N_SRC = readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8');
 
 /** The six product areas, in the locked order. */
-const NAV = ['home', 'workspace', 'dashboard', 'jobs', 'admin', 'settings'];
+/**
+ * The focused rail (docs/uiux/new ui.md §4), top to bottom:
+ *   + New workflow (a button, not a route) · Home · Workspace · Executions
+ *   (`#/jobs`) · Settings (bottom). Dashboard and Admin stay reachable as routes
+ *   and through the launcher, but are not rail entries any more.
+ */
+const NAV = ['home', 'workspace', 'jobs', 'settings'];
+/** Every product area the App Launcher lists (unchanged by the rail redesign). */
+const LAUNCHER = ['home', 'workspace', 'dashboard', 'jobs', 'admin', 'settings'];
 
 /** Retired from the chrome — they are per-workflow capabilities now. */
 const RETIRED = ['live', 'browser', 'schedules', 'run', 'workflows', 'editor', 'quota'];
@@ -82,31 +90,33 @@ const I18N = loadI18n();
  * missing Persian entry is invisible at runtime — only a source-level check
  * catches it.
  */
-function dictSlices(): { fa: string; en: string } {
-  const faAt = I18N_SRC.indexOf('fa: {');
+function dictSlices(): { en: string } {
+  // English-only dictionary (docs/uiux/new ui.md §2): there is one `en` block
+  // and no `fa` block any more, so every key must live in `en`.
   const enAt = I18N_SRC.indexOf('en: {');
-  expect(faAt).toBeGreaterThan(-1);
-  expect(enAt).toBeGreaterThan(faAt);
-  return { fa: I18N_SRC.slice(faAt, enAt), en: I18N_SRC.slice(enAt) };
+  expect(enAt).toBeGreaterThan(-1);
+  return { en: I18N_SRC.slice(enAt) };
 }
 const DICTS = dictSlices();
 
 function expectKeyInBothDicts(key: string) {
   const needle = `'${key}':`;
-  expect(DICTS.fa.includes(needle), `fa is missing "${key}"`).toBe(true);
   expect(DICTS.en.includes(needle), `en is missing "${key}"`).toBe(true);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-describe('sidebar — exactly the six locked product areas', () => {
+describe('sidebar — the focused rail (new ui §4)', () => {
   const navBlock = HTML.slice(
     HTML.indexOf('<nav class="sidebar-nav">'),
     HTML.indexOf('</nav>')
   );
   const routes = [...navBlock.matchAll(/data-route="([a-z]+)"/g)].map((m) => m[1]);
 
-  it('has six entries, in the locked order', () => {
+  it('has the four route entries, in the locked order, after + New workflow', () => {
     expect(routes).toEqual(NAV);
+    expect(navBlock.indexOf('id="nav-new-workflow"')).toBeGreaterThan(-1);
+    expect(navBlock.indexOf('id="nav-new-workflow"')).toBeLessThan(navBlock.indexOf('data-route="home"'));
+    expect(navBlock).toMatch(/class="nav-item nav-bottom" data-route="settings"/);
   });
 
   it('drops every retired entry (the whole point of the change)', () => {
@@ -120,7 +130,7 @@ describe('sidebar — exactly the six locked product areas', () => {
       expect(navBlock, `#/${r} link`).toContain(`href="#/${r}"`);
     }
     const icons = [...navBlock.matchAll(/data-icon="([a-z-]+)"/g)].map((m) => m[1]);
-    expect(icons).toHaveLength(6);
+    expect(icons).toHaveLength(NAV.length + 1); // + the New workflow glyph
     for (const name of icons) {
       expect(Icons.has(name), `sidebar icon "${name}"`).toBe(true);
     }
@@ -130,17 +140,19 @@ describe('sidebar — exactly the six locked product areas', () => {
     // Re-read off the locked images: `Workspace` is four EQUAL squares (`grid`,
     // the launcher glyph), `Jobs` is a briefcase and `Admin` is a shield with a
     // check — the earlier `layout` / `layers` / `shield` set was a guess.
+    // `jobs` is labelled Executions in the rail and uses the `history` glyph.
     for (const [route, icon] of Object.entries({
-      home: 'home', workspace: 'grid', dashboard: 'bar-chart',
-      jobs: 'briefcase', admin: 'shield-check', settings: 'settings',
+      home: 'home', workspace: 'grid', jobs: 'history', settings: 'settings',
     })) {
       const row = navBlock.slice(navBlock.indexOf(`data-route="${route}"`));
       expect(row.slice(0, 200), `${route} -> ${icon}`).toContain(`data-icon="${icon}"`);
     }
   });
 
-  it('every nav label is translated in both dictionaries', () => {
-    for (const r of NAV) expectKeyInBothDicts(`nav.${r}`);
+  it('every nav label is in the dictionary', () => {
+    for (const r of LAUNCHER) expectKeyInBothDicts(`nav.${r}`);
+    expectKeyInBothDicts('nav.newWorkflow');
+    expectKeyInBothDicts('nav.executions');
   });
 });
 
@@ -162,8 +174,8 @@ describe('app launcher — the header replacement for nav links', () => {
     expect(panel).toContain('role="menu"');
     expect(panel).toContain('hidden');
     const items = [...panel.matchAll(/role="menuitem" data-route="([a-z]+)"/g)].map((m) => m[1]);
-    // Same six areas, same order as the sidebar — it is the same architecture.
-    expect(items).toEqual(NAV);
+    // The launcher still lists all six product areas, in the locked order.
+    expect(items).toEqual(LAUNCHER);
   });
 
   it('the header carries NO navigation links (that was the defect)', () => {
@@ -207,7 +219,7 @@ describe('app launcher — the header replacement for nav links', () => {
       admin: 'shield-check',    // was a plain shield — the image has a check
       settings: 'settings',
     };
-    NAV.forEach((route) => {
+    LAUNCHER.forEach((route) => {
       const row = panel.slice(panel.indexOf(`data-route="${route}"`));
       const m = row.slice(0, 220).match(/data-icon="([a-z-]+)" data-icon-size="(\d+)"/);
       expect(m, `launcher row "${route}" declares an icon + size`).toBeTruthy();
@@ -220,7 +232,14 @@ describe('app launcher — the header replacement for nav links', () => {
   it('the sidebar and the launcher agree glyph-for-glyph (one architecture)', () => {
     const nav = HTML.slice(HTML.indexOf('<nav class="sidebar-nav">'), HTML.indexOf('</nav>'));
     const panel = HTML.slice(HTML.indexOf('id="launcher-menu"'), HTML.indexOf('</header>'));
-    NAV.forEach((route) => {
+    // Every launcher area exists; every route that is ALSO a rail entry must
+    // use the same glyph in both places — except `jobs`, which the focused
+    // rail relabels "Executions" with the `history` glyph (new ui §4) while the
+    // locked launcher image keeps the briefcase.
+    LAUNCHER.forEach((route) => {
+      expect(panel, `launcher row "${route}"`).toContain(`data-route="${route}"`);
+    });
+    NAV.filter((r) => r !== 'jobs').forEach((route) => {
       const inNav = nav.slice(nav.indexOf(`data-route="${route}"`)).slice(0, 200)
         .match(/data-icon="([a-z-]+)"/);
       const inPanel = panel.slice(panel.indexOf(`data-route="${route}"`)).slice(0, 220)
@@ -517,11 +536,10 @@ describe('Workspace / Home / Settings — style + i18n completeness', () => {
     expect(referenced.size).toBeGreaterThanOrEqual(40);
   });
 
-  it('every referenced key exists in BOTH dictionaries', () => {
+  it('every referenced key exists in the dictionary', () => {
     const missing: string[] = [];
     for (const k of referenced) {
       const needle = `'${k}':`;
-      if (!DICTS.fa.includes(needle)) missing.push(`fa: ${k}`);
       if (!DICTS.en.includes(needle)) missing.push(`en: ${k}`);
     }
     expect(missing, 'untranslated keys').toEqual([]);
@@ -583,7 +601,7 @@ describe('workspace rows: open by double-click, ⋮ menu is never clipped', () =
     expect(VIEWS).toMatch(/addEventListener\('resize', closeMenusOnMove\)/);
   });
 
-  it('the open hint exists in both languages', () => {
-    expect((readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8').match(/'ws\.openHint'/g) || []).length).toBe(2);
+  it('the open hint exists in the (English-only) dictionary', () => {
+    expect((readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8').match(/'ws\.openHint'/g) || []).length).toBe(1);
   });
 });

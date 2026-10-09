@@ -72,10 +72,10 @@ describe('export / import UI', () => {
 
 describe('i18n parity for this task', () => {
   const keys = (src: string) => Array.from(src.matchAll(/'((?:ex\.[A-Za-z]+)|ndv\.outRanEmpty)':/g)).map((m) => m[1]);
-  it('every ex.* / ndv.outRanEmpty key exists exactly once in fa and once in en', () => {
+  it('every ex.* / ndv.outRanEmpty key exists exactly once (English-only dictionary)', () => {
     const all = keys(I18N);
     const uniq = Array.from(new Set(all));
     expect(uniq.length).toBeGreaterThanOrEqual(15);
-    uniq.forEach((k) => expect(all.filter((x) => x === k), k).toHaveLength(2));
+    uniq.forEach((k) => expect(all.filter((x) => x === k), k).toHaveLength(1));
   });
 });

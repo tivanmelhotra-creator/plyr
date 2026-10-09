@@ -308,7 +308,7 @@ describe('wiring', () => {
     for (const k of ['wfm.edit', 'wfm.save', 'wfm.saved', 'wfm.unsavedClose', 'wfm.notText', 'wfm.loadingFolders']) {
       expect(keys.has(k), `${k} is asked for`).toBe(true);
     }
-    for (const k of keys) expect(i18n.split(`'${k}':`).length - 1, k).toBe(2);
+    for (const k of keys) expect(i18n.split(`'${k}':`).length - 1, k).toBe(1);
   });
 
   it('the notepad is styled, left-to-right, and hides the tree while a file is open', () => {

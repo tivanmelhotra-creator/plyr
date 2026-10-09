@@ -305,20 +305,12 @@ describe('canvas chrome — behaviour contracts', () => {
 });
 
 describe('canvas chrome — i18n and icon coverage', () => {
-  it('every chrome label exists in BOTH dictionaries (no key fallthrough)', () => {
+  it('every chrome label exists in the dictionary (no raw key on screen)', () => {
     const I18N = loadI18n();
     for (const k of CHROME_KEYS) {
-      I18N.setLang('en');
       const en = I18N.t(k);
-      I18N.setLang('fa');
-      const fa = I18N.t(k);
       expect(en, `en missing ${k}`).not.toBe(k);
-      expect(fa, `fa missing ${k}`).not.toBe(k);
-      // a fa value identical to en means the fa entry is missing and t() fell
-      // back to the en table
-      expect(fa, `fa fell back to en for ${k}`).not.toBe(en);
     }
-    I18N.setLang('en');
   });
 
   it('every icon the chrome asks for resolves to a real icon', () => {
@@ -543,7 +535,7 @@ describe('full-bleed editor route', () => {
     // `Fit` is a word in the column, and it uses the SHORT label — the tooltip
     // string ("Fit to screen") overflowed the 38px column.
     expect(block).toContain("esc(t('fe.fitShort'))");
-    expect(I18N_SRC.match(/'fe\.fitShort'/g) || []).toHaveLength(2);
+    expect(I18N_SRC.match(/'fe\.fitShort'/g) || []).toHaveLength(1); // English-only dictionary
     expect(CSS).toContain('.fe-mm-body {');
     expect(CSS).toContain('.fe-mm-zoom {');
   });

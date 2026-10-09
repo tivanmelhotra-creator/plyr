@@ -165,13 +165,14 @@ describe('panel', () => {
 });
 
 describe('i18n parity for the panel', () => {
-  it('every bo.* key exists in fa and en; every key the code uses is defined', () => {
+  it('every bo.* key the code uses is defined in the (English-only) dictionary', () => {
     const src = readFileSync(join(JS, 'i18n.js'), 'utf8');
-    const faStart = src.indexOf('    fa: {'); const enStart = src.indexOf('    en: {');
-    const fa = src.slice(faStart, enStart); const en = src.slice(enStart);
+    const enStart = src.indexOf('    en: {');
+    expect(enStart).toBeGreaterThan(-1);
+    const en = src.slice(enStart);
     const keys = (s: string) => new Set([...s.matchAll(/'(bo\.[A-Za-z.]+)':/g)].map((m) => m[1]));
-    const kf = keys(fa); const ke = keys(en);
-    expect([...kf].sort()).toEqual([...ke].sort());
+    const kf = keys(en);
+    expect(kf.size).toBeGreaterThan(10);
     const used = new Set<string>();
     const ui = readFileSync(join(JS, 'browser-options-ui.js'), 'utf8');
     for (const m of ui.matchAll(/t\('(bo\.[A-Za-z.]+)'\)/g)) used.add(m[1]);

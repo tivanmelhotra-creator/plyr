@@ -30,15 +30,20 @@ const I18N = read('public/js/i18n.js');
 // ─────────────────────────────────────────────────────────────────────────
 describe('the hamburger in the editor top bar', () => {
   const bar = VIEWS.slice(
-    VIEWS.indexOf("'<div class=\"fe-topbar\">'"),
+    VIEWS.indexOf("'<header class=\"fe-topbar\">'"),
     VIEWS.indexOf("'<div class=\"fe-layout\">'"),
   );
 
-  it('is emitted after the account avatar, inside the right-hand actions', () => {
+  // Focused top bar (docs/uiux/new ui.md §3): the hamburger is a VISIBLE
+  // control in the end section (Active · Save · Extract · hamburger), the
+  // outermost one. The avatar no longer sits in the visible bar; it is kept,
+  // inert, in the hidden legacy host so its listeners still find their ids.
+  it('is emitted in the visible end section, as its outermost control', () => {
     expect(bar).toContain('id="fe-files"');
-    const actions = bar.slice(bar.indexOf('class="fe-topbar-actions"'));
-    expect(actions.indexOf('id="fe-avatar"')).toBeGreaterThan(-1);
-    expect(actions.indexOf('id="fe-files"')).toBeGreaterThan(actions.indexOf('id="fe-acct-menu"'));
+    const end = bar.slice(bar.indexOf('class="fe-tb-end"'), bar.indexOf('class="fe-legacy-host"'));
+    expect(end.indexOf('id="fe-files"')).toBeGreaterThan(-1);
+    expect(end.indexOf('id="fe-files"')).toBeGreaterThan(end.indexOf('id="fe-extract"'));
+    expect(end.indexOf('id="fe-files"')).toBeGreaterThan(end.indexOf('id="fe-savenow"'));
   });
 
   it('does NOT replace the avatar: Language and Logout are reached through it', () => {
@@ -181,8 +186,8 @@ describe('WorkflowFiles.workflowId()', () => {
 
 // ─────────────────────────────────────────────────────────────────────────
 describe('wiring', () => {
-  it('both languages carry the "save first" sentence', () => {
-    expect(I18N.match(/'fe\.filesNeedSave':/g)).toHaveLength(2);
+  it('the dictionary carries the "save first" sentence', () => {
+    expect(I18N.match(/'fe\.filesNeedSave':/g)).toHaveLength(1);
   });
 
   it('docks the drawer to the layout, which is therefore positioned', () => {

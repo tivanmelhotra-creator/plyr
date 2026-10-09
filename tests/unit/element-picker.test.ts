@@ -118,15 +118,13 @@ describe('picker page script capabilities', () => {
 });
 
 describe('picker i18n + rule 0.9 labelling', () => {
-  it('every bvp.* key referenced by the modal exists in BOTH dictionaries', () => {
+  it('every bvp.* key referenced by the modal exists in the dictionary', () => {
     const used = Array.from(new Set(
       Array.from(browserView.matchAll(/t\('(bvp\.[a-zA-Z]+)'\)/g)).map((m) => m[1])
     ));
     expect(used.length).toBeGreaterThan(10);
-    const fa = i18n.slice(i18n.indexOf('\n    fa: {'), i18n.indexOf('\n    en: {'));
     const en = i18n.slice(i18n.indexOf('\n    en: {'));
     for (const key of used) {
-      expect(fa, `fa is missing ${key}`).toContain(`'${key}':`);
       expect(en, `en is missing ${key}`).toContain(`'${key}':`);
     }
   });
@@ -595,7 +593,7 @@ describe('picker: browse mode vs element-selection mode', () => {
     for (const key of ['bvp.selectOn', 'bvp.selectOff', 'bvp.inBrowse', 'bvp.inSelect',
       'bvp.kbdBrowse', 'bvp.back', 'bvp.forward', 'bvp.reload']) {
       const hits = i18n.split("'" + key + "'").length - 1;
-      expect(hits, `${key} must exist in fa AND en`).toBe(2);
+      expect(hits, `${key} must exist exactly once (English-only dictionary)`).toBe(1);
     }
   });
 });

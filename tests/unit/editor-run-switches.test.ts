@@ -15,12 +15,11 @@ const FE = readFileSync(join(PUB, 'js', 'flow-editor.js'), 'utf8');
 const I18N = readFileSync(join(PUB, 'js', 'i18n.js'), 'utf8');
 const PIPE = readFileSync(join(__dirname, '..', '..', 'src', 'pipeline.ts'), 'utf8');
 
-const faAt = I18N.indexOf('fa: {');
+// English-only dictionary (docs/uiux/new ui.md §2): one `en` block.
 const enAt = I18N.indexOf('en: {');
-const FA = I18N.slice(faAt, enAt);
 const EN = I18N.slice(enAt);
 const inBoth = (k: string) => {
-  expect(FA.includes(`'${k}':`), `fa missing ${k}`).toBe(true);
+  expect(enAt, 'en block').toBeGreaterThan(-1);
   expect(EN.includes(`'${k}':`), `en missing ${k}`).toBe(true);
 };
 
@@ -58,8 +57,11 @@ describe('editor header: Live browser switch', () => {
     expect(VIEWS).toContain('headless: !wantLiveBrowser()');
     expect(VIEWS).not.toMatch(/API\.runFlow\(\{ userId: uid, steps: steps, headless: true \}\)/);
   });
-  it('a saved workflow uses its server flag; a draft uses a session choice', () => {
-    expect(VIEWS).toMatch(/return cur \? cur\.liveBrowser === true : draftLive/);
+  // docs/uiux/new ui.md §9: `Execute Workflow` (a test run) is ALWAYS observed
+  // in the read-only Live view; only Active/background runs go hidden, and that
+  // decision is made server-side (tests/unit/background-headless.test.ts).
+  it('a test run is always observed live (new ui §9)', () => {
+    expect(VIEWS).toMatch(/function wantLiveBrowser\(\) \{[\s\S]{0,400}?return true;\s*\}/);
   });
   it('the pipeline prepares a display for a headed launch and never throws on failure', () => {
     expect(PIPE).toMatch(/if \(!headless\) \{\s*try \{\s*await Desktop\.ensureDisplay\(\)/);
@@ -82,7 +84,7 @@ describe('trigger nodes skipped in a manual run say so', () => {
   });
 });
 
-describe('i18n for the new controls (both languages)', () => {
+describe('i18n for the new controls', () => {
   it.each([
     'fe.activeLabel', 'fe.liveLabel', 'fe.activeOnHint', 'fe.activeOffHint', 'fe.needSaved', 'fe.liveHint',
     'ndv.trigNoteSchedule', 'ndv.trigNoteWebhook', 'ndv.trigNoteTelegram',

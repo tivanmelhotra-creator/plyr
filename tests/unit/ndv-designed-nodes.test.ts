@@ -499,12 +499,11 @@ describe('condition operators — Automa parity + grouped dropdown', () => {
     join(__dirname, '..', '..', 'public', 'js', 'i18n.js'), 'utf8');
 
   /** fa and en are separate objects in i18n.js; a key must appear in each. */
-  function dictSlices(): { fa: string; en: string } {
-    const faAt = I18N_SRC.indexOf('fa: {');
+  function dictSlices(): { en: string } {
+    // English-only dictionary (docs/uiux/new ui.md §2): one `en` block.
     const enAt = I18N_SRC.indexOf('en: {');
-    expect(faAt).toBeGreaterThan(-1);
-    expect(enAt).toBeGreaterThan(faAt);
-    return { fa: I18N_SRC.slice(faAt, enAt), en: I18N_SRC.slice(enAt) };
+    expect(enAt).toBeGreaterThan(-1);
+    return { en: I18N_SRC.slice(enAt) };
   }
 
   /**
@@ -559,7 +558,7 @@ describe('condition operators — Automa parity + grouped dropdown', () => {
     expect(grouped.groupedOperatorsForKind('content').length).toBeGreaterThan(3);
   });
 
-  it('translates every operator AND group label in both dictionaries', () => {
+  it('translates every operator AND group label in the dictionary', () => {
     const dicts = dictSlices();
     const keys = [
       ...NM.CONDITION_OPERATORS.map((o) => (o as unknown as { label: string }).label),
@@ -567,9 +566,7 @@ describe('condition operators — Automa parity + grouped dropdown', () => {
         .CONDITION_OPERATOR_GROUPS).map((g) => g.label),
       'opg.other', // the orphan-safety bucket must be translatable too
     ];
-    const missFa = [...new Set(keys)].filter((k) => !dicts.fa.includes(`'${k}':`));
     const missEn = [...new Set(keys)].filter((k) => !dicts.en.includes(`'${k}':`));
-    expect(missFa, `missing from fa: ${missFa.join(', ')}`).toEqual([]);
     expect(missEn, `missing from en: ${missEn.join(', ')}`).toEqual([]);
   });
 
@@ -670,7 +667,7 @@ describe('condition operators — Automa parity + grouped dropdown', () => {
     expect(NODES_SRC).toContain('m.groupedCheckKinds()');
   });
 
-  it('translates every kind, hint and group label in both dictionaries', () => {
+  it('translates every kind, hint and group label in the dictionary', () => {
     const dicts = dictSlices();
     const keys = [
       ...NM.CONDITION_KINDS.flatMap((k) => [k.label, k.hint]),
@@ -678,9 +675,7 @@ describe('condition operators — Automa parity + grouped dropdown', () => {
       'cvg.other',            // the orphan-safety bucket must be translatable too
       'cb.codeSnippet', 'cb.codeSnippetHelp', 'cb.codeContext',
     ];
-    const missFa = [...new Set(keys)].filter((k) => !dicts.fa.includes(`'${k}':`));
     const missEn = [...new Set(keys)].filter((k) => !dicts.en.includes(`'${k}':`));
-    expect(missFa, `missing from fa: ${missFa.join(', ')}`).toEqual([]);
     expect(missEn, `missing from en: ${missEn.join(', ')}`).toEqual([]);
   });
 
