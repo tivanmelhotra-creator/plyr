@@ -5,8 +5,13 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_COMPOSE_FILE="$ROOT_DIR/docker-compose.dev.yml"
+# `dev-docker --ref` re-runs a copy of the ref's own scripts (see
+# dev_docker_use_ref_files). That copy has no .git and no state, so the real
+# checkout stays the place for git commands and for remembered state.
+GIT_ROOT="${PLYR_GIT_ROOT:-$ROOT_DIR}"
+PLYR_HOME="${PLYR_HOME:-$ROOT_DIR/.plyr}"
 DEV_PROJECT=plyr-dev
-STATE_DIR="${PLYR_STATE_DIR:-$ROOT_DIR/.plyr/runtime}"
+STATE_DIR="${PLYR_STATE_DIR:-$PLYR_HOME/runtime}"
 LOG_DIR="$STATE_DIR/logs"
 ENV_FILE="${PLYR_ENV_FILE:-$ROOT_DIR/.env}"
 mkdir -p "$STATE_DIR" "$LOG_DIR"
@@ -415,7 +420,7 @@ install_dev_docker_engine() {
 dev_docker_registry_image() {
   if [[ -n "${PLYR_DEV_IMAGE_REPO:-}" ]]; then printf '%s' "$PLYR_DEV_IMAGE_REPO"; return 0; fi
   local url slug
-  url="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null || true)"
+  url="$(git -C "$GIT_ROOT" remote get-url origin 2>/dev/null || true)"
   slug="$(sed -E 's#^(https?://[^/]*github\.com/|git@github\.com:|ssh://git@github\.com/)##; s#\.git$##' <<<"$url")"
   [[ "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
   printf 'ghcr.io/%s' "$(tr '[:upper:]' '[:lower:]' <<<"$slug")"
@@ -426,13 +431,49 @@ dev_docker_resolve_ref() {
   local ref="$1" sha=''
   if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "$ref"; return 0; fi
   if [[ "$ref" =~ ^pr-([0-9]+)$ ]]; then
-    sha="$(git -C "$ROOT_DIR" ls-remote origin "refs/pull/${BASH_REMATCH[1]}/head" 2>/dev/null | awk 'NR==1{print $1}')"
+    sha="$(git -C "$GIT_ROOT" ls-remote origin "refs/pull/${BASH_REMATCH[1]}/head" 2>/dev/null | awk 'NR==1{print $1}')"
   else
-    sha="$(git -C "$ROOT_DIR" ls-remote origin "refs/heads/$ref" "refs/tags/$ref" 2>/dev/null | awk 'NR==1{print $1}')"
-    [[ -n "$sha" ]] || sha="$(git -C "$ROOT_DIR" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null || true)"
+    sha="$(git -C "$GIT_ROOT" ls-remote origin "refs/heads/$ref" "refs/tags/$ref" 2>/dev/null | awk 'NR==1{print $1}')"
+    [[ -n "$sha" ]] || sha="$(git -C "$GIT_ROOT" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null || true)"
   fi
   [[ -n "$sha" ]] || return 1
   printf '%s' "$sha"
+}
+
+# The image comes from <ref>, so the scripts and docker-compose.dev.yml that
+# start it must come from <ref> too. Running `--ref pr-N` from an older checkout
+# used to pair a new image with old compose settings, and the new server then
+# refused to boot. Nobody should have to `git fetch` / `git checkout` first:
+# fetch the ref into git's object store (the checked-out branch and the working
+# tree are not touched), unpack only what dev-docker needs into
+# .plyr/ref/<sha>/ and continue from that copy.
+dev_docker_use_ref_files() {
+  local ref="$1"; shift
+  [[ -z "${PLYR_REF_FILES:-}" ]] || return 0           # already running the ref's copy
+  have git && git -C "$GIT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local sha head spec dest p
+  sha="$(dev_docker_resolve_ref "$ref")" || { error "Cannot resolve '$ref' on origin (branch, tag, SHA or pr-N)"; return 1; }
+  head="$(git -C "$GIT_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  [[ "$sha" != "$head" ]] || return 0                  # the checkout already is the ref
+  if [[ "$ref" =~ ^pr-([0-9]+)$ ]]; then spec="refs/pull/${BASH_REMATCH[1]}/head"; else spec="$sha"; fi
+  dest="$PLYR_HOME/ref/${sha:0:12}"
+  if [[ ! -f "$dest/docker-compose.dev.yml" ]]; then
+    say "fetching ${ref} (${sha:0:7}) so its scripts match its image"
+    git -C "$GIT_ROOT" fetch -q origin "$spec" || { error "Could not fetch '$ref' from origin"; return 1; }
+    local -a paths=()
+    for p in scripts docker-compose.dev.yml plyr; do   # older refs may lack some of them
+      git -C "$GIT_ROOT" cat-file -e "$sha:$p" 2>/dev/null && paths+=("$p")
+    done
+    rm -rf "$dest.tmp"; mkdir -p "$dest.tmp"
+    git -C "$GIT_ROOT" archive --format=tar "$sha" "${paths[@]}" | tar -x -C "$dest.tmp" \
+      || { rm -rf "$dest.tmp"; error "Could not unpack '$ref' (${sha:0:7})"; return 1; }
+    [[ -f "$dest.tmp/docker-compose.dev.yml" && -f "$dest.tmp/scripts/plyr.sh" ]] \
+      || { rm -rf "$dest.tmp"; error "'$ref' has no dev-docker files"; return 1; }
+    rm -rf "$dest"; mv "$dest.tmp" "$dest"
+  fi
+  PLYR_REF_LABEL="$ref" PLYR_REF_FILES=1 PLYR_GIT_ROOT="$GIT_ROOT" PLYR_HOME="$PLYR_HOME" PLYR_STATE_DIR="$STATE_DIR" \
+    PLYR_DEV_IMAGE_REPO="${PLYR_DEV_IMAGE_REPO:-$(dev_docker_registry_image 2>/dev/null || true)}" \
+    exec bash "$dest/scripts/plyr.sh" dev-docker "$@" --ref "$sha"
 }
 
 # Returns 0 after tagging the published image as plyr-dev:local; 1 = use a local build.
@@ -446,11 +487,11 @@ dev_docker_pull_prebuilt() {
   if [[ -n "$ref" ]]; then
     sha="$(dev_docker_resolve_ref "$ref")" || { error "Cannot resolve '$ref' on origin (branch, tag, SHA or pr-N)"; return 1; }
   else
-    have git && git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || { info "no git checkout; building locally"; return 1; }
-    if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
+    have git && git -C "$GIT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || { info "no git checkout; building locally"; return 1; }
+    if [[ -n "$(git -C "$GIT_ROOT" status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
       info "working tree has uncommitted changes; building locally so the test uses them"; return 1
     fi
-    sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+    sha="$(git -C "$GIT_ROOT" rev-parse HEAD)"
   fi
   say "pulling the CI-built image for commit ${sha:0:7} ($repo:$sha)"
   local out
@@ -482,6 +523,7 @@ dev_docker_build_local() {
 }
 
 dev_docker() {
+  local -a orig_args=("$@")
   local source=auto ref='' fresh=0
   while (( $# )); do
     case "$1" in
@@ -494,6 +536,15 @@ dev_docker() {
     esac
     shift
   done
+  if [[ -n "$ref" ]]; then
+    # Re-run with the ref's own files; pass every option except --ref itself.
+    local -a pass=(); local skip=0 a
+    for a in "${orig_args[@]}"; do
+      if (( skip )); then skip=0; continue; fi
+      case "$a" in --ref) skip=1 ;; --ref=*) ;; *) pass+=("$a") ;; esac
+    done
+    dev_docker_use_ref_files "$ref" ${pass[@]+"${pass[@]}"} || return 1
+  fi
   [[ -f "$DEV_COMPOSE_FILE" ]] || fail "Missing docker-compose.dev.yml"
   have docker || install_dev_docker_engine || return 1
   local docker_cmd=(docker)
