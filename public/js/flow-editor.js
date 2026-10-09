@@ -1160,6 +1160,13 @@
     card.style.setProperty('--cat-color',
       node.color && isNodeColor(node.color) ? node.color : cat.color);
 
+    // Decorative chamfered inner frame (docs/uiux/new ui.png). Purely visual,
+    // first child so every real part of the card paints above it.
+    var frame = document.createElement('span');
+    frame.className = 'fn-frame';
+    frame.setAttribute('aria-hidden', 'true');
+    card.appendChild(frame);
+
     var header = document.createElement('div');
     header.className = 'flow-node-head';
     header.innerHTML = '<span class="fn-icon">' + icon + '</span>' +
