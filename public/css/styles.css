@@ -8495,8 +8495,13 @@ body.route-fullbleed .fe-minimap-wrap {
   opacity: 0.22;
   transition: opacity .45s ease;
 }
-.fe-minimap-wrap.is-awake { opacity: 0.92; transition-duration: .15s; }
-.fe-minimap-wrap:hover, .fe-minimap-wrap:focus-within { opacity: 1; transition-duration: .12s; }
+/* Same specificity as the resting rule above (it carries `body.route-fullbleed`),
+   or the resting opacity always wins and the wake is invisible. */
+.fe-minimap-wrap.is-awake,
+body.route-fullbleed .fe-minimap-wrap.is-awake { opacity: 0.92; transition-duration: .15s; }
+.fe-minimap-wrap:hover, .fe-minimap-wrap:focus-within,
+body.route-fullbleed .fe-minimap-wrap:hover,
+body.route-fullbleed .fe-minimap-wrap:focus-within { opacity: 1; transition-duration: .12s; }
 body.route-fullbleed .fe-minimap { height: 110px; }
 .fe-mm-head { display: none; }
 .fe-mm-zoom { display: none !important; }
