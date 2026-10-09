@@ -71,11 +71,25 @@ ask_text() {
 }
 
 # ---------- values ----------
+# Random 48-hex-character secret.
+# No `producer | head -c N` pipeline on purpose: under `set -Eeuo pipefail` the
+# producer can be killed by SIGPIPE (exit 141) when `head` closes early, which
+# fails the assignment and silently ends the whole script (seen on MSYS2/Git
+# Bash). Every command here reads a fixed amount and every failure is handled.
 wz_gen_token() {
-  local t
-  t="$( (openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n') | head -c 48)"
-  [[ ${#t} -ge 32 ]] || t="$(date +%s)${RANDOM}${RANDOM}${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
-  printf '%s' "$t"
+  local t=''
+  if command -v openssl >/dev/null 2>&1; then
+    t="$(openssl rand -hex 24 2>/dev/null)" || t=''
+    t="${t//[^0-9a-fA-F]/}"                      # drop CR/LF a Windows build may add
+  fi
+  if [[ ${#t} -lt 32 && -r /dev/urandom ]]; then
+    t="$(od -An -N24 -tx1 /dev/urandom 2>/dev/null | tr -d ' \r\n')" || t=''
+    t="${t//[^0-9a-fA-F]/}"
+  fi
+  if [[ ${#t} -lt 32 ]]; then
+    t="$(date +%s)${RANDOM}${RANDOM}${RANDOM}${RANDOM}${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
+  fi
+  printf '%s' "${t:0:48}"
 }
 
 wz_valid_token() {

@@ -20,6 +20,9 @@ fail() { failed "$@"; }
 ready() { printf '[plyr] READY: %s\n' "$*"; }
 not_ready() { printf '[plyr] NOT READY: %s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# Never die silently: `set -e` ends the script without a word, which looks like
+# "it just returned to the prompt". Say what failed and where.
+trap 'rc=$?; printf "[plyr] ERROR: unexpected failure (exit %s) at %s line %s: %s\n" "$rc" "${BASH_SOURCE[0]##*/}" "${LINENO}" "$BASH_COMMAND" >&2' ERR
 
 # Launch questions (numbered choices) for start/install/setup/dev-docker.
 # shellcheck source=scripts/setup-wizard.sh
@@ -55,7 +58,7 @@ ensure_env() {
     # start with it under APP_ENV=server/production. A freshly created .env gets
     # its own random token so the first `./plyr start` just works.
     local fresh_token
-    fresh_token="$( (openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n') | head -c 48)"
+    fresh_token="$(wz_gen_token)"
     if [[ -n "$fresh_token" ]]; then
       sed -i.bak "s|^API_TOKEN=admin123\r\{0,1\}$|API_TOKEN=${fresh_token}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
       say "generated a random API_TOKEN in $ENV_FILE (the panel login key)"

@@ -139,3 +139,41 @@ describe('./plyr dev-docker questions', () => {
   });
 });
 
+
+describe('wz_gen_token (Windows / Git Bash regressions)', () => {
+  const hasEnv = process.platform === 'linux';
+  /** Run `wz_gen_token` under `set -Eeuo pipefail` with SIGPIPE at its default, like a real terminal. */
+  function gen(pathPrefix: string, pathOnly = false): { status: number | null; out: string } {
+    const file = path.join(dir, 'gen.sh');
+    fs.writeFileSync(file, `set -Eeuo pipefail\nsource ${wizard}\nfor i in 1 2 3 4 5; do t="$(wz_gen_token)"; done\nprintf '%s' "$t"\n`);
+    const PATH = pathOnly ? pathPrefix : `${pathPrefix}:${process.env.PATH}`;
+    const r = spawnSync('env', ['--default-signal=PIPE', 'bash', file], { encoding: 'utf8', timeout: 20000, env: { ...process.env, PATH } });
+    return { status: r.status, out: r.stdout };
+  }
+
+  it.skipIf(!hasEnv)('survives a slow openssl that appends CRLF (native Windows build)', () => {
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'openssl'), '#!/usr/bin/env bash\nprintf %s 6f9c4b332369002ad9d156fd60f87c630a29bc5d148e4873; sleep 0.1; printf "\\r\\n"\n', { mode: 0o755 });
+    const r = gen(bin);
+    expect(r.status).toBe(0);
+    expect(r.out).toBe('6f9c4b332369002ad9d156fd60f87c630a29bc5d148e4873');
+  });
+
+  it.skipIf(!hasEnv)('still returns 48 hex characters when openssl does not exist', () => {
+    const bin = path.join(dir, 'bin2'); fs.mkdirSync(bin);
+    for (const c of ['bash', 'od', 'tr', 'date', 'sed', 'grep', 'cut', 'tail', 'awk', 'mv', 'chmod', 'mkdir', 'cat', 'printf', 'dirname', 'env']) {
+      const w = spawnSync('sh', ['-c', `command -v ${c}`], { encoding: 'utf8' }).stdout.trim();
+      if (w) fs.symlinkSync(w, path.join(bin, c));
+    }
+    const r = gen(bin, true);
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/^[0-9a-f]{48}$/);
+  });
+
+  it('plyr.sh reuses wz_gen_token instead of its own head-pipe, and reports unexpected failures', () => {
+    const manager = fs.readFileSync(path.join(root, 'scripts/plyr.sh'), 'utf8');
+    expect(manager).toContain('fresh_token="$(wz_gen_token)"');
+    expect(manager).not.toMatch(/\| head -c 48\)/);
+    expect(manager).toMatch(/trap .*ERR/);
+  });
+});
