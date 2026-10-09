@@ -17,11 +17,11 @@
     <div class="login-card">
       <div class="login-logo" data-icon="zap" data-icon-size="30"></div>
       <h1 class="login-title" data-i18n="app.title">Aria Automate</h1>
-      <p class="login-subtitle" data-i18n="login.subtitle">برای ورود کلید API خود را وارد کنید</p>
+      <p class="login-subtitle" data-i18n="login.subtitle">Enter your API key to sign in</p>
 
       <form id="login-form" autocomplete="off">
         <label class="field">
-          <span class="field-label" data-i18n="login.apiKey">کلید API</span>
+          <span class="field-label" data-i18n="login.apiKey">API Key</span>
           <div class="field-input-wrap">
             <input
               type="password"
@@ -38,18 +38,18 @@
 
         <label class="field checkbox-field">
           <input type="checkbox" id="remember-key" checked />
-          <span data-i18n="login.remember">مرا به خاطر بسپار</span>
+          <span data-i18n="login.remember">Remember me</span>
         </label>
 
         <div id="login-error" class="login-error" hidden></div>
 
         <button type="submit" id="login-btn" class="btn btn-primary btn-block">
-          <span data-i18n="login.submit">ورود</span>
+          <span data-i18n="login.submit">Sign in</span>
         </button>
       </form>
 
       <div class="login-footer">
-        <button type="button" class="link-btn" id="lang-toggle-login">English</button>
+        <button type="button" class="link-btn" id="lang-toggle-login" hidden>English</button>
       </div>
     </div>
   </div>
@@ -73,37 +73,38 @@
            `Schedules` and `Active Flow` are NOT places in the product: they are
            capabilities of one workflow and are reachable from a workflow row or
            from the editor. Do not re-add them here. -->
+      <!-- Focused rail (docs/uiux/new ui.md §4), top to bottom:
+             + New workflow · Home · Workspace · Executions … Settings (bottom).
+           `Dashboard` and `Admin` stay reachable as routes (Home links to the
+           dashboard; Settings to the admin panel) but are not rail entries. -->
       <nav class="sidebar-nav">
+        <button type="button" class="nav-item nav-new" id="nav-new-workflow" title="New workflow" aria-label="New workflow">
+          <span class="nav-icon" data-icon="plus" data-icon-size="18"></span>
+          <span class="nav-label" data-i18n="nav.newWorkflow">New workflow</span>
+        </button>
+        <span class="nav-sep" aria-hidden="true"></span>
         <a href="#/home" class="nav-item" data-route="home">
           <span class="nav-icon" data-icon="home"></span>
-          <span class="nav-label" data-i18n="nav.home">خانه</span>
+          <span class="nav-label" data-i18n="nav.home">Home</span>
         </a>
         <a href="#/workspace" class="nav-item" data-route="workspace">
           <span class="nav-icon" data-icon="grid"></span>
-          <span class="nav-label" data-i18n="nav.workspace">فضای کاری</span>
-        </a>
-        <a href="#/dashboard" class="nav-item" data-route="dashboard">
-          <span class="nav-icon" data-icon="bar-chart"></span>
-          <span class="nav-label" data-i18n="nav.dashboard">داشبورد</span>
+          <span class="nav-label" data-i18n="nav.workspace">Workspace</span>
         </a>
         <a href="#/jobs" class="nav-item" data-route="jobs">
-          <span class="nav-icon" data-icon="briefcase"></span>
-          <span class="nav-label" data-i18n="nav.jobs">جاب‌ها</span>
+          <span class="nav-icon" data-icon="history"></span>
+          <span class="nav-label" data-i18n="nav.executions">Executions</span>
         </a>
-        <a href="#/admin" class="nav-item" data-route="admin">
-          <span class="nav-icon" data-icon="shield-check"></span>
-          <span class="nav-label" data-i18n="nav.admin">پنل ادمین</span>
-        </a>
-        <a href="#/settings" class="nav-item" data-route="settings">
+        <a href="#/settings" class="nav-item nav-bottom" data-route="settings">
           <span class="nav-icon" data-icon="settings"></span>
-          <span class="nav-label" data-i18n="nav.settings">تنظیمات</span>
+          <span class="nav-label" data-i18n="nav.settings">Settings</span>
         </a>
       </nav>
 
       <div class="sidebar-footer">
         <div class="sys-indicator" id="sys-indicator">
           <span class="dot" id="sys-dot"></span>
-          <span id="sys-text" data-i18n="status.checking">در حال بررسی…</span>
+          <span id="sys-text" data-i18n="status.checking">Checking…</span>
         </div>
       </div>
     </aside>
@@ -139,32 +140,32 @@
                  Each route uses the SAME glyph as its sidebar entry. -->
             <button class="launcher-item" type="button" role="menuitem" data-route="home">
               <span class="launcher-item-icon" data-icon="home" data-icon-size="20"></span>
-              <span data-i18n="nav.home">خانه</span>
+              <span data-i18n="nav.home">Home</span>
             </button>
             <button class="launcher-item" type="button" role="menuitem" data-route="workspace">
               <span class="launcher-item-icon" data-icon="grid" data-icon-size="20"></span>
-              <span data-i18n="nav.workspace">فضای کاری</span>
+              <span data-i18n="nav.workspace">Workspace</span>
             </button>
             <button class="launcher-item" type="button" role="menuitem" data-route="dashboard">
               <span class="launcher-item-icon" data-icon="bar-chart" data-icon-size="20"></span>
-              <span data-i18n="nav.dashboard">داشبورد</span>
+              <span data-i18n="nav.dashboard">Dashboard</span>
             </button>
             <button class="launcher-item" type="button" role="menuitem" data-route="jobs">
               <span class="launcher-item-icon" data-icon="briefcase" data-icon-size="20"></span>
-              <span data-i18n="nav.jobs">جاب‌ها</span>
+              <span data-i18n="nav.jobs">Jobs</span>
             </button>
             <button class="launcher-item" type="button" role="menuitem" data-route="admin">
               <span class="launcher-item-icon" data-icon="shield-check" data-icon-size="20"></span>
-              <span data-i18n="nav.admin">پنل ادمین</span>
+              <span data-i18n="nav.admin">Admin</span>
             </button>
             <button class="launcher-item" type="button" role="menuitem" data-route="settings">
               <span class="launcher-item-icon" data-icon="settings" data-icon-size="20"></span>
-              <span data-i18n="nav.settings">تنظیمات</span>
+              <span data-i18n="nav.settings">Settings</span>
             </button>
           </div>
         </div>
 
-        <h2 class="page-title" id="page-title" data-i18n="nav.workspace">فضای کاری</h2>
+        <h2 class="page-title" id="page-title" data-i18n="nav.workspace">Workspace</h2>
         <div class="topbar-actions">
           <!-- Dual Browser Mode switch (Remote / Local).
                Lives in the SHELL header, not in the editor: the mode decides
@@ -188,7 +189,7 @@
               <span class="bmode-label" id="bmode-label">—</span>
             </button>
             <div class="bmode-menu" id="bmode-menu" role="dialog" aria-label="Browser mode" hidden>
-              <div class="bmode-title" data-i18n="mode.title">حالت مرورگر</div>
+              <div class="bmode-title" data-i18n="mode.title">Browser mode</div>
               <!-- Radios, matching the spec's "○ Remote Browser / ○ Local
                    Browser". Rendered by app.js from the server's own registry,
                    so a mode the server does not offer cannot appear here. -->
@@ -197,9 +198,9 @@
               <div class="bmode-agent" id="bmode-agent" hidden></div>
             </div>
           </div>
-          <button class="icon-btn" id="lang-toggle" title="Language" data-icon="globe"></button>
-          <button class="icon-btn" id="theme-toggle" title="Theme" data-icon="sparkles"></button>
-          <button class="btn btn-ghost btn-sm" id="logout-btn" data-i18n="nav.logout">خروج</button>
+          <button class="icon-btn" id="lang-toggle" title="Language" data-icon="globe" hidden></button>
+          <button class="icon-btn" id="theme-toggle" title="Theme" data-icon="sparkles" hidden></button>
+          <button class="btn btn-ghost btn-sm" id="logout-btn" data-i18n="nav.logout">Logout</button>
         </div>
       </header>
 

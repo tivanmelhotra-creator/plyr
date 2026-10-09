@@ -819,6 +819,11 @@
 
     el.logoutBtn.addEventListener('click', doLogout);
     el.langToggle.addEventListener('click', function () { I18N.toggle(); });
+    // Rail `+`: create + persist a workflow now, then open it (views.js).
+    var newWfBtn = document.getElementById('nav-new-workflow');
+    if (newWfBtn) newWfBtn.addEventListener('click', function () {
+      if (window.Views && window.Views.createWorkflow) window.Views.createWorkflow();
+    });
     el.themeToggle.addEventListener('click', toggleTheme);
     el.menuToggle.addEventListener('click', toggleSidebar);
     bindLauncher();
@@ -857,6 +862,9 @@
     // to be able to end the session. Exposed rather than re-implemented: two
     // logout paths would drift (one clearing `ab_session_only`, one not).
     logout: doLogout,
+    // Re-render the current route in place (used when the editor must open a
+    // different workflow while it is already on screen).
+    rerender: function () { handleRoute(); },
   };
 
   // ---------------------------------------------

@@ -772,11 +772,7 @@
 
     root.querySelector('#wf-templates').addEventListener('click', renderTemplates);
     root.querySelector('#wf-refresh').addEventListener('click', load);
-    root.querySelector('#wf-new').addEventListener('click', function () {
-      if (window.FlowEditor) window.FlowEditor.newWorkflow();
-      pendingWorkflowToOpen = null;
-      location.hash = '#/editor';
-    });
+    root.querySelector('#wf-new').addEventListener('click', function () { createAndOpenWorkflow(); });
     load();
   }
 
@@ -3753,11 +3749,7 @@
       ev.currentTarget.setAttribute('aria-pressed', wsState.compact ? 'true' : 'false');
       if (wsState.tab === 'workflows') paintWorkflowsTab();
     });
-    root.querySelector('#ws-new').addEventListener('click', function () {
-      if (window.FlowEditor) window.FlowEditor.newWorkflow();
-      pendingWorkflowToOpen = null;
-      location.hash = '#/editor';
-    });
+    root.querySelector('#ws-new').addEventListener('click', function () { createAndOpenWorkflow(); });
     var caret = root.querySelector('#ws-new-caret');
     var caretMenu = root.querySelector('#ws-new-menu');
     caret.addEventListener('click', function (ev) {
@@ -3904,5 +3896,42 @@
     }
   }
 
-  window.Views = { render: render, stopAll: stopAll, addStep: addStep };
+  /**
+   * NEW WORKFLOW — the one creation path (rail `+`, Workspace `New Workflow`,
+   * the legacy library button). docs/uiux/new ui.md §4: the workflow is
+   * PERSISTED immediately, empty or not — POST /workflows creates the record,
+   * assigns the id and provisions its file workspace in the same request — so
+   * the hamburger (Workflow Files) and the Workspace list work before the
+   * first node exists. It then opens in the editor.
+   */
+  var creatingWorkflow = false;
+  function untitledName() {
+    var d = new Date();
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return 'Untitled workflow ' + d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +
+      ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+  function createAndOpenWorkflow() {
+    if (creatingWorkflow) return Promise.resolve(null);
+    var uid = effectiveUserId();
+    if (!uid || !API.createWorkflow) { location.hash = '#/editor'; return Promise.resolve(null); }
+    creatingWorkflow = true;
+    return API.createWorkflow(uid, { name: untitledName(), steps: [] })
+      .then(function (data) {
+        var wf = data && data.workflow ? data.workflow : data;
+        if (!wf || !wf.id) throw new Error(t('ws.newFailed'));
+        pendingWorkflowToOpen = wf;
+        // Re-render even when the editor is already on screen.
+        if (location.hash.replace(/\?.*$/, '') === '#/editor' && U().rerender) U().rerender();
+        else location.hash = '#/editor';
+        return wf;
+      })
+      .catch(function (err) {
+        U().toast((err && err.message) || t('ws.newFailed'), 'error');
+        return null;
+      })
+      .then(function (wf) { creatingWorkflow = false; return wf; });
+  }
+
+  window.Views = { render: render, stopAll: stopAll, addStep: addStep, createWorkflow: createAndOpenWorkflow };
 })();
