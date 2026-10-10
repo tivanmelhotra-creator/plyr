@@ -50,11 +50,14 @@ const I18N_SRC = readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8');
  *   and through the launcher, but are not rail entries any more.
  */
 const NAV = ['workspace', 'settings'];
-/** Every product area the App Launcher lists (unchanged by the rail redesign). */
-const LAUNCHER = ['workspace', 'admin', 'settings'];
+/**
+ * Every product area the App Launcher lists. Single-user product: there is no
+ * Admin area (the owner holds the API token and IS the admin).
+ */
+const LAUNCHER = ['workspace', 'settings'];
 
 /** Retired from the chrome — they are per-workflow capabilities now. */
-const RETIRED = ['live', 'browser', 'schedules', 'run', 'workflows', 'editor', 'quota'];
+const RETIRED = ['live', 'browser', 'schedules', 'run', 'workflows', 'editor', 'quota', 'admin'];
 
 /** Load the icon registry in a DOM-free sandbox (icons.js guards on `document`). */
 function loadIcons(): any {
@@ -292,7 +295,7 @@ describe('brand — the shell has a single product name', () => {
 
 describe('router — the six areas plus addressable deep routes', () => {
   it('declares the nav routes explicitly (Home is no longer one of them)', () => {
-    expect(APP).toMatch(/var NAV_ROUTES = \['home', 'workspace', 'admin', 'settings'\]/);
+    expect(APP).toMatch(/var NAV_ROUTES = \['home', 'workspace', 'settings'\]/);
     // Home stays a routable screen (#/home) but has no sidebar or launcher entry.
     expect(APP).toContain("if (route === 'home')");
   });
@@ -300,9 +303,12 @@ describe('router — the six areas plus addressable deep routes', () => {
   it('keeps the retired screens reachable rather than deleting them', () => {
     // Removing a nav ENTRY must not remove a working feature: the views are
     // still routable, they are just opened from a workflow instead.
-    for (const r of ['workflows', 'editor', 'live', 'browser', 'schedules', 'quota']) {
+    for (const r of ['workflows', 'editor', 'live', 'browser', 'schedules']) {
       expect(APP, `deep route "${r}"`).toContain(`'${r}'`);
     }
+    // Quota / Admin belonged to the multi-user product. Their old hashes are
+    // aliases of Settings, never a dead end.
+    expect(APP).toMatch(/quota: 'settings', admin: 'settings'/);
   });
 
   it('a workflow route does NOT light up Workspace; Settings-owned routes still light Settings', () => {
@@ -310,7 +316,7 @@ describe('router — the six areas plus addressable deep routes', () => {
     // Inside a workflow the Workspace item must not be active.
     expect(APP).not.toMatch(/editor:\s*'workspace'/);
     expect(APP).not.toMatch(/run:\s*'workspace'/);
-    expect(APP).toMatch(/quota:\s*'settings'/);
+    expect(APP).toMatch(/var ROUTE_PARENT = \{\};/);
     expect(APP).toContain("var area = ROUTE_PARENT[route] || route;");
   });
 
@@ -581,7 +587,7 @@ describe('Workspace / Home / Settings — style + i18n completeness', () => {
     // Duplicating operational data on a landing page is how landing pages rot.
     const tiles = APP.slice(APP.indexOf('var HOME_TILES'), APP.indexOf('function renderHome'));
     const routes = [...tiles.matchAll(/route: '(\w+)'/g)].map((m) => m[1]);
-    expect(routes).toEqual(['workspace', 'jobs', 'admin', 'settings']);
+    expect(routes).toEqual(['workspace', 'jobs', 'settings']);
   });
 });
 

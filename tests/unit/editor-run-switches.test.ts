@@ -28,7 +28,11 @@ describe('editor header: Active switch', () => {
     expect(VIEWS).toContain('id="fe-active"');
     expect(VIEWS).toMatch(/id="fe-active" role="switch"/);
     expect(VIEWS).toMatch(/API\.setWorkflowState\(uid, cur\.id, patch\)/);
-    expect(VIEWS).toMatch(/flipState\(\{ active: !\(cur\.active !== false\) \}\)/);
+    // Activating first flushes the pending autosave, so the server validates
+    // (and test-gates) exactly the design on the canvas.
+    expect(VIEWS).toMatch(/var turnOn = !\(cur\.active !== false\);/);
+    expect(VIEWS).toMatch(/turnOn && FE\.autosaveNow \? FE\.autosaveNow\(\)/);
+    expect(VIEWS).toMatch(/flipState\(\{ active: turnOn \}\)/);
   });
   it('is disabled with a reason for an unsaved draft (no record to flip)', () => {
     expect(VIEWS).toMatch(/paintSwitch\(activeBtn, cur \? cur\.active !== false : false, !cur \|\| busy/);

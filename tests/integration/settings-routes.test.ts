@@ -83,10 +83,18 @@ describe('GET /settings', () => {
 
 describe('PUT /settings', () => {
   it('rejects the whole change set when any value is invalid', async () => {
-    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { STEP_TIMEOUT_MS: '60000', WORKFLOW_MAX_VERSIONS: '7' } });
+    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { STEP_TIMEOUT_MS: '60000', MAX_CONCURRENT: '7' } });
     expect(r.status).toBe(400);
-    expect(r.body.errors.WORKFLOW_MAX_VERSIONS.errorFa).toBeTruthy();
+    expect(r.body.errors.MAX_CONCURRENT.errorFa).toBeTruthy();
     expect(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '').not.toContain('STEP_TIMEOUT_MS');
+  });
+
+  it('no longer offers the dead "versions kept" limit (manual versions are never trimmed)', async () => {
+    const g = await request(app).get('/settings').set(LOCAL);
+    expect(g.body.settings.map((x: { key: string }) => x.key)).not.toContain('WORKFLOW_MAX_VERSIONS');
+    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { WORKFLOW_MAX_VERSIONS: '20' } });
+    expect(r.status).toBe(400);
+    expect(r.body.errors.WORKFLOW_MAX_VERSIONS.error).toBe('Unknown setting');
   });
 
   it('applies and persists valid choices, telling which need a restart', async () => {

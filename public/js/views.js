@@ -1,6 +1,5 @@
 /* ============================================
-   Views — Run / Jobs / Job detail / Quota / Schedules / Admin.
-   Step 8: build/run/monitor jobs + quota + schedules + admin.
+   Views — Workspace / Editor / Jobs / Schedules / Settings host.
    Exposes window.Views.{ render, stopAll }.
    ============================================ */
 (function () {
