@@ -51,7 +51,7 @@ const I18N_SRC = readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8');
  */
 const NAV = ['home', 'workspace', 'settings'];
 /** Every product area the App Launcher lists (unchanged by the rail redesign). */
-const LAUNCHER = ['home', 'workspace', 'dashboard', 'admin', 'settings'];
+const LAUNCHER = ['home', 'workspace', 'admin', 'settings'];
 
 /** Retired from the chrome — they are per-workflow capabilities now. */
 const RETIRED = ['live', 'browser', 'schedules', 'run', 'workflows', 'editor', 'quota'];
@@ -292,7 +292,7 @@ describe('brand — the shell has a single product name', () => {
 
 describe('router — the six areas plus addressable deep routes', () => {
   it('declares the six nav routes explicitly', () => {
-    expect(APP).toMatch(/var NAV_ROUTES = \['home', 'workspace', 'dashboard', 'admin', 'settings'\]/);
+    expect(APP).toMatch(/var NAV_ROUTES = \['home', 'workspace', 'admin', 'settings'\]/);
   });
 
   it('keeps the retired screens reachable rather than deleting them', () => {
@@ -579,7 +579,7 @@ describe('Workspace / Home / Settings — style + i18n completeness', () => {
     // Duplicating operational data on a landing page is how landing pages rot.
     const tiles = APP.slice(APP.indexOf('var HOME_TILES'), APP.indexOf('function renderHome'));
     const routes = [...tiles.matchAll(/route: '(\w+)'/g)].map((m) => m[1]);
-    expect(routes).toEqual(['workspace', 'dashboard', 'jobs', 'admin', 'settings']);
+    expect(routes).toEqual(['workspace', 'jobs', 'admin', 'settings']);
   });
 });
 

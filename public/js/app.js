@@ -273,7 +273,7 @@
   // ---------------------------------------------
   // The six product areas — and ONLY these six — appear in the sidebar and in
   // the App Launcher (docs/uiux/workspace-overview.md § 3A).
-  var NAV_ROUTES = ['home', 'workspace', 'dashboard', 'admin', 'settings'];
+  var NAV_ROUTES = ['home', 'workspace', 'admin', 'settings'];
 
   /**
    * Deep routes: still addressable, but deliberately absent from the chrome.
@@ -410,7 +410,6 @@
    */
   var HOME_TILES = [
     { route: 'workspace', icon: 'layout', title: 'nav.workspace', desc: 'home.workspaceDesc' },
-    { route: 'dashboard', icon: 'bar-chart', title: 'nav.dashboard', desc: 'home.dashboardDesc' },
     { route: 'jobs', icon: 'layers', title: 'nav.jobs', desc: 'home.jobsDesc' },
     { route: 'admin', icon: 'shield', title: 'nav.admin', desc: 'home.adminDesc' },
     { route: 'settings', icon: 'settings', title: 'nav.settings', desc: 'home.settingsDesc' },

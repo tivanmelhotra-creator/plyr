@@ -4406,6 +4406,18 @@
         renderNodes();
         return;
       }
+      // Select tool (default): a background drag draws a box selection. Pan tool:
+      // the same drag moves the view. Shift box-selects in both tools (above).
+      if (canvasTool !== 'pan') {
+        var bwp = worldPoint(ev.clientX, ev.clientY);
+        drag = { type: 'box', x0: bwp.x, y0: bwp.y, x1: bwp.x, y1: bwp.y };
+        state.selSet = {};
+        state.selected = null;
+        renderInspector();
+        renderNodes();
+        renderBoxSelect();
+        return;
+      }
       drag = { type: 'pan', startX: ev.clientX, startY: ev.clientY,
         ox: state.view.x, oy: state.view.y };
       state.selected = null;
@@ -4523,6 +4535,8 @@
     // zoom with wheel
     on(dom.canvas, 'wheel', function (ev) {
       ev.preventDefault();
+      // Canvas lock freezes the view: the wheel must not zoom either.
+      if (canvasLocked) return;
       var v = state.view;
       var delta = ev.deltaY < 0 ? 1.1 : 0.9;
       var newScale = Math.min(2, Math.max(0.4, v.scale * delta));

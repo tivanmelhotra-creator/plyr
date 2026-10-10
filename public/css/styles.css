@@ -8829,3 +8829,36 @@ body.route-fullbleed .fe-statusbar { grid-area: extra; }
   body.route-fullbleed .fe-shell .fe-layout { grid-template-columns: 0 1fr; height: auto; }
   body.route-fullbleed .fe-canvas { height: auto; }
 }
+
+/* Versions panel (top bar History button). Dark, anchored under the button. */
+.fe-versions-panel {
+  z-index: 1000; width: 340px; max-height: 420px; display: flex; flex-direction: column;
+  padding: 12px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px;
+  background: #1A1B20; color: #D9DDE4; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  font: 500 12px/1.4 var(--font);
+}
+.fe-versions-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.fe-versions-head strong { font-size: 13px; color: #F1F3F6; }
+.fe-versions-save {
+  height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid rgba(255, 138, 31, 0.5); background: rgba(255, 138, 31, 0.12);
+  color: var(--primary); font: 600 12px/1 var(--font);
+}
+.fe-versions-save:hover { background: rgba(255, 138, 31, 0.2); }
+.fe-versions-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+.fe-version-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 4px; border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.fe-version-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fe-version-meta strong { color: #F1F3F6; }
+.fe-version-what, .fe-version-when { color: #8E95A1; font-size: 11px; }
+.fe-version-row.is-manual .fe-version-what { color: var(--primary); }
+.fe-version-restore {
+  flex: none; height: 26px; padding: 0 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12); background: #222328;
+  color: #D9DDE4; font: 600 11.5px/1 var(--font);
+}
+.fe-version-restore:hover:not(:disabled) { background: #2A2B31; }
+.fe-version-restore:disabled { opacity: .5; cursor: default; }
+.fe-versions-empty, .fe-versions-loading { list-style: none; color: #8E95A1; padding: 8px 4px; margin: 0; }
