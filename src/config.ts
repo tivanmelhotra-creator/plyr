@@ -36,81 +36,30 @@ const profiled = (name: string): string | undefined =>
   profiledEnv(name, process.env, ACTIVE_PROFILE.id);
 
 // ============================================
-// Plan Configuration Interface
+// Instance limits
 // ============================================
+// What used to be a per-user "plan" (quota, priority, level) is now one fixed
+// set of sanity limits for the instance. There is no quota and no tiering: the
+// owner runs their own server. The shape is kept (`PlanConfig`) because
+// validateSteps() and the pipeline already take it as their limit object.
 export interface PlanConfig {
+  /** Unused (always 0 = unlimited); kept so older callers type-check. */
   quota: number;
   maxTabs: number;
   maxSteps: number;
+  /** BullMQ priority for every job. One owner, so one priority. */
   priority: number;
-  maxSchedules: number;  // ✅ اضافه شد
-  runLimit: number;      // ✅ اضافه شد (0 = unlimited)
+  maxSchedules: number;
+  /** 0 = unlimited. */
+  runLimit: number;
 }
 
-// ============================================
-// Parse Plans from Environment
-// ============================================
-const parsePlans = (): Record<string, PlanConfig> => {
-  const defaultPlans: Record<string, PlanConfig> = {
-    "0": { quota: 5, maxTabs: 1, maxSteps: 5, priority: 100, maxSchedules: 2, runLimit: 100 },
-    "1": { quota: 15, maxTabs: 3, maxSteps: 20, priority: 50, maxSchedules: 5, runLimit: 500 },
-    "2": { quota: 60, maxTabs: 10, maxSteps: 100, priority: 10, maxSchedules: 20, runLimit: 0 },
-    "3": { quota: 0, maxTabs: 20, maxSteps: 500, priority: 1, maxSchedules: 100, runLimit: 0 }
-  };
-  
-  try {
-    const raw = cleanEnv(process.env.USER_PLANS);
-    if (!raw) return defaultPlans;
-    
-    const parsed = JSON.parse(raw);
-    
-    // Merge with defaults to ensure all fields exist
-    const result: Record<string, PlanConfig> = {};
-    for (const [level, plan] of Object.entries(parsed)) {
-      const basePlan = defaultPlans[level] || defaultPlans["0"];
-      result[level] = {
-        quota: (plan as any).quota ?? basePlan.quota,
-        maxTabs: (plan as any).maxTabs ?? basePlan.maxTabs,
-        maxSteps: (plan as any).maxSteps ?? basePlan.maxSteps,
-        priority: (plan as any).priority ?? basePlan.priority,
-        maxSchedules: (plan as any).maxSchedules ?? basePlan.maxSchedules,
-        runLimit: (plan as any).runLimit ?? basePlan.runLimit,
-      };
-    }
-    
-    // Ensure all default levels exist
-    for (const [level, plan] of Object.entries(defaultPlans)) {
-      if (!result[level]) {
-        result[level] = plan;
-      }
-    }
-    
-    return result;
-  } catch (e) {
-    console.warn('[CONFIG] Failed to parse USER_PLANS, using defaults');
-    return defaultPlans;
-  }
-};
-
-const parseApiKeys = (): Set<string> => {
-  const raw = cleanEnv(process.env.API_KEYS) || '';
-  const keys = raw
-    .split(',')
-    .map(k => k.trim())
-    .filter(k => k.length > 0);
-  return new Set(keys);
-};
-
-// ============================================
-// [H — Step 18] Deployment mode (single self-hosted vs multi-tenant).
-// 'single' (default): full-access single user, Quota/VIP/Plan/Level disabled,
-// authenticated by one shared API_TOKEN. 'multi': original SaaS behaviour.
-// ============================================
-const resolveDeploymentMode = (): 'single' | 'multi' => {
-  const raw = (cleanEnv(process.env.DEPLOYMENT_MODE) || 'single').toLowerCase();
-  return raw === 'multi' ? 'multi' : 'single';
-};
-const DEPLOYMENT_MODE = resolveDeploymentMode();
+// ONE INSTALL = ONE OWNER. The multi-tenant mode (plans, quotas, admin API,
+// per-user API keys) was removed: this product is self-hosted and every
+// install belongs to the person who runs it. `DEPLOYMENT_MODE=multi` in an old
+// .env is ignored with a boot warning instead of silently changing behaviour.
+const REQUESTED_DEPLOYMENT_MODE = (cleanEnv(process.env.DEPLOYMENT_MODE) || 'single').toLowerCase();
+const DEPLOYMENT_MODE = 'single' as const;
 
 // In single mode we accept one shared token.
 //
@@ -148,9 +97,9 @@ const rawNow = (key: string): string | undefined => {
 // process.env is snapshotted for these so a later `delete process.env.X` (tests,
 // tools) cannot silently change a running server — only a panel save can.
 const BOOT_RAW: Record<string, string | undefined> = {};
-for (const k of ['API_TOKEN', 'AUTH_MODE', 'PUBLIC_DOMAIN', 'BASE_URL', 'WEBHOOK_SECRET', 'LIVE_SHARE_SECRET',
-  'LIVE_SHARE_TTL_SEC', 'CODE_NODE_ENABLED', 'DEFAULT_HEADLESS', 'STEP_TIMEOUT_MS', 'DOWNLOAD_TTL_MINUTES',
-  'WORKFLOW_MAX_VERSIONS', 'ALLOW_OPEN_AUTH']) BOOT_RAW[k] = process.env[k];
+for (const k of ['API_TOKEN', 'PUBLIC_DOMAIN', 'BASE_URL', 'WEBHOOK_SECRET', 'LIVE_SHARE_SECRET',
+  'LIVE_SHARE_TTL_SEC', 'CODE_NODE_ENABLED', 'STEP_TIMEOUT_MS', 'DOWNLOAD_TTL_MINUTES',
+  'WORKFLOW_MAX_VERSIONS', 'EXECUTION_RETENTION_DAYS', 'ALLOW_OPEN_AUTH']) BOOT_RAW[k] = process.env[k];
 const cur = (key: string): string | undefined =>
   liveRaw(key) === undefined ? cleanEnv(BOOT_RAW[key]) : rawNow(key);
 /**
@@ -172,30 +121,27 @@ const intNow = (key: string, dflt: number, min = 0): number => {
 };
 
 /**
- * AUTH_MODE=open — no login screen; the panel signs itself in.
+ * KEYLESS LOCAL ACCESS — the development security model.
  *
- * Only honoured where nobody else can reach the panel by design: a development
- * profile, or a stack that opts in explicitly with ALLOW_OPEN_AUTH=true (only
- * docker-compose.dev.yml, which binds 127.0.0.1). Anywhere else the request is
- * ignored with a startup warning and the token is required — a setting must
- * never be able to open a server to the internet by accident.
+ * Not a setting: it follows the environment. In `development` a request that
+ * reaches the server straight from THIS machine (loopback socket) is the owner
+ * and needs no token. Every other request — another device on the LAN, and
+ * EVERY request in `production` — must present the access token.
+ * ALLOW_OPEN_AUTH=true (set only by docker-compose.dev.yml, which publishes
+ * 127.0.0.1:3000 only) extends the keyless rule to the container's bridge peer;
+ * it is ignored outside development.
  */
-const authOpenAllowed = (): boolean =>
-  DEPLOYMENT_MODE === 'single'
-  && (ACTIVE_PROFILE.id === 'development' || ACTIVE_PROFILE.id === 'test'
-    || (cleanEnv(BOOT_RAW.ALLOW_OPEN_AUTH) || '').toLowerCase() === 'true');
-const authModeRequested = (): 'open' | 'token' =>
-  (cur('AUTH_MODE') || 'token').toLowerCase() === 'open' ? 'open' : 'token';
+const keylessLocalAccess = (): boolean => ACTIVE_PROFILE.id === 'development';
 // Kept for the boot message and for anything that wants to nag the operator.
 // Renamed in spirit, not in name: it is still "the operator did not choose this
 // token", it just no longer means "and it is therefore unguessable".
 const API_TOKEN_AUTO_GENERATED = DEPLOYMENT_MODE === 'single' && !cleanEnv(process.env.API_TOKEN);
 const API_TOKEN_IS_DEFAULT = API_TOKEN === DEFAULT_SINGLE_USER_API_TOKEN;
 
-// Full-access plan used for every request in single mode (quota 0 = unlimited).
-const FULL_ACCESS_PLAN: PlanConfig = {
+// The one set of limits every run of this instance is checked against.
+const INSTANCE_LIMITS: PlanConfig = Object.freeze({
   quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0,
-};
+});
 
 // Read the real package version once at startup so /health, the admin
 // stats endpoint, the boot banner and outbound User-Agent headers all report
@@ -237,15 +183,17 @@ export const config = {
   set API_TOKEN(v: string) { assigned.set('API_TOKEN', v); },
   API_TOKEN_AUTO_GENERATED,
   get API_TOKEN_IS_DEFAULT(): boolean { return tokenNow() === DEFAULT_SINGLE_USER_API_TOKEN; },
-  /** What the operator asked for (Settings page / .env AUTH_MODE). */
-  get AUTH_MODE_REQUESTED(): 'open' | 'token' { return authModeRequested(); },
-  /** May this instance run without a login at all? */
-  get AUTH_OPEN_ALLOWED(): boolean { return authOpenAllowed(); },
-  /** In force: no login screen, requests without a key are the owner. */
-  get AUTH_OPEN(): boolean { return authModeRequested() === 'open' && authOpenAllowed(); },
+  /** `DEPLOYMENT_MODE` as written in the environment (only for the boot warning). */
+  REQUESTED_DEPLOYMENT_MODE,
+  /**
+   * Development: requests from this machine need no token (keylessLocalAccess).
+   * Production: the token is always required. Not a panel setting.
+   */
+  get AUTH_OPEN(): boolean { return pick('AUTH_OPEN', () => keylessLocalAccess()); },
+  set AUTH_OPEN(v: boolean) { assigned.set('AUTH_OPEN', v); },
   /** Set only by a stack that is loopback-only by construction (docker-compose.dev.yml). */
   ALLOW_OPEN_AUTH: (cleanEnv(BOOT_RAW.ALLOW_OPEN_AUTH) || '').toLowerCase() === 'true',
-  FULL_ACCESS_PLAN,
+  INSTANCE_LIMITS,
 
   // ============================================
   // Server
@@ -270,7 +218,7 @@ export const config = {
   // wrong address, and a wrong address is worse than an absent one.
   get PUBLIC_DOMAIN(): string { return pick('PUBLIC_DOMAIN', () => cur('PUBLIC_DOMAIN') || cur('BASE_URL') || ''); },
   set PUBLIC_DOMAIN(v: string) { assigned.set('PUBLIC_DOMAIN', v); },
-  NODE_ENV: cleanEnv(process.env.NODE_ENV) || 'development',
+  NODE_ENV: cleanEnv(process.env.NODE_ENV) || 'development',
   // Which profile filled in the gaps, and where that was read from. Surfaced
   // so the UI can say "development chose this for you" rather than leaving the
   // operator guessing which of 77 variables is in play.
@@ -452,7 +400,13 @@ export const config = {
   // (Xvfb) first, or point REAL_CHROME_DISPLAY at an existing display.
   // Profiled: headed while developing (you need to SEE it), headless in
   // production and test (nobody is watching, and CI has no screen).
-  REAL_CHROME_HEADLESS: profiled('REAL_CHROME_HEADLESS')?.toLowerCase() === 'true',
+  // The operator's interactive Real Chrome (viewer, Element Inspector) is a
+  // window to be looked at, so it is headed. Not a profile decision and not a
+  // panel setting. The test profile keeps it headless so the suite never opens
+  // a window; an explicit env value remains a diagnostics escape hatch only.
+  // Workflow RUNS do not follow this: core/RunPolicy decides per run.
+  REAL_CHROME_HEADLESS: (cleanEnv(process.env.REAL_CHROME_HEADLESS)
+    || (ACTIVE_PROFILE.id === 'test' ? 'true' : 'false')).toLowerCase() === 'true',
 
   // X display for the headed Chrome. Ignored when a DISPLAY is already exported.
   REAL_CHROME_DISPLAY: cleanEnv(process.env.REAL_CHROME_DISPLAY) || ':99',
@@ -590,7 +544,12 @@ export const config = {
   // ============================================
   // Queue Settings
   // ============================================
-  MAX_CONCURRENT: parseInt(cleanEnv(process.env.MAX_CONCURRENT) || '20', 10),
+  // NO MAX_CONCURRENT. How many runs execute at once is decided by the browser
+  // profiles they need (core/ProfileLease): one run per profile, runs on
+  // different free profiles in parallel. WORKER_SLOTS is only a technical
+  // ceiling on in-flight jobs in this process (a run waiting for its profile
+  // does not hold a slot: it is moved back to the delayed set).
+  WORKER_SLOTS: 32,
   MAX_QUEUED_JOBS_PER_USER: parseInt(cleanEnv(process.env.MAX_QUEUED_JOBS_PER_USER) || '3', 10),
   MAX_STORED_JOBS_PER_USER: parseInt(cleanEnv(process.env.MAX_STORED_JOBS_PER_USER) || '10', 10),
   QUEUE_DELAY_MS: parseInt(cleanEnv(process.env.QUEUE_DELAY_MS) || '200', 10),
@@ -606,8 +565,8 @@ export const config = {
   // ============================================
   // Browser
   // ============================================
-  get DEFAULT_HEADLESS(): boolean { return pick('DEFAULT_HEADLESS', () => cur('DEFAULT_HEADLESS')?.toLowerCase() !== 'false'); },
-  set DEFAULT_HEADLESS(v: boolean) { assigned.set('DEFAULT_HEADLESS', v); },
+  // No DEFAULT_HEADLESS: whether a run shows its browser is decided per run by
+  // core/RunPolicy (operator's Run click = visible; trigger/schedule/API = hidden).
   // Profiled off in development: turbo trades diagnosability for speed, and
   // during development that trade is backwards.
   TURBO_MODE: profiled('TURBO_MODE') === 'true',
@@ -633,7 +592,6 @@ export const config = {
   // on a non-bug), on in production (an unlimited public endpoint is a bill).
   RATE_LIMIT_ENABLED: profiled('RATE_LIMIT_ENABLED') !== 'false',
   RATE_LIMIT_PER_MINUTE: parseInt(cleanEnv(process.env.RATE_LIMIT_PER_MINUTE) || '120', 10),
-  ADMIN_RATE_LIMIT_PER_MINUTE: parseInt(cleanEnv(process.env.ADMIN_RATE_LIMIT_PER_MINUTE) || '30', 10),
 
   // ============================================
   // CORS (F5) - explicit cross-origin control for UI / API clients / extension
@@ -644,23 +602,7 @@ export const config = {
     .split(',')
     .map(s => s.trim())
     .filter(s => s.length > 0),
-  GOD_MODE_IPS: (cleanEnv(process.env.GOD_MODE_IPS) || '127.0.0.1,::1')
-    .split(',')
-    .map(s => s.trim())
-    .filter(s => s.length > 0),
 
-  // ============================================
-  // Authentication
-  // ============================================
-  API_KEYS_ENABLED: cleanEnv(process.env.API_KEYS_ENABLED) !== 'false',
-  API_KEYS: parseApiKeys(),
-  ADMIN_SECRET: cleanEnv(process.env.ADMIN_SECRET) || 'admin_secret_change_me',
-
-  // ============================================
-  // User Plans
-  // ============================================
-  USER_PLANS: parsePlans(),
-  DEFAULT_USER_LEVEL: cleanEnv(process.env.DEFAULT_USER_LEVEL) || '0',
 
   // ============================================
   // Webhooks
@@ -728,7 +670,10 @@ export const config = {
   // Keep it on a persistent volume (Docker: ./data is mounted).
   SQLITE_PATH: path.resolve(cleanEnv(process.env.SQLITE_PATH) || './data/plyr.db'),
   // Execution history retention: whichever limit is reached first. 0 = no limit.
-  EXECUTION_RETENTION_DAYS: parseInt(cleanEnv(process.env.EXECUTION_RETENTION_DAYS) || '30', 10),
+  // Live: the history pruner reads it on every pass (boot, every 50 inserts and
+  // the periodic GC), so a change in Settings applies without a restart.
+  get EXECUTION_RETENTION_DAYS(): number { return pick('EXECUTION_RETENTION_DAYS', () => intNow('EXECUTION_RETENTION_DAYS', 30, 0)); },
+  set EXECUTION_RETENTION_DAYS(v: number) { assigned.set('EXECUTION_RETENTION_DAYS', v); },
   EXECUTION_MAX_ROWS: parseInt(cleanEnv(process.env.EXECUTION_MAX_ROWS) || '10000', 10),
 
   // ============================================
@@ -758,11 +703,9 @@ export const config = {
   // ============================================
   // Code node (src/core/CodeNode.ts) — runs the operator's own JavaScript.
   // NOT a security sandbox: in `single` mode the author owns the server.
-  // Always OFF in `multi` mode, whatever the env says (other tenants' code
-  // would run with this server's privileges).
   // ============================================
   get CODE_NODE_ENABLED(): boolean {
-    return pick('CODE_NODE_ENABLED', () => DEPLOYMENT_MODE === 'single' && (cur('CODE_NODE_ENABLED') || 'true').toLowerCase() !== 'false');
+    return pick('CODE_NODE_ENABLED', () => (cur('CODE_NODE_ENABLED') || 'true').toLowerCase() !== 'false');
   },
   set CODE_NODE_ENABLED(v: boolean) { assigned.set('CODE_NODE_ENABLED', v); },
   // Comma list of module roots `require()` may load. Empty = every module.
@@ -771,15 +714,12 @@ export const config = {
   CODE_NODE_TIMEOUT_MS: parseInt(cleanEnv(process.env.CODE_NODE_TIMEOUT_MS) || '30000', 10),
   // Heap cap of the worker thread (no-browser mode). 0 = Node's default.
   CODE_NODE_MAX_MEMORY_MB: parseInt(cleanEnv(process.env.CODE_NODE_MAX_MEMORY_MB) || '512', 10),
-  USE_LUA_QUOTA: cleanEnv(process.env.USE_LUA_QUOTA) !== 'false',
 
   // ============================================
   // Hybrid Architecture Settings
   // ============================================
-  VIP_PRIORITY_THRESHOLD: parseInt(cleanEnv(process.env.VIP_PRIORITY_THRESHOLD) || '100', 10),
   FREE_CONTEXT_MAX_LIFETIME_MS: parseInt(cleanEnv(process.env.FREE_CONTEXT_MAX_LIFETIME_MS) || '300000', 10),
   FREE_RESOURCE_BLOCKING: cleanEnv(process.env.FREE_RESOURCE_BLOCKING) !== 'false',
-  FREE_FORCE_SEQUENTIAL: cleanEnv(process.env.FREE_FORCE_SEQUENTIAL) === 'true',
 
   // ============================================
   // Flattener Settings
@@ -798,46 +738,19 @@ export const config = {
   // ============================================
   MAX_VARIABLE_SIZE_KB: parseInt(cleanEnv(process.env.MAX_VARIABLE_SIZE_KB) || '100', 10),
 
-  // ============================================
-  // Schedule Settings (Global Fallbacks)
-  // ============================================
-  MAX_SCHEDULES_FREE: parseInt(cleanEnv(process.env.MAX_SCHEDULES_FREE) || '2', 10),
-  MAX_SCHEDULES_VIP: parseInt(cleanEnv(process.env.MAX_SCHEDULES_VIP) || '10', 10),
-  MAX_REPEAT_LIMIT_FREE: parseInt(cleanEnv(process.env.MAX_REPEAT_LIMIT_FREE) || '100', 10),
 
 } as const;
 
 // ============================================
-// Helper: Get Plan by Level
-// ============================================
-export const getPlanByLevel = (level: number): PlanConfig => {
-  const key = String(level);
-  return config.USER_PLANS[key] || config.USER_PLANS["0"] || {
-    quota: 5,
-    maxTabs: 1,
-    maxSteps: 5,
-    priority: 100,
-    maxSchedules: 2,
-    runLimit: 100
-  };
-};
-
-// ============================================
 // Validation Warnings
 // ============================================
-// Note: in 'single' mode auth uses the shared API_TOKEN, not the multi-tenant
-// API_KEYS list, so an empty API_KEYS set is expected and harmless. Only warn
-// in 'multi' mode where API_KEYS actually gates per-user access.
-if (config.DEPLOYMENT_MODE === 'multi' && config.API_KEYS_ENABLED && config.API_KEYS.size === 0) {
-  console.warn('[CONFIG] ⚠️ API_KEYS_ENABLED is true but no API_KEYS defined!');
-}
-
-if (config.DEPLOYMENT_MODE === 'multi' && config.ADMIN_SECRET === 'admin_secret_change_me') {
-  console.warn('[CONFIG] ⚠️ Using default ADMIN_SECRET in multi mode! Change it in production.');
+if (REQUESTED_DEPLOYMENT_MODE === 'multi') {
+  console.warn('[CONFIG] ⚠️ DEPLOYMENT_MODE=multi is no longer supported and is ignored: '
+    + 'one install belongs to one owner. Remove the line from .env.');
 }
 
 if (config.IS_SINGLE_USER) {
-  console.log('[CONFIG] 🏠 DEPLOYMENT_MODE=single — full-access, single-user self-hosted.');
+  console.log(`[CONFIG] 🏠 Self-hosted single-owner instance (environment: ${ACTIVE_PROFILE.id}).`);
   if (config.API_TOKEN_IS_DEFAULT) {
     // Loud, and it says what the risk actually is. The old message said "we
     // generated a random one", which was reassuring; this default is the
@@ -857,8 +770,6 @@ if (config.IS_SINGLE_USER) {
       '        Set API_TOKEN in your .env to keep it stable across restarts.'
     );
   }
-} else {
-  console.log('[CONFIG] 🏢 DEPLOYMENT_MODE=multi — multi-tenant (plans/quotas/admin enabled).');
 }
 
 // ============================================
