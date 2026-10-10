@@ -102,7 +102,9 @@ describe('canvas chrome — item G: floating toolbar', () => {
   });
 
   it('exposes the three view actions', () => {
-    for (const v of ['fullscreen', 'autolayout', 'focus']) {
+    // The former Fullscreen control is now Fit View (`fitview`); browser
+    // fullscreen is no longer bound to any button.
+    for (const v of ['fitview', 'autolayout', 'focus']) {
       expect(FE, `view action "${v}"`).toContain(`data-view="${v}"`);
     }
   });

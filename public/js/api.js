@@ -252,6 +252,14 @@
   function listWorkflowVersions(userId, workflowId) {
     return get(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/versions');
   }
+  /** Manual save: a restorable version tagged 'manual' (separate from autosave). */
+  function saveWorkflowVersion(userId, workflowId, label) {
+    return post(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/save', label ? { label: label } : {});
+  }
+  /** Restore a saved version into the editable design (ordinary edit; Active untouched). */
+  function restoreWorkflowVersion(userId, workflowId, version) {
+    return post(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/versions/' + encodeURIComponent(String(version)) + '/restore', {});
+  }
   function runWorkflow(userId, workflowId, body) {
     return post(wfBase(userId) + '/' + encodeURIComponent(workflowId) + '/run', body || {});
   }
@@ -395,6 +403,8 @@
     updateWorkflow: updateWorkflow,
     deleteWorkflow: deleteWorkflow,
     listWorkflowVersions: listWorkflowVersions,
+    saveWorkflowVersion: saveWorkflowVersion,
+    restoreWorkflowVersion: restoreWorkflowVersion,
     runWorkflow: runWorkflow,
     setWorkflowState: setWorkflowState,
     workspaceStats: workspaceStats,

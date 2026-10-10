@@ -477,10 +477,13 @@
       };
     } catch (e) { return null; }
   }
+  // The workflow name is part of the saved document: a rename is then a real
+  // change (it autosaves) and it is restored with the design after reload.
   function serialize() {
     return JSON.stringify({
       nodes: state.nodes, edges: state.edges, nextId: state.nextId,
       view: state.view,
+      name: currentWorkflow ? currentWorkflow.name : null,
     });
   }
   function saveLocal() {
@@ -4394,6 +4397,15 @@
         renderBoxSelect();
         return;
       }
+      // Canvas lock freezes the view as well as the nodes: a background drag does
+      // not pan. Clicking empty canvas still clears the selection.
+      if (canvasLocked) {
+        state.selected = null;
+        state.selSet = {};
+        renderInspector();
+        renderNodes();
+        return;
+      }
       drag = { type: 'pan', startX: ev.clientX, startY: ev.clientY,
         ox: state.view.x, oy: state.view.y };
       state.selected = null;
@@ -4862,9 +4874,9 @@
           ' title="' + esc(t('fe.toolLock')) + '">' + IC('lock') + '</button>' +
         '<button class="fe-zbtn fe-tool" data-tool="grid" aria-pressed="true"' +
           ' title="' + esc(t('fe.toolFrame')) + '">' + IC('frame') + '</button>' +
-        // Fullscreen stays with the icon-only tools (it has no label in either
-        // image); the labelled pills above own Auto Layout / Focus Mode.
-        '<button class="fe-zbtn" data-view="fullscreen" title="' + esc(t('fe.fullscreen')) + '">' + IC('maximize') + '</button>' +
+        // Fit View frames every node (browser fullscreen is not bound here). Icon-only:
+        // the labelled pills above own Auto Layout / Focus Mode.
+        '<button class="fe-zbtn" data-view="fitview" title="' + esc(t('fe.fitView')) + '" aria-label="' + esc(t('fe.fitView')) + '">' + IC('maximize') + '</button>' +
       '</div>' +
       '<span class="fe-tb-sep" aria-hidden="true"></span>' +
       // zoom cluster
@@ -4913,6 +4925,7 @@
             openAddPaletteForSelection({ x: br.left - 220, y: br.bottom + 8 });
           } else if (v === 'autolayout') autoLayout();
           else if (v === 'focus') toggleFocusMode();
+          else if (v === 'fitview') fitToScreen();
           else toggleFullscreen();
         });
         b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
@@ -5419,6 +5432,17 @@
     getCurrentWorkflow: function () { return currentWorkflow; },
     // Merge server-confirmed fields (e.g. {active, liveBrowser}) into the open
     // workflow's identity WITHOUT marking the graph dirty or bumping version.
+    // Rename the open workflow. Goes through the normal autosave PUT, so the
+    // name persists on the server and is restored after reload.
+    renameCurrentWorkflow: function (name) {
+      var clean = String(name == null ? '' : name).trim().slice(0, 120);
+      if (!clean || !currentWorkflow || !currentWorkflow.id) return false;
+      if (currentWorkflow.name === clean) return true;
+      currentWorkflow.name = clean;
+      saveWorkflowIdentity();
+      onDocumentChanged();
+      return true;
+    },
     patchCurrentWorkflow: function (fields) {
       if (!currentWorkflow || !fields) return false;
       Object.keys(fields).forEach(function (k) { currentWorkflow[k] = fields[k]; });

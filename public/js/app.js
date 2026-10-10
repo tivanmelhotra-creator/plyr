@@ -273,14 +273,16 @@
   // ---------------------------------------------
   // The six product areas — and ONLY these six — appear in the sidebar and in
   // the App Launcher (docs/uiux/workspace-overview.md § 3A).
-  var NAV_ROUTES = ['home', 'workspace', 'dashboard', 'jobs', 'admin', 'settings'];
+  var NAV_ROUTES = ['home', 'workspace', 'dashboard', 'admin', 'settings'];
 
   /**
    * Deep routes: still addressable, but deliberately absent from the chrome.
    * They are opened FROM something (a workflow row, the editor, Settings), so
    * putting them in the sidebar was the clutter this change removes.
    */
-  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'quota'];
+  // `jobs` is no longer a rail/launcher area, but its deep links (run logs,
+  // Executions) must still resolve, so it stays routable here.
+  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'quota', 'jobs'];
 
   var ROUTES = NAV_ROUTES.concat(DEEP_ROUTES);
 
@@ -288,13 +290,10 @@
    * Which sidebar entry lights up for a deep route. A user standing in the
    * editor is still "in" the Workspace area; Quota is a Settings sub-page.
    */
+  // Routes that live INSIDE a workflow do not light up Workspace: the Workspace
+  // item means the list of workflows, and an open workflow is not that list. Only
+  // Settings-owned routes still map to their parent area.
   var ROUTE_PARENT = {
-    workflows: 'workspace',
-    editor: 'workspace',
-    run: 'workspace',
-    live: 'workspace',
-    browser: 'workspace',
-    schedules: 'workspace',
     quota: 'settings',
   };
 

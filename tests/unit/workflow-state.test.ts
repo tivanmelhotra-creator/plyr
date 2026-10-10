@@ -221,3 +221,31 @@ describe('WorkflowService.update — flags survive an editor save', () => {
     expect(newest.liveBrowser).toBe(true);
   });
 });
+
+describe('Workflow.activeSnapshot — activation contract', () => {
+  it('activating without a frozen snapshot is refused', async () => {
+    const svc = new WorkflowService(makeRedis() as any);
+    const wf = await svc.create('u1', sampleInput({ active: false }));
+    await expect(svc.setState('u1', wf.id, { active: true })).rejects.toThrow(/activeSnapshot is required/);
+    expect((await svc.get('u1', wf.id))?.active).toBe(false);
+  });
+
+  it('activating with a snapshot stores it and leaves the version untouched', async () => {
+    const svc = new WorkflowService(makeRedis() as any);
+    const wf = await svc.create('u1', sampleInput({ active: false }));
+    const snap = WorkflowService.buildActiveSnapshot(wf);
+    const on = await svc.setState('u1', wf.id, { active: true, activeSnapshot: snap });
+    expect(on?.active).toBe(true);
+    expect(on?.activeSnapshot?.steps).toEqual(wf.steps);
+    expect(on?.version).toBe(wf.version);
+  });
+
+  it('deactivation keeps the last frozen snapshot', async () => {
+    const svc = new WorkflowService(makeRedis() as any);
+    const wf = await svc.create('u1', sampleInput({ active: false }));
+    await svc.setState('u1', wf.id, { active: true, activeSnapshot: WorkflowService.buildActiveSnapshot(wf) });
+    const off = await svc.setState('u1', wf.id, { active: false });
+    expect(off?.active).toBe(false);
+    expect(off?.activeSnapshot).not.toBeNull();
+  });
+});

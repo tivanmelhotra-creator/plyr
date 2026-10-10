@@ -925,13 +925,12 @@
           '<div class="fe-tb-start">' +
             '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
               '<span class="fe-brand-name">' + esc(t('fe.brand')) + '</span></span>' +
-            '<span class="fe-wfname" id="fe-wfname" title=""></span>' +
+            '<input type="text" class="fe-wfname" id="fe-wfname" maxlength="120" spellcheck="false"' +
+              ' aria-label="' + esc(t('sh.wfNameLabel')) + '" title="" value="" />' +
           '</div>' +
           '<nav class="fe-modes" id="fe-modes" role="tablist" aria-label="' + esc(t('sh.modes')) + '">' +
             '<button type="button" role="tab" class="fe-mode is-active" id="fe-mode-editor"' +
               ' data-mode="editor" aria-selected="true"><span>' + esc(t('sh.modeEditor')) + '</span></button>' +
-            '<button type="button" role="tab" class="fe-mode" id="fe-mode-extract"' +
-              ' data-mode="extract" aria-selected="false"><span>' + esc(t('sh.modeExtraction')) + '</span></button>' +
             '<button type="button" role="tab" class="fe-mode" id="fe-mode-exec"' +
               ' data-mode="exec" aria-selected="false"><span>' + esc(t('sh.modeExecutions')) + '</span>' +
               '<span class="fe-mode-live" aria-hidden="true"></span></button>' +
@@ -948,6 +947,8 @@
               ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
               '<span>' + esc(t('sh.save')) + '</span>' +
               '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
+            '<button type="button" class="fe-tbbtn fe-versionsbtn" id="fe-versions" aria-haspopup="dialog" aria-expanded="false"' +
+              ' title="' + esc(t('sh.versionsHint')) + '" aria-label="' + esc(t('sh.versionsHint')) + '">' + IC('history', 14) + '</button>' +
             '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
             '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
               IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
@@ -1229,9 +1230,11 @@
         wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
       }
       var nameEl = root.querySelector('#fe-wfname');
-      if (nameEl) {
+      // Never overwrite the field while the user is typing in it.
+      if (nameEl && document.activeElement !== nameEl) {
         var nm = (cur && cur.name) || t('fe.untitled');
-        nameEl.textContent = nm;
+        nameEl.value = cur && cur.id ? nm : '';
+        nameEl.disabled = !(cur && cur.id);
         nameEl.title = cur && cur.id ? nm + ' · ' + cur.id + (cur.version ? ' · v' + cur.version : '') : nm;
       }
       refreshStatusBar();
@@ -1239,6 +1242,30 @@
       if (typeof refreshToggles === 'function') refreshToggles();
     }
     refreshWfLabel();
+
+    // ---- Editable workflow name (top bar) -------------------------------
+    // Enter or blur commits through FE.renameCurrentWorkflow: the rename is a
+    // normal autosave PUT, so it persists and survives reload. Escape reverts.
+    var wfNameInput = root.querySelector('#fe-wfname');
+    if (wfNameInput) {
+      var commitName = function () {
+        var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+        if (!cur || !cur.id) return;
+        var next = wfNameInput.value.trim();
+        if (!next) { wfNameInput.value = cur.name; return; }
+        if (next === cur.name) return;
+        if (FE.renameCurrentWorkflow && FE.renameCurrentWorkflow(next)) refreshWfLabel();
+      };
+      wfNameInput.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); wfNameInput.blur(); }
+        else if (ev.key === 'Escape') {
+          var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          wfNameInput.value = c && c.name ? c.name : '';
+          wfNameInput.blur();
+        }
+      });
+      wfNameInput.addEventListener('blur', commitName);
+    }
 
     // No manual save path exists. FlowEditor owns the debounced server queue.
     var removeAutosaveStatus = FE.onAutosaveStatus ? FE.onAutosaveStatus(function () {
@@ -1931,7 +1958,8 @@
           U().toast(t(key), 'success');
         })
         .catch(function (err) {
-          U().toast((err && err.message) || t('ws.stateFailed'), 'error');
+          var detail = err && err.body && err.body.details && err.body.details[0];
+          U().toast(detail ? (err.message + ': ' + detail) : ((err && err.message) || t('ws.stateFailed')), 'error');
         })
         .then(function () { toggleBusy = false; refreshToggles(); refreshRunInfo(); });
     }
@@ -1973,6 +2001,108 @@
       if (window.RunPanel && window.RunPanel.stop) window.RunPanel.stop();
       refreshRunSlot();
     }, true);
+
+    // ---- Versions: manual Save + restorable list -------------------------
+    // Manual versions are separate from autosave history. Restore is an
+    // ordinary edit: it writes a new autosave entry and never touches Active.
+    var versionsBtn = root.querySelector('#fe-versions');
+    var versionsPanel = null;
+    function closeVersions() {
+      if (versionsPanel && versionsPanel.parentNode) versionsPanel.parentNode.removeChild(versionsPanel);
+      versionsPanel = null;
+      if (versionsBtn) versionsBtn.setAttribute('aria-expanded', 'false');
+    }
+    function reloadWorkflowAfterRestore(wfId) {
+      return API.getWorkflow(effectiveUserId(), wfId).then(function (data) {
+        var wf = data && data.workflow ? data.workflow : data;
+        if (!wf || !wf.id) return;
+        FE.openWorkflow(wf, wf.steps || []);
+        refreshWfLabel();
+      });
+    }
+    function renderVersionRows(list, versions, cur) {
+      if (!versions.length) {
+        list.innerHTML = '<p class="fe-versions-empty">' + esc(t('sh.versionsEmpty')) + '</p>';
+        return;
+      }
+      list.innerHTML = versions.map(function (v) {
+        var isManual = v.kind === 'manual';
+        var when = v.savedAt ? new Date(v.savedAt).toLocaleString() : '';
+        var what = isManual
+          ? (v.label ? esc(v.label) : esc(t('sh.versionManualDefault')))
+          : esc(t('sh.versionAuto'));
+        return '<li class="fe-version-row' + (isManual ? ' is-manual' : '') + '">' +
+          '<span class="fe-version-meta"><strong>v' + esc(String(v.designVersion || v.version)) + '</strong> ' +
+          '<span class="fe-version-what">' + what + '</span>' +
+          '<span class="fe-version-when">' + esc(when) + '</span></span>' +
+          '<button type="button" class="fe-version-restore" data-version="' + esc(String(v.version)) + '">' +
+          esc(t('sh.versionRestore')) + '</button></li>';
+      }).join('');
+      list.querySelectorAll('.fe-version-restore').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var cur2 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          if (!cur2 || !cur2.id) return;
+          b.disabled = true;
+          API.restoreWorkflowVersion(effectiveUserId(), cur2.id, b.getAttribute('data-version'))
+            .then(function () { return reloadWorkflowAfterRestore(cur2.id); })
+            .then(function () { U().toast(t('sh.versionRestored'), 'success'); closeVersions(); })
+            .catch(function (err) {
+              U().toast((err && err.message) || t('sh.versionRestoreFailed'), 'error');
+              b.disabled = false;
+            });
+        });
+      });
+    }
+    function openVersions() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!cur || !cur.id) { U().toast(t('fe.filesNeedSave'), 'info'); return; }
+      if (versionsPanel) { closeVersions(); return; }
+      versionsPanel = document.createElement('div');
+      versionsPanel.className = 'fe-versions-panel';
+      versionsPanel.setAttribute('role', 'dialog');
+      versionsPanel.setAttribute('aria-label', t('sh.versionsTitle'));
+      versionsPanel.innerHTML =
+        '<div class="fe-versions-head"><strong>' + esc(t('sh.versionsTitle')) + '</strong>' +
+        '<button type="button" class="fe-versions-save">' + esc(t('sh.versionSaveNow')) + '</button></div>' +
+        '<ul class="fe-versions-list"><li class="fe-versions-loading">' + esc(t('sh.versionsLoading')) + '</li></ul>';
+      document.body.appendChild(versionsPanel);
+      var rect = versionsBtn.getBoundingClientRect();
+      versionsPanel.style.position = 'fixed';
+      versionsPanel.style.top = (rect.bottom + 6) + 'px';
+      versionsPanel.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
+      versionsBtn.setAttribute('aria-expanded', 'true');
+      var list = versionsPanel.querySelector('.fe-versions-list');
+      var loadList = function () {
+        API.listWorkflowVersions(effectiveUserId(), cur.id).then(function (data) {
+          renderVersionRows(list, (data && data.versions) || [], cur);
+        }).catch(function (err) {
+          list.innerHTML = '<li class="fe-versions-empty">' + esc((err && err.message) || t('sh.versionsLoadFailed')) + '</li>';
+        });
+      };
+      versionsPanel.querySelector('.fe-versions-save').addEventListener('click', function () {
+        // Flush the current design first so the manual version is the latest one.
+        var flush = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
+        flush.then(function () {
+          var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          return API.saveWorkflowVersion(effectiveUserId(), c.id, null);
+        }).then(function () {
+          U().toast(t('sh.versionSaved'), 'success');
+          loadList();
+        }).catch(function (err) {
+          U().toast((err && err.message) || t('sh.versionSaveFailed'), 'error');
+        });
+      });
+      loadList();
+    }
+    if (versionsBtn) versionsBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      openVersions();
+    });
+    document.addEventListener('click', function (ev) {
+      if (!versionsPanel) return;
+      if (versionsPanel.contains(ev.target) || (versionsBtn && versionsBtn.contains(ev.target))) return;
+      closeVersions();
+    });
 
     // ---- Aria Compact: Save (flush), canvas CTA, Editor/Executions ------
     var saveNowBtn = root.querySelector('#fe-savenow');

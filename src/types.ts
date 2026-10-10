@@ -376,9 +376,32 @@ export interface Workflow {
   // Whether the user wants this workflow's Playwright session streamed to the
   // Live Browser viewer. Only observable while `active` is true.
   liveBrowser: boolean;
+  /**
+   * The design that background runs (triggers, schedules, API runs) execute.
+   * Frozen at the moment the workflow was activated, so later Editor changes
+   * never reach a running automation. Present only while `active` is true.
+   * Re-activation re-freezes it from the current design after validation.
+   */
+  activeSnapshot?: WorkflowActiveSnapshot | null;
+}
+
+// The frozen, executable design of an active workflow.
+export interface WorkflowActiveSnapshot {
+  /** The workflow version that was frozen (Workflow.version at activation). */
+  version: number;
+  name: string;
+  description?: string;
+  steps: unknown[];
+  headless?: boolean | string | number | null;
+  webhookUrl?: string | null;
+  profileId?: string;
+  activatedAt: string;
 }
 
 // A point-in-time snapshot kept in the version history of a workflow.
+// `auto` entries are written by the autosave path (every design change);
+// `manual` entries are written only by the explicit Save action and are never
+// pruned by the autosave history limit.
 export interface WorkflowVersionSnapshot {
   version: number;
   name: string;
@@ -388,6 +411,10 @@ export interface WorkflowVersionSnapshot {
   webhookUrl?: string | null;
   profileId?: string;
   savedAt: string;
+  kind?: 'auto' | 'manual';
+  // Design version the snapshot was taken from (manual entries use their own number range).
+  designVersion?: number;
+  label?: string | null;
   // Recorded for auditability. Restoring a snapshot restores the design; the
   // live switches are deliberately re-applied from the current record.
   active?: boolean;

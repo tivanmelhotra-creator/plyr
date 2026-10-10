@@ -2,7 +2,7 @@ import type IORedis from 'ioredis';
 import { randomBytes } from 'crypto';
 
 import { config } from '../config';
-import type { Workflow, WorkflowVersionSnapshot } from '../types';
+import type { Workflow, WorkflowActiveSnapshot, WorkflowVersionSnapshot } from '../types';
 import {
   RedisWorkflowRepository,
   type WorkflowRepository,
@@ -41,7 +41,18 @@ export interface WorkflowInput {
 export interface WorkflowStateInput {
   active?: boolean;
   liveBrowser?: boolean;
+  /**
+   * Required when `active` is set to true. The caller (the route) validates the
+   * design against the user's plan FIRST and passes the result here, so the
+   * frozen snapshot is always a design that was accepted at activation time.
+   */
+  activeSnapshot?: WorkflowActiveSnapshot;
 }
+
+// Stored label for a manual save is capped so a version list stays readable.
+const MAX_LABEL_LENGTH = 120;
+// Manual snapshots are numbered from here so they can never collide with autosave numbers.
+export const MANUAL_VERSION_BASE = 1_000_000_000;
 
 // A brand-new workflow is runnable immediately (that is what creating it means),
 // but its browser is NOT streamed until the user opts in.
@@ -105,8 +116,31 @@ export class WorkflowService {
   // Persist a version snapshot + trim history to WORKFLOW_MAX_VERSIONS, dropping
   // the oldest entries so the history never grows unbounded.
   private async saveVersion(wf: Workflow): Promise<void> {
-    await this.repo.saveVersion(wf.userId, wf.id, WorkflowService.toSnapshot(wf));
+    await this.repo.saveVersion(wf.userId, wf.id, { ...WorkflowService.toSnapshot(wf), kind: 'auto' });
     await this.repo.trimVersions(wf.userId, wf.id, config.WORKFLOW_MAX_VERSIONS);
+  }
+
+  /**
+   * The steps a BACKGROUND run (trigger, schedule, API) must execute. An active
+   * workflow runs its frozen activation snapshot, never the live design, so
+   * Editor changes cannot alter an automation that is already running.
+   * Falls back to the live design only for records that predate snapshots and
+   * are still active; the route re-freezes them on the next activation.
+   */
+  static executableDesign(wf: Workflow): { steps: unknown[]; name: string; headless?: Workflow['headless']; webhookUrl?: string | null; profileId?: string; version: number; frozen: boolean } {
+    if (wf.activeSnapshot) {
+      const snap = wf.activeSnapshot;
+      return {
+        steps: snap.steps, name: snap.name, headless: snap.headless,
+        webhookUrl: snap.webhookUrl, profileId: snap.profileId,
+        version: snap.version, frozen: true,
+      };
+    }
+    return {
+      steps: wf.steps, name: wf.name, headless: wf.headless,
+      webhookUrl: wf.webhookUrl, profileId: wf.profileId,
+      version: wf.version, frozen: false,
+    };
   }
 
   // Create and persist a new workflow (version 1).
@@ -137,8 +171,17 @@ export class WorkflowService {
 
   // Fetch a single workflow, or null if it does not exist for this user.
   async get(userId: string, workflowId: string): Promise<Workflow | null> {
-    const wf = await this.repo.get(userId, workflowId);
-    return wf ? WorkflowService.hydrate(wf) : null;
+    const raw = await this.repo.get(userId, workflowId);
+    if (!raw) return null;
+    const wf = WorkflowService.hydrate(raw);
+    // Records activated BEFORE activation snapshots existed have no frozen
+    // design. Freeze the current one once, persist it, and only then let it run,
+    // so a legacy active workflow is isolated from Editor changes like any other.
+    if (wf.active && !wf.activeSnapshot) {
+      wf.activeSnapshot = WorkflowService.buildActiveSnapshot(wf);
+      await this.repo.save(wf);
+    }
+    return wf;
   }
 
   // List all workflows owned by a user (newest updated first).
@@ -171,6 +214,9 @@ export class WorkflowService {
       // Design edits never touch the Workspace switches (see WorkflowInput).
       active: existing.active,
       liveBrowser: existing.liveBrowser,
+      // The frozen activation snapshot is independent of the editable design:
+      // an Editor save must never change what an active workflow executes.
+      activeSnapshot: existing.activeSnapshot ?? null,
     };
     await this.repo.save(updated);
     await this.saveVersion(updated);
@@ -192,14 +238,114 @@ export class WorkflowService {
   ): Promise<Workflow | null> {
     const existing = await this.get(userId, workflowId);
     if (!existing) return null;
+
+    let activeSnapshot = existing.activeSnapshot ?? null;
+    let active = existing.active;
+    if (state.active === true) {
+      // Activation freezes the design that was validated by the caller. An
+      // already-active workflow asked to activate again is re-frozen too: that
+      // is the explicit "deactivate, then activate" path the spec describes.
+      if (!state.activeSnapshot) {
+        throw new Error('activeSnapshot is required to activate a workflow');
+      }
+      activeSnapshot = state.activeSnapshot;
+      active = true;
+    } else if (state.active === false) {
+      // Deactivation keeps the last frozen snapshot for reference but stops
+      // every background run (the run endpoints check `active`).
+      active = false;
+    }
+
     const updated: Workflow = {
       ...existing,
-      active: typeof state.active === 'boolean' ? state.active : existing.active,
+      active,
+      activeSnapshot,
       liveBrowser:
         typeof state.liveBrowser === 'boolean' ? state.liveBrowser : existing.liveBrowser,
       updatedAt: nowIso(),
     };
     await this.repo.save(updated);
+    return updated;
+  }
+
+  /**
+   * Build the frozen snapshot for activation from the CURRENT design. Pure: no
+   * storage write. The route validates the steps before calling this.
+   */
+  static buildActiveSnapshot(wf: Workflow): WorkflowActiveSnapshot {
+    return {
+      version: wf.version,
+      name: wf.name,
+      description: wf.description,
+      steps: wf.steps,
+      headless: wf.headless,
+      webhookUrl: wf.webhookUrl,
+      profileId: wf.profileId,
+      activatedAt: nowIso(),
+    };
+  }
+
+  /**
+   * Explicit, user-requested snapshot of the current design. It is a version
+   * like any other (version number is the next one, the design is untouched),
+   * but tagged `manual` so it is never confused with autosave history and
+   * never trimmed by WORKFLOW_MAX_VERSIONS.
+   */
+  async saveManual(userId: string, workflowId: string, label?: string | null): Promise<WorkflowVersionSnapshot | null> {
+    const wf = await this.get(userId, workflowId);
+    if (!wf) return null;
+    const cleanLabel = typeof label === 'string' && label.trim()
+      ? label.trim().slice(0, MAX_LABEL_LENGTH)
+      : null;
+    // Manual entries live in their own number range (MANUAL_VERSION_BASE + n),
+    // so they never overwrite an autosave entry that shares the design version
+    // number. Autosave numbers stay far below the base and are never affected.
+    const existing = await this.repo.listVersions(userId, workflowId);
+    const manualNumbers = existing
+      .filter((s) => s.kind === 'manual' && typeof s.version === 'number')
+      .map((s) => s.version);
+    const next = manualNumbers.length
+      ? Math.max(...manualNumbers) + 1
+      : MANUAL_VERSION_BASE + 1;
+    const snap: WorkflowVersionSnapshot = {
+      ...WorkflowService.toSnapshot(wf),
+      version: next,
+      designVersion: wf.version,
+      kind: 'manual',
+      label: cleanLabel,
+      savedAt: nowIso(),
+    };
+    await this.repo.saveVersion(userId, workflowId, snap);
+    return snap;
+  }
+
+  /**
+   * Restore a saved version into the editable design. Restoring is an ordinary
+   * design edit: it bumps `version`, writes an auto history entry, and leaves
+   * the Workspace switches and the frozen activation snapshot untouched. Other
+   * versions are never deleted by a restore.
+   */
+  async restoreVersion(userId: string, workflowId: string, version: number): Promise<Workflow | null | 'not_found_version'> {
+    const existing = await this.get(userId, workflowId);
+    if (!existing) return null;
+    const snap = await this.repo.getVersion(userId, workflowId, version);
+    if (!snap) return 'not_found_version';
+    const updated: Workflow = {
+      ...existing,
+      name: snap.name,
+      description: snap.description ?? undefined,
+      steps: snap.steps,
+      headless: snap.headless ?? undefined,
+      webhookUrl: snap.webhookUrl ?? undefined,
+      profileId: snap.profileId ?? existing.profileId,
+      version: existing.version + 1,
+      updatedAt: nowIso(),
+      active: existing.active,
+      liveBrowser: existing.liveBrowser,
+      activeSnapshot: existing.activeSnapshot ?? null,
+    };
+    await this.repo.save(updated);
+    await this.saveVersion(updated);
     return updated;
   }
 

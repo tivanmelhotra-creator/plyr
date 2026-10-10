@@ -70,10 +70,16 @@ export const scheduleBodySchema = z.object({
   }),
   cron: cronField,
   name: z.string().max(120).optional(),
-  steps: stepsEnvelope,
+  // Required for a raw schedule. A schedule bound to a saved workflow takes its
+  // steps from that workflow (frozen when active), so the body may omit them.
+  steps: stepsEnvelope.optional(),
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
   workflowId: workflowIdOptional,
+}).superRefine((b, ctx) => {
+  if (!b.workflowId && (!b.steps || b.steps.length === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['steps'], message: 'Steps cannot be empty' });
+  }
 });
 
 // [G2] Saved-workflow create/update envelope (Step 17). userId is taken from the

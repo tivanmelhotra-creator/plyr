@@ -16,9 +16,15 @@ vi.mock('../../src/core/UserManager', () => ({
   },
 }));
 
+// Test hook: when set, validateSteps rejects with this message (simulates an invalid design).
+const stepValidation = { rejectWith: null as string | null };
+
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
-  validateSteps: (s: unknown) => s as unknown[],
+  validateSteps: (s: unknown) => {
+    if (stepValidation.rejectWith) throw new Error(stepValidation.rejectWith);
+    return s as unknown[];
+  },
   validateWebhookUrl: (u: unknown) => (u ? String(u) : null),
   validateHeadless: () => true,
   validateBackgroundHeadless: () => true,
@@ -188,5 +194,106 @@ describe('Workflow CRUD (G2)', () => {
 
     const gone = await request(app).get(`/workflows/u1/${createdId}`);
     expect(gone.status).toBe(404);
+  });
+});
+
+describe('Active isolation and manual versions (HTTP)', () => {
+  const stepsA = [{ action: 'goto', params: { url: 'https://a.example' } }];
+  const stepsB = [{ action: 'goto', params: { url: 'https://b.example' } }];
+  let wfId = '';
+
+  beforeAll(() => { stepValidation.rejectWith = null; });
+
+  it('activation freezes the design; editing afterwards does not change runs', async () => {
+    const created = await request(app).post('/workflows/iso1').send({ name: 'Iso', steps: stepsA });
+    wfId = created.body.workflow.id;
+
+    const on = await request(app).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
+    expect(on.status).toBe(200);
+    expect(on.body.workflow.activeSnapshot.steps).toEqual(stepsA);
+
+    // Editor change after activation.
+    const edited = await request(app).put(`/workflows/iso1/${wfId}`).send({ name: 'Iso', steps: stepsB });
+    expect(edited.status).toBe(200);
+    expect(edited.body.workflow.steps).toEqual(stepsB);
+
+    // A background run uses the frozen design, not the live one.
+    queue.lastData = null;
+    const run = await request(app).post(`/workflows/iso1/${wfId}/run`).send({});
+    expect(run.status).toBe(200);
+    expect(queue.lastData.steps).toEqual(stepsA);
+    expect(run.body.workflowVersion).toBe(on.body.workflow.activeSnapshot.version);
+  });
+
+  it('re-activation with an invalid design is refused and the old snapshot is kept', async () => {
+    stepValidation.rejectWith = 'Step 1: unknown action';
+    try {
+      const res = await request(app).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe('activation_invalid');
+      expect(res.body.details[0]).toContain('unknown action');
+
+      const read = await request(app).get(`/workflows/iso1/${wfId}`);
+      expect(read.body.workflow.activeSnapshot.steps).toEqual(stepsA);
+    } finally {
+      stepValidation.rejectWith = null;
+    }
+  });
+
+  it('re-activation with a valid design replaces the snapshot', async () => {
+    const res = await request(app).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
+    expect(res.status).toBe(200);
+    expect(res.body.workflow.activeSnapshot.steps).toEqual(stepsB);
+  });
+
+  it('manual save creates a manual version that is listed and does not overwrite autosave history', async () => {
+    const before = await request(app).get(`/workflows/iso1/${wfId}/versions`);
+    const autoCountBefore = before.body.versions.filter((v: any) => v.kind !== 'manual').length;
+
+    const saved = await request(app).post(`/workflows/iso1/${wfId}/save`).send({ label: '  before refactor  ' });
+    expect(saved.status).toBe(201);
+    expect(saved.body.version.kind).toBe('manual');
+    expect(saved.body.version.label).toBe('before refactor');
+
+    const after = await request(app).get(`/workflows/iso1/${wfId}/versions`);
+    const manual = after.body.versions.filter((v: any) => v.kind === 'manual');
+    const autoCountAfter = after.body.versions.filter((v: any) => v.kind !== 'manual').length;
+    expect(manual.length).toBe(1);
+    expect(autoCountAfter).toBe(autoCountBefore); // no autosave entry lost
+  });
+
+  it('restore brings back an earlier design, keeps other versions, and keeps Active intact', async () => {
+    const versions = await request(app).get(`/workflows/iso1/${wfId}/versions`);
+    const first = versions.body.versions.find((v: any) => v.kind !== 'manual' && v.steps[0].params.url === 'https://a.example');
+    expect(first).toBeTruthy();
+    const countBefore = versions.body.versions.length;
+
+    const res = await request(app).post(`/workflows/iso1/${wfId}/versions/${first.version}/restore`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.workflow.steps).toEqual(stepsA);
+    expect(res.body.workflow.active).toBe(true);
+    expect(res.body.workflow.activeSnapshot.steps).toEqual(stepsB); // Active untouched
+
+    const after = await request(app).get(`/workflows/iso1/${wfId}/versions`);
+    expect(after.body.versions.length).toBeGreaterThan(countBefore); // restore is an edit: new entry, nothing removed
+    expect(after.body.versions.some((v: any) => v.kind === 'manual')).toBe(true);
+  });
+
+  it('restore of an unknown version returns 404', async () => {
+    const res = await request(app).post(`/workflows/iso1/${wfId}/versions/999999/restore`).send({});
+    expect(res.status).toBe(404);
+  });
+
+  it('schedule bound to an inactive workflow is refused with 409', async () => {
+    const created = await request(app).post('/workflows/iso1').send({ name: 'Off', steps: stepsA });
+    const offId = created.body.workflow.id;
+    // New workflows default to active; deactivate it explicitly (the real Workspace switch).
+    const off = await request(app).patch(`/workflows/iso1/${offId}/state`).send({ active: false });
+    expect(off.status).toBe(200);
+    const res = await request(app).post('/schedule').send({
+      userId: 'iso1', cron: '0 9 * * *', name: 'off', workflowId: offId,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Workflow is inactive');
   });
 });
