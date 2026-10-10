@@ -21,8 +21,13 @@ const stepValidation = { rejectWith: null as string | null };
 
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
-  validateSteps: (s: unknown) => {
+  // Mirrors the real validateSteps rule for an empty design (allowEmpty is
+  // only passed by save/restore, never by activation).
+  validateSteps: (s: unknown, _plan?: unknown, opts: { allowEmpty?: boolean } = {}) => {
     if (stepValidation.rejectWith) throw new Error(stepValidation.rejectWith);
+    if (Array.isArray(s) && s.length === 0 && !opts.allowEmpty) {
+      throw new Error('Steps cannot be empty');
+    }
     return s as unknown[];
   },
   validateWebhookUrl: (u: unknown) => (u ? String(u) : null),
@@ -295,5 +300,16 @@ describe('Active isolation and manual versions (HTTP)', () => {
     });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('Workflow is inactive');
+  });
+
+  it('activating an empty workflow is refused with the reason, and nothing is frozen', async () => {
+    const created = await request(app).post('/workflows/iso1').send({ name: 'Empty', steps: [] });
+    const emptyId = created.body.workflow.id;
+    const res = await request(app).patch(`/workflows/iso1/${emptyId}/state`).send({ active: true });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('activation_invalid');
+    expect(res.body.details[0]).toBe('Steps cannot be empty');
+    const read = await request(app).get(`/workflows/iso1/${emptyId}`);
+    expect(read.body.workflow.activeSnapshot ?? null).toBeNull();
   });
 });

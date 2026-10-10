@@ -173,15 +173,10 @@ export class WorkflowService {
   async get(userId: string, workflowId: string): Promise<Workflow | null> {
     const raw = await this.repo.get(userId, workflowId);
     if (!raw) return null;
-    const wf = WorkflowService.hydrate(raw);
-    // Records activated BEFORE activation snapshots existed have no frozen
-    // design. Freeze the current one once, persist it, and only then let it run,
-    // so a legacy active workflow is isolated from Editor changes like any other.
-    if (wf.active && !wf.activeSnapshot) {
-      wf.activeSnapshot = WorkflowService.buildActiveSnapshot(wf);
-      await this.repo.save(wf);
-    }
-    return wf;
+    // Read-only: no write on read. Legacy active records without a snapshot are
+    // frozen by the next activation (PATCH state); until then background runs
+    // use `executableDesign`, which reports `frozen:false` for them.
+    return WorkflowService.hydrate(raw);
   }
 
   // List all workflows owned by a user (newest updated first).
