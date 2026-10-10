@@ -85,10 +85,11 @@
   function choiceControl(s, d) {
     var opts = s.options || [];
     var labelId = 'set-lbl-' + s.key;
-    // Long option labels (Environment) become a vertical list that shows each
-    // option's explanation; short ones stay a compact segmented control.
-    var long = opts.reduce(function (n, o) { return n + String(o.en).length; }, 0) > 42;
-    if (long && opts.length <= 4) {
+    // Options that carry an explanation (Environment) become a vertical list
+    // that shows it; everything else stays a compact segmented control/select.
+    var explained = opts.length <= 4 && opts.some(function (o) { return !!o.hintEn; })
+      && opts.reduce(function (n, o) { return n + String(o.en).length; }, 0) > 42;
+    if (explained) {
       return '<div class="set-seg set-choice-list" role="radiogroup" aria-labelledby="' + labelId + '" data-key="' + esc(s.key) + '">' +
         opts.map(function (o) {
           var on = o.value === s.value;
