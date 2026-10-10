@@ -8914,3 +8914,18 @@ body.route-fullbleed .fe-statusbar { grid-area: extra; }
 .fe-version-dialog-confirm:focus-visible, .fe-version-dialog-cancel:focus-visible {
   outline: 2px solid var(--primary); outline-offset: 2px;
 }
+
+/* Extract / Import group (editor top bar): one bordered pair, not two loose
+   buttons, so the bar does not grow by a full button. */
+.fe-xfer { display: inline-flex; align-items: center; }
+.fe-xfer > .fe-tbbtn:first-child { border-start-end-radius: 0; border-end-end-radius: 0; }
+.fe-xfer > .fe-importbtn { border-start-start-radius: 0; border-end-start-radius: 0; margin-inline-start: -1px; padding: 0 9px; }
+.fe-version-row.is-initial .fe-version-what { color: #A9B0BC; }
+
+/* Activation refused: the list of blocking problems from the server. */
+.act-err-list {
+  margin: 4px 0 0; padding: 8px 10px 8px 26px; max-height: 240px; overflow: auto;
+  border: 1px solid rgba(255, 92, 92, 0.28); border-radius: 8px; background: rgba(255, 92, 92, 0.06);
+  color: #F1C9C9; font: 500 12px/1.5 var(--font);
+}
+.act-err-list li + li { margin-top: 3px; }

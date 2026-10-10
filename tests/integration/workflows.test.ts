@@ -92,16 +92,19 @@ function makeQueue() {
       return { id, getState: async () => states.get(id)! };
     },
     async getJobs() { return []; },
+    async getRepeatableJobs() { return []; },
   };
 }
 
 let app: Express;
 let queue: ReturnType<typeof makeQueue>;
+let conn: ReturnType<typeof makeConnection>;
 
 beforeAll(async () => {
   const { createUserRoutes } = await import('../../src/Routes/user.routes');
   queue = makeQueue();
   const connection = makeConnection();
+  conn = connection;
   const router = createUserRoutes({
     queue: queue as any,
     connection: connection as any,
@@ -186,9 +189,21 @@ describe('Workflow CRUD (G2)', () => {
     }
     const after = await request(app).get(`/workflows/u1/${id}/versions`);
     expect(after.body.count).toBe(before.body.count);
+    // ...and nothing was written underneath either: storage still holds only
+    // the creation snapshot, whatever the number of edits.
+    const { WorkflowService } = await import('../../src/services/workflow.service');
+    expect((await new WorkflowService(conn as any).listAllVersions('u1', id)).length).toBe(1);
     const cur = await request(app).get(`/workflows/u1/${id}`);
     expect(cur.body.workflow.name).toBe('n999');
   }, 60_000);
+
+  it('a new workflow is inactive: a background run is refused until it is activated', async () => {
+    const off = await request(app).post(`/workflows/u1/${createdId}/run`).send({});
+    expect(off.status).toBe(409);
+    const on = await request(app).patch(`/workflows/u1/${createdId}/state`).send({ active: true });
+    expect(on.status).toBe(200);
+    expect(on.body.workflow.active).toBe(true);
+  });
 
   it('POST /workflows/:userId/:id/run enqueues a job tagged with the workflow', async () => {
     const before = queue.addCalls;
@@ -325,5 +340,128 @@ describe('Active isolation and manual versions (HTTP)', () => {
     expect(res.body.details[0]).toBe('Steps cannot be empty');
     const read = await request(app).get(`/workflows/iso1/${emptyId}`);
     expect(read.body.workflow.activeSnapshot ?? null).toBeNull();
+  });
+});
+
+describe('Phase-1 completion: activation errors, versions, import, schedules', () => {
+  beforeAll(() => { stepValidation.rejectWith = null; });
+
+  it('activation lists EVERY blocking error (unknown action, missing params) and is refused', async () => {
+    const created = await request(app).post('/workflows/ph1').send({
+      name: 'Broken',
+      steps: [
+        { action: 'goto', params: {} },
+        { action: 'does-not-exist', params: {} },
+        { action: 'click', params: { selector: '' } },
+        { action: 'click', params: {}, disabled: true }, // disabled: never runs, not an error
+      ],
+    });
+    const id = created.body.workflow.id;
+    const res = await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('activation_invalid');
+    expect(res.body.details).toEqual([
+      'Node 1 (goto) needs a URL',
+      'Node 2 (does-not-exist) uses an unknown action "does-not-exist"',
+      'Node 3 (click) needs a selector',
+    ]);
+    const read = await request(app).get(`/workflows/ph1/${id}`);
+    expect(read.body.workflow.active).toBe(false);
+    expect(read.body.workflow.activeSnapshot ?? null).toBeNull();
+  });
+
+  it('valid -> active, deactivate, add a broken node, re-activate refused, fix, re-activate replaces the snapshot', async () => {
+    const good = [{ action: 'goto', params: { url: 'https://ok.example' } }];
+    const created = await request(app).post('/workflows/ph1').send({ name: 'Cycle', steps: good });
+    const id = created.body.workflow.id;
+    expect((await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true })).status).toBe(200);
+    expect((await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: false })).status).toBe(200);
+
+    const broken = [...good, { action: 'fill', params: { text: 'x' } }];
+    await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Cycle', steps: broken });
+    const refused = await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    expect(refused.status).toBe(422);
+    expect(refused.body.details).toEqual(['Node 2 (fill) needs a selector']);
+    const mid = await request(app).get(`/workflows/ph1/${id}`);
+    expect(mid.body.workflow.active).toBe(false);
+    expect(mid.body.workflow.activeSnapshot.steps).toEqual(good); // previous snapshot untouched
+
+    const fixed = [...good, { action: 'fill', params: { selector: '#q', text: 'x' } }];
+    await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Cycle', steps: fixed });
+    const ok = await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    expect(ok.status).toBe(200);
+    expect(ok.body.workflow.activeSnapshot.steps).toEqual(fixed);
+  });
+
+  it('an invalid edit on an ACTIVE workflow never reaches its frozen snapshot', async () => {
+    const good = [{ action: 'goto', params: { url: 'https://live.example' } }];
+    const created = await request(app).post('/workflows/ph1').send({ name: 'Live', steps: good });
+    const id = created.body.workflow.id;
+    await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Live', steps: [{ action: 'nope', params: {} }] });
+    queue.lastData = null;
+    const run = await request(app).post(`/workflows/ph1/${id}/run`).send({});
+    expect(run.status).toBe(200);
+    expect(queue.lastData.steps).toEqual(good);
+  });
+
+  it('the versions list offers only the initial version and manual saves, numbered apart', async () => {
+    const created = await request(app).post('/workflows/ph1').send({ name: 'Ver', steps: [{ action: 'log', params: {} }] });
+    const id = created.body.workflow.id;
+    for (let i = 0; i < 5; i++) await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Ver', steps: [{ action: 'log', params: { message: String(i) } }] });
+    await request(app).post(`/workflows/ph1/${id}/save`).send({ label: 'one' });
+    await request(app).post(`/workflows/ph1/${id}/save`).send({ label: 'two' });
+    const list = await request(app).get(`/workflows/ph1/${id}/versions`);
+    expect(list.body.versions.map((v: any) => [v.kind, v.label ?? null])).toEqual([
+      ['manual', 'two'], ['manual', 'one'], ['initial', null],
+    ]);
+  });
+
+  it('legacy per-edit autosave rows are pruned safely: manual and initial kept, restore of a pruned row is 404', async () => {
+    const { WorkflowService } = await import('../../src/services/workflow.service');
+    const svc = new WorkflowService(conn as any);
+    const created = await request(app).post('/workflows/ph1').send({ name: 'Legacy', steps: [{ action: 'log', params: {} }] });
+    const id = created.body.workflow.id;
+    // Simulate an old build: untagged per-edit rows v2..v4 + the initial row untagged.
+    const repo: any = (svc as any).repo;
+    const init = (await repo.listVersions('ph1', id))[0];
+    await repo.saveVersion('ph1', id, { ...init, kind: undefined });
+    for (const v of [2, 3, 4]) await repo.saveVersion('ph1', id, { ...init, version: v, kind: undefined });
+    await request(app).post(`/workflows/ph1/${id}/save`).send({ label: 'keep me' }); // also prunes
+    const all = await svc.listAllVersions('ph1', id);
+    expect(all.map((s: any) => s.kind).sort()).toEqual(['initial', 'manual']);
+    expect((await request(app).post(`/workflows/ph1/${id}/versions/3/restore`).send({})).status).toBe(404);
+  });
+
+  it('import never overwrites: a duplicate name gets a predictable " (2)" suffix and starts inactive', async () => {
+    const file = { format: 'plyr-workflow', version: 1, workflow: { name: 'Dup', steps: [{ action: 'log', params: {} }] } };
+    const a = await request(app).post('/workflows/ph2/import').send(file);
+    const b = await request(app).post('/workflows/ph2/import').send(file);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(a.body.workflow.name).toBe('Dup');
+    expect(b.body.workflow.name).toBe('Dup (2)');
+    expect(b.body.renamedFrom).toBe('Dup');
+    expect(b.body.workflow.active).toBe(false);
+    expect(b.body.workflow.id).not.toBe(a.body.workflow.id);
+  });
+
+  it('a schedule bound to a workflow is resolved at FIRE time (inactive -> skipped, active -> frozen design)', async () => {
+    const { WorkflowService, resolveScheduledWorkflow } = await import('../../src/services/workflow.service');
+    const svc = new WorkflowService(conn as any);
+    const steps = [{ action: 'goto', params: { url: 'https://sched.example' } }];
+    const created = await request(app).post('/workflows/ph3').send({ name: 'Sched', steps });
+    const id = created.body.workflow.id;
+    await request(app).patch(`/workflows/ph3/${id}/state`).send({ active: true });
+    const sched = await request(app).post('/schedule').send({ userId: 'ph3', cron: '0 9 * * *', name: 's', workflowId: id });
+    expect(sched.status).toBe(200);
+    expect(queue.lastData.__scheduleWorkflowId).toBe(id);
+
+    await request(app).put(`/workflows/ph3/${id}`).send({ name: 'Sched', steps: [{ action: 'log', params: {} }] });
+    const live = await resolveScheduledWorkflow(svc, 'ph3', id);
+    expect('steps' in live && live.steps).toEqual(steps);
+
+    await request(app).patch(`/workflows/ph3/${id}/state`).send({ active: false });
+    expect(await resolveScheduledWorkflow(svc, 'ph3', id)).toEqual({ skip: 'bound workflow is inactive' });
   });
 });

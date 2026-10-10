@@ -80,6 +80,8 @@ async function saveWorkflow(userId: string): Promise<string> {
 describe('workflow workspace binding on a run', () => {
   it('POST /workflows/:u/:id/run always binds the run to that workflow', async () => {
     const id = await saveWorkflow('alice');
+    // New workflows start inactive; a background run needs an activated one.
+    expect((await request(app).patch(`/workflows/alice/${id}/state`).send({ active: true })).status).toBe(200);
     const res = await request(app).post(`/workflows/alice/${id}/run`).send({});
     expect(res.status).toBe(200);
     expect(lastData.__workflowId).toBe(id);

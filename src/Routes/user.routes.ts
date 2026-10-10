@@ -27,6 +27,7 @@ import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
 import type { WorkflowActiveSnapshot } from '../types';
+import { activationIssues, formatActivationIssue, installedModuleExists } from '../core/ActivationCheck';
 import { parseExchange, buildNativeEnvelope, enforceImportedCodeDisabled } from '../core/WorkflowExchange';
 import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
@@ -497,6 +498,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           __scheduled: true,
           __scheduleName: scheduleName,
           __scheduleId: scheduleId,
+          // Re-resolved by the worker at every fire: an inactive workflow is
+          // skipped, and the CURRENT frozen design is what runs.
+          ...(body.workflowId ? { __scheduleWorkflowId: body.workflowId, __workflowId: body.workflowId } : {}),
           ...(scheduleWorkspace ? { __workspace: scheduleWorkspace } : {})
         },
         {
@@ -1097,8 +1101,18 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Disable Code nodes AGAIN on the validated (normalised) steps — the ones
       // actually stored. See enforceImportedCodeDisabled.
       const { steps, count: codeDisabled } = enforceImportedCodeDisabled(validateSteps(parsed.workflow.steps as any, plan));
+      // An import NEVER overwrites: it always creates a new workflow. A name
+      // already used by this user gets the first free " (n)" suffix, so two
+      // workflows never share a name and the outcome is predictable.
+      const taken = new Set((await workflowService.list(userId)).map((w) => w.name));
+      const baseName = String(parsed.workflow.name);
+      let importName = baseName;
+      for (let n = 2; taken.has(importName); n++) {
+        const suffix = ` (${n})`;
+        importName = baseName.slice(0, 120 - suffix.length) + suffix;
+      }
       const wf = await workflowService.create(userId, {
-        name: parsed.workflow.name,
+        name: importName,
         description: parsed.workflow.description,
         steps,
         headless: (parsed.workflow.headless as any) ?? null,
@@ -1106,7 +1120,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         active: false,
       });
       await provisionWorkspace(userId, wf.id);
-      return res.status(201).json({ success: true, workflow: wf, summary: parsed.summary, codeDisabled });
+      return res.status(201).json({
+        success: true, workflow: wf, summary: parsed.summary, codeDisabled,
+        ...(importName !== baseName ? { renamedFrom: baseName } : {}),
+      });
     } catch (e: unknown) {
       res.status(400).json({ success: false, code: 'steps', error: (e as Error).message });
     }
@@ -1474,17 +1491,25 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         const current = await workflowService.get(userId, workflowId);
         if (!current) return res.status(404).json({ success: false, error: 'Workflow not found' });
         const plan = await UserManager.getUserPlan(connection, userId);
+        const refuse = (details: string[]) => res.status(422).json({
+          success: false,
+          error: 'Workflow has errors and cannot be activated',
+          code: 'activation_invalid',
+          details,
+          active: current.active,
+        });
         try {
           validateSteps(current.steps, plan);
         } catch (err: unknown) {
-          return res.status(422).json({
-            success: false,
-            error: 'Workflow has errors and cannot be activated',
-            code: 'activation_invalid',
-            details: [(err as Error).message],
-            active: current.active,
-          });
+          return refuse([(err as Error).message]);
         }
+        // Every blocking problem at once (unknown actions, missing required
+        // params, disabled Code nodes...), not just the first shape error.
+        const issues = activationIssues(current.steps, {
+          codeNodeEnabled: config.CODE_NODE_ENABLED,
+          moduleExists: installedModuleExists,
+        });
+        if (issues.length) return refuse(issues.map(formatActivationIssue));
         activeSnapshot = WorkflowService.buildActiveSnapshot(current);
       }
 

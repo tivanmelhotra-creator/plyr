@@ -46,6 +46,48 @@
   function t(k) { return U().t(k); }
   function esc(s) { return U().esc(s); }
 
+  /**
+   * A refused state change. For an activation refused by the server's
+   * validation (422 activation_invalid) every blocking problem is listed in a
+   * dialog the user can read and dismiss; anything else is a toast. Never a
+   * success message: callers only toast success after the server confirmed.
+   */
+  function showActivationError(err) {
+    var body = err && err.body;
+    var details = body && Array.isArray(body.details) ? body.details.filter(Boolean) : [];
+    if (!(body && body.code === 'activation_invalid' && details.length)) {
+      U().toast((err && err.message) || t('ws.stateFailed'), 'error');
+      return;
+    }
+    U().toast(t('ws.activationRefused'), 'error');
+    var old = document.getElementById('activation-error-dialog');
+    if (old) old.remove();
+    var dlg = document.createElement('div');
+    dlg.id = 'activation-error-dialog';
+    dlg.className = 'fe-version-dialog act-err-dialog';
+    dlg.setAttribute('role', 'alertdialog');
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.setAttribute('aria-labelledby', 'act-err-title');
+    dlg.innerHTML =
+      '<div class="fe-version-dialog-card">' +
+        '<h3 id="act-err-title" class="fe-version-dialog-title">' + esc(t('ws.activationRefusedTitle')) + '</h3>' +
+        '<p class="fe-version-dialog-hint">' + esc(t('ws.activationRefusedHint')) + '</p>' +
+        '<ul class="act-err-list">' + details.slice(0, 20).map(function (d) {
+          return '<li>' + esc(String(d)) + '</li>';
+        }).join('') + (details.length > 20 ? '<li>…</li>' : '') + '</ul>' +
+        '<div class="fe-version-dialog-actions">' +
+          '<button type="button" class="fe-version-dialog-confirm" id="act-err-ok">' + esc(t('ws.activationRefusedOk')) + '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(dlg);
+    var close = function () { dlg.remove(); };
+    dlg.addEventListener('click', function (ev) { if (ev.target === dlg) close(); });
+    dlg.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } });
+    var ok = dlg.querySelector('#act-err-ok');
+    ok.addEventListener('click', close);
+    ok.focus();
+  }
+
   // Inline SVG icons (public/js/icons.js). IC() is for chrome glyphs, ICON() for
   // ACTION_CATALOG actions. Emoji were replaced project-wide because the target
   // font stack has no emoji coverage — they rendered as empty boxes (□).
@@ -950,8 +992,14 @@
             '<button type="button" class="fe-tbbtn fe-versionsbtn" id="fe-versions" aria-haspopup="dialog" aria-expanded="false"' +
               ' title="' + esc(t('sh.versionsHint')) + '" aria-label="' + esc(t('sh.versionsHint')) + '">' + IC('history', 14) + '</button>' +
             '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
+            // Extract / Import share one compact group: the same native
+            // `plyr-workflow` file goes out and comes back in.
+            '<span class="fe-xfer" role="group" aria-label="' + esc(t('sh.fileGroup')) + '">' +
             '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
               IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
+            '<button type="button" class="fe-tbbtn fe-importbtn" id="fe-import" title="' + esc(t('sh.importHint')) + '"' +
+              ' aria-label="' + esc(t('sh.import')) + '">' + IC('upload', 14) + '</button>' +
+            '</span>' +
             '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
               ' aria-haspopup="dialog" aria-expanded="false"' +
               ' title="' + esc(t('rio.filesMenu')) + '" aria-label="' + esc(t('rio.filesMenu')) + '">' +
@@ -1958,8 +2006,7 @@
           U().toast(t(key), 'success');
         })
         .catch(function (err) {
-          var detail = err && err.body && err.body.details && err.body.details[0];
-          U().toast(detail ? (err.message + ': ' + detail) : ((err && err.message) || t('ws.stateFailed')), 'error');
+          showActivationError(err);
         })
         .then(function () { toggleBusy = false; refreshToggles(); refreshRunInfo(); });
     }
@@ -2006,6 +2053,7 @@
     // Manual versions are separate from autosave history. Restore is an
     // ordinary edit: it writes a new autosave entry and never touches Active.
     var versionsBtn = root.querySelector('#fe-versions');
+    var MANUAL_BASE = 1000000000; // = MANUAL_VERSION_BASE in workflow.service.ts
     var versionsPanel = null;
     function closeVersions() {
       if (versionsPanel && versionsPanel.parentNode) versionsPanel.parentNode.removeChild(versionsPanel);
@@ -2028,11 +2076,15 @@
       list.innerHTML = versions.map(function (v) {
         var isManual = v.kind === 'manual';
         var when = v.savedAt ? new Date(v.savedAt).toLocaleString() : '';
+        // The server lists only the initial version and manual saves.
         var what = isManual
           ? (v.label ? esc(v.label) : esc(t('sh.versionManualDefault')))
-          : esc(t('sh.versionAuto'));
-        return '<li class="fe-version-row' + (isManual ? ' is-manual' : '') + '">' +
-          '<span class="fe-version-meta"><strong>v' + esc(String(v.designVersion || v.version)) + '</strong> ' +
+          : esc(t('sh.versionInitial'));
+        // Manual saves are numbered #1, #2... (their own range); the initial
+        // version is the design as it was created.
+        var tag = isManual ? '#' + (Number(v.version) - MANUAL_BASE) : t('sh.versionInitialTag');
+        return '<li class="fe-version-row' + (isManual ? ' is-manual' : ' is-initial') + '">' +
+          '<span class="fe-version-meta"><strong>' + esc(String(tag)) + '</strong> ' +
           '<span class="fe-version-what">' + what + '</span>' +
           '<span class="fe-version-when">' + esc(when) + '</span></span>' +
           '<button type="button" class="fe-version-restore" data-version="' + esc(String(v.version)) + '">' +
@@ -2123,19 +2175,43 @@
         });
       };
       versionsPanel.querySelector('.fe-versions-save').addEventListener('click', function () {
-        openVersionNameDialog(function (label) {
-          // Flush the current design first so the manual version is the latest one.
-          var flush = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
-          return flush.then(function () {
-            var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
-            return API.saveWorkflowVersion(effectiveUserId(), c.id, label);
-          }).then(function () {
-            U().toast(t('sh.versionSaved'), 'success');
-            loadList();
-          });
-        });
+        saveManualVersion(loadList);
       });
+      versionsPanel.__reload = loadList;
       loadList();
+    }
+    /**
+     * The ONE manual-save path (top-bar Save, Ctrl+S, the panel button): ask
+     * for a name, flush autosave so the snapshot is the current design, then
+     * write exactly one manual version. Cancel / Escape write nothing.
+     */
+    var manualSaveBusy = false;
+    function saveManualVersion(after) {
+      var cur0 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!cur0 || !cur0.id) {
+        // A draft has no record yet: persist it first, then ask for the name.
+        if (FE.notifyDocumentChanged) FE.notifyDocumentChanged();
+        var first = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
+        first.then(function () {
+          var c1 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          if (c1 && c1.id) saveManualVersion(after);
+          else U().toast(t('sh.saveFailed'), 'error');
+        }).catch(function (err) { U().toast((err && err.message) || t('sh.saveFailed'), 'error'); });
+        return;
+      }
+      if (manualSaveBusy) return;
+      openVersionNameDialog(function (label) {
+        manualSaveBusy = true;
+        var flush = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
+        return flush.then(function () {
+          var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          return API.saveWorkflowVersion(effectiveUserId(), c.id, label);
+        }).then(function () {
+          U().toast(t('sh.versionSaved') + ': ' + label, 'success');
+          if (after) after();
+          else if (versionsPanel && versionsPanel.__reload) versionsPanel.__reload();
+        }).finally(function () { manualSaveBusy = false; });
+      });
     }
     if (versionsBtn) versionsBtn.addEventListener('click', function (ev) {
       ev.stopPropagation();
@@ -2159,20 +2235,11 @@
       saveNowBtn.setAttribute('data-state', st || 'draft');
       saveNowBtn.disabled = st === 'saving';
     }
-    if (saveNowBtn) saveNowBtn.addEventListener('click', function () {
-      if (!FE.autosaveNow) return;
-      var before = FE.getAutosaveStatus ? FE.getAutosaveStatus() : '';
-      // Nothing dirty and already persisted: say so instead of a fake save.
-      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
-      if (before === 'saved' && cur && cur.id) { U().toast(t('sh.alreadySaved'), 'info'); return; }
-      if (FE.notifyDocumentChanged && !(cur && cur.id)) FE.notifyDocumentChanged();
-      FE.autosaveNow()
-        .then(function () { refreshSaveBtn(); refreshWfLabel(); })
-        .catch(function (err) {
-          U().toast((err && err.message) || t('sh.saveFailed'), 'error');
-          refreshSaveBtn();
-        });
-      refreshSaveBtn();
+    // Save = create a named, restorable MANUAL version. Autosave keeps running
+    // on its own and never creates versions (spec §6: two independent things).
+    if (saveNowBtn) saveNowBtn.addEventListener('click', function (ev) {
+      if (ev) ev.stopPropagation();
+      saveManualVersion(null);
     });
     var removeSaveWatch = FE.onAutosaveStatus ? FE.onAutosaveStatus(refreshSaveBtn) : null;
     refreshSaveBtn();
@@ -2562,9 +2629,32 @@
     modeBtns.forEach(function (b) {
       b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); });
     });
-    // Extract (top bar) = the Extraction view of the open workflow.
+    // Extract (top bar) = download the open workflow as the native
+    // `plyr-workflow` file, built from the CURRENT canvas (the Extraction tab
+    // was removed; the Extract capability stays). Import reads the same file.
     var extractBtn = root.querySelector('#fe-extract');
-    if (extractBtn) extractBtn.addEventListener('click', function () { setMode('extract'); });
+    if (extractBtn) extractBtn.addEventListener('click', function () {
+      var curx = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      exportWorkflowJson({
+        id: curx && curx.id,
+        name: (curx && curx.name) || t('fe.untitled'),
+        description: (curx && curx.description) || '',
+        steps: FE.toDocumentSteps(),
+        headless: curx && curx.headless,
+      });
+    });
+    var importBtn = root.querySelector('#fe-import');
+    if (importBtn) importBtn.addEventListener('click', function () {
+      // A validated import creates a NEW, inactive workflow (never overwrites)
+      // and opens it in the editor.
+      importWorkflowJson(effectiveUserId(), function (res) {
+        var wf = res && res.workflow;
+        if (res && res.renamedFrom) {
+          U().toast(t('ex.renamed').replace('{from}', res.renamedFrom).replace('{to}', wf.name), 'info');
+        }
+        if (wf && wf.id) { FE.openWorkflow(wf, wf.steps || []); refreshWfLabel(); refreshShell(); }
+      });
+    });
     // The editor always opens on the canvas; the last mode is not restored
     // (landing on a log after creating a workflow is disorienting).
     var initialMode = 'editor';
@@ -2928,9 +3018,9 @@
           .then(function (res) {
             showImportSummary(res.summary, res.codeDisabled, function () {
               API.importWorkflow(uid, p.envelope)
-                .then(function () {
+                .then(function (res) {
                   U().toast(t('ws.imported'), 'success');
-                  if (done) done();
+                  if (done) done(res);
                 })
                 .catch(function (err) { U().toast(err.message, 'error'); });
             });
@@ -3426,7 +3516,7 @@
           paintWorkflowsTab();
         })
         .catch(function (err) {
-          U().toast(err.message || t('ws.stateFailed'), 'error');
+          showActivationError(err);
           if (btn) btn.disabled = false;
         });
     }

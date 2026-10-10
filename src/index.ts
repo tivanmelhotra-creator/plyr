@@ -17,7 +17,8 @@ import { UserManager } from './core/UserManager';
 import { QuotaManager } from './core/QuotaManager';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import { smartLimiter, adminLimiter, pairingLimiter } from './rate-limit';
-import { sanitizeLogMessage } from './validation';
+import { sanitizeLogMessage, validateSteps } from './validation';
+import { WorkflowService, resolveScheduledWorkflow } from './services/workflow.service';
 import {
   requireApiKey,
   initApiKeyManager,
@@ -32,7 +33,7 @@ import { isVipUser } from './utils/helpers';
 import { STATS_KEY, getUserActiveJobsKey, getLiveChannel } from './utils/redis-keys';
 import { sendWebhook, sendStepWebhook } from './services/webhook.service';
 import { persistJob } from './services/job.service';
-import { initStorage, executionsFor } from './services/storage';
+import { initStorage, executionsFor, workflowStoreFor } from './services/storage';
 import { closeSharedSqlite } from './core/SqliteStore';
 import type { ExecutionStatus } from './services/execution.repository';
 
@@ -644,6 +645,28 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
     console.log(`[JOB:${job.id}] ⚡ Already cancelled - skipping`);
     await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
     return;
+  }
+
+  // A schedule bound to a saved workflow follows that workflow's CURRENT state
+  // at every fire: inactive -> skipped (no run, no history entry); active ->
+  // runs the frozen activation snapshot, never the live Editor design.
+  if (job.data.__scheduled && typeof job.data.__scheduleWorkflowId === 'string') {
+    try {
+      const svc = new WorkflowService(workflowStoreFor(connection));
+      // Same owner lookup the /schedule route used when it accepted the binding.
+      const r = await resolveScheduledWorkflow(svc, userId, job.data.__scheduleWorkflowId);
+      if ('skip' in r) {
+        console.log(`[JOB:${job.id}] schedule skipped: ${r.skip} (${job.data.__scheduleWorkflowId})`);
+        await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
+        return;
+      }
+      job.data.steps = validateSteps(r.steps, await UserManager.getUserPlan(connection, userId));
+      job.data.__workflowVersion = r.version;
+    } catch (e) {
+      console.warn(`[JOB:${job.id}] schedule could not resolve its workflow: ${(e as Error).message}`);
+      await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
+      return;
+    }
   }
 
   const userPlan = await UserManager.getUserPlan(connection, userId);

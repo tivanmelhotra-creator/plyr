@@ -411,7 +411,8 @@ export interface WorkflowVersionSnapshot {
   webhookUrl?: string | null;
   profileId?: string;
   savedAt: string;
-  kind?: 'auto' | 'manual';
+  // `initial` = the snapshot written when the workflow was created.
+  kind?: 'initial' | 'auto' | 'manual';
   // Design version the snapshot was taken from (manual entries use their own number range).
   designVersion?: number;
   label?: string | null;

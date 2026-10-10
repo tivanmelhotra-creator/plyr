@@ -472,8 +472,11 @@
     markLauncherCurrent(area);
 
     // page title
-    el.pageTitle.setAttribute('data-i18n', 'nav.' + route);
-    el.pageTitle.textContent = I18N.t('nav.' + route);
+    // The shell bar shows the brand only; the page title element is optional.
+    if (el.pageTitle) {
+      el.pageTitle.setAttribute('data-i18n', 'nav.' + route);
+      el.pageTitle.textContent = I18N.t('nav.' + route);
+    }
 
     // FULL-BLEED ROUTES. `docs/uiux/state-empty-canvas.webp` puts the editor's
     // OWN top bar at y=0 and its status bar at the very bottom of the screen:
@@ -815,7 +818,8 @@
     });
     el.langToggleLogin.addEventListener('click', function () { I18N.toggle(); });
 
-    el.logoutBtn.addEventListener('click', doLogout);
+    // Logout lives in the editor account menu now (AppUtil.logout).
+    if (el.logoutBtn) el.logoutBtn.addEventListener('click', doLogout);
     el.langToggle.addEventListener('click', function () { I18N.toggle(); });
     // Rail `+`: create + persist a workflow now, then open it (views.js).
     var newWfBtn = document.getElementById('nav-new-workflow');

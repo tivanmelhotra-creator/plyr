@@ -240,7 +240,8 @@ describe('canvas chrome — behaviour contracts', () => {
   });
 
   it('canvas lock freezes geometry only — selection still works', () => {
-    const idx = FE.indexOf('if (canvasLocked) return;');
+    // The node-drag guard (the Pan tool has its own lock bail-out earlier).
+    const idx = FE.indexOf('if (canvasLocked) return;\n      var wp = worldPoint');
     expect(idx).toBeGreaterThan(-1);
     // selectNode() must run BEFORE the lock bail-out, so a locked canvas can
     // still be inspected and its NDV opened.

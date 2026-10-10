@@ -145,42 +145,15 @@
           </div>
         </div>
 
-        <h2 class="page-title" id="page-title" data-i18n="nav.workspace">Workspace</h2>
-        <div class="topbar-actions">
-          <!-- Dual Browser Mode switch (Remote / Local).
-               Lives in the SHELL header, not in the editor: the mode decides
-               which browser runs this user's automation everywhere -- editor,
-               jobs, live view -- so a control docked inside one screen would
-               imply a scope it does not have. It is a popover rather than a
-               plain toggle because switching can be REFUSED (local mode off on
-               the server, or no agent connected), and a refusal needs room for a
-               reason plus the command that fixes it. -->
-          <div class="bmode" id="bmode">
-            <button
-              class="bmode-btn"
-              id="bmode-btn"
-              type="button"
-              aria-haspopup="dialog"
-              aria-expanded="false"
-              aria-controls="bmode-menu"
-              title="Browser mode"
-            >
-              <span class="bmode-dot" id="bmode-dot"></span>
-              <span class="bmode-label" id="bmode-label">—</span>
-            </button>
-            <div class="bmode-menu" id="bmode-menu" role="dialog" aria-label="Browser mode" hidden>
-              <div class="bmode-title" data-i18n="mode.title">Browser mode</div>
-              <!-- Radios, matching the spec's "○ Remote Browser / ○ Local
-                   Browser". Rendered by app.js from the server's own registry,
-                   so a mode the server does not offer cannot appear here. -->
-              <div class="bmode-opts" id="bmode-opts" role="radiogroup" aria-label="Browser mode"></div>
-              <div class="bmode-note" id="bmode-note" hidden></div>
-              <div class="bmode-agent" id="bmode-agent" hidden></div>
-            </div>
-          </div>
+        <!-- Workspace top bar = brand only (logo + project name). The page
+             title, Browser-mode switch and Logout were removed from here
+             (phase-1 spec §2). Logout stays in the editor account menu;
+             the browser mode keeps its server-side default (Remote). -->
+        <div class="topbar-actions" hidden>
+          <!-- Inert hosts: app.js binds these ids (language/theme are reached
+               from Settings and the editor account menu). -->
           <button class="icon-btn" id="lang-toggle" title="Language" data-icon="globe" hidden></button>
           <button class="icon-btn" id="theme-toggle" title="Theme" data-icon="sparkles" hidden></button>
-          <button class="btn btn-ghost btn-sm" id="logout-btn" data-i18n="nav.logout">Logout</button>
         </div>
       </header>
 

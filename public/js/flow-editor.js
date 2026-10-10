@@ -1333,6 +1333,14 @@
     header.addEventListener('mousedown', function (ev) {
       if (ev.button !== 0) return;
       ev.stopPropagation();
+      // Pan tool: a drag that starts on a node moves the VIEW, never the node
+      // and never the selection (Select tool owns node interaction).
+      if (canvasTool === 'pan') {
+        if (canvasLocked) return;
+        drag = { type: 'pan', startX: ev.clientX, startY: ev.clientY,
+          ox: state.view.x, oy: state.view.y };
+        return;
+      }
       var additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
       if (additive && !isStart) {
         state.selSet[node.id] = !state.selSet[node.id];
@@ -1363,6 +1371,7 @@
 
     card.addEventListener('click', function (ev) {
       ev.stopPropagation();
+      if (canvasTool === 'pan') return; // Pan tool never selects
       selectNode(node.id);
     });
 

@@ -135,6 +135,42 @@ export async function importWorkflowsFromRedis(redis: IORedis, db: SqliteDb): Pr
   return report;
 }
 
+export const LEGACY_AUTOSAVE_PRUNE_MARKER = 'legacy_autosave_pruned';
+
+/**
+ * One-time cleanup of the per-edit autosave history older builds wrote (one
+ * row per edit). Autosave no longer writes history, so these rows are dead
+ * weight that the Versions list would otherwise offer as restore points.
+ *
+ * Kept, always: every `manual` row, every `initial` row, and for a workflow
+ * without an `initial` row its OLDEST row (the creation snapshot, or the
+ * oldest state the old history limit left), re-tagged `initial`. Removed:
+ * every other non-manual row. One transaction;
+ * a marker in `meta` makes it run once per database file.
+ */
+export function pruneLegacyAutosavesOnce(db: SqliteDb): number {
+  if (getMeta(db, LEGACY_AUTOSAVE_PRUNE_MARKER)) return 0;
+  let removed = 0;
+  db.transaction(() => {
+    const kindOf = "COALESCE(json_extract(data, '$.kind'), 'auto')";
+    // Tag the legacy creation snapshot of workflows that have no `initial` row.
+    db.prepare(`
+      UPDATE workflow_versions SET data = json_set(data, '$.kind', 'initial')
+      WHERE ${kindOf} = 'auto' AND version = (
+        SELECT MIN(w3.version) FROM workflow_versions w3 WHERE w3.user_id = workflow_versions.user_id
+          AND w3.workflow_id = workflow_versions.workflow_id
+          AND COALESCE(json_extract(w3.data, '$.kind'), 'auto') = 'auto')
+      AND NOT EXISTS (
+        SELECT 1 FROM workflow_versions w2 WHERE w2.user_id = workflow_versions.user_id
+          AND w2.workflow_id = workflow_versions.workflow_id
+          AND COALESCE(json_extract(w2.data, '$.kind'), 'auto') = 'initial')
+    `).run();
+    removed = db.prepare(`DELETE FROM workflow_versions WHERE ${kindOf} = 'auto'`).run().changes;
+    setMeta(db, LEGACY_AUTOSAVE_PRUNE_MARKER, new Date().toISOString());
+  })();
+  return removed;
+}
+
 /** Called once at boot. Never throws: a failed import must not stop the server. */
 export async function initStorage(redis: IORedis, log: (m: string) => void = console.log): Promise<StorageHandles> {
   const h = getStorage(redis);
@@ -151,6 +187,12 @@ export async function initStorage(redis: IORedis, log: (m: string) => void = con
     for (const e of rep.errors.slice(0, 20)) log(`[STORAGE] import warning: ${e}`);
   } catch (e) {
     log(`[STORAGE] Redis import failed (will retry next boot): ${(e as Error).message}`);
+  }
+  try {
+    const pruned = pruneLegacyAutosavesOnce(h.db);
+    if (pruned > 0) log(`[STORAGE] removed ${pruned} legacy autosave history entr${pruned === 1 ? 'y' : 'ies'} (manual and initial versions kept)`);
+  } catch (e) {
+    log(`[STORAGE] legacy autosave cleanup skipped: ${(e as Error).message}`);
   }
   try {
     const n = h.executions?.prune() ?? 0;

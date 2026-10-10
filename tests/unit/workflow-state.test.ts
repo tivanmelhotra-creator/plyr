@@ -81,11 +81,11 @@ const sampleInput = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('Workflow.active / .liveBrowser — defaults', () => {
-  it('a freshly created workflow is Active with Live Browser OFF', async () => {
+  it('a freshly created workflow is INACTIVE with Live Browser OFF', async () => {
     const wf = await svc.create('u1', sampleInput());
-    // Active by default: a workflow you just built should be runnable without a
-    // second action. Streaming is opt-in because it costs a visible browser.
-    expect(wf.active).toBe(true);
+    // Inactive by default: nothing runs in the background until the user
+    // activates it, which validates and freezes the design (phase-1 spec §5).
+    expect(wf.active).toBe(false);
     expect(wf.liveBrowser).toBe(false);
   });
 
@@ -182,8 +182,8 @@ describe('WorkflowService.setState', () => {
 
   it('is scoped per user: another user cannot flip your switch', async () => {
     const wf = await svc.create('u1', sampleInput());
-    expect(await svc.setState('u2', wf.id, { active: false })).toBeNull();
-    expect((await svc.get('u1', wf.id))?.active).toBe(true);
+    expect(await svc.setState('u2', wf.id, { liveBrowser: true })).toBeNull();
+    expect((await svc.get('u1', wf.id))?.liveBrowser).toBe(false);
   });
 });
 
