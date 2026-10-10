@@ -19,8 +19,11 @@ const stepsEnvelope = z
   .array(z.unknown(), { invalid_type_error: 'Steps must be an array' })
   .min(1, 'Steps cannot be empty');
 
-// headless accepts boolean | string | number (coerced later by validateHeadless)
+// `headless` is still ACCEPTED (old clients and saved workflows send it) but
+// IGNORED: a run's browser visibility follows who started it (core/RunPolicy).
 const headlessLoose = z.union([z.boolean(), z.string(), z.number()]).optional();
+// Who started the run. Only the editor / Workspace click sends 'manual'.
+const originLoose = z.enum(['manual', 'automatic']).optional();
 
 // Step 28: optional trigger data injected as the workflow's initial item
 // stream. Either a webhook-style envelope ({ source:'webhook', body, headers,
@@ -44,6 +47,7 @@ export const runBodySchema = z.object({
   }),
   steps: stepsEnvelope,
   headless: headlessLoose,
+  origin: originLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
   triggerData: triggerDataLoose,
   workflowId: workflowIdOptional,
@@ -135,6 +139,7 @@ export const runNodeBodySchema = z.object({
   steps: stepsEnvelope,
   nodeIndex: z.number().int().min(0).optional(),
   headless: headlessLoose,
+  origin: originLoose,
   triggerData: triggerDataLoose,
   workflowId: workflowIdOptional,
 });

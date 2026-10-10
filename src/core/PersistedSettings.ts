@@ -79,17 +79,14 @@ export function readSettingsFile(file: string = settingsFilePath()): Record<stri
  */
 export const PERSISTABLE_KEYS: readonly string[] = Object.freeze([
   'APP_ENV',
-  'AUTH_MODE',
   'API_TOKEN',
   'WEBHOOK_SECRET',
   'LIVE_SHARE_TTL_SEC',
   'CODE_NODE_ENABLED',
   'PUBLIC_DOMAIN',
-  'REAL_CHROME_ENABLED',
-  'DEFAULT_HEADLESS',
   'STEP_TIMEOUT_MS',
-  'MAX_CONCURRENT',
   'DOWNLOAD_TTL_MINUTES',
+  'WORKFLOW_MAX_VERSIONS',
   'EXECUTION_RETENTION_DAYS',
 ]);
 

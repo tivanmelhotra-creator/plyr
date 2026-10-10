@@ -133,36 +133,17 @@ export async function validateStartup(): Promise<StartupReport> {
     });
   }
 
-  // Multi-tenant mode with no keys in `.env`.
-  //
-  // THIS WAS WRITTEN AS `fatal` AND THAT WAS A BUG — recorded because the
-  // reasoning is the whole point of this file. The draft rule said "every
-  // request would be rejected", which is false twice over:
-  //
-  //   1. `config.API_KEYS` is only the .env SEED. The real key store is Redis
-  //      (`ApiKeyManager`, auth.ts:38): `initialize()` migrates .env keys INTO
-  //      Redis, and `validateAndGetOwner()` falls through to Redis for anything
-  //      not in .env. A server whose keys were all created through the admin
-  //      API has an empty API_KEYS and a perfectly working authentication.
-  //   2. `/admin` is mounted behind `requireAdminAuth` (ADMIN_SECRET) only, NOT
-  //      behind API-key auth — so `POST /admin/api-keys/generate` is a working
-  //      bootstrap path from a completely empty key list.
-  //
-  // Aborting the boot would therefore have destroyed a healthy instance and
-  // removed the very endpoint used to fix the state it was complaining about.
-  // It is a `warn` with the actual bootstrap command, because that is what the
-  // situation is: possibly fine, and trivially fixable if not.
-  if (!config.IS_SINGLE_USER && config.API_KEYS_ENABLED && config.API_KEYS.size === 0) {
+  // Multi-tenant mode was removed: one install = one owner. An old .env that
+  // still says DEPLOYMENT_MODE=multi is told so instead of silently changing
+  // behaviour (no admin API, no per-user keys, no plans exist any more).
+  if (config.REQUESTED_DEPLOYMENT_MODE && config.REQUESTED_DEPLOYMENT_MODE !== 'single') {
     issues.push({
-      id: 'no_api_keys',
+      id: 'deployment_mode_ignored',
       severity: 'warn',
       feature: 'Authentication',
-      problem: 'DEPLOYMENT_MODE=multi but API_KEYS is empty in .env. Keys already stored in '
-        + 'Redis still work; if there are none, no client can authenticate yet.',
-      fix: 'Either set API_KEYS=key1,key2 in .env, or mint one with: '
-        + 'curl -X POST localhost:' + config.PORT + '/admin/api-keys/generate '
-        + '-H "x-admin-token: $ADMIN_SECRET" -H "Content-Type: application/json" '
-        + '-d \'{"userId":"admin"}\'',
+      problem: `DEPLOYMENT_MODE=${config.REQUESTED_DEPLOYMENT_MODE} is no longer supported and is ignored. `
+        + 'This server is a single-owner install protected by one access token (API_TOKEN).',
+      fix: 'Remove DEPLOYMENT_MODE, API_KEYS, ADMIN_SECRET and plan settings from .env.',
     });
   }
 
@@ -170,12 +151,12 @@ export async function validateStartup(): Promise<StartupReport> {
   // A warning rather than fatal: an operator running production behind a VPN
   // is making a defensible choice, and refusing to boot would strand them.
   // `admin123` is for the disposable dev compose stack and for a laptop. On a
-  // profile that means "deployed" (server/production) it is REFUSED: the token
+  // profile that means "deployed" (production) it is REFUSED: the token
   // is in the source and in .env.example, and it drives a real browser. The one
   // legitimate server-profile use (docker-compose.dev.yml, loopback-only, wiped
   // on every run) opts in explicitly with ALLOW_DEFAULT_API_TOKEN=true, so the
   // exception is visible in the file that needs it instead of being implicit.
-  if (config.API_TOKEN_IS_DEFAULT && (config.APP_PROFILE === 'production' || config.APP_PROFILE === 'server')) {
+  if (config.API_TOKEN_IS_DEFAULT && config.APP_PROFILE === 'production') {
     const allowed = config.ALLOW_DEFAULT_API_TOKEN === true;
     issues.push({
       id: 'default_token_in_production',
@@ -189,40 +170,9 @@ export async function validateStartup(): Promise<StartupReport> {
     });
   }
 
-  // AUTH_MODE=open outside development is IGNORED (the token stays required);
-  // say so, so the operator is not surprised by a login screen.
-  if (config.AUTH_MODE_REQUESTED === 'open' && !config.AUTH_OPEN_ALLOWED) {
-    issues.push({
-      id: 'open_auth_ignored',
-      severity: 'warn',
-      feature: 'Authentication',
-      problem: `AUTH_MODE=open was requested but the profile is ${config.APP_PROFILE}: login without a token `
-        + 'is only honoured in development. The API token is required.',
-      fix: 'Remove AUTH_MODE=open, or run with APP_ENV=development on a machine only you can reach.',
-    });
-  }
-
   // ── Security minimums (Redis exposure, DevTools bind, HTTPS, webhooks, …) ──
   const security = await collectSecurity();
   issues.push(...security.issues);
-
-  // Worth more alarm than it first appears, which is why the consequence is
-  // spelled out rather than left as "change your secret": `/admin` sits behind
-  // ADMIN_SECRET ALONE (admin-auth.ts), and `POST /admin/api-keys/generate`
-  // mints working API keys. A shipped-default admin secret is therefore not a
-  // weak password on a minor endpoint — it is anonymous key minting on a
-  // reachable box.
-  if (!config.IS_SINGLE_USER && config.ADMIN_SECRET === 'admin_secret_change_me') {
-    issues.push({
-      id: 'default_admin_secret',
-      severity: 'warn',
-      feature: 'Admin API',
-      problem: 'ADMIN_SECRET is still the shipped default in multi-tenant mode. This value is '
-        + 'in .env.example and in the source, and /admin/api-keys/generate can mint API keys '
-        + 'with it — anyone who can reach this port can issue themselves access.',
-      fix: 'Set ADMIN_SECRET in .env to a value only you know, then restart.',
-    });
-  }
 
   // ── Remote Browser ───────────────────────────────────────────────────────
 
@@ -373,7 +323,7 @@ export async function enforceStartupValidation(
  * answer would be noise, and a unit test must never open sockets.
  */
 export async function collectSecurity() {
-  const reachable = config.APP_PROFILE === 'server' || config.APP_PROFILE === 'production';
+  const reachable = config.APP_PROFILE === 'production';
   return runSecurityChecks({
     profile: config.APP_PROFILE,
     debugBind: config.REAL_CHROME_DEBUG_BIND,

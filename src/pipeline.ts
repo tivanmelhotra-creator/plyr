@@ -890,8 +890,11 @@ async function runPipelineImpl(params: {
   isCancelled?: CancelChecker;
   profileManager: ProfileManager;
   userPlan: PlanConfig;
-  quotaManager: QuotaManager;
+  /** The browser profile this run holds the lease for (core/ProfileLease). */
+  profile?: ProfileRef;
   onEvent?: (type: string, data?: Record<string, unknown>) => void;
+  /** Who started the run (core/RunPolicy). Informational here: `headless` already follows it. */
+  origin?: 'manual' | 'automatic';
   // Step 28: optional initial item stream injected by a trigger
   // (webhook body/headers/query, schedule context, or manual data).
   // When omitted, the workflow starts with a single empty item.
@@ -907,7 +910,7 @@ async function runPipelineImpl(params: {
     isCancelled,
     profileManager,
     userPlan,
-    quotaManager,
+    profile,
     onEvent,
     initialItems
   } = params;
@@ -946,7 +949,7 @@ async function runPipelineImpl(params: {
     userPlan,
     variables: new Map<string, any>(),
     globalLoopCounter: 0,
-    quotaManager,
+    profile,
     onEvent,
     // Step 21: start every workflow with a single empty item, like n8n,
     // so the first node always has exactly one input item to act on.
@@ -959,25 +962,19 @@ async function runPipelineImpl(params: {
 
   let globalStepNumber = 0;
 
-  if (!(await quotaManager.hasQuotaRemaining(userId, userPlan.quota))) {
-    throw new Error('Daily quota exhausted');
-  }
-
-  const isVip = isVipUser(userPlan);
+  // Every server-side run owns its profile's browser for the duration of the
+  // run (the worker holds the profile lease). There is no quota and no tier.
+  const ownsProfileBrowser = true;
+  log(`[BROWSER] Run origin: ${params.origin || 'automatic'} -> ${describeVisibility(context.headless)} browser`);
 
   try {
-    // Local mode is checked FIRST and independently of the plan: it is a choice
-    // about which machine renders, not a tier. A user's own browser costs this
-    // server nothing, so gating it behind VIP would be charging for the cheaper
-    // option.
+    // Local mode is checked FIRST: it is a choice about which machine renders.
     if (browserModes.modeOf(userId) === 'local') {
       await ensureLocalContext(context);
     } else if (stepsUseExtensions(steps)) {
       await ensureExtensionContext(context);
-    } else if (isVip) {
-      await ensureVipBrowser(context);
     } else {
-      await ensureFreeContext(context);
+      await ensureProfileBrowser(context);
     }
 
     if (await context.isCancelled()) {
@@ -992,8 +989,6 @@ async function runPipelineImpl(params: {
   }
 
   const startTime = Date.now();
-  let lastQuotaCheck = Date.now();
-  let quotaExhausted = false;
   let lastTouchTime = Date.now();
   let watchdogActive = true;
 
@@ -1009,21 +1004,6 @@ async function runPipelineImpl(params: {
         return;
       }
 
-      const now = Date.now();
-
-      if (now - lastQuotaCheck > 5000) {
-        const elapsed = Math.round((now - lastQuotaCheck) / 1000);
-        const hasQuota = await quotaManager.consumeQuota(userId, elapsed, userPlan.quota);
-
-        if (!hasQuota) {
-          quotaExhausted = true;
-          watchdogActive = false;
-          clearInterval(watchdog);
-          log('[QUOTA] Quota exhausted');
-        }
-
-        lastQuotaCheck = now;
-      }
     } catch (err: any) {
       log(`[WATCHDOG] Error: ${err.message}`);
     }
@@ -1168,10 +1148,6 @@ async function runPipelineImpl(params: {
 
       if (context.globalLoopCounter > config.MAX_TOTAL_EXECUTION_OPS) {
         throw new Error('Safety Stop: Maximum operations exceeded');
-      }
-
-      if (quotaExhausted) {
-        throw new Error('QUOTA_EXHAUSTED');
       }
 
       if (await context.isCancelled()) {
@@ -2316,7 +2292,7 @@ async function runPipelineImpl(params: {
             }
 
             if (!found) {
-              if (newTab && isVip) {
+              if (newTab) {
                 const newPage = await context.browserContext.newPage();
                 await newPage.goto(url, { waitUntil, timeout });
                 context.page = newPage;
@@ -2545,7 +2521,7 @@ async function runPipelineImpl(params: {
           const followRedirects = parseBoolean(finalParams.followRedirects ?? true);
           const allowInternal = parseBoolean(finalParams.allowInternal);
 
-          validateHttpUrl(url, allowInternal && isVip);
+          validateHttpUrl(url, allowInternal);
 
           url = appendApiKeyToUrl(url, auth);
 
@@ -2719,10 +2695,8 @@ async function runPipelineImpl(params: {
               await ensureLocalContext(context);
             } else if (stepsUseExtensions(steps)) {
               await ensureExtensionContext(context);
-            } else if (isVip) {
-              await ensureVipBrowser(context);
             } else {
-              await ensureFreeContext(context);
+              await ensureProfileBrowser(context);
             }
             launchAction = 'launched';
           } else {
@@ -2822,10 +2796,9 @@ async function runPipelineImpl(params: {
 
           if (context.browserShared) {
             // Nothing to un-register with a pool: the browser was never ours.
-          } else if (isVip) {
-            profileManager.removeVipContext(userId);
           } else {
-            profileManager.removeFreeContext(jobId);
+            profileManager.removeVipContext(context.profile?.id || 'default');
+            profileBuildHash.delete(context.profile?.id || 'default');
           }
           profileManager.unregisterPage(jobId);
 
@@ -2945,7 +2918,7 @@ async function runPipelineImpl(params: {
             }
           }
 
-          if (!target && finalParams.createIfNotFound && isVip) {
+          if (!target && finalParams.createIfNotFound) {
             target = await context.browserContext.newPage();
             if (finalParams.newTabUrl) {
               await target.goto(finalParams.newTabUrl);
@@ -3357,14 +3330,14 @@ async function runPipelineImpl(params: {
           await savePartialOutputs(userId, jobId, stepOutputs, log);
         }
 
-        if (isVip) {
-          profileManager.updateActivity(userId);
+        if (ownsProfileBrowser && !context.browserShared) {
+          profileManager.updateActivity(context.profile?.id || 'default');
         }
 
       } catch (stepError: any) {
         // Step 27: never retry/swallow fatal control-flow errors.
         const __fatal = stepError instanceof WorkflowFailError
-          || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|QUOTA_EXHAUSTED|Safety Stop)/.test(String(stepError && stepError.message));
+          || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|Safety Stop)/.test(String(stepError && stepError.message));
         // Retry-on-fail: roll back this attempt's bookkeeping and try again.
         if (!__fatal && __policy.retryOnFail && shouldRetry(__attempt, __policy.maxTries)) {
           globalStepNumber = __sgBefore;
@@ -3427,25 +3400,15 @@ async function runPipelineImpl(params: {
     watchdogActive = false;
     clearInterval(watchdog);
 
-    const finalElapsed = Math.round((Date.now() - lastQuotaCheck) / 1000);
-    if (finalElapsed > 0) {
-      await quotaManager.consumeQuota(userId, finalElapsed, userPlan.quota);
-    }
-
     // Real Chrome runs: close the tabs this run opened, and only those.
     if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
 
     if (context.browserContext) {
       // 'browserShared' is local mode (the user's own browser) — never ours to
       // close. A finished run must leave their tabs exactly as it found them.
-      if (!isVip && !context.browserShared) {
-        try {
-          await context.browserContext.close();
-        } catch (err: any) {
-          log(`[BROWSER] Error closing context: ${err.message}`);
-        }
-        profileManager.removeFreeContext(jobId);
-      }
+      // The profile's browser stays open for the next run on the same profile
+      // (closed by the idle collector, or relaunched when visibility/options
+      // differ). Shared browsers (local mode, Real Chrome) are never ours.
       profileManager.unregisterPage(jobId);
     }
 
@@ -3468,13 +3431,6 @@ async function runPipelineImpl(params: {
     watchdogActive = false;
     clearInterval(watchdog);
 
-    const finalElapsed = Math.round((Date.now() - lastQuotaCheck) / 1000);
-    if (finalElapsed > 0) {
-      try {
-        await quotaManager.consumeQuota(userId, finalElapsed, userPlan.quota);
-      } catch { }
-    }
-
     await savePartialOutputs(userId, jobId, stepOutputs, log).catch(() => { });
 
     if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
@@ -3482,17 +3438,10 @@ async function runPipelineImpl(params: {
     if (context.browserContext) {
       // Same rule on the failure path, and it matters MORE here: a run that
       // errored must not also take the user's browser down with it.
-      if (!isVip && !context.browserShared) {
-        try {
-          await context.browserContext.close();
-        } catch { }
-        profileManager.removeFreeContext(jobId);
-      }
+      // The profile's browser stays open for the next run on the same profile
+      // (closed by the idle collector, or relaunched when visibility/options
+      // differ). Shared browsers (local mode, Real Chrome) are never ours.
       profileManager.unregisterPage(jobId);
-    }
-
-    if (err.message === 'QUOTA_EXHAUSTED') {
-      throw new Error('Daily quota exhausted');
     }
 
     if (err instanceof WorkflowFailError) {

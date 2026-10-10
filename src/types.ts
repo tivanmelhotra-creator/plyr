@@ -3,7 +3,7 @@ import type { Job } from 'bullmq';
 import type { ProfileManager } from './core/ProfileManager';
 import type { PlanConfig } from './config';
 import type { Condition } from './core/ConditionEngine';
-import type { QuotaManager } from './core/QuotaManager';
+import type { ProfileRef } from './core/ProfileLease';
 import type { WorkflowItem } from './core/WorkflowItems';
 
 // ============================================
@@ -151,7 +151,8 @@ export interface AutomationContext {
   userPlan: PlanConfig;
   variables: Map<string, unknown>;
   globalLoopCounter: number;
-  quotaManager: QuotaManager;
+  /** The browser profile this run holds the lease for (core/ProfileLease). */
+  profile?: ProfileRef;
   // Step 21 (item-based data model): the uniform item stream flowing
   // between steps (n8n-style). Starts as a single empty item.
   items: WorkflowItem[];

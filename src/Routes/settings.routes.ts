@@ -9,9 +9,8 @@
  *   PUT  /settings          {changes}    validate ALL, then apply ALL.
  *   POST /settings/generate {key}        server-generated token/secret, applied.
  *
- * Everything but /auth/mode is mounted behind requireApiKey (see index.ts), and
- * in multi-user mode it additionally requires the env (admin) key: in a
- * multi-tenant install a tenant must not be able to rotate the instance token.
+ * Everything but /auth/mode is mounted behind requireApiKey (see index.ts).
+ * One install = one owner, so passing that check is the whole authorization.
  */
 import { Router, type Response } from 'express';
 import { config } from '../config';
@@ -22,14 +21,12 @@ import {
   CATALOG, specOf, validateValue, generateSecret, PUBLIC_DEFAULT_TOKEN,
   type SettingSpec, type ValidateCtx,
 } from '../core/SettingsCatalog';
-import { applySetting } from '../core/RuntimeSettings';
 
 /** The value in force in THIS process (boot value for restart-type keys). */
 function activeValue(key: string): string {
   const c = config as unknown as Record<string, unknown>;
   switch (key) {
     case 'APP_ENV': return config.APP_PROFILE;
-    case 'AUTH_MODE': return config.AUTH_MODE_REQUESTED;
     case 'API_TOKEN': return config.API_TOKEN;
     default: {
       const v = c[key];
@@ -87,9 +84,9 @@ function describe(spec: SettingSpec) {
   };
 }
 
-function isAllowed(req: AuthenticatedRequest): boolean {
-  if (config.IS_SINGLE_USER) return true;
-  return req.apiKeyUserId === 'env_root';
+// One owner per install: whoever passed requireApiKey IS the owner.
+function isAllowed(_req: AuthenticatedRequest): boolean {
+  return true;
 }
 
 function deny(res: Response): void {
@@ -100,7 +97,7 @@ function normProfile(p: string): string {
   const v = p.toLowerCase();
   if (v === 'dev') return 'development';
   if (v === 'prod') return 'production';
-  if (v === 'remote') return 'server';
+  if (v === 'remote' || v === 'server') return 'production';
   return v;
 }
 
@@ -108,10 +105,6 @@ function ctxFor(profileAfter: string): ValidateCtx {
   return {
     profile: normProfile(profileAfter),
     allowDefaultToken: config.ALLOW_DEFAULT_API_TOKEN === true,
-    // Open login is allowed only where the profile IN FORCE allows it: APP_ENV
-    // needs a restart, so a pending change to development does not unlock it.
-    openAllowed: config.AUTH_OPEN_ALLOWED,
-    singleUser: config.IS_SINGLE_USER,
   };
 }
 
@@ -119,10 +112,6 @@ async function applyOne(key: string, value: string | null) {
   const saved = saveSetting(key, value);
   // REAL_CHROME_ENABLED has its own in-memory override (RuntimeSettings) that
   // other code relies on; keep it in step without touching .env.
-  if (key === 'REAL_CHROME_ENABLED') {
-    const on = (value ?? envValueOf(key) ?? 'true').trim().toLowerCase() !== 'false';
-    await applySetting('REAL_CHROME_ENABLED', on, { persist: false });
-  }
   return saved;
 }
 
@@ -135,11 +124,9 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
     const open = isOpenAuthRequest(req);
     res.json({
       success: true,
+      // Keyless access is not a setting: development + a request from this
+      // machine. Everything else must present the access token.
       mode: open ? 'open' : 'token',
-      requested: config.AUTH_MODE_REQUESTED,
-      // Why "open" was requested but is not in force — the login screen says so.
-      openRefused: config.AUTH_MODE_REQUESTED === 'open' && !open
-        ? (config.AUTH_OPEN_ALLOWED ? 'not_local' : 'profile') : null,
       profile: config.APP_PROFILE,
       // Only to a caller open mode already treats as the owner. The panel needs
       // the real token anyway for WebSockets, download links and the extension.
@@ -153,8 +140,6 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
     res.json({
       success: true,
       profile: config.APP_PROFILE,
-      singleUser: config.IS_SINGLE_USER,
-      openAllowed: config.AUTH_OPEN_ALLOWED,
       authOpen: config.AUTH_OPEN,
       file: settingsFilePath(),
       settings: CATALOG.map(describe),
@@ -198,14 +183,12 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
       if ('error' in r) errors[key] = r; else accepted.set(key, r.value);
     }
     // A server profile with the public token would refuse to boot.
-    if (!errors.APP_ENV && accepted.has('APP_ENV') && (profileAfter === 'server' || profileAfter === 'production')) {
+    if (!errors.APP_ENV && accepted.has('APP_ENV') && profileAfter === 'production') {
       const tokenAfter = accepted.has('API_TOKEN') ? accepted.get('API_TOKEN') : config.API_TOKEN;
       if ((tokenAfter ?? PUBLIC_DEFAULT_TOKEN) === PUBLIC_DEFAULT_TOKEN && !config.ALLOW_DEFAULT_API_TOKEN) {
         errors.APP_ENV = { error: 'Generate an API token first: a server refuses to start with admin123.',
           errorFa: 'ابتدا یک توکن API بسازید؛ سرور با admin123 بالا نمی‌آید.' };
       }
-      // Leaving development: login is required again.
-      if ((accepted.get('AUTH_MODE') ?? config.AUTH_MODE_REQUESTED) === 'open') accepted.set('AUTH_MODE', 'token');
     }
     if (Object.keys(errors).length) {
       res.status(400).json({ success: false, error: 'Some values are not valid', errors });

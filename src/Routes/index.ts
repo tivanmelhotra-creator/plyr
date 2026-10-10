@@ -1,6 +1,7 @@
 import type { Queue } from 'bullmq';
 import type IORedis from 'ioredis';
 import type { ProfileManager } from '../core/ProfileManager';
+import type { ProfileLeases } from '../core/ProfileLease';
 
 import { createHealthRoutes } from './health.routes';
 import { createUserRoutes } from './user.routes';
@@ -12,6 +13,7 @@ interface RoutesDeps {
   queue: Queue;
   connection: IORedis;
   profileManager: ProfileManager;
+  profileLeases?: ProfileLeases;
   luaScriptsLoaded: () => boolean;
   reloadLuaScripts: () => Promise<void>;
 }
@@ -26,7 +28,8 @@ export const createAllRoutes = (deps: RoutesDeps) => {
     user: createUserRoutes({
       queue: deps.queue,
       connection: deps.connection,
-      profileManager: deps.profileManager
+      profileManager: deps.profileManager,
+      profileLeases: deps.profileLeases
     }),
     // Real Chrome / extensions / cookies / remote desktop. No deps: it talks
     // to process-level singletons (RealChrome, Desktop) rather than to Redis.
