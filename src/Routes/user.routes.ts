@@ -10,7 +10,8 @@ import {
   sanitizeUserId,
   validateSteps,
   validateWebhookUrl,
-  validateHeadless
+  validateHeadless,
+  validateBackgroundHeadless
 } from '../validation';
 import {
   runBodySchema,
@@ -25,6 +26,8 @@ import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValid
 import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
+import type { WorkflowActiveSnapshot } from '../types';
+import { activationIssues, formatActivationIssue, installedModuleExists } from '../core/ActivationCheck';
 import { parseExchange, buildNativeEnvelope, enforceImportedCodeDisabled } from '../core/WorkflowExchange';
 import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
@@ -427,6 +430,24 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       const userId = sanitizeUserId(body.userId);
       const cron = body.cron.trim();
+      // A schedule bound to a saved workflow runs that workflow's ACTIVE frozen
+      // design, and only while it is active. Checked BEFORE any queue or plan
+      // access so an inactive workflow is refused without side effects.
+      let scheduleSteps: unknown = body.steps;
+      let scheduleHeadless: unknown = body.headless;
+      if (body.workflowId) {
+        const bound = await workflowService.get(userId, body.workflowId);
+        if (!bound) return res.status(404).json({ success: false, error: 'Workflow not found' });
+        if (bound.active === false) {
+          return res.status(409).json({
+            success: false, error: 'Workflow is inactive', workflowId: body.workflowId, active: false,
+            hint: 'Activate the workflow before scheduling it.',
+          });
+        }
+        const design = WorkflowService.executableDesign(bound);
+        scheduleSteps = design.steps;
+        scheduleHeadless = design.headless;
+      }
       const scheduleName = body.name
         ? String(body.name).substring(0, 50).replace(/[^a-zA-Z0-9_-]/g, '_')
         : `job_${Date.now()}`;
@@ -452,8 +473,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       }
 
       // ── Validate Steps (deep) ──
-      const headless = validateHeadless(body.headless, config.DEFAULT_HEADLESS);
-      const steps = validateSteps(body.steps, plan);
+      // A schedule is a background run: hidden unless explicitly asked otherwise.
+      // A schedule bound to a saved workflow runs that workflow's ACTIVE frozen
+      // design, and only while the workflow is active. A raw schedule keeps the
+      // steps it was sent with.
+      const headless = validateBackgroundHeadless(scheduleHeadless as any);
+      const steps = validateSteps(scheduleSteps, plan);
       const webhookUrl = validateWebhookUrl(req.body.webhookUrl);
 
       // Scheduled runs file their node outputs in the workflow's workspace too.
@@ -473,6 +498,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           __scheduled: true,
           __scheduleName: scheduleName,
           __scheduleId: scheduleId,
+          // Re-resolved by the worker at every fire: an inactive workflow is
+          // skipped, and the CURRENT frozen design is what runs.
+          ...(body.workflowId ? { __scheduleWorkflowId: body.workflowId, __workflowId: body.workflowId } : {}),
           ...(scheduleWorkspace ? { __workspace: scheduleWorkspace } : {})
         },
         {
@@ -840,7 +868,13 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       const userJobs = jobs
         .filter(j => String(j.data?.userId) === userId)
-        .filter(j => wantWorkflow === null || String(j.data?.__workflowId || '') === wantWorkflow)
+        // A saved workflow's run is stamped `__workflowId`; an editor TEST run of
+        // that same workflow carries it only in its workspace binding
+        // (`__workspace.workflowId`). Both are runs OF this workflow, so the
+        // editor's Executions view must list both — otherwise every Test
+        // Workflow click vanished from its own history.
+        .filter(j => wantWorkflow === null ||
+          String(j.data?.__workflowId || j.data?.__workspace?.workflowId || '') === wantWorkflow)
         .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
         .slice(0, limit);
 
@@ -855,7 +889,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         // [Workspace] Execution provenance + duration for the Executions tab.
         // `__workflowId` is stamped by the workflow run endpoint; an ad-hoc
         // /run job has none, and the UI labels those as one-off runs.
-        workflowId: j.data.__workflowId ? String(j.data.__workflowId) : null,
+        workflowId: j.data.__workflowId ? String(j.data.__workflowId)
+          : (j.data.__workspace && j.data.__workspace.workflowId ? String(j.data.__workspace.workflowId) : null),
         workflowVersion: typeof j.data.__workflowVersion === 'number' ? j.data.__workflowVersion : null,
         // [Item N] A per-node test run is a PARTIAL execution: it is tagged
         // `__runNode` and carries no `__workflowId`, so the Executions tab and
@@ -1018,7 +1053,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       // Deep-validate the step tree against the user's plan (same pass as /run).
       const plan = await UserManager.getUserPlan(connection, userId);
-      const steps = validateSteps(body.steps, plan);
+      const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
       const wf = await workflowService.create(userId, {
@@ -1066,8 +1101,18 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Disable Code nodes AGAIN on the validated (normalised) steps — the ones
       // actually stored. See enforceImportedCodeDisabled.
       const { steps, count: codeDisabled } = enforceImportedCodeDisabled(validateSteps(parsed.workflow.steps as any, plan));
+      // An import NEVER overwrites: it always creates a new workflow. A name
+      // already used by this user gets the first free " (n)" suffix, so two
+      // workflows never share a name and the outcome is predictable.
+      const taken = new Set((await workflowService.list(userId)).map((w) => w.name));
+      const baseName = String(parsed.workflow.name);
+      let importName = baseName;
+      for (let n = 2; taken.has(importName); n++) {
+        const suffix = ` (${n})`;
+        importName = baseName.slice(0, 120 - suffix.length) + suffix;
+      }
       const wf = await workflowService.create(userId, {
-        name: parsed.workflow.name,
+        name: importName,
         description: parsed.workflow.description,
         steps,
         headless: (parsed.workflow.headless as any) ?? null,
@@ -1075,7 +1120,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         active: false,
       });
       await provisionWorkspace(userId, wf.id);
-      return res.status(201).json({ success: true, workflow: wf, summary: parsed.summary, codeDisabled });
+      return res.status(201).json({
+        success: true, workflow: wf, summary: parsed.summary, codeDisabled,
+        ...(importName !== baseName ? { renamedFrom: baseName } : {}),
+      });
     } catch (e: unknown) {
       res.status(400).json({ success: false, code: 'steps', error: (e as Error).message });
     }
@@ -1166,7 +1214,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!body) return;
 
       const plan = await UserManager.getUserPlan(connection, userId);
-      const steps = validateSteps(body.steps, plan);
+      const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
       const wf = await workflowService.update(userId, workflowId, {
@@ -1227,17 +1275,21 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         });
       }
 
-      // Re-validate the stored steps against the CURRENT plan (plan limits may
-      // have changed since the workflow was saved). Request body may optionally
-      // override headless/webhookUrl for this run only.
+      // An active workflow executes its FROZEN activation snapshot, never the
+      // live Editor design (docs/uiux: Active is independent of the editor).
+      const design = WorkflowService.executableDesign(wf);
+      // Re-validate the frozen steps against the CURRENT plan (plan limits may
+      // have changed since activation). Request body may optionally override
+      // headless/webhookUrl for this run only.
       const plan = await UserManager.getUserPlan(connection, userId);
-      const steps = validateSteps(wf.steps, plan);
-      const headless = validateHeadless(
-        req.body?.headless !== undefined ? req.body.headless : wf.headless,
-        config.DEFAULT_HEADLESS
+      const steps = validateSteps(design.steps, plan);
+      // A saved-workflow run (API, trigger, Workspace) is a background run:
+      // hidden unless the request or the workflow says otherwise.
+      const headless = validateBackgroundHeadless(
+        req.body?.headless !== undefined ? req.body.headless : design.headless
       );
       const webhookUrl = validateWebhookUrl(
-        req.body?.webhookUrl !== undefined ? req.body.webhookUrl : wf.webhookUrl
+        req.body?.webhookUrl !== undefined ? req.body.webhookUrl : design.webhookUrl
       );
       // Step 28: optional trigger data passed at run time (manual/webhook).
       const triggerData = (req.body?.triggerData && typeof req.body.triggerData === 'object')
@@ -1304,7 +1356,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         'run',
         {
           userId, steps, headless, webhookUrl, triggerData,
-          __workflowId: workflowId, __workflowVersion: wf.version,
+          __workflowId: workflowId, __workflowVersion: design.version,
           // Verified above: `wf` was fetched for this very user.
           __workspace: workspaceFor(userId, workflowId),
         },
@@ -1347,7 +1399,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         success: true,
         jobId: job.id,
         workflowId,
-        workflowVersion: wf.version,
+        workflowVersion: design.version,
         message: 'Workflow job queued successfully',
         yourJobNumber: thisJobNumber,
         queueLimit: config.MAX_QUEUED_JOBS_PER_USER,
@@ -1358,6 +1410,62 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
     } catch (e: unknown) {
       const error = e as Error;
       res.status(400).json({ success: false, error: error.message });
+    }
+  });
+
+  // POST /workflows/:userId/:workflowId/save — create a MANUAL, restorable
+  // snapshot of the current design. Independent of autosave: it never bumps the
+  // version and is never trimmed by the autosave history limit.
+  router.post('/workflows/:userId/:workflowId/save', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const workflowId = req.params.workflowId;
+      if (!isValidWorkflowId(workflowId)) {
+        return res.status(400).json({ success: false, error: 'Invalid workflow id' });
+      }
+      const label = typeof req.body?.label === 'string' ? req.body.label : null;
+      const snap = await workflowService.saveManual(userId, workflowId, label);
+      if (!snap) return res.status(404).json({ success: false, error: 'Workflow not found' });
+      return res.status(201).json({ success: true, version: snap });
+    } catch (e: unknown) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  });
+
+  // POST /workflows/:userId/:workflowId/versions/:version/restore — copy a
+  // saved version back into the editable design. Ordinary edit: bumps version,
+  // keeps every other version, leaves the Active snapshot untouched.
+  router.post('/workflows/:userId/:workflowId/versions/:version/restore', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = sanitizeUserId(req.params.userId);
+      const workflowId = req.params.workflowId;
+      if (!isValidWorkflowId(workflowId)) {
+        return res.status(400).json({ success: false, error: 'Invalid workflow id' });
+      }
+      const version = Number(req.params.version);
+      if (!Number.isInteger(version) || version < 1) {
+        return res.status(400).json({ success: false, error: 'Invalid version' });
+      }
+      // Validate the restored design against the current plan before writing it.
+      const snap = (await workflowService.listVersions(userId, workflowId)).find((v) => v.version === version);
+      if (!snap) {
+        const exists = await workflowService.get(userId, workflowId);
+        if (!exists) return res.status(404).json({ success: false, error: 'Workflow not found' });
+        return res.status(404).json({ success: false, error: 'Version not found' });
+      }
+      const plan = await UserManager.getUserPlan(connection, userId);
+      try {
+        validateSteps(snap.steps, plan, { allowEmpty: true });
+      } catch (err: unknown) {
+        return res.status(422).json({ success: false, code: 'restore_invalid', error: (err as Error).message });
+      }
+      const wf = await workflowService.restoreVersion(userId, workflowId, version);
+      if (!wf || wf === 'not_found_version') {
+        return res.status(404).json({ success: false, error: 'Version not found' });
+      }
+      return res.json({ success: true, workflow: wf, restoredFrom: version });
+    } catch (e: unknown) {
+      res.status(400).json({ success: false, error: (e as Error).message });
     }
   });
 
@@ -1375,9 +1483,40 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const body = parseBody(workflowStateSchema, req.body, res);
       if (!body) return;
 
+      let activeSnapshot: WorkflowActiveSnapshot | undefined;
+      if (body.active === true) {
+        // Activation is refused while the design has blocking errors. The
+        // design is validated against the CURRENT plan and only then frozen,
+        // so a running automation can never be a design that was never valid.
+        const current = await workflowService.get(userId, workflowId);
+        if (!current) return res.status(404).json({ success: false, error: 'Workflow not found' });
+        const plan = await UserManager.getUserPlan(connection, userId);
+        const refuse = (details: string[]) => res.status(422).json({
+          success: false,
+          error: 'Workflow has errors and cannot be activated',
+          code: 'activation_invalid',
+          details,
+          active: current.active,
+        });
+        try {
+          validateSteps(current.steps, plan);
+        } catch (err: unknown) {
+          return refuse([(err as Error).message]);
+        }
+        // Every blocking problem at once (unknown actions, missing required
+        // params, disabled Code nodes...), not just the first shape error.
+        const issues = activationIssues(current.steps, {
+          codeNodeEnabled: config.CODE_NODE_ENABLED,
+          moduleExists: installedModuleExists,
+        });
+        if (issues.length) return refuse(issues.map(formatActivationIssue));
+        activeSnapshot = WorkflowService.buildActiveSnapshot(current);
+      }
+
       const wf = await workflowService.setState(userId, workflowId, {
         active: body.active,
         liveBrowser: body.liveBrowser,
+        activeSnapshot,
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
 

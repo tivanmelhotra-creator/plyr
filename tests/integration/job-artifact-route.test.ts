@@ -13,6 +13,7 @@ vi.mock('../../src/validation', () => ({
   validateSteps: (s: unknown) => s as unknown[],
   validateWebhookUrl: (u: unknown) => (u ? String(u) : null),
   validateHeadless: () => true,
+  validateBackgroundHeadless: () => true,
 }));
 vi.mock('../../src/services/job.service', () => ({
   readJobFile: vi.fn(async () => null),

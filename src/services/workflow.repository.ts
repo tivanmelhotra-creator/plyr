@@ -30,8 +30,16 @@ export interface WorkflowRepository {
   saveVersion(userId: string, workflowId: string, snap: WorkflowVersionSnapshot): Promise<void>;
   /** Newest first. */
   listVersions(userId: string, workflowId: string): Promise<WorkflowVersionSnapshot[]>;
-  /** Keep only the newest `max` versions (max <= 0 keeps all). */
+  /**
+   * Keep only the newest `max` AUTO versions (max <= 0 keeps all). Manual
+   * snapshots are never removed here: they exist only because the user asked
+   * for them, so the autosave history limit must not eat them.
+   */
   trimVersions(userId: string, workflowId: string, max: number): Promise<void>;
+  /** One snapshot by version number, or null. */
+  getVersion(userId: string, workflowId: string, version: number): Promise<WorkflowVersionSnapshot | null>;
+  /** Delete specific history entries (used by the legacy-autosave prune). */
+  deleteVersions(userId: string, workflowId: string, versions: number[]): Promise<void>;
 }
 
 function parse<T>(raw: string | null | undefined): T | null {
@@ -97,13 +105,26 @@ export class RedisWorkflowRepository implements WorkflowRepository {
     return out;
   }
 
+  async getVersion(userId: string, workflowId: string, version: number): Promise<WorkflowVersionSnapshot | null> {
+    return parse<WorkflowVersionSnapshot>(await this.redis.get(getWorkflowVersionKey(userId, workflowId, version)));
+  }
+
   async trimVersions(userId: string, workflowId: string, max: number): Promise<void> {
     if (max <= 0) return;
-    const versions = (await this.versionNumbers(userId, workflowId)).sort((a, b) => a - b);
-    const excess = versions.length - max;
+    const all = await this.listVersions(userId, workflowId); // newest first
+    const autos = all.filter((s) => s.kind !== 'manual' && s.kind !== 'initial').map((s) => s.version).sort((a, b) => a - b);
+    const excess = autos.length - max;
     if (excess <= 0) return;
     const idxKey = getWorkflowVersionIndexKey(userId, workflowId);
-    for (const v of versions.slice(0, excess)) {
+    for (const v of autos.slice(0, excess)) {
+      await this.redis.del(getWorkflowVersionKey(userId, workflowId, v));
+      await this.redis.srem(idxKey, String(v));
+    }
+  }
+
+  async deleteVersions(userId: string, workflowId: string, versions: number[]): Promise<void> {
+    const idxKey = getWorkflowVersionIndexKey(userId, workflowId);
+    for (const v of versions) {
       await this.redis.del(getWorkflowVersionKey(userId, workflowId, v));
       await this.redis.srem(idxKey, String(v));
     }
@@ -155,14 +176,28 @@ export class SqliteWorkflowRepository implements WorkflowRepository {
     return rows.map((r) => parse<WorkflowVersionSnapshot>(r.data)).filter((s): s is WorkflowVersionSnapshot => !!s);
   }
 
+  async getVersion(userId: string, workflowId: string, version: number): Promise<WorkflowVersionSnapshot | null> {
+    const row = this.db.prepare(
+      'SELECT data FROM workflow_versions WHERE user_id = ? AND workflow_id = ? AND version = ?'
+    ).get(userId, workflowId, version) as { data: string } | undefined;
+    return parse<WorkflowVersionSnapshot>(row?.data);
+  }
+
   async trimVersions(userId: string, workflowId: string, max: number): Promise<void> {
     if (max <= 0) return;
+    // Only auto entries count toward (and are removed by) the history limit.
     this.db.prepare(`
-      DELETE FROM workflow_versions WHERE user_id = ? AND workflow_id = ? AND version NOT IN (
-        SELECT version FROM workflow_versions WHERE user_id = ? AND workflow_id = ?
+      DELETE FROM workflow_versions WHERE user_id = ? AND workflow_id = ? AND COALESCE(json_extract(data, '$.kind'), 'auto') = 'auto' AND version NOT IN (
+        SELECT version FROM workflow_versions WHERE user_id = ? AND workflow_id = ? AND COALESCE(json_extract(data, '$.kind'), 'auto') = 'auto'
         ORDER BY version DESC LIMIT ?
       )
     `).run(userId, workflowId, userId, workflowId, max);
+  }
+
+  async deleteVersions(userId: string, workflowId: string, versions: number[]): Promise<void> {
+    if (!versions.length) return;
+    const del = this.db.prepare('DELETE FROM workflow_versions WHERE user_id = ? AND workflow_id = ? AND version = ?');
+    this.db.transaction(() => { for (const v of versions) del.run(userId, workflowId, v); })();
   }
 
   /** Used by the boot migration: does this DB hold any workflow at all? */

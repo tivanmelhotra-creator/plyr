@@ -46,11 +46,11 @@ function loadIcons(): { has: (n: string) => boolean } {
   return sandbox.window.Icons;
 }
 
-/** Both dictionaries, so a key added to `en` only cannot slip through. */
-function dictionaries(): { fa: string; en: string } {
+/** English-only dictionary (docs/uiux/new ui.md §2): one `en` block. */
+function dictionaries(): { en: string } {
   const enAt = I18N_SRC.indexOf('    en: {');
   expect(enAt).toBeGreaterThan(0);
-  return { fa: I18N_SRC.slice(0, enAt), en: I18N_SRC.slice(enAt) };
+  return { en: I18N_SRC.slice(enAt) };
 }
 
 const ICONS = loadIcons();
@@ -58,7 +58,7 @@ const DICT = dictionaries();
 
 function hasKeyInBothDicts(key: string): boolean {
   const needle = `'${key}':`;
-  return DICT.fa.includes(needle) && DICT.en.includes(needle);
+  return DICT.en.includes(needle);
 }
 
 describe('item H — floating Add Node palette', () => {

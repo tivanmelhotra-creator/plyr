@@ -205,6 +205,16 @@ curl -X POST http://localhost:3000/run \
 
 ---
 
+### Saved workflows: Active, versions, import (PR #71)
+
+- `PATCH /workflows/:userId/:workflowId/state` `{ "active": true }` — validates the CURRENT design and, if valid, freezes it as `activeSnapshot`. Refused with `422 { code: "activation_invalid", details: [...] }` listing EVERY blocking problem (unknown action, missing required param such as a URL/selector, Code node while disabled, empty design). A refusal never changes `active` nor the previous snapshot.
+- New workflows start **inactive** (`active: false`). Background runs (`POST /workflows/:u/:id/run`, schedules bound with `workflowId`) refuse inactive workflows (409) and always execute `activeSnapshot`, never the live Editor design. A bound schedule is re-resolved at every fire: inactive → skipped; active → current snapshot.
+- `PUT /workflows/:userId/:workflowId` is autosave: it replaces the current state and writes **no** history entry.
+- `POST /workflows/:userId/:workflowId/save` `{ "label": "..." }` — one named manual version (`kind: "manual"`, numbered from 1 000 000 001).
+- `GET /workflows/:userId/:workflowId/versions` — restorable versions only: the creation snapshot (`kind: "initial"`) and manual saves, newest first. Legacy per-edit autosave rows are removed once at boot (SQLite) and on the next manual save; manual and initial rows are never removed.
+- `POST /workflows/:userId/:workflowId/versions/:version/restore` — copies that design into the editable state (keeps the current name, Active and the frozen snapshot; writes no version).
+- `POST /workflows/:userId/import` — always creates a NEW inactive workflow; a duplicate name gets the first free ` (n)` suffix and the response carries `renamedFrom`.
+
 ### `POST /schedule`
 ثبت یک جاب زمان‌بندی‌شده‌ی تکرارشونده (cron) با BullMQ repeatable. _(auth: x-api-key)_
 

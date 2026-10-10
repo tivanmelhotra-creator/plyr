@@ -755,7 +755,7 @@ describe('the wiring', () => {
     expect(keys.size).toBeGreaterThanOrEqual(20);
     for (const key of keys) {
       const hits = i18n.split(`'${key}':`).length - 1;
-      expect(hits, `${key} should be defined twice (fa + en), found ${hits}`).toBe(2);
+      expect(hits, `${key} should be defined once, found ${hits}`).toBe(1);
     }
   });
 

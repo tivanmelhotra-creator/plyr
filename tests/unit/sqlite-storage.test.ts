@@ -85,11 +85,12 @@ describe('SqliteWorkflowRepository', () => {
     expect(st?.active).toBe(false);
     // a design save never re-enables a workflow the user switched off
     expect((await svc.update('local', created.id, { name: 'C', steps: [] }))?.active).toBe(false);
-    const max = config.WORKFLOW_MAX_VERSIONS;
-    for (let i = 0; i < max + 3; i++) await svc.update('local', created.id, { name: `n${i}`, steps: [] });
+    // Autosave edits replace the current state and write no history entry.
+    for (let i = 0; i < 10; i++) await svc.update('local', created.id, { name: `n${i}`, steps: [] });
     const versions = await svc.listVersions('local', created.id);
-    expect(versions).toHaveLength(max);
-    expect(versions[0].version).toBe(3 + max + 3 - 0);
+    expect(versions).toHaveLength(1); // creation entry only
+    // v2 (B) + one design save (C) + ten autosaves = version 13.
+    expect((await svc.get('local', created.id))?.version).toBe(2 + 1 + 10);
     expect((await svc.list('local')).map((w) => w.id)).toEqual([created.id]);
     expect(await svc.remove('local', created.id)).toBe(true);
     expect(await svc.get('local', created.id)).toBeNull();

@@ -176,7 +176,7 @@ describe('the removed machinery is absent from the client and the server', () =>
     // one renders blank in the other, which is worse than a missing feature
     // because it looks like a styling bug.
     for (const key of ['tgt.authCode', 'tgt.baseUrl']) {
-      expect(i18n.split(`'${key}':`).length - 1, key).toBe(2);
+      expect(i18n.split(`'${key}':`).length - 1, key).toBe(1);
     }
   });
 });

@@ -162,10 +162,10 @@ describe('live view page', () => {
     expect($('lv-error').hidden).toBe(false);
   });
 
-  it('speaks Persian and flips direction when the UI language is fa', () => {
+  it('stays English LTR even if a stale `ab_lang = fa` is stored (English-only UI)', () => {
     localStorage.setItem('ab_lang', 'fa');
     boot();
-    expect(document.documentElement.dir).toBe('rtl');
-    expect($('lv-readonly').textContent).toContain('فقط مشاهده');
+    expect(document.documentElement.dir).toBe('ltr');
+    expect($('lv-readonly').textContent).not.toMatch(/[\u0600-\u06FF]/);
   });
 });

@@ -117,32 +117,32 @@ describe('WorkflowService.list', () => {
 });
 
 describe('WorkflowService.update', () => {
-  it('bumps the version and snapshots history', async () => {
+  it('bumps the version and keeps one current state (autosave writes no history)', async () => {
     const wf = await svc.create('u1', sampleInput({ name: 'v1' }));
     const u2 = await svc.update('u1', wf.id, sampleInput({ name: 'v2' }));
     expect(u2?.version).toBe(2);
     expect(u2?.name).toBe('v2');
     expect(u2?.createdAt).toBe(wf.createdAt); // createdAt preserved
 
+    // Only the creation entry exists; the edit replaced the current state.
     const versions = await svc.listVersions('u1', wf.id);
-    expect(versions.map((v) => v.version)).toEqual([2, 1]); // newest first
-    expect(versions[0].name).toBe('v2');
-    expect(versions[1].name).toBe('v1');
+    expect(versions.map((v) => v.version)).toEqual([1]);
+    expect((await svc.get('u1', wf.id))?.name).toBe('v2');
   });
 
   it('returns null for an unknown workflow', async () => {
     expect(await svc.update('u1', 'wf_missing', sampleInput())).toBeNull();
   });
 
-  it('prunes history beyond WORKFLOW_MAX_VERSIONS (3), keeping the newest', async () => {
-    const wf = await svc.create('u1', sampleInput({ name: 'v1' })); // v1
-    await svc.update('u1', wf.id, sampleInput({ name: 'v2' })); // v2
-    await svc.update('u1', wf.id, sampleInput({ name: 'v3' })); // v3
-    await svc.update('u1', wf.id, sampleInput({ name: 'v4' })); // v4 -> prunes v1
-    await svc.update('u1', wf.id, sampleInput({ name: 'v5' })); // v5 -> prunes v2
+  it('many autosaves never grow history; manual saves are never pruned', async () => {
+    const wf = await svc.create('u1', sampleInput({ name: 'v1' }));
+    await svc.saveManual('u1', wf.id, 'keep me');
+    for (let i = 2; i <= 40; i++) await svc.update('u1', wf.id, sampleInput({ name: `v${i}` }));
 
     const versions = await svc.listVersions('u1', wf.id);
-    expect(versions.map((v) => v.version)).toEqual([5, 4, 3]);
+    expect(versions.filter((v) => v.kind === 'manual')).toHaveLength(1);
+    expect(versions.filter((v) => v.kind !== 'manual')).toHaveLength(1); // creation only
+    expect((await svc.get('u1', wf.id))?.version).toBe(40);
   });
 });
 

@@ -304,7 +304,7 @@ describe('graphs that cannot be turned into steps[] are REJECTED, not silently c
   it('every new rejection code has an i18n message key', () => {
     const src = readFileSync(join(__dirname, '..', '..', 'public', 'js', 'i18n.js'), 'utf8');
     for (const k of ['val.cycle', 'val.fanout', 'val.dangling', 'val.duplicated', 'val.routerPaths']) {
-      expect(src.match(new RegExp(`'${k.replace('.', '\\.')}':`, 'g')), k).toHaveLength(2); // fa + en
+      expect(src.match(new RegExp(`'${k.replace('.', '\\.')}':`, 'g')), k).toHaveLength(1); // English-only dictionary
     }
   });
 

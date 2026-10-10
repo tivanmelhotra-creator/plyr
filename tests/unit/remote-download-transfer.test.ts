@@ -398,7 +398,7 @@ describe('§1 — the download shelf actually transfers the file', () => {
     // gibberish — worse than the generic text it replaced.
     for (const k of ['bvp.dlNoAuth', 'bvp.dlForbidden', 'bvp.dlGone', 'bvp.dlServerError']) {
       const hits = i18n.split(`'${k}':`).length - 1;
-      expect(hits, `${k} must exist in BOTH the fa and en dictionaries`).toBe(2);
+      expect(hits, `${k} must exist exactly once in the dictionary`).toBe(1);
     }
     // The catch-all needs somewhere to put the number.
     expect(i18n).toMatch(/'bvp\.dlServerError':[^\n]*\{status\}/);

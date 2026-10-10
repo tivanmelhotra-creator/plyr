@@ -156,6 +156,18 @@ export const validateWebhookUrl = (url: unknown): string | null => {
 
 // === HEADLESS VALIDATION ===
 
+/**
+ * Headless value for a BACKGROUND run (schedule, saved-workflow run from the
+ * API / a trigger). docs/uiux/new ui.md section 9: an Active workflow runs
+ * hidden, nobody is watching, so it must not open a visible window just
+ * because DEFAULT_HEADLESS is false on a development box. An explicit value
+ * (request body / saved workflow / the Launch node option, applied later in
+ * the pipeline) still wins, and extension runs keep their Real Chrome route.
+ * The visible, observed run is the editor's Execute Workflow (POST /run).
+ */
+export const validateBackgroundHeadless = (value: unknown): boolean => validateHeadless(value, true);
+
+
 export const validateHeadless = (value: unknown, defaultValue: boolean = true): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -176,10 +188,41 @@ export const validateHeadless = (value: unknown, defaultValue: boolean = true): 
 
 // === STEPS VALIDATION ===
 
-export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[] => {
+// Blocking rules the editor enforces (graph-serialize.js validateGraph). Only the
+// ones readable from a step's own parameters are checked here: the server never
+// sees the canvas, so cycles and dangling edges cannot be re-derived from steps[].
+// Refusing these at activation stops a red-marked node from running in the background.
+const checkBlockingStepRules = (step: any, action: string, index: number): void => {
+  const params = (step && typeof step.params === 'object' && step.params) || step || {};
+  const has = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== '';
+  if (action === 'switch' && !has(params.variable)) {
+    throw new Error(`Step at index ${index} (switch): a variable is required`);
+  }
+  if (action === 'foreach' && !has(params.items)) {
+    throw new Error(`Step at index ${index} (foreach): an items variable is required`);
+  }
+  if (action === 'router') {
+    let paths: unknown = params.paths;
+    if (typeof paths === 'string') {
+      try { paths = JSON.parse(paths); } catch { paths = null; }
+    }
+    if (paths !== undefined && (!Array.isArray(paths) || paths.length === 0)) {
+      throw new Error(`Step at index ${index} (router): at least one path is required`);
+    }
+  }
+};
+
+export const validateSteps = (
+  input: unknown,
+  userPlan?: PlanConfig,
+  opts: { allowEmpty?: boolean } = {}
+): StepInput[] => {
   if (!Array.isArray(input)) {
     throw new Error('Steps must be an array');
   }
+
+  // A saved (not run) workflow may be empty; see workflowBodySchema.
+  if (input.length === 0 && opts.allowEmpty) return [];
 
   if (input.length === 0) {
     throw new Error('Steps cannot be empty');
@@ -248,6 +291,7 @@ export const validateSteps = (input: unknown, userPlan?: PlanConfig): StepInput[
       params = { ...params, browserOptions: parsed.options };
     }
 
+    if (!opts.allowEmpty) checkBlockingStepRules(step, action, index);
     const cleanStep: StepInput = { action, params };
 
     // Optional fields

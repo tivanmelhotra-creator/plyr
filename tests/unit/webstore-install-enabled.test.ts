@@ -443,9 +443,9 @@ describe('§3 — a Web Store page offers an install that can actually finish', 
       'bvp.storeFailed',
     ]) {
       const hits = i18n.split(`'${key}'`).length - 1;
-      // Exactly two: the fa block and the en block. One means a user of the
-      // other language sees a raw key, which the repo treats as a bug.
-      expect(hits, `${key} must exist in fa and en`).toBe(2);
+      // Exactly one: the English-only dictionary. Zero means the user sees a
+      // raw key, which the repo treats as a bug.
+      expect(hits, `${key} must exist in the dictionary`).toBe(1);
     }
   });
 });

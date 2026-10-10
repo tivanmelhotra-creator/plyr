@@ -241,7 +241,7 @@ describe('wiring', () => {
       'wfm.browserStop', 'wfm.browserStarting', 'wfm.browserStopping', 'wfm.browserFailed',
       'wfm.browserShow', 'wfm.browserShowing', 'wfm.browserShowFailed']) {
       expect(moduleSrc.includes(`'${k}'`), `${k} is asked for`).toBe(true);
-      expect(i18n.split(`'${k}':`).length - 1, k).toBe(2);
+      expect(i18n.split(`'${k}':`).length - 1, k).toBe(1);
     }
   });
 

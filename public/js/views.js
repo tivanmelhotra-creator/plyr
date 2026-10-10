@@ -46,6 +46,48 @@
   function t(k) { return U().t(k); }
   function esc(s) { return U().esc(s); }
 
+  /**
+   * A refused state change. For an activation refused by the server's
+   * validation (422 activation_invalid) every blocking problem is listed in a
+   * dialog the user can read and dismiss; anything else is a toast. Never a
+   * success message: callers only toast success after the server confirmed.
+   */
+  function showActivationError(err) {
+    var body = err && err.body;
+    var details = body && Array.isArray(body.details) ? body.details.filter(Boolean) : [];
+    if (!(body && body.code === 'activation_invalid' && details.length)) {
+      U().toast((err && err.message) || t('ws.stateFailed'), 'error');
+      return;
+    }
+    U().toast(t('ws.activationRefused'), 'error');
+    var old = document.getElementById('activation-error-dialog');
+    if (old) old.remove();
+    var dlg = document.createElement('div');
+    dlg.id = 'activation-error-dialog';
+    dlg.className = 'fe-version-dialog act-err-dialog';
+    dlg.setAttribute('role', 'alertdialog');
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.setAttribute('aria-labelledby', 'act-err-title');
+    dlg.innerHTML =
+      '<div class="fe-version-dialog-card">' +
+        '<h3 id="act-err-title" class="fe-version-dialog-title">' + esc(t('ws.activationRefusedTitle')) + '</h3>' +
+        '<p class="fe-version-dialog-hint">' + esc(t('ws.activationRefusedHint')) + '</p>' +
+        '<ul class="act-err-list">' + details.slice(0, 20).map(function (d) {
+          return '<li>' + esc(String(d)) + '</li>';
+        }).join('') + (details.length > 20 ? '<li>…</li>' : '') + '</ul>' +
+        '<div class="fe-version-dialog-actions">' +
+          '<button type="button" class="fe-version-dialog-confirm" id="act-err-ok">' + esc(t('ws.activationRefusedOk')) + '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(dlg);
+    var close = function () { dlg.remove(); };
+    dlg.addEventListener('click', function (ev) { if (ev.target === dlg) close(); });
+    dlg.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } });
+    var ok = dlg.querySelector('#act-err-ok');
+    ok.addEventListener('click', close);
+    ok.focus();
+  }
+
   // Inline SVG icons (public/js/icons.js). IC() is for chrome glyphs, ICON() for
   // ACTION_CATALOG actions. Emoji were replaced project-wide because the target
   // font stack has no emoji coverage — they rendered as empty boxes (□).
@@ -772,11 +814,7 @@
 
     root.querySelector('#wf-templates').addEventListener('click', renderTemplates);
     root.querySelector('#wf-refresh').addEventListener('click', load);
-    root.querySelector('#wf-new').addEventListener('click', function () {
-      if (window.FlowEditor) window.FlowEditor.newWorkflow();
-      pendingWorkflowToOpen = null;
-      location.hash = '#/editor';
-    });
+    root.querySelector('#wf-new').addEventListener('click', function () { createAndOpenWorkflow(); });
     load();
   }
 
@@ -914,131 +952,172 @@
     // ---------------------------------------------------------------------
     root.innerHTML =
       '<div class="fe-shell">' +
-        '<div class="fe-topbar">' +
-          // G13: the real brand mark, not the letter `A` in an orange tile.
-          '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
-            t('fe.brand') + '</span>' +
-          // Editor-local App Launcher: the SAME six areas as the header/sidebar.
-          '<div class="fe-nav">' +
-            '<button class="fe-navlink" id="fe-nav-home" data-route="#/">' +
-              IC('home', 15) + '<span>' + esc(t('sh.home')) + '</span></button>' +
-            '<button class="fe-navlink" id="fe-nav-ws" data-route="#/workspace">' +
-              IC('layout', 15) + '<span>' + esc(t('sh.workspace')) + '</span>' + IC('chevron-down', 13) + '</button>' +
+        // =================================================================
+        // FOCUSED EDITOR SHELL (2026-10, docs/uiux/new ui.md + new ui.png).
+        //   start : brand (logo + name) · workflow name
+        //   centre: Editor · Extraction · Executions
+        //   end   : Active · Save · Extract · hamburger (workflow files)
+        // Everything that used to crowd this bar (undo/redo, Export, Live
+        // browser, bell, gear, avatar, the workflow tab strip) moved to the
+        // section it belongs to — the left rail, Extraction, Executions, or
+        // the Workflow menu behind the hamburger — or was removed.
+        // =================================================================
+        '<header class="fe-topbar">' +
+          // start: brand (logo + name) and, quietly, the workflow's name
+          '<div class="fe-tb-start">' +
+            '<span class="fe-brand"><span class="fe-brand-mark">' + IC('aria-mark', 22) + '</span>' +
+              '<span class="fe-brand-name">' + esc(t('fe.brand')) + '</span></span>' +
+            '<input type="text" class="fe-wfname" id="fe-wfname" maxlength="120" spellcheck="false"' +
+              ' aria-label="' + esc(t('sh.wfNameLabel')) + '" title="" value="" />' +
           '</div>' +
-          // Workflow tab strip — real, from API.listWorkflows(); never faked.
-          '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
-          '<div class="fe-topbar-actions">' +
-            '<div class="fe-hist" role="group">' +
-              '<button class="fe-icobtn" id="fe-undo" title="' + esc(t('sh.undo')) + '" aria-label="' + esc(t('sh.undo')) + '">' + IC('rotate-ccw', 15) + '</button>' +
-              '<button class="fe-icobtn" id="fe-redo" title="' + esc(t('sh.redo')) + '" aria-label="' + esc(t('sh.redo')) + '">' + IC('rotate-cw', 15) + '</button>' +
-            '</div>' +
-            // Export ▾ — five items, divider before the last two (item B).
-            '<div class="fe-split" id="fe-export-wrap">' +
-              '<button class="fe-splitbtn" id="fe-export-btn" aria-haspopup="menu" aria-expanded="false">' +
-                IC('download', 14) + '<span>' + esc(t('sh.export')) + '</span>' + IC('chevron-down', 13) + '</button>' +
-              '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
-            '</div>' +
-            // Workflow persistence is automatic; there is intentionally no Save control.
-            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
-            // ONE slot, TWO states: orange ▶ Test Workflow while idle, solid
-            // red ■ Stop while a run is live (that is why the two reference
-            // images disagree about this button — they show the two states).
-            // Run-state switches. Active = the workflow's triggers/schedules may
-            // run it (a saved workflow only); Live browser = Test Workflow (and
-            // the saved run) opens a VISIBLE browser instead of headless.
+          '<nav class="fe-modes" id="fe-modes" role="tablist" aria-label="' + esc(t('sh.modes')) + '">' +
+            '<button type="button" role="tab" class="fe-mode is-active" id="fe-mode-editor"' +
+              ' data-mode="editor" aria-selected="true"><span>' + esc(t('sh.modeEditor')) + '</span></button>' +
+            '<button type="button" role="tab" class="fe-mode" id="fe-mode-exec"' +
+              ' data-mode="exec" aria-selected="false"><span>' + esc(t('sh.modeExecutions')) + '</span>' +
+              '<span class="fe-mode-live" aria-hidden="true"></span></button>' +
+          '</nav>' +
+          // end: Active · Save · Extract · hamburger (workflow files), the
+          // hamburger outermost — the order of docs/uiux/new ui.png.
+          '<div class="fe-tb-end">' +
+            // Active = triggers / schedules may run this workflow in the
+            // BACKGROUND (hidden browser). Test runs never need it.
             '<button type="button" class="al-switch fe-toggle" id="fe-active" role="switch" aria-checked="false">' +
-              '<span class="al-sw-label">' + esc(t('fe.activeLabel')) + '</span>' +
+              '<span class="al-sw-label" id="fe-active-label">' + esc(t('fe.activeLabel')) + '</span>' +
               '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
-            '<button type="button" class="al-switch fe-toggle" id="fe-live" role="switch" aria-checked="false">' +
-              '<span class="al-sw-label">' + esc(t('fe.liveLabel')) + '</span>' +
-              '<span class="al-sw" aria-hidden="true"><i></i></span></button>' +
-            '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
-            '<button class="fe-icobtn" id="fe-bell" title="' + esc(t('sh.notifications')) + '" aria-label="' + esc(t('sh.notifications')) + '">' + IC('bell', 15) + '</button>' +
-            '<button class="fe-icobtn" id="fe-gear" title="' + esc(t('sh.settings')) + '" aria-label="' + esc(t('sh.settings')) + '">' + IC('settings', 15) + '</button>' +
-            // Account menu. On the FULL-BLEED editor route the app header is
-            // hidden (app.js `FULLBLEED_ROUTES`), which took Language and
-            // Logout with it — so the avatar has to be a real menu, not the
-            // decorative <span> it used to be. Anything the avatar offers is
-            // wired to the shell's own handlers; nothing here is invented.
-            '<div class="fe-split fe-acct" id="fe-acct-wrap">' +
-              '<button class="fe-avatar" id="fe-avatar" type="button" aria-haspopup="menu"' +
-                ' aria-expanded="false" title="' + esc(t('sh.account')) + '"' +
-                ' aria-label="' + esc(t('sh.account')) + '">' + IC('user', 15) +
-                '<span class="fe-avatar-dot" aria-hidden="true"></span></button>' +
-              '<div class="fe-menu fe-menu-end" id="fe-acct-menu" role="menu" hidden></div>' +
-            '</div>' +
-            // Workflow Files hamburger: the SAME drawer the Live Browser View
-            // has, so the open workflow's file workspace is reachable without
-            // starting a browser. Beside the avatar, not instead of it -- the
-            // avatar is where Language and Logout live on this full-bleed route.
+            '<button type="button" class="fe-tbbtn fe-savebtn" id="fe-savenow" data-state="draft"' +
+              ' title="' + esc(t('sh.saveNowHint')) + '">' + IC('save', 14) +
+              '<span>' + esc(t('sh.save')) + '</span>' +
+              '<span class="fe-save-dot" aria-hidden="true"></span></button>' +
+            '<button type="button" class="fe-tbbtn fe-versionsbtn" id="fe-versions" aria-haspopup="dialog" aria-expanded="false"' +
+              ' title="' + esc(t('sh.versionsHint')) + '" aria-label="' + esc(t('sh.versionsHint')) + '">' + IC('history', 14) + '</button>' +
+            '<span class="fe-autosave-status" id="fe-autosave-status" aria-live="polite"></span>' +
+            // Extract / Import share one compact group: the same native
+            // `plyr-workflow` file goes out and comes back in.
+            '<span class="fe-xfer" role="group" aria-label="' + esc(t('sh.fileGroup')) + '">' +
+            '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
+              IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
+            '<button type="button" class="fe-tbbtn fe-importbtn" id="fe-import" title="' + esc(t('sh.importHint')) + '"' +
+              ' aria-label="' + esc(t('sh.import')) + '">' + IC('upload', 14) + '</button>' +
+            '</span>' +
             '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
               ' aria-haspopup="dialog" aria-expanded="false"' +
               ' title="' + esc(t('rio.filesMenu')) + '" aria-label="' + esc(t('rio.filesMenu')) + '">' +
               IC('menu', 16) + '</button>' +
           '</div>' +
-          // Breadcrumb + badge moved to a hairline second line so the tab strip
-          // owns row one (the images never wrap the bar to two tall rows).
-          //
-          // G4 (handoff 11 §3.2): the row is now `hidden` by default. NO locked
-          // image has a second bar row — `state-empty-canvas.webp` starts the
-          // canvas immediately under the bar — and the row cost ~24px of canvas
-          // to restate what the active tab (name) and the status bar (version /
-          // draft state) already say. The element itself MUST stay in the DOM:
-          // `#fe-wf-label` / `#fe-wf-badge` are written by `refreshWfLabel()`
-          // and the six `.fe-legacy` ids have UNGUARDED listeners below — a
-          // missing id throws and blanks the whole editor. `hidden` is honoured
-          // because `.fe-crumbline[hidden] { display: none }` beats the
-          // `display:flex` base rule.
+          // ---- kept in the DOM, never shown ------------------------------
+          // These ids have listeners (and tests) that predate the redesign.
+          // They are inert hosts now: the run slot (#fe-run) is driven by
+          // the canvas `Execute Workflow` button, and the rest are reached
+          // through the hamburger's Workflow menu.
+          '<div class="fe-legacy-host" hidden>' +
+            '<div class="fe-tb-start-legacy"><span class="fe-nav">' +
+              '<button class="fe-navlink" id="fe-nav-home" data-route="#/"></button>' +
+              '<button class="fe-navlink" id="fe-nav-ws" data-route="#/workspace"></button></span>' +
+              '<div class="fe-wftabs" id="fe-wftabs" role="tablist" aria-label="' + esc(t('sh.wfTabs')) + '"></div>' +
+            '</div>' +
+            '<div class="fe-topbar-actions">' +
+              '<button class="fe-icobtn" id="fe-undo"></button>' +
+              '<button class="fe-icobtn" id="fe-redo"></button>' +
+              '<div class="fe-split" id="fe-export-wrap">' +
+                '<button class="fe-splitbtn" id="fe-export-btn" aria-haspopup="menu" aria-expanded="false"></button>' +
+                '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
+              '</div>' +
+              '<button type="button" class="al-switch fe-toggle" id="fe-live" role="switch" aria-checked="false"></button>' +
+              '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
+              '<button class="fe-icobtn" id="fe-bell"></button>' +
+              '<button class="fe-icobtn" id="fe-gear"></button>' +
+              '<div class="fe-split fe-acct" id="fe-acct-wrap">' +
+                '<button class="fe-avatar" id="fe-avatar" type="button" aria-haspopup="menu" aria-expanded="false"></button>' +
+                '<div class="fe-menu fe-menu-end" id="fe-acct-menu" role="menu" hidden></div>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
           '<div class="fe-crumbline" id="fe-crumbline" hidden>' +
-            '<span class="fe-crumb-sep">/</span>' +
             '<span class="fe-wf-title" id="fe-wf-label"></span>' +
             '<span id="fe-wf-badge"></span>' +
-            // Legacy low-traffic actions keep their ids alive here; the split
-            // menus above drive the same handlers.
             '<span class="fe-legacy" hidden>' +
-              '<button id="fe-from-run" title="' + t('fe.fromRun') + '"></button>' +
-              '<button id="fe-load" title="' + t('fe.load') + '"></button>' +
-              '<button id="fe-json" title="' + t('fe.toJson') + '"></button>' +
-               '<button id="fe-clear" title="' + t('fe.clear') + '"></button>' +
-               // Compatibility hooks for older integrations; hidden and unwired.
-               '<button id="fe-save" hidden></button>' +
-               '<button id="fe-save-server" hidden></button>' +
-               '<button id="fe-save-btn" hidden></button>' +
-               '<div id="fe-save-menu" hidden></div>' +
-
-             '</span>' +
+              '<button id="fe-from-run"></button>' +
+              '<button id="fe-load"></button>' +
+              '<button id="fe-json"></button>' +
+              '<button id="fe-clear"></button>' +
+              '<button id="fe-save" hidden></button>' +
+              '<button id="fe-save-server" hidden></button>' +
+              '<button id="fe-save-btn" hidden></button>' +
+              '<div id="fe-save-menu" hidden></div>' +
+            '</span>' +
           '</div>' +
-        '</div>' +
+        '</header>' +
         '<div class="fe-layout">' +
-          '<aside class="fe-palette" id="fe-palette"></aside>' +
+          // The blocks palette is not part of the focused editor: nodes are
+          // added through the Add Node dialog (top-end `+`, double-click on
+          // empty canvas, Tab, or a port's `+`). The aside stays as FlowEditor's
+          // mount point — it is hidden by CSS, never rendered on screen.
+          '<aside class="fe-palette" id="fe-palette" aria-hidden="true"></aside>' +
           '<div class="fe-canvas" id="fe-canvas">' +
             '<svg class="fe-svg" id="fe-svg"></svg>' +
             '<div class="fe-world" id="fe-world"></div>' +
-            // Run-info strip (top-start of the canvas in the refreshed image):
-            //   Last Run: Success · Duration: 342 ms · Variables: 3
             '<div class="fe-runinfo" id="fe-runinfo" hidden></div>' +
-            // OUTLINE overlay (item C) — an absolutely positioned panel INSIDE
-            // the canvas, exactly like the minimap; NOT a third grid column
-            // (.fe-layout is `240px 1fr` and .fe-focus would fight a third one).
-            '<div class="fe-outline" id="fe-outline">' +
-              '<div class="fe-ol-head">' +
-                '<span class="fe-ol-title">' + esc(t('ol.title')) + '</span>' +
-                '<button class="fe-ol-close" id="fe-ol-close" title="' + esc(t('ol.close')) + '"' +
-                  ' aria-label="' + esc(t('ol.close')) + '">' + IC('x', 13) + '</button>' +
-              '</div>' +
+            // OUTLINE: removed from the focused editor (decorative, never
+            // used). The nodes stay because views.js still renders into them
+            // when it is asked to; CSS keeps both off screen.
+            '<div class="fe-outline" id="fe-outline" hidden>' +
+              '<div class="fe-ol-head"><span class="fe-ol-title"></span>' +
+                '<button class="fe-ol-close" id="fe-ol-close"></button></div>' +
               '<div class="fe-ol-body" id="fe-ol-body" role="tree"></div>' +
             '</div>' +
-            // Collapsed state: a vertical "OUTLINE" tab hugging the canvas edge
-            // (the launcher-menu image shows exactly this affordance).
-            '<button class="fe-ol-tab" id="fe-ol-tab" hidden title="' + esc(t('ol.open')) + '">' +
-              '<span>' + esc(t('ol.title')) + '</span>' + IC('chevron-right', 12) + '</button>' +
+            '<button class="fe-ol-tab" id="fe-ol-tab" hidden></button>' +
+            // Top-end `+`: the SAME Add Node dialog double-click opens, but
+            // centred in the viewport (FE.openAddNodeCentered).
+            '<button type="button" class="fe-addnode-fab" id="fe-addnode-fab"' +
+              ' title="' + esc(t('sh.addNodeHint')) + '" aria-label="' + esc(t('an.title')) + '">' +
+              IC('plus', 18) + '</button>' +
+            // Bottom-centre primary action. A PROXY for the one Run/Stop slot
+            // (#fe-run): it clicks it, so run logic, the popup-blocker rule and
+            // the Stop capture handler stay single.
+            '<button type="button" class="fe-exec-cta" id="fe-exec-cta" data-mode="run">' +
+              IC('play', 14) + '<span>' + esc(t('sh.executeWorkflow')) + '</span></button>' +
           '</div>' +
           '<aside class="fe-inspector"><div id="fe-inspector"></div></aside>' +
         '</div>' +
-        // Status bar (shell previews): version · auto-save · last saved ·
-        // workflow id · environment. Read-only telemetry, no controls.
-        '<div class="fe-statusbar" id="fe-statusbar"></div>' +
-        '<div class="muted small fe-hint">' + t('fe.hint') + '</div>' +
+        // ---- Extraction: what this workflow's extract steps produced --------
+        '<section class="fe-xview" id="fe-xview" hidden aria-labelledby="fe-mode-extract">' +
+          '<header class="fe-pane-head">' +
+            '<div class="fe-pane-title"><span>' + esc(t('sh.modeExtraction')) + '</span>' +
+              '<span class="fe-pane-sub" id="fe-x-sub"></span></div>' +
+            '<div class="fe-pane-actions" id="fe-x-actions"></div>' +
+          '</header>' +
+          '<div class="fe-x-body" id="fe-x-body"></div>' +
+        '</section>' +
+        // ---- Executions: run list + the selected run's details --------------
+        // The ACTIVITY LOG (RunPanel, a body singleton) is re-parented in
+        // here as the live/selected run's detail — one log, no second renderer.
+        '<section class="fe-execview" id="fe-execview" hidden aria-labelledby="fe-mode-exec">' +
+          '<div class="fe-ex-split">' +
+            '<aside class="fe-ex-list" aria-label="' + esc(t('sh.exRuns')) + '">' +
+              '<header class="fe-ex-list-head">' +
+                '<span class="fe-pane-title"><span>' + esc(t('sh.exRuns')) + '</span></span>' +
+                '<button type="button" class="fe-ex-refresh" id="fe-ex-refresh" title="' + esc(t('sh.exRefresh')) + '"' +
+                  ' aria-label="' + esc(t('sh.exRefresh')) + '">' + IC('rotate-cw', 13) + '</button>' +
+              '</header>' +
+              '<div class="fe-ex-filters" id="fe-ex-filters" role="radiogroup"></div>' +
+              '<ol class="fe-ex-runs" id="fe-ex-runs"></ol>' +
+            '</aside>' +
+            '<section class="fe-ex-detail" id="fe-ex-detail">' +
+              '<header class="fe-ex-head">' +
+                '<div class="fe-ex-title" id="fe-ex-title"></div>' +
+                '<div class="fe-ex-stats" id="fe-ex-stats"></div>' +
+              '</header>' +
+              '<div class="fe-ex-steps" id="fe-ex-steps"></div>' +
+              '<div class="fe-ex-host" id="fe-ex-host"></div>' +
+            '</section>' +
+          '</div>' +
+          // kept for the header counts the earlier build wrote to
+          '<span class="fe-ex-wf" id="fe-ex-wf" hidden></span>' +
+        '</section>' +
+        // Status bar: hidden in the focused editor (CSS). Its cells are still
+        // rendered so the version / environment facts have one source.
+        '<div class="fe-statusbar" id="fe-statusbar" hidden></div>' +
         '<div id="fe-result"></div>' +
       '</div>';
 
@@ -1198,11 +1277,43 @@
         wfLabel.textContent = t('fe.untitled');
         wfBadge.innerHTML = '<span class="fe-badge-draft">' + t('fe.draft') + '</span>';
       }
+      var nameEl = root.querySelector('#fe-wfname');
+      // Never overwrite the field while the user is typing in it.
+      if (nameEl && document.activeElement !== nameEl) {
+        var nm = (cur && cur.name) || t('fe.untitled');
+        nameEl.value = cur && cur.id ? nm : '';
+        nameEl.disabled = !(cur && cur.id);
+        nameEl.title = cur && cur.id ? nm + ' · ' + cur.id + (cur.version ? ' · v' + cur.version : '') : nm;
+      }
       refreshStatusBar();
       reconcileFiles();
       if (typeof refreshToggles === 'function') refreshToggles();
     }
     refreshWfLabel();
+
+    // ---- Editable workflow name (top bar) -------------------------------
+    // Enter or blur commits through FE.renameCurrentWorkflow: the rename is a
+    // normal autosave PUT, so it persists and survives reload. Escape reverts.
+    var wfNameInput = root.querySelector('#fe-wfname');
+    if (wfNameInput) {
+      var commitName = function () {
+        var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+        if (!cur || !cur.id) return;
+        var next = wfNameInput.value.trim();
+        if (!next) { wfNameInput.value = cur.name; return; }
+        if (next === cur.name) return;
+        if (FE.renameCurrentWorkflow && FE.renameCurrentWorkflow(next)) refreshWfLabel();
+      };
+      wfNameInput.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); wfNameInput.blur(); }
+        else if (ev.key === 'Escape') {
+          var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          wfNameInput.value = c && c.name ? c.name : '';
+          wfNameInput.blur();
+        }
+      });
+      wfNameInput.addEventListener('blur', commitName);
+    }
 
     // No manual save path exists. FlowEditor owns the debounced server queue.
     var removeAutosaveStatus = FE.onAutosaveStatus ? FE.onAutosaveStatus(function () {
@@ -1258,6 +1369,10 @@
       resultEl.innerHTML = '';
 
       var runWf = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      // Execute Workflow is the TEST run: it always uses a visible browser so
+      // the read-only live tab has something to show (docs/uiux/new ui.md §9).
+      // Background runs (Active: triggers / schedules) keep the workflow's own
+      // headless setting — they never come through this handler.
       var runPayload = { userId: uid, steps: steps, headless: !wantLiveBrowser() };
       // A saved workflow files its node outputs in ITS OWN workspace
       // (Workflow Files > downloads/<node>); the server verifies ownership.
@@ -1278,17 +1393,10 @@
       });
       liveTab.run
         .then(function (data) {
-          resultEl.innerHTML =
-            '<div class="result-banner ok">' + IC('check-circle') + ' ' + t('fe.queued') +
-            ' <code>' + esc(data.jobId) + '</code> ' +
-            '<button class="btn btn-ghost btn-sm" id="fe-goto-job" data-job="' +
-            esc(data.jobId) + '">' + t('run.viewJob') + '</button> ' +
-            '<span class="muted small">(' + steps.length + ' ' + t('fe.steps') + ')</span></div>';
-          var g = resultEl.querySelector('#fe-goto-job');
-          if (g) g.addEventListener('click', function () {
-            location.hash = '#/jobs?job=' + encodeURIComponent(data.jobId) +
-              '&user=' + encodeURIComponent(uid);
-          });
+          // Focused editor: no banner over the canvas. A short toast confirms
+          // the run; its details live in Executions (where the live log is).
+          resultEl.innerHTML = '';
+          U().toast(t('fe.queued') + ' #' + data.jobId + ' · ' + steps.length + ' ' + t('fe.steps'), 'ok');
           // Step 26: stream this job's live events into the bottom run/log
           // drawer — per-node halos, badges and the step timeline update live.
           if (window.RunPanel) {
@@ -1860,8 +1968,10 @@
       return cur && cur.id ? cur : null;
     }
     function wantLiveBrowser() {
-      var cur = savedWf();
-      return cur ? cur.liveBrowser === true : draftLive;
+      // The per-workflow `Live browser` switch is gone from the focused
+      // header: a test run is ALWAYS observed live. (Kept as a function so the
+      // run handler and its test have one name for the decision.)
+      return true;
     }
     function paintSwitch(btn, on, disabled, title) {
       if (!btn) return;
@@ -1896,7 +2006,7 @@
           U().toast(t(key), 'success');
         })
         .catch(function (err) {
-          U().toast((err && err.message) || t('ws.stateFailed'), 'error');
+          showActivationError(err);
         })
         .then(function () { toggleBusy = false; refreshToggles(); refreshRunInfo(); });
     }
@@ -1939,26 +2049,684 @@
       refreshRunSlot();
     }, true);
 
+    // ---- Versions: manual Save + restorable list -------------------------
+    // Manual versions are separate from autosave history. Restore is an
+    // ordinary edit: it writes a new autosave entry and never touches Active.
+    var versionsBtn = root.querySelector('#fe-versions');
+    var MANUAL_BASE = 1000000000; // = MANUAL_VERSION_BASE in workflow.service.ts
+    var versionsPanel = null;
+    function closeVersions() {
+      if (versionsPanel && versionsPanel.parentNode) versionsPanel.parentNode.removeChild(versionsPanel);
+      versionsPanel = null;
+      if (versionsBtn) versionsBtn.setAttribute('aria-expanded', 'false');
+    }
+    function reloadWorkflowAfterRestore(wfId) {
+      return API.getWorkflow(effectiveUserId(), wfId).then(function (data) {
+        var wf = data && data.workflow ? data.workflow : data;
+        if (!wf || !wf.id) return;
+        FE.openWorkflow(wf, wf.steps || []);
+        refreshWfLabel();
+      });
+    }
+    function renderVersionRows(list, versions, cur) {
+      if (!versions.length) {
+        list.innerHTML = '<p class="fe-versions-empty">' + esc(t('sh.versionsEmpty')) + '</p>';
+        return;
+      }
+      list.innerHTML = versions.map(function (v) {
+        var isManual = v.kind === 'manual';
+        var when = v.savedAt ? new Date(v.savedAt).toLocaleString() : '';
+        // The server lists only the initial version and manual saves.
+        var what = isManual
+          ? (v.label ? esc(v.label) : esc(t('sh.versionManualDefault')))
+          : esc(t('sh.versionInitial'));
+        // Manual saves are numbered #1, #2... (their own range); the initial
+        // version is the design as it was created.
+        var tag = isManual ? '#' + (Number(v.version) - MANUAL_BASE) : t('sh.versionInitialTag');
+        return '<li class="fe-version-row' + (isManual ? ' is-manual' : ' is-initial') + '">' +
+          '<span class="fe-version-meta"><strong>' + esc(String(tag)) + '</strong> ' +
+          '<span class="fe-version-what">' + what + '</span>' +
+          '<span class="fe-version-when">' + esc(when) + '</span></span>' +
+          '<button type="button" class="fe-version-restore" data-version="' + esc(String(v.version)) + '">' +
+          esc(t('sh.versionRestore')) + '</button></li>';
+      }).join('');
+      list.querySelectorAll('.fe-version-restore').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var cur2 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          if (!cur2 || !cur2.id) return;
+          b.disabled = true;
+          API.restoreWorkflowVersion(effectiveUserId(), cur2.id, b.getAttribute('data-version'))
+            .then(function () { return reloadWorkflowAfterRestore(cur2.id); })
+            .then(function () { U().toast(t('sh.versionRestored'), 'success'); closeVersions(); })
+            .catch(function (err) {
+              U().toast((err && err.message) || t('sh.versionRestoreFailed'), 'error');
+              b.disabled = false;
+            });
+        });
+      });
+    }
+    // Asks for a name before a MANUAL version is written. Autosave never goes
+    // through here. `onConfirm(label)` runs only after the user confirms; Cancel
+    // and Escape write nothing.
+    function openVersionNameDialog(onConfirm) {
+      var existing = document.getElementById('fe-version-name-dialog');
+      if (existing) existing.remove();
+      var dlg = document.createElement('div');
+      dlg.id = 'fe-version-name-dialog';
+      dlg.className = 'fe-version-dialog';
+      dlg.setAttribute('role', 'dialog');
+      dlg.setAttribute('aria-modal', 'true');
+      dlg.setAttribute('aria-labelledby', 'fe-version-name-title');
+      dlg.innerHTML =
+        '<form class="fe-version-dialog-card" novalidate>' +
+        '<h3 id="fe-version-name-title" class="fe-version-dialog-title">' + esc(t('sh.versionNameTitle')) + '</h3>' +
+        '<label class="fe-version-dialog-label" for="fe-version-name-input">' + esc(t('sh.versionNameLabel')) + '</label>' +
+        '<input id="fe-version-name-input" class="fe-version-dialog-input" type="text" maxlength="120" ' +
+        'placeholder="' + esc(t('sh.versionNamePlaceholder')) + '" autocomplete="off">' +
+        '<p class="fe-version-dialog-hint">' + esc(t('sh.versionNameHint')) + '</p>' +
+        '<div class="fe-version-dialog-actions">' +
+        '<button type="button" class="fe-version-dialog-cancel">' + esc(t('sh.versionNameCancel')) + '</button>' +
+        '<button type="submit" class="fe-version-dialog-confirm">' + esc(t('sh.versionNameConfirm')) + '</button>' +
+        '</div></form>';
+      document.body.appendChild(dlg);
+      var input = dlg.querySelector('#fe-version-name-input');
+      var form = dlg.querySelector('form');
+      var close = function () { dlg.remove(); };
+      dlg.querySelector('.fe-version-dialog-cancel').addEventListener('click', close);
+      dlg.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') { ev.stopPropagation(); close(); }
+      });
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var label = input.value.trim();
+        if (!label) { input.focus(); return; }
+        close();
+        Promise.resolve().then(function () { return onConfirm(label); }).catch(function (err) {
+          U().toast((err && err.message) || t('sh.versionSaveFailed'), 'error');
+        });
+      });
+      input.focus();
+    }
+
+    function openVersions() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!cur || !cur.id) { U().toast(t('fe.filesNeedSave'), 'info'); return; }
+      if (versionsPanel) { closeVersions(); return; }
+      versionsPanel = document.createElement('div');
+      versionsPanel.className = 'fe-versions-panel';
+      versionsPanel.setAttribute('role', 'dialog');
+      versionsPanel.setAttribute('aria-label', t('sh.versionsTitle'));
+      versionsPanel.innerHTML =
+        '<div class="fe-versions-head"><strong>' + esc(t('sh.versionsTitle')) + '</strong>' +
+        '<button type="button" class="fe-versions-save">' + esc(t('sh.versionSaveNow')) + '</button></div>' +
+        '<ul class="fe-versions-list"><li class="fe-versions-loading">' + esc(t('sh.versionsLoading')) + '</li></ul>';
+      document.body.appendChild(versionsPanel);
+      var rect = versionsBtn.getBoundingClientRect();
+      versionsPanel.style.position = 'fixed';
+      versionsPanel.style.top = (rect.bottom + 6) + 'px';
+      versionsPanel.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
+      versionsBtn.setAttribute('aria-expanded', 'true');
+      var list = versionsPanel.querySelector('.fe-versions-list');
+      var loadList = function () {
+        API.listWorkflowVersions(effectiveUserId(), cur.id).then(function (data) {
+          renderVersionRows(list, (data && data.versions) || [], cur);
+        }).catch(function (err) {
+          list.innerHTML = '<li class="fe-versions-empty">' + esc((err && err.message) || t('sh.versionsLoadFailed')) + '</li>';
+        });
+      };
+      versionsPanel.querySelector('.fe-versions-save').addEventListener('click', function () {
+        saveManualVersion(loadList);
+      });
+      versionsPanel.__reload = loadList;
+      loadList();
+    }
+    /**
+     * The ONE manual-save path (top-bar Save, Ctrl+S, the panel button): ask
+     * for a name, flush autosave so the snapshot is the current design, then
+     * write exactly one manual version. Cancel / Escape write nothing.
+     */
+    var manualSaveBusy = false;
+    function saveManualVersion(after) {
+      var cur0 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      if (!cur0 || !cur0.id) {
+        // A draft has no record yet: persist it first, then ask for the name.
+        if (FE.notifyDocumentChanged) FE.notifyDocumentChanged();
+        var first = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
+        first.then(function () {
+          var c1 = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          if (c1 && c1.id) saveManualVersion(after);
+          else U().toast(t('sh.saveFailed'), 'error');
+        }).catch(function (err) { U().toast((err && err.message) || t('sh.saveFailed'), 'error'); });
+        return;
+      }
+      if (manualSaveBusy) return;
+      openVersionNameDialog(function (label) {
+        manualSaveBusy = true;
+        var flush = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
+        return flush.then(function () {
+          var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          return API.saveWorkflowVersion(effectiveUserId(), c.id, label);
+        }).then(function () {
+          U().toast(t('sh.versionSaved') + ': ' + label, 'success');
+          if (after) after();
+          else if (versionsPanel && versionsPanel.__reload) versionsPanel.__reload();
+        }).finally(function () { manualSaveBusy = false; });
+      });
+    }
+    if (versionsBtn) versionsBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      openVersions();
+    });
+    document.addEventListener('click', function (ev) {
+      if (!versionsPanel) return;
+      if (versionsPanel.contains(ev.target) || (versionsBtn && versionsBtn.contains(ev.target))) return;
+      // The name dialog is appended to <body>, outside the panel. Clicks inside
+      // it (Cancel / Save) must not dismiss the versions list behind it.
+      var nameDlg = document.getElementById('fe-version-name-dialog');
+      if (nameDlg && nameDlg.contains(ev.target)) return;
+      closeVersions();
+    });
+
+    // ---- Aria Compact: Save (flush), canvas CTA, Editor/Executions ------
+    var saveNowBtn = root.querySelector('#fe-savenow');
+    function refreshSaveBtn() {
+      if (!saveNowBtn) return;
+      var st = FE.getAutosaveStatus ? FE.getAutosaveStatus() : 'draft';
+      saveNowBtn.setAttribute('data-state', st || 'draft');
+      saveNowBtn.disabled = st === 'saving';
+    }
+    // Save = create a named, restorable MANUAL version. Autosave keeps running
+    // on its own and never creates versions (spec §6: two independent things).
+    if (saveNowBtn) saveNowBtn.addEventListener('click', function (ev) {
+      if (ev) ev.stopPropagation();
+      saveManualVersion(null);
+    });
+    var removeSaveWatch = FE.onAutosaveStatus ? FE.onAutosaveStatus(refreshSaveBtn) : null;
+    refreshSaveBtn();
+
+    // Top-end `+` opens the SAME Add Node dialog as double-click, centred.
+    var addFab = root.querySelector('#fe-addnode-fab');
+    if (addFab) {
+      addFab.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      addFab.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (FE.openAddNodeCentered) FE.openAddNodeCentered();
+      });
+    }
+
+    // The canvas CTA is a proxy: one Run/Stop slot, one handler set.
+    var execCta = root.querySelector('#fe-exec-cta');
+    function refreshExecCta() {
+      if (!execCta || !runSlot) return;
+      var stop = runSlot.getAttribute('data-mode') === 'stop';
+      execCta.setAttribute('data-mode', stop ? 'stop' : 'run');
+      execCta.classList.toggle('is-stop', stop);
+      execCta.disabled = !!runSlot.disabled;
+      execCta.innerHTML = IC(stop ? 'stop-circle' : 'play', 14) +
+        '<span>' + esc(t(stop ? 'sh.stop' : 'sh.executeWorkflow')) + '</span>';
+    }
+    if (execCta) {
+      execCta.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      execCta.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (runSlot) runSlot.click();
+        refreshExecCta();
+      });
+    }
+
+    // ---- Editor · Extraction · Executions ---------------------------------
+    // One workflow, three views. The ACTIVITY LOG element is shared: in
+    // Executions it is docked into the selected run's detail; in the Editor
+    // it is not shown at all (the canvas is for building, not for logs).
+    var modeBtns = root.querySelectorAll('.fe-mode');
+    var execView = root.querySelector('#fe-execview');
+    var execHost = root.querySelector('#fe-ex-host');
+    var xView = root.querySelector('#fe-xview');
+    var layoutEl = root.querySelector('.fe-layout');
+    var shellEl = root.querySelector('.fe-shell');
+    var feMode = 'editor';
+    var MODES = { editor: 1, extract: 1, exec: 1 };
+
+    // -- run list (real jobs, GET /jobs/:userId?workflowId=) ----------------
+    var exRuns = [];             // newest first
+    var exFilter = 'all';        // all | success | error | running
+    var exSel = null;            // selected jobId (string) or null = live run
+    var exDetail = {};           // jobId -> GET /job payload (cache)
+    function curWfId() {
+      var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      return cur && cur.id ? String(cur.id) : null;
+    }
+    function exTone(st) {
+      if (st === 'completed' || st === 'success') return 'green';
+      if (st === 'failed' || st === 'error') return 'red';
+      if (st === 'active' || st === 'waiting' || st === 'delayed' || st === 'running') return 'amber';
+      return 'muted';
+    }
+    function exWord(st) {
+      var tone = exTone(st);
+      return tone === 'green' ? t('ndv.statusSuccess') : tone === 'red' ? t('ndv.statusError')
+        : tone === 'amber' ? t('ndv.statusRunning') : (st || '—');
+    }
+    function exDur(ms) {
+      if (ms == null) return '—';
+      return ms < 1000 ? ms + ' ms' : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + ' s';
+    }
+    function exWhen(iso) {
+      if (!iso) return '—';
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '—';
+      function p2(n) { return (n < 10 ? '0' : '') + n; }
+      var today = new Date();
+      var same = d.toDateString() === today.toDateString();
+      return (same ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ') +
+        p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+    }
+    function loadRuns() {
+      var uid = effectiveUserId();
+      var wf = curWfId();
+      if (!uid || !API.listJobs) { exRuns = []; renderRunList(); return Promise.resolve(); }
+      // A draft has no history of its own; show nothing rather than everything.
+      if (!wf) { exRuns = []; renderRunList(); renderRunDetail(); return Promise.resolve(); }
+      return API.listJobs(uid, 50, wf)
+        .then(function (d) { exRuns = (d && d.jobs) || []; })
+        .catch(function () { exRuns = []; })
+        .then(function () { renderRunList(); renderRunDetail(); refreshExecHeader(); });
+    }
+    function renderRunFilters() {
+      var host = root.querySelector('#fe-ex-filters');
+      if (!host) return;
+      var counts = { all: exRuns.length, success: 0, error: 0, running: 0 };
+      exRuns.forEach(function (j) {
+        var tn = exTone(j.state);
+        if (tn === 'green') counts.success++; else if (tn === 'red') counts.error++;
+        else if (tn === 'amber') counts.running++;
+      });
+      var defs = [['all', t('sh.exAll')], ['success', t('ndv.statusSuccess')],
+        ['error', t('ndv.statusError')], ['running', t('ndv.statusRunning')]];
+      host.innerHTML = defs.map(function (d) {
+        return '<button type="button" role="radio" class="fe-ex-filter tone-' + d[0] +
+          (exFilter === d[0] ? ' is-on' : '') + '" aria-checked="' + (exFilter === d[0]) + '"' +
+          ' data-f="' + d[0] + '">' + esc(d[1]) + '<b>' + counts[d[0]] + '</b></button>';
+      }).join('');
+      host.querySelectorAll('[data-f]').forEach(function (b) {
+        b.addEventListener('click', function () { exFilter = b.getAttribute('data-f'); renderRunList(); });
+      });
+    }
+    function renderRunList() {
+      renderRunFilters();
+      var list = root.querySelector('#fe-ex-runs');
+      if (!list) return;
+      var rows = exRuns.filter(function (j) {
+        if (exFilter === 'all') return true;
+        var tn = exTone(j.state);
+        return (exFilter === 'success' && tn === 'green') || (exFilter === 'error' && tn === 'red') ||
+          (exFilter === 'running' && tn === 'amber');
+      });
+      if (!rows.length) {
+        list.innerHTML = '<li class="fe-ex-empty">' + esc(curWfId() ? t('al.noRuns') : t('sh.exNeedSaved')) + '</li>';
+        return;
+      }
+      list.innerHTML = rows.map(function (j) {
+        var id = String(j.jobId);
+        var on = exSel === id;
+        return '<li><button type="button" class="fe-ex-run' + (on ? ' is-on' : '') + '" data-job="' + esc(id) + '">' +
+          '<span class="fe-ex-dot tone-' + exTone(j.state) + '"></span>' +
+          '<span class="fe-ex-run-main"><span class="fe-ex-run-id">#' + esc(id) + '</span>' +
+            '<span class="fe-ex-run-word tone-' + exTone(j.state) + '">' + esc(exWord(j.state)) + '</span></span>' +
+          '<span class="fe-ex-run-meta"><span>' + esc(exWhen(j.startedAt || j.timestamp)) + '</span>' +
+            '<span>' + esc(exDur(j.durationMs)) + '</span></span>' +
+          (j.failedReason ? '<span class="fe-ex-run-err" title="' + esc(j.failedReason) + '">' + esc(String(j.failedReason).slice(0, 80)) + '</span>' : '') +
+          '</button></li>';
+      }).join('');
+      list.querySelectorAll('[data-job]').forEach(function (b) {
+        b.addEventListener('click', function () { selectRun(b.getAttribute('data-job')); });
+      });
+    }
+    function selectRun(jobId) {
+      exSel = jobId ? String(jobId) : null;
+      renderRunList();
+      renderRunDetail();
+      if (!exSel || exDetail[exSel]) return;
+      var uid = effectiveUserId();
+      if (!uid || !API.getJob) return;
+      API.getJob(uid, exSel).then(function (d) {
+        exDetail[exSel] = d || {};
+        renderRunDetail();
+      }).catch(function (err) {
+        exDetail[exSel] = { __error: (err && err.message) || String(err) };
+        renderRunDetail();
+      });
+    }
+    /** One row per step: status, action, timing, items, error and the output. */
+    function stepRowsHtml(outs) {
+      if (!outs || !outs.length) return '<div class="fe-ex-empty">' + esc(t('sh.exNoSteps')) + '</div>';
+      return '<ol class="fe-ex-steplist">' + outs.map(function (o, i) {
+        var ok = o.success !== false && !o.error;
+        var sample = o.outputSample != null ? o.outputSample : o.result;
+        var json = '';
+        try { json = sample == null ? '' : JSON.stringify(sample, null, 2); } catch (e) { json = String(sample); }
+        if (json.length > 4000) json = json.slice(0, 4000) + '\n…';
+        var label = (window.FlowEditor && FE.ACTIONS) ? null : null;
+        void label;
+        return '<li class="fe-ex-step tone-' + (ok ? 'green' : 'red') + '">' +
+          '<details' + (ok ? '' : ' open') + '>' +
+            '<summary>' +
+              '<span class="fe-ex-dot tone-' + (ok ? 'green' : 'red') + '"></span>' +
+              '<span class="fe-ex-step-n">' + (o.step || i + 1) + '</span>' +
+              '<span class="fe-ex-step-act">' + esc(o.action || '') + '</span>' +
+              (o.inputItemCount != null || o.outputItemCount != null
+                ? '<span class="fe-ex-step-items">' + esc((o.inputItemCount != null ? o.inputItemCount : '–') +
+                  ' → ' + (o.outputItemCount != null ? o.outputItemCount : '–') + ' ' + t('rp.items')) + '</span>' : '') +
+              '<span class="fe-ex-step-time">' + esc(exDur(o.durationMs)) + '</span>' +
+            '</summary>' +
+            (o.error ? '<div class="fe-ex-step-err">' + esc(String(o.error)) + '</div>' : '') +
+            (json ? '<pre class="fe-ex-json">' + esc(json) + '</pre>' : '') +
+          '</details></li>';
+      }).join('') + '</ol>';
+    }
+    function renderRunDetail() {
+      var title = root.querySelector('#fe-ex-title');
+      var stepsEl = root.querySelector('#fe-ex-steps');
+      var host = execHost;
+      if (!title || !stepsEl) return;
+      var RP = window.RunPanel;
+      var rs = RP && RP.getSummary ? RP.getSummary() : null;
+      var liveId = rs && rs.jobId ? String(rs.jobId) : null;
+      // The live / last run of THIS session is shown through the activity log
+      // itself (it has the event timeline); any other run through its stored
+      // step outputs.
+      var showLive = !exSel || (liveId && exSel === liveId);
+      if (host) host.hidden = !showLive;
+      if (showLive) {
+        title.innerHTML = liveId
+          ? '<span class="fe-ex-dot tone-' + exTone(rs.phase === 'done' ? (rs.error ? 'failed' : 'completed') : rs.phase) + '"></span>' +
+            '<span>' + esc(t('sh.exRun')) + ' #' + esc(liveId) + '</span>' +
+            '<span class="fe-pane-sub">' + esc(t('sh.exLive')) + '</span>'
+          : '<span>' + esc(t('sh.exNoSelection')) + '</span>';
+        stepsEl.innerHTML = '';
+        return;
+      }
+      var j = null;
+      exRuns.forEach(function (r) { if (String(r.jobId) === exSel) j = r; });
+      var d = exDetail[exSel];
+      title.innerHTML = '<span class="fe-ex-dot tone-' + exTone(j && j.state) + '"></span>' +
+        '<span>' + esc(t('sh.exRun')) + ' #' + esc(exSel) + '</span>' +
+        '<span class="fe-pane-sub">' + esc(exWord(j && j.state)) + ' · ' + esc(exWhen(j && (j.startedAt || j.timestamp))) +
+          ' · ' + esc(exDur(j && j.durationMs)) + ' · ' + esc((j && j.trigger) || 'manual') + '</span>';
+      if (!d) { stepsEl.innerHTML = '<div class="fe-ex-empty">' + esc(t('sh.exLoading')) + '</div>'; return; }
+      if (d.__error) { stepsEl.innerHTML = '<div class="fe-ex-step-err">' + esc(d.__error) + '</div>'; return; }
+      var err = (j && j.failedReason) || (d.success === false ? (d.error || d.message) : '');
+      stepsEl.innerHTML =
+        (err ? '<div class="fe-ex-banner tone-red">' + IC('alert-triangle', 14) + '<span>' + esc(String(err)) + '</span></div>' : '') +
+        stepRowsHtml(d.stepOutputs || []);
+    }
+    function refreshExecHeader() {
+      var statsEl = root.querySelector('#fe-ex-stats');
+      var liveDot = root.querySelector('.fe-mode-live');
+      var rs = window.RunPanel && window.RunPanel.getSummary ? window.RunPanel.getSummary() : null;
+      if (liveDot) liveDot.classList.toggle('on', !!(rs && rs.phase === 'running'));
+      if (!statsEl) return;
+      // Real counts from the real job list (window.RunPanel.getRuns() mirrors
+      // the same /jobs query) — a chip only says what it counted.
+      var runs = exRuns.length ? exRuns
+        : (window.RunPanel && window.RunPanel.getRuns ? window.RunPanel.getRuns() : []);
+      var ok = 0, bad = 0, busy = 0;
+      runs.forEach(function (j) {
+        var s = j.state;
+        if (s === 'completed') ok++;
+        else if (s === 'failed') bad++;
+        else if (s === 'active' || s === 'waiting' || s === 'delayed') busy++;
+      });
+      function chip(label, n, tone) {
+        return '<span class="fe-ex-chip tone-' + tone + '"><b>' + n + '</b>' + esc(label) + '</span>';
+      }
+      statsEl.innerHTML =
+        chip(t('sh.exTotal'), runs.length, 'muted') +
+        chip(t('ndv.statusSuccess'), ok, 'green') +
+        chip(t('ndv.statusError'), bad, 'red') +
+        chip(t('ndv.statusRunning'), busy, 'amber');
+    }
+    var exRefresh = root.querySelector('#fe-ex-refresh');
+    if (exRefresh) exRefresh.addEventListener('click', function () { exDetail = {}; loadRuns(); });
+
+    // -- Extraction: the data this workflow's extract-type steps produced ----
+    // Source of truth: the stored step outputs of the latest finished run, and
+    // the live run's per-step samples. Nothing is re-run to show it.
+    var X_ACTIONS = { extract: 1, attribute: 1, extract_data: 1, 'extract-data': 1, extract_table: 1,
+      extract_links: 1, scrape: 1, get_text: 1, get_attribute: 1, code: 1 };
+    var xRows = [];   // [{ step, action, items: [] }]
+    var xJob = null;
+    function rowsFromOutputs(outs) {
+      var out = [];
+      (outs || []).forEach(function (o) {
+        if (!o || !X_ACTIONS[String(o.action)]) return;
+        var items = Array.isArray(o.outputSample) ? o.outputSample : (o.result != null ? [o.result] : []);
+        out.push({ step: o.step, action: o.action, items: items, truncated: !!o.outputTruncated });
+      });
+      return out;
+    }
+    function loadExtraction() {
+      var uid = effectiveUserId();
+      var wf = curWfId();
+      var body = root.querySelector('#fe-x-body');
+      if (!body) return;
+      if (!wf) { xRows = []; xJob = null; renderExtraction(); return; }
+      body.innerHTML = '<div class="fe-ex-empty">' + esc(t('sh.exLoading')) + '</div>';
+      API.listJobs(uid, 20, wf).then(function (d) {
+        var jobs = ((d && d.jobs) || []).filter(function (j) { return j.state === 'completed' || j.state === 'failed'; });
+        if (!jobs.length) { xRows = []; xJob = null; renderExtraction(); return null; }
+        xJob = jobs[0];
+        return API.getJob(uid, String(xJob.jobId)).then(function (jd) {
+          xRows = rowsFromOutputs(jd && jd.stepOutputs);
+          renderExtraction();
+        });
+      }).catch(function () { xRows = []; renderExtraction(); });
+    }
+    function flatKeys(items) {
+      var keys = [];
+      items.forEach(function (it) {
+        if (it && typeof it === 'object' && !Array.isArray(it)) {
+          Object.keys(it).forEach(function (k) { if (keys.indexOf(k) < 0 && keys.length < 12) keys.push(k); });
+        }
+      });
+      return keys;
+    }
+    function cell(v) {
+      if (v == null) return '';
+      if (typeof v === 'object') { try { v = JSON.stringify(v); } catch (e) { v = String(v); } }
+      v = String(v);
+      return v.length > 240 ? v.slice(0, 240) + '…' : v;
+    }
+    function renderExtraction() {
+      var body = root.querySelector('#fe-x-body');
+      var sub = root.querySelector('#fe-x-sub');
+      var act = root.querySelector('#fe-x-actions');
+      if (!body) return;
+      if (sub) sub.textContent = xJob ? t('sh.exRun') + ' #' + xJob.jobId + ' · ' + exWhen(xJob.finishedAt || xJob.startedAt) : '';
+      if (act) {
+        act.innerHTML = xRows.length
+          ? '<button type="button" class="fe-tbbtn" id="fe-x-json">' + IC('download', 13) + '<span>JSON</span></button>' +
+            '<button type="button" class="fe-tbbtn" id="fe-x-csv">' + IC('download', 13) + '<span>CSV</span></button>'
+          : '';
+        var bj = act.querySelector('#fe-x-json'), bc = act.querySelector('#fe-x-csv');
+        if (bj) bj.addEventListener('click', function () { downloadExtraction('json'); });
+        if (bc) bc.addEventListener('click', function () { downloadExtraction('csv'); });
+      }
+      if (!curWfId()) { body.innerHTML = '<div class="fe-x-empty">' + esc(t('sh.exNeedSaved')) + '</div>'; return; }
+      if (!xRows.length) {
+        body.innerHTML = '<div class="fe-x-empty">' + IC('database', 22) +
+          '<b>' + esc(t('sh.xEmptyTitle')) + '</b><span>' + esc(t('sh.xEmptyHint')) + '</span></div>';
+        return;
+      }
+      body.innerHTML = xRows.map(function (r) {
+        var keys = flatKeys(r.items);
+        var table;
+        if (keys.length) {
+          table = '<table class="fe-x-table"><thead><tr>' + keys.map(function (k) { return '<th>' + esc(k) + '</th>'; }).join('') +
+            '</tr></thead><tbody>' + r.items.map(function (it) {
+              return '<tr>' + keys.map(function (k) { return '<td>' + esc(cell(it && it[k])) + '</td>'; }).join('') + '</tr>';
+            }).join('') + '</tbody></table>';
+        } else {
+          table = '<pre class="fe-ex-json">' + esc(cell(r.items)) + '</pre>';
+        }
+        return '<article class="fe-x-card"><header><span class="fe-ex-step-n">' + esc(String(r.step || '')) + '</span>' +
+          '<span class="fe-ex-step-act">' + esc(r.action) + '</span>' +
+          '<span class="fe-pane-sub">' + r.items.length + ' ' + esc(t('rp.items')) + (r.truncated ? ' · ' + esc(t('sh.xTruncated')) : '') + '</span></header>' +
+          '<div class="fe-x-tablewrap">' + table + '</div></article>';
+      }).join('');
+    }
+    function downloadExtraction(kind) {
+      var name = 'extraction-' + (curWfId() || 'draft') + (xJob ? '-' + xJob.jobId : '');
+      var text, type;
+      if (kind === 'json') {
+        text = JSON.stringify(xRows.map(function (r) { return { step: r.step, action: r.action, items: r.items }; }), null, 2);
+        type = 'application/json'; name += '.json';
+      } else {
+        var all = [];
+        xRows.forEach(function (r) { r.items.forEach(function (it) { all.push(it); }); });
+        var keys = flatKeys(all);
+        var q = function (v) { v = cell(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+        text = keys.map(q).join(',') + '\n' + all.map(function (it) {
+          return keys.map(function (k) { return q(it && it[k]); }).join(',');
+        }).join('\n');
+        type = 'text/csv'; name += '.csv';
+      }
+      try {
+        var blob = new Blob([text], { type: type });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) { U().toast(t('sh.saveFailed'), 'error'); }
+    }
+
+    function setMode(mode) {
+      feMode = MODES[mode] ? mode : 'editor';
+      modeBtns.forEach(function (b) {
+        var on = b.getAttribute('data-mode') === feMode;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      if (shellEl) {
+        shellEl.classList.toggle('fe-mode-exec', feMode === 'exec');
+        shellEl.classList.toggle('fe-mode-extract', feMode === 'extract');
+      }
+      if (layoutEl) layoutEl.hidden = feMode !== 'editor';
+      if (execView) execView.hidden = feMode !== 'exec';
+      if (xView) xView.hidden = feMode !== 'extract';
+      var RP = window.RunPanel;
+      if (feMode === 'exec') {
+        if (RP && RP.dockInto) RP.dockInto(execHost);
+        loadRuns();
+      } else {
+        if (RP && RP.undock) RP.undock();
+        if (feMode === 'editor' && FE.syncDock) FE.syncDock();
+      }
+      if (feMode === 'extract') loadExtraction();
+      if (AppUtil.setPref) AppUtil.setPref('feMode', feMode);
+    }
+    modeBtns.forEach(function (b) {
+      b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); });
+    });
+    // Extract (top bar) = download the open workflow as the native
+    // `plyr-workflow` file, built from the CURRENT canvas (the Extraction tab
+    // was removed; the Extract capability stays). Import reads the same file.
+    var extractBtn = root.querySelector('#fe-extract');
+    if (extractBtn) extractBtn.addEventListener('click', function () {
+      var curx = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+      exportWorkflowJson({
+        id: curx && curx.id,
+        name: (curx && curx.name) || t('fe.untitled'),
+        description: (curx && curx.description) || '',
+        steps: FE.toDocumentSteps(),
+        headless: curx && curx.headless,
+      });
+    });
+    var importBtn = root.querySelector('#fe-import');
+    if (importBtn) importBtn.addEventListener('click', function () {
+      // A validated import creates a NEW, inactive workflow (never overwrites)
+      // and opens it in the editor.
+      importWorkflowJson(effectiveUserId(), function (res) {
+        var wf = res && res.workflow;
+        if (res && res.renamedFrom) {
+          U().toast(t('ex.renamed').replace('{from}', res.renamedFrom).replace('{to}', wf.name), 'info');
+        }
+        if (wf && wf.id) { FE.openWorkflow(wf, wf.steps || []); refreshWfLabel(); refreshShell(); }
+      });
+    });
+    // The editor always opens on the canvas; the last mode is not restored
+    // (landing on a log after creating a workflow is disorienting).
+    var initialMode = 'editor';
+    var lastRunPhase = '';
+
     // ---- One subscription drives every derived surface ------------------
     function refreshShell() {
       refreshHistoryBtns();
       if (olOpen) renderOutline();
       refreshRunInfo();
       refreshRunSlot();
+      refreshExecCta();
       refreshToggles();
     }
     var offChange = FE.onChange ? FE.onChange(refreshShell) : null;
     // The run panel republishes its state whenever a live event lands, so the
     // run-info strip and the Run/Stop slot follow the run without polling.
     var offRun = (window.RunPanel && window.RunPanel.onUpdate)
-      ? window.RunPanel.onUpdate(function () { refreshRunInfo(); refreshRunSlot(); })
+      ? window.RunPanel.onUpdate(function () {
+          refreshRunInfo(); refreshRunSlot(); refreshExecCta(); refreshExecHeader();
+          // A run that just started or finished changes the history: re-read
+          // it once per phase change (not per event), while Executions shows.
+          var ph = window.RunPanel.getSummary ? window.RunPanel.getSummary().phase : '';
+          if (ph !== lastRunPhase) {
+            lastRunPhase = ph;
+            if (feMode === 'exec') loadRuns();
+            if (feMode === 'extract' && ph !== 'running') loadExtraction();
+          }
+          if (feMode === 'exec') renderRunDetail();
+        })
       : null;
     setOutlineOpen(olOpen, false);
     refreshShell();
+    if (initialMode === 'exec') setMode('exec');
+    // Ctrl/Cmd+S flushes the save queue (the browser's own Save Page is never
+    // what an editor user means). Registered through onDoc, so it is removed.
+    onDoc('keydown', function (ev) {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey &&
+          String(ev.key).toLowerCase() === 's') {
+        ev.preventDefault();
+        if (saveNowBtn && !saveNowBtn.disabled) saveNowBtn.click();
+      }
+    });
 
     // The full-bleed route docks the ACTIVITY LOG against the canvas' start
     // gutter, which is measured in px — so a window resize invalidates it.
-    var onWinResize = function () { if (FE.syncDock) FE.syncDock(); };
+    // Keep the bottom-centre CTA clear of the ACTIVITY LOG dock, whose height
+    // follows its content and its open/closed state — measured, not guessed.
+    var canvasEl = root.querySelector('#fe-canvas');
+    function placeExecCta() {
+      if (!canvasEl) return;
+      var dock = document.getElementById('run-panel');
+      var gap = 22;
+      if (dock && dock.parentNode === document.body && dock.offsetHeight) {
+        var cr = canvasEl.getBoundingClientRect();
+        var dr = dock.getBoundingClientRect();
+        var overlap = cr.bottom - dr.top;
+        if (overlap > 0 && dr.left < cr.left + cr.width / 2 + 120 && dr.right > cr.left + cr.width / 2 - 120) {
+          gap = overlap + 14;
+        }
+      }
+      canvasEl.style.setProperty('--fe-cta-bottom', Math.round(gap) + 'px');
+    }
+    var ctaObs = null;
+    if (typeof ResizeObserver === 'function') {
+      ctaObs = new ResizeObserver(function () { placeExecCta(); });
+      var dockEl = document.getElementById('run-panel');
+      if (dockEl) ctaObs.observe(dockEl);
+      if (canvasEl) ctaObs.observe(canvasEl);
+    }
+    placeExecCta();
+    var onWinResize = function () { if (FE.syncDock) FE.syncDock(); placeExecCta(); };
     window.addEventListener('resize', onWinResize);
 
     // Tear-down: the editor view is re-rendered on every language switch and
@@ -1966,6 +2734,8 @@
     root.__feShellCleanup = function () {
       if (offChange) offChange();
       if (offRun) offRun();
+      if (removeSaveWatch) removeSaveWatch();
+      if (ctaObs) ctaObs.disconnect();
       window.removeEventListener('resize', onWinResize);
       shellListeners.forEach(function (p) { document.removeEventListener(p[0], p[1]); });
       shellListeners = [];
@@ -2248,9 +3018,9 @@
           .then(function (res) {
             showImportSummary(res.summary, res.codeDisabled, function () {
               API.importWorkflow(uid, p.envelope)
-                .then(function () {
+                .then(function (res) {
                   U().toast(t('ws.imported'), 'success');
-                  if (done) done();
+                  if (done) done(res);
                 })
                 .catch(function (err) { U().toast(err.message, 'error'); });
             });
@@ -2746,7 +3516,7 @@
           paintWorkflowsTab();
         })
         .catch(function (err) {
-          U().toast(err.message || t('ws.stateFailed'), 'error');
+          showActivationError(err);
           if (btn) btn.disabled = false;
         });
     }
@@ -3252,11 +4022,7 @@
       ev.currentTarget.setAttribute('aria-pressed', wsState.compact ? 'true' : 'false');
       if (wsState.tab === 'workflows') paintWorkflowsTab();
     });
-    root.querySelector('#ws-new').addEventListener('click', function () {
-      if (window.FlowEditor) window.FlowEditor.newWorkflow();
-      pendingWorkflowToOpen = null;
-      location.hash = '#/editor';
-    });
+    root.querySelector('#ws-new').addEventListener('click', function () { createAndOpenWorkflow(); });
     var caret = root.querySelector('#ws-new-caret');
     var caretMenu = root.querySelector('#ws-new-menu');
     caret.addEventListener('click', function (ev) {
@@ -3403,5 +4169,42 @@
     }
   }
 
-  window.Views = { render: render, stopAll: stopAll, addStep: addStep };
+  /**
+   * NEW WORKFLOW — the one creation path (rail `+`, Workspace `New Workflow`,
+   * the legacy library button). docs/uiux/new ui.md §4: the workflow is
+   * PERSISTED immediately, empty or not — POST /workflows creates the record,
+   * assigns the id and provisions its file workspace in the same request — so
+   * the hamburger (Workflow Files) and the Workspace list work before the
+   * first node exists. It then opens in the editor.
+   */
+  var creatingWorkflow = false;
+  function untitledName() {
+    var d = new Date();
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return 'Untitled workflow ' + d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +
+      ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+  function createAndOpenWorkflow() {
+    if (creatingWorkflow) return Promise.resolve(null);
+    var uid = effectiveUserId();
+    if (!uid || !API.createWorkflow) { location.hash = '#/editor'; return Promise.resolve(null); }
+    creatingWorkflow = true;
+    return API.createWorkflow(uid, { name: untitledName(), steps: [] })
+      .then(function (data) {
+        var wf = data && data.workflow ? data.workflow : data;
+        if (!wf || !wf.id) throw new Error(t('ws.newFailed'));
+        pendingWorkflowToOpen = wf;
+        // Re-render even when the editor is already on screen.
+        if (location.hash.replace(/\?.*$/, '') === '#/editor' && U().rerender) U().rerender();
+        else location.hash = '#/editor';
+        return wf;
+      })
+      .catch(function (err) {
+        U().toast((err && err.message) || t('ws.newFailed'), 'error');
+        return null;
+      })
+      .then(function (wf) { creatingWorkflow = false; return wf; });
+  }
+
+  window.Views = { render: render, stopAll: stopAll, addStep: addStep, createWorkflow: createAndOpenWorkflow };
 })();

@@ -357,9 +357,9 @@ describe('§1 the heal panel can never strand the user', () => {
       'bvp.healDismissed', 'bvp.healResumed',
     ];
     for (const k of keys) {
-      it(`${k} is defined twice`, () => {
+      it(`${k} is defined exactly once`, () => {
         const hits = I18N.split(`'${k}':`).length - 1;
-        expect(hits).toBe(2);
+        expect(hits).toBe(1);
       });
     }
 

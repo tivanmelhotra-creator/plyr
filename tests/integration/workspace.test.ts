@@ -31,6 +31,7 @@ vi.mock('../../src/validation', () => ({
   validateSteps: (s: unknown) => s as unknown[],
   validateWebhookUrl: (u: unknown) => (u ? String(u) : null),
   validateHeadless: () => true,
+  validateBackgroundHeadless: () => true,
 }));
 
 vi.mock('../../src/services/job.service', () => ({
@@ -134,11 +135,17 @@ let queue: ReturnType<typeof makeQueue>;
 let browserCount = 0;
 
 // Create a workflow through the real route and return its id.
-async function createWorkflow(name: string, userId = 'u1'): Promise<string> {
+async function createWorkflow(name: string, userId = 'u1', activate = true): Promise<string> {
   const res = await request(app)
     .post(`/workflows/${userId}`)
     .send({ name, steps: [{ action: 'goto', params: { url: 'https://e.com' } }] });
   expect(res.status).toBe(201);
+  // New workflows start INACTIVE; most cases here exercise an active flow, so
+  // they activate it through the real (validating) endpoint.
+  if (activate) {
+    const on = await request(app).patch(`/workflows/${userId}/${res.body.workflow.id}/state`).send({ active: true });
+    expect(on.status).toBe(200);
+  }
   return res.body.workflow.id as string;
 }
 
@@ -169,11 +176,12 @@ beforeEach(() => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('PATCH /workflows/:userId/:workflowId/state', () => {
-  it('creates workflows runnable-but-not-streamed by default', async () => {
-    const id = await createWorkflow('Defaults Flow');
+  it('creates workflows inactive and not streamed by default', async () => {
+    const id = await createWorkflow('Defaults Flow', 'u1', false);
     const res = await request(app).get(`/workflows/u1/${id}`);
     expect(res.status).toBe(200);
-    expect(res.body.workflow.active).toBe(true);
+    // Not runnable in the background until activated (validated + frozen).
+    expect(res.body.workflow.active).toBe(false);
     expect(res.body.workflow.liveBrowser).toBe(false);
   });
 

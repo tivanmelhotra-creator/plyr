@@ -87,10 +87,8 @@ describe('editor: a restored workflow identity is verified against the server', 
     expect(editor).not.toMatch(/notifyAutosaveStatus[\s\S]{0,500}onDocumentChanged/);
   });
 
-  it('the toast key exists in BOTH dictionaries (t() falls back to English silently)', () => {
-    const fa = I18N.slice(I18N.indexOf('    fa: {'), I18N.indexOf('    en: {'));
+  it('the toast key exists in the dictionary (t() returns the raw key otherwise)', () => {
     const en = I18N.slice(I18N.indexOf('    en: {'));
-    expect(fa).toMatch(/'fe\.workflowGone':/);
     expect(en).toMatch(/'fe\.workflowGone':/);
   });
 });

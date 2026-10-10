@@ -102,7 +102,9 @@ describe('canvas chrome — item G: floating toolbar', () => {
   });
 
   it('exposes the three view actions', () => {
-    for (const v of ['fullscreen', 'autolayout', 'focus']) {
+    // The former Fullscreen control is now Fit View (`fitview`); browser
+    // fullscreen is no longer bound to any button.
+    for (const v of ['fitview', 'autolayout', 'focus']) {
       expect(FE, `view action "${v}"`).toContain(`data-view="${v}"`);
     }
   });
@@ -238,7 +240,8 @@ describe('canvas chrome — behaviour contracts', () => {
   });
 
   it('canvas lock freezes geometry only — selection still works', () => {
-    const idx = FE.indexOf('if (canvasLocked) return;');
+    // The node-drag guard (the Pan tool has its own lock bail-out earlier).
+    const idx = FE.indexOf('if (canvasLocked) return;\n      var wp = worldPoint');
     expect(idx).toBeGreaterThan(-1);
     // selectNode() must run BEFORE the lock bail-out, so a locked canvas can
     // still be inspected and its NDV opened.
@@ -305,20 +308,12 @@ describe('canvas chrome — behaviour contracts', () => {
 });
 
 describe('canvas chrome — i18n and icon coverage', () => {
-  it('every chrome label exists in BOTH dictionaries (no key fallthrough)', () => {
+  it('every chrome label exists in the dictionary (no raw key on screen)', () => {
     const I18N = loadI18n();
     for (const k of CHROME_KEYS) {
-      I18N.setLang('en');
       const en = I18N.t(k);
-      I18N.setLang('fa');
-      const fa = I18N.t(k);
       expect(en, `en missing ${k}`).not.toBe(k);
-      expect(fa, `fa missing ${k}`).not.toBe(k);
-      // a fa value identical to en means the fa entry is missing and t() fell
-      // back to the en table
-      expect(fa, `fa fell back to en for ${k}`).not.toBe(en);
     }
-    I18N.setLang('en');
   });
 
   it('every icon the chrome asks for resolves to a real icon', () => {
@@ -543,7 +538,7 @@ describe('full-bleed editor route', () => {
     // `Fit` is a word in the column, and it uses the SHORT label — the tooltip
     // string ("Fit to screen") overflowed the 38px column.
     expect(block).toContain("esc(t('fe.fitShort'))");
-    expect(I18N_SRC.match(/'fe\.fitShort'/g) || []).toHaveLength(2);
+    expect(I18N_SRC.match(/'fe\.fitShort'/g) || []).toHaveLength(1); // English-only dictionary
     expect(CSS).toContain('.fe-mm-body {');
     expect(CSS).toContain('.fe-mm-zoom {');
   });

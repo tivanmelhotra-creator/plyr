@@ -423,16 +423,14 @@ describe('every §27 refusal code is renderable in both languages', () => {
    * `window`, and this is a node environment. Reading the real file is the point:
    * a key added to a copy would prove nothing about what users load.
    */
-  function dict(lang: 'fa' | 'en'): Record<string, string> {
+  function dict(): Record<string, string> {
     const src = readFileSync(resolve(__dirname, '../../public/js/i18n.js'), 'utf8');
     const out: Record<string, string> = {};
-    // The fa block comes first, en second; slice to the requested one so a key
-    // present only in fa cannot be found while checking en.
-    const faAt = src.indexOf('\n    fa: {');
+    // English-only dictionary (docs/uiux/new ui.md §2): one `en` block, no `fa`.
     const enAt = src.indexOf('\n    en: {');
-    expect(faAt).toBeGreaterThan(-1);
-    expect(enAt).toBeGreaterThan(faAt);
-    const block = lang === 'fa' ? src.slice(faAt, enAt) : src.slice(enAt);
+    expect(enAt).toBeGreaterThan(-1);
+    expect(src.indexOf('\n    fa: {')).toBe(-1);
+    const block = src.slice(enAt);
 
     const re = /'(insp\.err\.[A-Z_]+)':\s*'((?:\\'|[^'])*)'/g;
     let m: RegExpExecArray | null;
@@ -440,37 +438,15 @@ describe('every §27 refusal code is renderable in both languages', () => {
     return out;
   }
 
-  it('has a Persian message for all nine', () => {
-    const fa = dict('fa');
-    for (const code of CODES) {
-      expect(fa[`insp.err.${code}`], `missing fa message for ${code}`).toBeTruthy();
-    }
-  });
-
   it('has an English message for all nine', () => {
-    const en = dict('en');
+    const en = dict();
     for (const code of CODES) {
       expect(en[`insp.err.${code}`], `missing en message for ${code}`).toBeTruthy();
     }
   });
 
-  it('keeps the two languages in lockstep', () => {
-    // A code present in one language renders as a raw key to exactly the users
-    // who cannot read the other one.
-    expect(Object.keys(dict('fa')).sort()).toEqual(Object.keys(dict('en')).sort());
-  });
-
-  it('does not leave a Persian message written in English', () => {
-    const fa = dict('fa');
-    for (const code of CODES) {
-      // Copy-pasting the en block into fa is the realistic failure, and it looks
-      // fine in a diff. Persian text must contain Persian characters.
-      expect(/[\u0600-\u06FF]/.test(fa[`insp.err.${code}`]!), `${code} is not translated`).toBe(true);
-    }
-  });
-
   it('reaches the same codes the routes actually emit', () => {
-    const en = dict('en');
+    const en = dict();
     // The dictionary is only useful if the keys match what the wire carries.
     for (const code of ['TARGET_FIELD_NOT_FOUND', 'TARGET_NOT_AUTHORIZED', 'INVALID_AUTHORIZATION_CODE']) {
       expect(en[`insp.err.${code}`]).toBeTruthy();

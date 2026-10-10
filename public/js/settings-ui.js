@@ -11,7 +11,7 @@
   var GROUP_ICON = { environment: 'sliders', access: 'lock', security: 'shield', browser: 'globe', runs: 'play', storage: 'database' };
 
   function t(k) { return window.I18N ? window.I18N.t(k) : k; }
-  function fa() { return !!(window.I18N && window.I18N.getLang && window.I18N.getLang() === 'fa'); }
+  function fa() { return false; }  // English only (2026-10)
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];

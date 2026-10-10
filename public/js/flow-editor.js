@@ -477,10 +477,13 @@
       };
     } catch (e) { return null; }
   }
+  // The workflow name is part of the saved document: a rename is then a real
+  // change (it autosaves) and it is restored with the design after reload.
   function serialize() {
     return JSON.stringify({
       nodes: state.nodes, edges: state.edges, nextId: state.nextId,
       view: state.view,
+      name: currentWorkflow ? currentWorkflow.name : null,
     });
   }
   function saveLocal() {
@@ -754,8 +757,28 @@
     document.documentElement.style.setProperty('--fe-dock-start', (start + olw) + 'px');
   }
 
+  // Subtle minimap (docs/uiux/new ui.md §8): it rests at low opacity and wakes
+  // for ~4.5 s after the VIEWPORT changes (pan / zoom / fit), then fades back.
+  // Hover keeps it fully visible (CSS). Driven only from applyViewTransform —
+  // the one place every viewport change already goes through.
+  var MINIMAP_WAKE_MS = 4500;
+  var minimapWakeTimer = null;
+  var lastViewKey = '';
+  function wakeMinimap() {
+    if (!dom || !dom.minimapWrap) return;
+    dom.minimapWrap.classList.add('is-awake');
+    if (minimapWakeTimer) clearTimeout(minimapWakeTimer);
+    minimapWakeTimer = setTimeout(function () {
+      minimapWakeTimer = null;
+      if (dom && dom.minimapWrap) dom.minimapWrap.classList.remove('is-awake');
+    }, MINIMAP_WAKE_MS);
+  }
+
   function applyViewTransform() {
     var v = state.view;
+    var viewKey = Math.round(v.x) + ',' + Math.round(v.y) + ',' + v.scale.toFixed(3);
+    if (lastViewKey && viewKey !== lastViewKey) wakeMinimap();
+    lastViewKey = viewKey;
     dom.world.style.transform =
       'translate(' + v.x + 'px,' + v.y + 'px) scale(' + v.scale + ')';
     dom.svg.style.transform = dom.world.style.transform;
@@ -1140,6 +1163,13 @@
     card.style.setProperty('--cat-color',
       node.color && isNodeColor(node.color) ? node.color : cat.color);
 
+    // Decorative chamfered inner frame (docs/uiux/new ui.png). Purely visual,
+    // first child so every real part of the card paints above it.
+    var frame = document.createElement('span');
+    frame.className = 'fn-frame';
+    frame.setAttribute('aria-hidden', 'true');
+    card.appendChild(frame);
+
     var header = document.createElement('div');
     header.className = 'flow-node-head';
     header.innerHTML = '<span class="fn-icon">' + icon + '</span>' +
@@ -1303,6 +1333,14 @@
     header.addEventListener('mousedown', function (ev) {
       if (ev.button !== 0) return;
       ev.stopPropagation();
+      // Pan tool: a drag that starts on a node moves the VIEW, never the node
+      // and never the selection (Select tool owns node interaction).
+      if (canvasTool === 'pan') {
+        if (canvasLocked) return;
+        drag = { type: 'pan', startX: ev.clientX, startY: ev.clientY,
+          ox: state.view.x, oy: state.view.y };
+        return;
+      }
       var additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
       if (additive && !isStart) {
         state.selSet[node.id] = !state.selSet[node.id];
@@ -1333,6 +1371,7 @@
 
     card.addEventListener('click', function (ev) {
       ev.stopPropagation();
+      if (canvasTool === 'pan') return; // Pan tool never selects
       selectNode(node.id);
     });
 
@@ -4367,6 +4406,27 @@
         renderBoxSelect();
         return;
       }
+      // Canvas lock freezes the view as well as the nodes: a background drag does
+      // not pan. Clicking empty canvas still clears the selection.
+      if (canvasLocked) {
+        state.selected = null;
+        state.selSet = {};
+        renderInspector();
+        renderNodes();
+        return;
+      }
+      // Select tool (default): a background drag draws a box selection. Pan tool:
+      // the same drag moves the view. Shift box-selects in both tools (above).
+      if (canvasTool !== 'pan') {
+        var bwp = worldPoint(ev.clientX, ev.clientY);
+        drag = { type: 'box', x0: bwp.x, y0: bwp.y, x1: bwp.x, y1: bwp.y };
+        state.selSet = {};
+        state.selected = null;
+        renderInspector();
+        renderNodes();
+        renderBoxSelect();
+        return;
+      }
       drag = { type: 'pan', startX: ev.clientX, startY: ev.clientY,
         ox: state.view.x, oy: state.view.y };
       state.selected = null;
@@ -4484,6 +4544,8 @@
     // zoom with wheel
     on(dom.canvas, 'wheel', function (ev) {
       ev.preventDefault();
+      // Canvas lock freezes the view: the wheel must not zoom either.
+      if (canvasLocked) return;
       var v = state.view;
       var delta = ev.deltaY < 0 ? 1.1 : 0.9;
       var newScale = Math.min(2, Math.max(0.4, v.scale * delta));
@@ -4835,9 +4897,9 @@
           ' title="' + esc(t('fe.toolLock')) + '">' + IC('lock') + '</button>' +
         '<button class="fe-zbtn fe-tool" data-tool="grid" aria-pressed="true"' +
           ' title="' + esc(t('fe.toolFrame')) + '">' + IC('frame') + '</button>' +
-        // Fullscreen stays with the icon-only tools (it has no label in either
-        // image); the labelled pills above own Auto Layout / Focus Mode.
-        '<button class="fe-zbtn" data-view="fullscreen" title="' + esc(t('fe.fullscreen')) + '">' + IC('maximize') + '</button>' +
+        // Fit View frames every node (browser fullscreen is not bound here). Icon-only:
+        // the labelled pills above own Auto Layout / Focus Mode.
+        '<button class="fe-zbtn" data-view="fitview" title="' + esc(t('fe.fitView')) + '" aria-label="' + esc(t('fe.fitView')) + '">' + IC('maximize') + '</button>' +
       '</div>' +
       '<span class="fe-tb-sep" aria-hidden="true"></span>' +
       // zoom cluster
@@ -4886,6 +4948,7 @@
             openAddPaletteForSelection({ x: br.left - 220, y: br.bottom + 8 });
           } else if (v === 'autolayout') autoLayout();
           else if (v === 'focus') toggleFocusMode();
+          else if (v === 'fitview') fitToScreen();
           else toggleFullscreen();
         });
         b.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
@@ -5257,6 +5320,17 @@
 
     // ---- Step 23: viewport + visual node status ---------------------------
     fitToScreen: function () { fitToScreen(); },
+    /**
+     * The top-end `+`: the existing Add Node dialog (same one double-click and
+     * Tab open), centred in the VIEWPORT and wired after the selection like
+     * Tab. `openAddPalette` centres itself when no `at` is given.
+     */
+    openAddNodeCentered: function () {
+      if (!dom) return null;
+      var panel = openAddPaletteForSelection(null);
+      if (panel && panel.classList) panel.classList.add('is-centered');
+      return panel;
+    },
     zoomIn: function () { zoomBy(1.2); },
     zoomOut: function () { zoomBy(1 / 1.2); },
     // Paint a node's halo: ref = nodeId | chain step index; status =
@@ -5381,6 +5455,17 @@
     getCurrentWorkflow: function () { return currentWorkflow; },
     // Merge server-confirmed fields (e.g. {active, liveBrowser}) into the open
     // workflow's identity WITHOUT marking the graph dirty or bumping version.
+    // Rename the open workflow. Goes through the normal autosave PUT, so the
+    // name persists on the server and is restored after reload.
+    renameCurrentWorkflow: function (name) {
+      var clean = String(name == null ? '' : name).trim().slice(0, 120);
+      if (!clean || !currentWorkflow || !currentWorkflow.id) return false;
+      if (currentWorkflow.name === clean) return true;
+      currentWorkflow.name = clean;
+      saveWorkflowIdentity();
+      onDocumentChanged();
+      return true;
+    },
     patchCurrentWorkflow: function (fields) {
       if (!currentWorkflow || !fields) return false;
       Object.keys(fields).forEach(function (k) { currentWorkflow[k] = fields[k]; });

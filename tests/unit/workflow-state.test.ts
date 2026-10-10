@@ -81,11 +81,11 @@ const sampleInput = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('Workflow.active / .liveBrowser — defaults', () => {
-  it('a freshly created workflow is Active with Live Browser OFF', async () => {
+  it('a freshly created workflow is INACTIVE with Live Browser OFF', async () => {
     const wf = await svc.create('u1', sampleInput());
-    // Active by default: a workflow you just built should be runnable without a
-    // second action. Streaming is opt-in because it costs a visible browser.
-    expect(wf.active).toBe(true);
+    // Inactive by default: nothing runs in the background until the user
+    // activates it, which validates and freezes the design (phase-1 spec §5).
+    expect(wf.active).toBe(false);
     expect(wf.liveBrowser).toBe(false);
   });
 
@@ -182,8 +182,8 @@ describe('WorkflowService.setState', () => {
 
   it('is scoped per user: another user cannot flip your switch', async () => {
     const wf = await svc.create('u1', sampleInput());
-    expect(await svc.setState('u2', wf.id, { active: false })).toBeNull();
-    expect((await svc.get('u1', wf.id))?.active).toBe(true);
+    expect(await svc.setState('u2', wf.id, { liveBrowser: true })).toBeNull();
+    expect((await svc.get('u1', wf.id))?.liveBrowser).toBe(false);
   });
 });
 
@@ -209,15 +209,44 @@ describe('WorkflowService.update — flags survive an editor save', () => {
     expect(saved?.liveBrowser).toBe(false);
   });
 
-  it('snapshots the flags into version history', async () => {
+  it('does not snapshot Workspace flags into history on an edit (no per-edit versions)', async () => {
     const wf = await svc.create('u1', sampleInput());
     await svc.setState('u1', wf.id, { active: false, liveBrowser: true });
     await svc.update('u1', wf.id, sampleInput({ name: 'v2' }));
 
-    const versions = await svc.listVersions('u1', wf.id);
-    const newest = versions[0];
-    expect(newest.version).toBe(2);
-    expect(newest.active).toBe(false);
-    expect(newest.liveBrowser).toBe(true);
+    const current = await svc.get('u1', wf.id);
+    expect(current?.version).toBe(2);
+    expect(current?.active).toBe(false);
+    expect(current?.liveBrowser).toBe(true);
+    // Only the creation entry exists; the edit wrote none.
+    expect((await svc.listVersions('u1', wf.id)).length).toBe(1);
+  });
+});
+
+describe('Workflow.activeSnapshot — activation contract', () => {
+  it('activating without a frozen snapshot is refused', async () => {
+    const svc = new WorkflowService(makeRedis() as any);
+    const wf = await svc.create('u1', sampleInput({ active: false }));
+    await expect(svc.setState('u1', wf.id, { active: true })).rejects.toThrow(/activeSnapshot is required/);
+    expect((await svc.get('u1', wf.id))?.active).toBe(false);
+  });
+
+  it('activating with a snapshot stores it and leaves the version untouched', async () => {
+    const svc = new WorkflowService(makeRedis() as any);
+    const wf = await svc.create('u1', sampleInput({ active: false }));
+    const snap = WorkflowService.buildActiveSnapshot(wf);
+    const on = await svc.setState('u1', wf.id, { active: true, activeSnapshot: snap });
+    expect(on?.active).toBe(true);
+    expect(on?.activeSnapshot?.steps).toEqual(wf.steps);
+    expect(on?.version).toBe(wf.version);
+  });
+
+  it('deactivation keeps the last frozen snapshot', async () => {
+    const svc = new WorkflowService(makeRedis() as any);
+    const wf = await svc.create('u1', sampleInput({ active: false }));
+    await svc.setState('u1', wf.id, { active: true, activeSnapshot: WorkflowService.buildActiveSnapshot(wf) });
+    const off = await svc.setState('u1', wf.id, { active: false });
+    expect(off?.active).toBe(false);
+    expect(off?.activeSnapshot).not.toBeNull();
   });
 });

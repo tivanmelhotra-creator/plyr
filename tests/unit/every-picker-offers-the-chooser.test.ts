@@ -323,8 +323,8 @@ describe('a failed options read still yields a chooser', () => {
     const i18n = read('public/js/i18n.js');
     expect(
       (i18n.match(/'tgt\.optionsDegraded'/g) || []).length,
-      'fa and en both — an untranslated key renders as the key itself',
-    ).toBe(2);
+      'defined once — an untranslated key renders as the key itself',
+    ).toBe(1);
     const css = read('public/css/styles.css');
     expect(
       /\.tgt-note\s*\{/.test(css) && /\.tgt-note\.is-warn/.test(css),

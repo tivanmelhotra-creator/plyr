@@ -217,7 +217,7 @@
     if (d) parts.push(d + 'd');
     if (h) parts.push(h + 'h');
     if (m) parts.push(m + 'm');
-    parts.push(s + (I18N.getLang() === 'fa' ? '' : 's'));
+    parts.push(s + 's');
     return parts.join(' ');
   }
 
@@ -273,14 +273,16 @@
   // ---------------------------------------------
   // The six product areas — and ONLY these six — appear in the sidebar and in
   // the App Launcher (docs/uiux/workspace-overview.md § 3A).
-  var NAV_ROUTES = ['home', 'workspace', 'dashboard', 'jobs', 'admin', 'settings'];
+  var NAV_ROUTES = ['home', 'workspace', 'admin', 'settings'];
 
   /**
    * Deep routes: still addressable, but deliberately absent from the chrome.
    * They are opened FROM something (a workflow row, the editor, Settings), so
    * putting them in the sidebar was the clutter this change removes.
    */
-  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'quota'];
+  // `jobs` is no longer a rail/launcher area, but its deep links (run logs,
+  // Executions) must still resolve, so it stays routable here.
+  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'quota', 'jobs'];
 
   var ROUTES = NAV_ROUTES.concat(DEEP_ROUTES);
 
@@ -288,13 +290,10 @@
    * Which sidebar entry lights up for a deep route. A user standing in the
    * editor is still "in" the Workspace area; Quota is a Settings sub-page.
    */
+  // Routes that live INSIDE a workflow do not light up Workspace: the Workspace
+  // item means the list of workflows, and an open workflow is not that list. Only
+  // Settings-owned routes still map to their parent area.
   var ROUTE_PARENT = {
-    workflows: 'workspace',
-    editor: 'workspace',
-    run: 'workspace',
-    live: 'workspace',
-    browser: 'workspace',
-    schedules: 'workspace',
     quota: 'settings',
   };
 
@@ -411,7 +410,6 @@
    */
   var HOME_TILES = [
     { route: 'workspace', icon: 'layout', title: 'nav.workspace', desc: 'home.workspaceDesc' },
-    { route: 'dashboard', icon: 'bar-chart', title: 'nav.dashboard', desc: 'home.dashboardDesc' },
     { route: 'jobs', icon: 'layers', title: 'nav.jobs', desc: 'home.jobsDesc' },
     { route: 'admin', icon: 'shield', title: 'nav.admin', desc: 'home.adminDesc' },
     { route: 'settings', icon: 'settings', title: 'nav.settings', desc: 'home.settingsDesc' },
@@ -474,8 +472,11 @@
     markLauncherCurrent(area);
 
     // page title
-    el.pageTitle.setAttribute('data-i18n', 'nav.' + route);
-    el.pageTitle.textContent = I18N.t('nav.' + route);
+    // The shell bar shows the brand only; the page title element is optional.
+    if (el.pageTitle) {
+      el.pageTitle.setAttribute('data-i18n', 'nav.' + route);
+      el.pageTitle.textContent = I18N.t('nav.' + route);
+    }
 
     // FULL-BLEED ROUTES. `docs/uiux/state-empty-canvas.webp` puts the editor's
     // OWN top bar at y=0 and its status bar at the very bottom of the screen:
@@ -817,8 +818,14 @@
     });
     el.langToggleLogin.addEventListener('click', function () { I18N.toggle(); });
 
-    el.logoutBtn.addEventListener('click', doLogout);
+    // Logout lives in the editor account menu now (AppUtil.logout).
+    if (el.logoutBtn) el.logoutBtn.addEventListener('click', doLogout);
     el.langToggle.addEventListener('click', function () { I18N.toggle(); });
+    // Rail `+`: create + persist a workflow now, then open it (views.js).
+    var newWfBtn = document.getElementById('nav-new-workflow');
+    if (newWfBtn) newWfBtn.addEventListener('click', function () {
+      if (window.Views && window.Views.createWorkflow) window.Views.createWorkflow();
+    });
     el.themeToggle.addEventListener('click', toggleTheme);
     el.menuToggle.addEventListener('click', toggleSidebar);
     bindLauncher();
@@ -857,6 +864,9 @@
     // to be able to end the session. Exposed rather than re-implemented: two
     // logout paths would drift (one clearing `ab_session_only`, one not).
     logout: doLogout,
+    // Re-render the current route in place (used when the editor must open a
+    // different workflow while it is already on screen).
+    rerender: function () { handleRoute(); },
   };
 
   // ---------------------------------------------
