@@ -105,7 +105,6 @@ async function main(): Promise<void> {
   out.push('KEY SETTINGS');
   out.push(DASH);
   out.push(`  PORT                       = ${config.PORT}`);
-  out.push(`  DEPLOYMENT_MODE            = ${config.DEPLOYMENT_MODE}`);
   out.push(`  REAL_CHROME_ENABLED        = ${config.REAL_CHROME_ENABLED}`
     + (process.env.REAL_CHROME_ENABLED ? '   [explicit in env]' : '   [default]'));
   out.push(`  CHROME_EXE                 = ${config.CHROME_EXE || '(unset — uses bundled Chromium)'}`);
@@ -115,8 +114,6 @@ async function main(): Promise<void> {
   out.push(`  REAL_CHROME_EXTENSIONS_DIR = ${config.REAL_CHROME_EXTENSIONS_DIR}`);
   out.push(`  API_TOKEN                  = ${mask(config.API_TOKEN)}`
     + (config.API_TOKEN_IS_DEFAULT ? '   ⚠️  SHIPPED DEFAULT' : ''));
-  out.push(`  ADMIN_SECRET               = ${mask(config.ADMIN_SECRET)}`);
-  out.push(`  API_KEYS                   = ${config.API_KEYS.size} key(s) in .env`);
   out.push(`  REAL_CHROME_DEBUG_BIND     = ${config.REAL_CHROME_DEBUG_BIND}`);
   out.push(`  REDIS_URL                  = ${config.REDIS_URL.replace(/\/\/[^@/]*@/, '//***@')}`);
   out.push(`  PUBLIC_DOMAIN              = ${config.PUBLIC_DOMAIN || '(unset)'}`);
@@ -144,7 +141,7 @@ async function main(): Promise<void> {
     out.push(`  ${mark(c)} ${c.label.padEnd(38)} ${c.detail}`);
   }
   if (config.API_TOKEN_IS_DEFAULT) {
-    const refused = (config.APP_PROFILE === 'server' || config.APP_PROFILE === 'production') && !config.ALLOW_DEFAULT_API_TOKEN;
+    const refused = config.APP_PROFILE === 'production' && !config.ALLOW_DEFAULT_API_TOKEN;
     out.push(`  ${refused ? '✗' : '⚠️ '} ${'API_TOKEN is not the public default'.padEnd(38)} admin123`
       + (refused ? ` — REFUSED under profile ${config.APP_PROFILE}` : ' — acceptable only on a machine nobody else can reach'));
   } else {

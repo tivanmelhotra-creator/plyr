@@ -2,13 +2,11 @@ import rateLimit from 'express-rate-limit';
 import type { Request } from 'express';
 import { config } from './config';
 
+// The owner on this same machine is never rate-limited (socket address, not
+// a client-written header).
 const isGodMode = (req: Request): boolean => {
-  const ip = req.ip || req.socket.remoteAddress || '';
-  return config.GOD_MODE_IPS.some(godIp =>
-    ip === godIp ||
-    ip === `::ffff:${godIp}` ||
-    ip.endsWith(godIp)
-  );
+  const ip = (req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  return ip === '127.0.0.1' || ip === '::1';
 };
 
 export const smartLimiter = rateLimit({
@@ -60,20 +58,6 @@ export const pairingLimiter = rateLimit({
     retryAfter: 60
   },
   skip: () => !config.RATE_LIMIT_ENABLED,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
-});
-
-export const adminLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: config.ADMIN_RATE_LIMIT_PER_MINUTE,
-  message: {
-    success: false,
-    error: 'Too many admin requests.',
-    retryAfter: 60
-  },
-  skip: (req) => isGodMode(req),
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
