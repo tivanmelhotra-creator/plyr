@@ -85,6 +85,20 @@
   function choiceControl(s, d) {
     var opts = s.options || [];
     var labelId = 'set-lbl-' + s.key;
+    // Long option labels (Environment) become a vertical list that shows each
+    // option's explanation; short ones stay a compact segmented control.
+    var long = opts.reduce(function (n, o) { return n + String(o.en).length; }, 0) > 42;
+    if (long && opts.length <= 4) {
+      return '<div class="set-seg set-choice-list" role="radiogroup" aria-labelledby="' + labelId + '" data-key="' + esc(s.key) + '">' +
+        opts.map(function (o) {
+          var on = o.value === s.value;
+          return '<button type="button" role="radio" class="set-seg-btn set-choice' + (on ? ' on' : '') + '"' +
+            ' aria-checked="' + on + '" data-value="' + esc(o.value) + '">' +
+            '<span class="set-choice-dot" aria-hidden="true"></span>' +
+            '<span class="set-choice-text"><span class="set-choice-label">' + esc(o.en) + '</span>' +
+            (o.hintEn ? '<span class="set-choice-hint">' + esc(o.hintEn) + '</span>' : '') + '</span></button>';
+        }).join('') + '</div>';
+    }
     if (opts.length <= 3) {
       return '<div class="set-seg" role="radiogroup" aria-labelledby="' + labelId + '" data-key="' + esc(s.key) + '">' +
         opts.map(function (o) {
@@ -162,7 +176,7 @@
 
   // ---- Panels -------------------------------------------------------------
   function generalPanel() {
-    var h = (window.AppUtil && window.AppUtil.health && window.AppUtil.health()) || null;
+    var h = currentHealth();
     var na = '—';
     var mode = h ? (h.mode === 'single' ? t('set.gen.modeSingle') : String(h.mode || na)) : na;
     var profile = h && h.profile ? t('set.profile.' + h.profile) : na;
@@ -245,9 +259,19 @@
     var active = tabFromHash();
     root.innerHTML = shell(active);
     bindNav(root);
-    // General needs only /health (already polled by app.js); paint it now.
-    root.querySelector('#set-panel-general').innerHTML = generalPanel();
-    bindGeneral(root);
+    // General shows only /health facts (polled by app.js). Paint what is
+    // known now, then repaint when a fresh payload arrives - never a guess.
+    paintGeneral(root);
+    var onHealth = function () {
+      if (!document.body.contains(root.querySelector('#set-panel-general'))) {
+        document.removeEventListener('health:change', onHealth); return;
+      }
+      paintGeneral(root);
+    };
+    document.addEventListener('health:change', onHealth);
+    if (window.API && window.API.health && !(window.AppUtil && window.AppUtil.health && window.AppUtil.health())) {
+      window.API.health().then(function (h) { lastHealth = h; paintGeneral(root); }).catch(function () {});
+    }
     load(root);
   }
 
@@ -281,6 +305,17 @@
         selectTab(root, next.getAttribute('data-tab'), true);
       });
     });
+  }
+
+  var lastHealth = null;
+  function currentHealth() {
+    return (window.AppUtil && window.AppUtil.health && window.AppUtil.health()) || lastHealth;
+  }
+  function paintGeneral(root) {
+    var p = root.querySelector('#set-panel-general');
+    if (!p) return;
+    p.innerHTML = generalPanel();
+    bindGeneral(root);
   }
 
   function bindGeneral(root) {
