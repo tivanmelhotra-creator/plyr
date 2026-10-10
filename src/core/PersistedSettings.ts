@@ -90,7 +90,6 @@ export const PERSISTABLE_KEYS: readonly string[] = Object.freeze([
   'STEP_TIMEOUT_MS',
   'MAX_CONCURRENT',
   'DOWNLOAD_TTL_MINUTES',
-  'WORKFLOW_MAX_VERSIONS',
   'EXECUTION_RETENTION_DAYS',
 ]);
 

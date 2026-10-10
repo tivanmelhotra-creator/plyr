@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
+import { markTested } from '../helpers/test-run';
+let wsConn: any;
 
 // ── Workspace route tests ─────────────────────────────────────────────────────
 // Covers the three endpoints added by the locked 6-area architecture change
@@ -143,6 +145,7 @@ async function createWorkflow(name: string, userId = 'u1', activate = true): Pro
   // New workflows start INACTIVE; most cases here exercise an active flow, so
   // they activate it through the real (validating) endpoint.
   if (activate) {
+    await markTested(wsConn, userId, res.body.workflow.id);
     const on = await request(app).patch(`/workflows/${userId}/${res.body.workflow.id}/state`).send({ active: true });
     expect(on.status).toBe(200);
   }
@@ -153,6 +156,7 @@ beforeAll(async () => {
   const { createUserRoutes } = await import('../../src/Routes/user.routes');
   queue = makeQueue();
   const connection = makeConnection();
+  wsConn = connection;
   const router = createUserRoutes({
     queue: queue as any,
     connection: connection as any,
@@ -339,6 +343,7 @@ describe('POST /workflows/:userId/:workflowId/run — inactive gate', () => {
     await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false });
     await request(app).post(`/workflows/u1/${id}/run`).send({}).expect(409);
 
+    await markTested(wsConn, 'u1', id);
     await request(app).patch(`/workflows/u1/${id}/state`).send({ active: true });
     const before = queue.addCalls;
     const res = await request(app).post(`/workflows/u1/${id}/run`).send({});

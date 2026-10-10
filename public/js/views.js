@@ -1,6 +1,5 @@
 /* ============================================
-   Views — Run / Jobs / Job detail / Quota / Schedules / Admin.
-   Step 8: build/run/monitor jobs + quota + schedules + admin.
+   Views — Workspace / Editor / Jobs / Schedules / Settings host.
    Exposes window.Views.{ render, stopAll }.
    ============================================ */
 (function () {
@@ -55,11 +54,12 @@
   function showActivationError(err) {
     var body = err && err.body;
     var details = body && Array.isArray(body.details) ? body.details.filter(Boolean) : [];
-    if (!(body && body.code === 'activation_invalid' && details.length)) {
+    var untested = body && body.code === 'activation_untested';
+    if (!(body && (body.code === 'activation_invalid' || untested) && details.length)) {
       U().toast((err && err.message) || t('ws.stateFailed'), 'error');
       return;
     }
-    U().toast(t('ws.activationRefused'), 'error');
+    U().toast(t(untested ? 'ws.activationUntested' : 'ws.activationRefused'), 'error');
     var old = document.getElementById('activation-error-dialog');
     if (old) old.remove();
     var dlg = document.createElement('div');
@@ -71,7 +71,7 @@
     dlg.innerHTML =
       '<div class="fe-version-dialog-card">' +
         '<h3 id="act-err-title" class="fe-version-dialog-title">' + esc(t('ws.activationRefusedTitle')) + '</h3>' +
-        '<p class="fe-version-dialog-hint">' + esc(t('ws.activationRefusedHint')) + '</p>' +
+        '<p class="fe-version-dialog-hint">' + esc(t(untested ? 'ws.activationUntestedHint' : 'ws.activationRefusedHint')) + '</p>' +
         '<ul class="act-err-list">' + details.slice(0, 20).map(function (d) {
           return '<li>' + esc(String(d)) + '</li>';
         }).join('') + (details.length > 20 ? '<li>…</li>' : '') + '</ul>' +
@@ -482,54 +482,6 @@
   // =============================================
   // QUOTA
   // =============================================
-  function renderQuota(root) {
-    var uid = effectiveUserId();
-    root.innerHTML =
-      '<div class="card">' +
-        '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">' + IC('gauge') + ' ' + t('quota.title') + '</h3>' +
-          '<span class="spacer"></span>' +
-          '<input id="q-uid" class="field-input" style="max-width:160px" value="' + esc(uid) + '" />' +
-          '<button class="btn btn-ghost btn-sm" id="q-refresh">' + t('common.refresh') + '</button>' +
-        '</div>' +
-        '<div id="q-body"><div class="placeholder"><span class="spinner"></span> ' + t('common.loading') + '</div></div>' +
-      '</div>';
-
-    function load() {
-      var u = (root.querySelector('#q-uid').value || '').trim() || uid;
-      var body = root.querySelector('#q-body');
-      API.getQuota(u)
-        .then(function (data) {
-          var p = data.plan || {};
-          var usg = data.usage || {};
-          var rem = usg.unlimited ? t('quota.unlimited') : (usg.remainingMinutes + ' ' + t('common.minutes'));
-          var lim = usg.unlimited ? t('quota.unlimited') : (usg.limitMinutes + ' ' + t('common.minutes'));
-          body.innerHTML =
-            '<div class="grid grid-cards">' +
-              '<div class="card"><h3 class="card-title">' + t('quota.plan') + '</h3><dl class="kv">' +
-                '<dt>' + t('quota.level') + '</dt><dd>' + U().num(p.level) + '</dd>' +
-                '<dt>' + t('quota.type') + '</dt><dd>' + esc(data.userType) + '</dd>' +
-                '<dt>' + t('quota.subscription') + '</dt><dd>' + esc(p.subscription) + '</dd>' +
-                '<dt>' + t('quota.priority') + '</dt><dd>' + U().num(p.priority) + '</dd>' +
-                '<dt>' + t('quota.maxTabs') + '</dt><dd>' + U().num(p.maxTabs) + '</dd>' +
-                '<dt>' + t('quota.maxSteps') + '</dt><dd>' + U().num(p.maxSteps) + '</dd>' +
-                '<dt>' + t('quota.maxSchedules') + '</dt><dd>' + U().num(p.maxSchedules) + '</dd>' +
-              '</dl></div>' +
-              '<div class="card"><h3 class="card-title">' + t('quota.usage') + '</h3><dl class="kv">' +
-                '<dt>' + t('quota.used') + '</dt><dd>' + U().num(usg.usedMinutes) + ' ' + t('common.minutes') + '</dd>' +
-                '<dt>' + t('quota.remaining') + '</dt><dd>' + esc(rem) + '</dd>' +
-                '<dt>' + t('quota.limit') + '</dt><dd>' + esc(lim) + '</dd>' +
-              '</dl></div>' +
-            '</div>';
-        })
-        .catch(function (err) {
-          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
-        });
-    }
-    root.querySelector('#q-refresh').addEventListener('click', load);
-    load();
-  }
-
   // =============================================
   // SCHEDULES
   // =============================================
@@ -827,98 +779,6 @@
   // =============================================
   // ADMIN
   // =============================================
-  function renderAdmin(root) {
-    var token = API.getAdminToken();
-    if (!token) { renderAdminLogin(root); return; }
-    renderAdminPanel(root);
-  }
-
-  function renderAdminLogin(root) {
-    root.innerHTML =
-      '<div class="card" style="max-width:460px">' +
-        '<h3 class="card-title">' + IC('shield') + ' ' + t('admin.title') + '</h3>' +
-        '<p class="muted" style="margin-top:0">' + t('admin.hint') + '</p>' +
-        '<label class="field"><span class="field-label">' + t('admin.tokenLabel') + '</span>' +
-          '<input id="admin-token" type="password" class="field-input" /></label>' +
-        '<div id="admin-err"></div>' +
-        '<button class="btn btn-primary" id="admin-connect">' + t('admin.connect') + '</button>' +
-      '</div>';
-
-    root.querySelector('#admin-connect').addEventListener('click', function () {
-      var tk = (root.querySelector('#admin-token').value || '').trim();
-      if (!tk) return;
-      var errEl = root.querySelector('#admin-err');
-      errEl.innerHTML = '';
-      API.validateAdminToken(tk)
-        .then(function (ok) {
-          if (!ok) { errEl.innerHTML = '<div class="result-banner err">' + t('admin.invalidToken') + '</div>'; return; }
-          API.setAdminToken(tk);
-          renderAdminPanel(root);
-        })
-        .catch(function () {
-          errEl.innerHTML = '<div class="result-banner err">' + t('admin.invalidToken') + '</div>';
-        });
-    });
-  }
-
-  function renderAdminPanel(root) {
-    root.innerHTML =
-      '<div class="card">' +
-        '<div class="toolbar">' +
-          '<h3 class="card-title" style="margin:0">' + IC('shield') + ' ' + t('admin.stats') + '</h3>' +
-          '<span class="spacer"></span>' +
-          '<button class="btn btn-ghost btn-sm" id="admin-refresh">' + t('common.refresh') + '</button>' +
-          '<button class="btn btn-ghost btn-sm" id="admin-logout">' + t('admin.disconnect') + '</button>' +
-        '</div>' +
-        '<div id="admin-body"><div class="placeholder"><span class="spinner"></span> ' + t('common.loading') + '</div></div>' +
-      '</div>';
-
-    root.querySelector('#admin-logout').addEventListener('click', function () {
-      API.setAdminToken('');
-      renderAdminLogin(root);
-    });
-
-    function load() {
-      var body = root.querySelector('#admin-body');
-      API.adminStats()
-        .then(function (data) {
-          var s = data.stats || data;
-          var sys = (s.system) || {};
-          var totals = data.totals || data.counters || {};
-          // /admin/stats embeds counters at top-level; be defensive.
-          var totalJobs = data.totalJobs != null ? data.totalJobs : (data.counters && data.counters.totalJobs);
-          var queue = data.queue || data.queueCounts || {};
-
-          body.innerHTML =
-            '<div class="grid grid-cards">' +
-              '<div class="card"><h3 class="card-title">' + t('admin.stats') + '</h3><dl class="kv">' +
-                '<dt>' + t('dash.version') + '</dt><dd>v' + esc(sys.version || data.version) + '</dd>' +
-                '<dt>' + t('dash.uptime') + '</dt><dd>' + esc(U().formatUptime(sys.uptime || data.uptime || 0)) + '</dd>' +
-                '<dt>Node</dt><dd>' + esc(sys.nodeVersion || '—') + '</dd>' +
-                '<dt>Lua</dt><dd>' + esc(sys.luaScripts || '—') + '</dd>' +
-              '</dl></div>' +
-              '<div class="card"><h3 class="card-title">Queue</h3><dl class="kv">' +
-                '<dt>waiting</dt><dd>' + U().num(queue.waiting) + '</dd>' +
-                '<dt>active</dt><dd>' + U().num(queue.active) + '</dd>' +
-                '<dt>completed</dt><dd>' + U().num(queue.completed) + '</dd>' +
-                '<dt>failed</dt><dd>' + U().num(queue.failed) + '</dd>' +
-                '<dt>delayed</dt><dd>' + U().num(queue.delayed) + '</dd>' +
-              '</dl></div>' +
-              '<div class="card"><h3 class="card-title">Raw</h3>' +
-                '<div class="json-block" style="max-height:260px">' + esc(JSON.stringify(data, null, 2)) + '</div>' +
-              '</div>' +
-            '</div>';
-        })
-        .catch(function (err) {
-          if (err.status === 403) { API.setAdminToken(''); renderAdminLogin(root); return; }
-          body.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' ' + esc(err.message) + '</div>';
-        });
-    }
-
-    root.querySelector('#admin-refresh').addEventListener('click', load);
-    load();
-  }
-
   // =============================================
   // Public router entry
   // =============================================
@@ -998,7 +858,7 @@
             '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
               IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
             '<button type="button" class="fe-tbbtn fe-importbtn" id="fe-import" title="' + esc(t('sh.importHint')) + '"' +
-              ' aria-label="' + esc(t('sh.import')) + '">' + IC('upload', 14) + '</button>' +
+              '>' + IC('upload', 14) + '<span>' + esc(t('sh.import')) + '</span></button>' +
             '</span>' +
             '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
               ' aria-haspopup="dialog" aria-expanded="false"' +
@@ -1675,10 +1535,6 @@
       var U0 = U();
       acctMenu.innerHTML =
         menuItem(t('sh.settings'), 'settings', { act: 'settings' }) +
-        menuItem(t('settings.language'), 'globe', {
-          act: 'lang',
-          badge: (window.I18N && window.I18N.meta) ? window.I18N.meta().label : '',
-        }) +
         '<div class="fe-mi-sep" role="separator"></div>' +
         // Only offered when app.js actually exposed the session teardown.
         // `power` (not a `log-out` glyph — the registry has no such key and
@@ -1693,7 +1549,6 @@
           var a = b.getAttribute('data-act');
           closeMenus(false);
           if (a === 'settings') { location.hash = '#/settings'; }
-          else if (a === 'lang') { if (window.I18N) window.I18N.toggle(); }
           else if (a === 'logout') { if (U0 && U0.logout) U0.logout(); }
         });
       });
@@ -2012,7 +1867,12 @@
     }
     if (activeBtn) activeBtn.addEventListener('click', function () {
       var cur = savedWf();
-      if (cur) flipState({ active: !(cur.active !== false) });
+      if (!cur) return;
+      var turnOn = !(cur.active !== false);
+      // The server validates the STORED design. Flush any pending autosave
+      // first so it judges exactly what is on the canvas.
+      var flush = turnOn && FE.autosaveNow ? FE.autosaveNow() : Promise.resolve();
+      Promise.resolve(flush).catch(function () {}).then(function () { flipState({ active: turnOn }); });
     });
     if (liveBtn) liveBtn.addEventListener('click', function () {
       var cur = savedWf();
@@ -4067,58 +3927,12 @@
   }
 
   // =============================================
-  // SETTINGS — the sixth product area.
-  // Holds what the sidebar shed: the account/API key, appearance, and Quota
-  // (a property of the account, not a place of its own).
+  // SETTINGS — tabbed layout (public/js/settings-ui.js).
+  // Single-user product: no separate admin, quota or account area.
   // =============================================
   function renderSettings(root) {
-    var uid = effectiveUserId();
-    var key = API.getKey() || '';
-    var masked = key ? key.replace(/.(?=.{4})/g, '\u2022') : '—';
-    root.innerHTML =
-      '<section class="settings">' +
-        '<header class="page-head">' +
-          '<div>' +
-            '<h1 class="page-h1">' + t('settings.title') + '</h1>' +
-            '<p class="page-sub">' + t('settings.subtitle') + '</p>' +
-          '</div>' +
-        '</header>' +
-        '<div class="grid grid-cards">' +
-          '<div class="card">' +
-            '<h3 class="card-title">' + IC('user') + ' ' + t('settings.account') + '</h3>' +
-            '<dl class="kv">' +
-              '<dt>' + t('settings.userId') + '</dt><dd class="mono">' + esc(uid) + '</dd>' +
-              '<dt>' + t('settings.apiKey') + '</dt><dd class="mono">' + esc(masked) + '</dd>' +
-            '</dl>' +
-            '<div class="wf-actions">' +
-              '<a class="btn btn-ghost btn-sm" href="#/quota">' + IC('gauge', 14) + ' ' +
-                t('settings.openQuota') + '</a>' +
-            '</div>' +
-          '</div>' +
-          '<div class="card">' +
-            '<h3 class="card-title">' + IC('palette') + ' ' + t('settings.appearance') + '</h3>' +
-            '<p class="muted small">' + t('settings.appearanceHint') + '</p>' +
-            '<div class="wf-actions">' +
-              '<button type="button" class="btn btn-ghost btn-sm" id="set-lang">' +
-                IC('globe', 14) + ' ' + t('settings.language') + '</button>' +
-            '</div>' +
-          '</div>' +
-          '<div class="card">' +
-            '<h3 class="card-title">' + IC('shield') + ' ' + t('settings.admin') + '</h3>' +
-            '<p class="muted small">' + t('settings.adminHint') + '</p>' +
-            '<div class="wf-actions">' +
-              '<a class="btn btn-ghost btn-sm" href="#/admin">' + IC('shield', 14) + ' ' + t('nav.admin') + '</a>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-        // Server configuration (what used to require editing .env): public/js/settings-ui.js
-        '<section id="server-settings" class="server-settings"></section>' +
-      '</section>';
-
-    root.querySelector('#set-lang').addEventListener('click', function () {
-      if (window.I18N) window.I18N.toggle();
-    });
-    if (window.SettingsUI) window.SettingsUI.render(root.querySelector('#server-settings'));
+    if (window.SettingsUI) { window.SettingsUI.render(root); return; }
+    root.innerHTML = '<div class="placeholder">' + IC('alert-circle') + ' settings-ui.js not loaded</div>';
   }
 
   function render(route, root) {
@@ -4148,9 +3962,7 @@
         }
         root.innerHTML = '<div class="placeholder">' + IC('wand') + ' ' + t('common.comingSoon') + '</div>';
         return;
-      case 'quota': return renderQuota(root);
       case 'schedules': return renderSchedules(root);
-      case 'admin': return renderAdmin(root);
       default:
         root.innerHTML = '<div class="placeholder">' + IC('wand') + ' ' + t('common.comingSoon') + '</div>';
     }

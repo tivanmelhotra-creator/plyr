@@ -28,6 +28,7 @@ import { resolveArtifact } from '../core/JobArtifacts';
 import { WorkflowService } from '../services/workflow.service';
 import type { WorkflowActiveSnapshot } from '../types';
 import { activationIssues, formatActivationIssue, installedModuleExists } from '../core/ActivationCheck';
+import { designFingerprint, testGateProblem } from '../core/TestRunGate';
 import { parseExchange, buildNativeEnvelope, enforceImportedCodeDisabled } from '../core/WorkflowExchange';
 import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
@@ -228,7 +229,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Add job to queue
       const job = await queue.add(
         'run',
-        { userId, steps, headless, webhookUrl, triggerData, ...(workspace ? { __workspace: workspace } : {}) },
+        {
+          userId, steps, headless, webhookUrl, triggerData, ...(workspace ? { __workspace: workspace } : {}),
+          // A run of a saved workflow's canvas (Execute Workflow) is its TEST:
+          // the worker stores the outcome + the design fingerprint on the
+          // workflow, and activation requires a green test of the current
+          // design (core/TestRunGate). Only stamped when ownership is verified.
+          ...(workspace ? { __testOf: workspace, __testFingerprint: designFingerprint(steps) } : {}),
+        },
         { priority: plan.priority }
       );
 
@@ -1510,6 +1518,21 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           moduleExists: installedModuleExists,
         });
         if (issues.length) return refuse(issues.map(formatActivationIssue));
+        // Filled-in fields are not proof that the workflow works: a page may
+        // never show the element, a site may refuse the request. Like n8n's
+        // publish, the design must have passed a real run first - the last
+        // Execute Workflow of THIS exact design must have succeeded.
+        const gate = testGateProblem(current.steps, current.lastTest);
+        if (gate) {
+          return res.status(422).json({
+            success: false,
+            error: 'Workflow has not passed a test run and cannot be activated',
+            code: 'activation_untested',
+            details: [gate],
+            lastTest: current.lastTest ?? null,
+            active: current.active,
+          });
+        }
         activeSnapshot = WorkflowService.buildActiveSnapshot(current);
       }
 

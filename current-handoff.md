@@ -2,8 +2,8 @@
 
 Points to the newest handoff. Read that file first; then continue.
 
-LATEST HANDOFF: handoffs/2026-10-05_S21_test-workflow-audit.md
-BRANCH / HEAD:  main (all work is merged; open a fresh branch for new work). PRs #62-#65 and the editor/live-browser PR described in the handoff are the Test Workflow audit.
+LATEST HANDOFF: handoffs/2026-10-10_S22_activation-gate-settings-tabs.md
+BRANCH / HEAD:  feat/settings-tabs-activation-gate (PR to main).
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 
 PLAN:           docs/PLAN-node-logic-v2.md (node logic v2 + production roadmap; start with milestone M1).
