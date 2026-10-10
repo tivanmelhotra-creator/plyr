@@ -55,55 +55,27 @@ export interface ResolvedValue<T> {
 /**
  * The profiles.
  *
- * Deliberately FOUR, not a spectrum. Every extra profile is another thing the
- * operator must understand before they can start, which is the disease, not the
- * cure.
+ * TWO operator-facing environments, plus `test` for the suite:
  *
- * `test` exists because the test suite has genuinely different needs (never
- * open a window, never wait 60s for a launch) and because CI setting one
- * variable is better than CI setting nine.
+ *     development — the operator's own machine. Rate limits off, verbose, and
+ *                   the panel needs no token FROM THIS MACHINE (loopback only).
+ *     production  — a deployed instance. Token required, rate limits on,
+ *                   DevTools port shut, VNC desktop off unless asked for.
  *
- * ── WHY `server` EXISTS, AND WHY IT IS NOT JUST `production` ───────────────
+ * WHAT A PROFILE NO LONGER DECIDES: whether the browser is visible. That used
+ * to be the difference between the old `server` and `production` profiles, and
+ * it mixed two unrelated questions ("where am I deployed?" and "should this run
+ * show a window?"). Visibility is now a property of each RUN (core/RunPolicy):
+ * a run the operator started by clicking Run is visible, a run started by a
+ * trigger/schedule/API is hidden — in every environment. Hidden runs use
+ * Chromium's new headless mode, which loads extensions (measured: 1 extension
+ * service worker in new headless, 0 in the old headless shell), so hiding a run
+ * no longer costs its extensions.
  *
- * This is the fix for a real, reported defect, so the reasoning is recorded in
- * full.
- *
- * `production` sets `REAL_CHROME_HEADLESS=true` on the entirely sound grounds
- * that nobody is watching the screen and a headed browser costs RAM. But
- * MEASURED with this repo's own launch options (playwright 1.56.1 /
- * chromium-1194, `--load-extension` with `--disable-extensions` stripped):
- *
- *     headless=true   ->  0 extension service workers
- *     headless=false  ->  1 extension service worker
- *
- * A headless Chrome loads NO extensions. Not "fewer" — none. So on any box
- * that set `NODE_ENV=production` (which this repo's OWN Dockerfile and both
- * compose files do), the Remote Browser came up with the Element Inspector and
- * every cookie extension silently absent. That is precisely the
- * "Environment B → Real Chrome silently disabled" outcome we were told to
- * eliminate.
- *
- * Two bad ways to fix it, and why they were rejected:
- *
- *   1. Flip `production` to headed. That breaks the legitimate deployment that
- *      runs ONLY the job queue and wants no X server at all, and it silently
- *      reverses a deliberate resource decision for every existing operator.
- *   2. Leave it and document the trap. Documentation does not stop a silent
- *      failure; it just means the failure is described somewhere.
- *
- * So instead the two intents are given two names, and neither is a guess:
- *
- *     production  — the app in production. Headless. Remote Browser runs
- *                   WITHOUT extensions, and now says so loudly at boot.
- *     server      — a remote server whose job includes the Remote Browser.
- *                   Headed on a virtual display, extensions load, VNC stays
- *                   shut unless asked for.
- *
- * `server` is what the Dockerfile, both compose files and the deployment docs
- * now select, because "I deployed this project to a server" overwhelmingly
- * means "and I want its headline feature to work".
+ * `server` / `remote` are still ACCEPTED as input (existing .env files, the
+ * Dockerfile and compose files used them) and mean `production`.
  */
-export const PROFILE_IDS = ['development', 'server', 'production', 'test'] as const;
+export const PROFILE_IDS = ['development', 'production', 'test'] as const;
 export type ProfileId = (typeof PROFILE_IDS)[number];
 
 export interface ProfileMeta {
@@ -119,49 +91,29 @@ export const PROFILES: readonly ProfileMeta[] = [
     id: 'development',
     label: 'Development',
     labelFa: 'توسعه',
-    summary: 'Visible browser, verbose errors, nothing hidden. Optimised for seeing what happened.',
-    summaryFa: 'مرورگر آشکار، خطاهای کامل، هیچ‌چیز پنهان نیست. برای دیدن اتفاقات بهینه شده.',
-  },
-  {
-    id: 'server',
-    label: 'Remote server',
-    labelFa: 'سرور راه دور',
-    summary:
-      'Production hardening, but the Remote Browser works: headed Chrome on a virtual '
-      + 'display so extensions and the Element Inspector load. Rate limits on, debug port shut.',
-    summaryFa:
-      'سخت‌گیری پروداکشن، اما Remote Browser کار می‌کند: کروم آشکار روی نمایشگر مجازی تا '
-      + 'افزونه‌ها و Element Inspector بارگذاری شوند. محدودیت نرخ روشن، پورت دیباگ بسته.',
+    summary: 'Your own machine: no token needed from this machine, rate limits off, verbose errors.',
+    summaryFa: 'سیستم خودتان: از همین سیستم نیازی به توکن نیست، محدودیت نرخ خاموش، خطاهای کامل.',
   },
   {
     id: 'production',
-    label: 'Production (headless)',
-    labelFa: 'محصول نهایی (پنهان)',
-    summary:
-      'Headless browser, tighter limits, no debug port. Optimised for resources and safety. '
-      + 'Extensions do NOT load headless — use the server profile if you need them.',
-    summaryFa:
-      'مرورگر پنهان، محدودیت‌های سخت‌تر، بدون پورت دیباگ. برای منابع و امنیت بهینه شده. '
-      + 'در حالت پنهان افزونه‌ها بارگذاری نمی‌شوند — اگر لازم دارید از پروفایل server استفاده کنید.',
+    label: 'Production',
+    labelFa: 'پروداکشن',
+    summary: 'A deployed instance: the access token is required for every request, rate limits on, debug port shut.',
+    summaryFa: 'نمونهٔ مستقرشده: توکن دسترسی برای هر درخواست لازم است، محدودیت نرخ روشن، پورت دیباگ بسته.',
   },
   {
     id: 'test',
     label: 'Test / CI',
     labelFa: 'تست / CI',
-    summary: 'Headless, fast failures, no desktop. Optimised for never hanging a CI job.',
-    summaryFa: 'پنهان، شکست سریع، بدون دسکتاپ. برای معلق‌نشدن CI بهینه شده.',
+    summary: 'Fast failures, no desktop. Optimised for never hanging a CI job.',
+    summaryFa: 'شکست سریع، بدون دسکتاپ. برای معلق‌نشدن CI بهینه شده.',
   },
 ];
 
 /**
  * What each profile decides, and WHY — the reason is part of the data because
- * it is shown to the operator. A default with no stated reason is a default
- * nobody can safely change.
- *
- * Only variables whose *correct* value genuinely differs by situation belong
- * here. Ports, directories, secrets and credentials deliberately do NOT: a
- * profile guessing a secret, or silently moving where a user's files are
- * written, would be a far nastier surprise than typing it out.
+ * it is shown to the operator. Only variables whose correct value genuinely
+ * differs by situation belong here; browser visibility does NOT (see above).
  */
 export interface ProfileEntry {
   value: string;
@@ -173,15 +125,10 @@ type ProfileTable = Record<ProfileId, Record<string, ProfileEntry>>;
 
 export const PROFILE_DEFAULTS: ProfileTable = {
   development: {
-    REAL_CHROME_HEADLESS: {
-      value: 'false',
-      why: 'You are developing: you need to SEE the browser to know what it did.',
-      whyFa: 'در حال توسعه‌اید: باید مرورگر را ببینید تا بفهمید چه کرد.',
-    },
     DESKTOP_ENABLED: {
       value: 'true',
-      why: 'A visible browser needs a display to be visible on.',
-      whyFa: 'مرورگر آشکار به یک نمایشگر نیاز دارد تا دیده شود.',
+      why: 'A visible run needs a display to be visible on.',
+      whyFa: 'اجرای آشکار به یک نمایشگر نیاز دارد.',
     },
     REAL_CHROME_RESTORE_TABS: {
       value: 'true',
@@ -191,7 +138,7 @@ export const PROFILE_DEFAULTS: ProfileTable = {
     RATE_LIMIT_ENABLED: {
       value: 'false',
       why: 'Rate-limiting yourself while testing wastes an afternoon on a non-bug.',
-      whyFa: 'محدودکردن نرخ درخواست خودتان هنگام تست، یک بعدازظهر را صرف باگی می‌کند که وجود ندارد.',
+      whyFa: 'محدودکردن نرخ درخواست خودتان هنگام تست، وقت را صرف باگی می‌کند که وجود ندارد.',
     },
     TURBO_MODE: {
       value: 'false',
@@ -200,38 +147,15 @@ export const PROFILE_DEFAULTS: ProfileTable = {
     },
   },
 
-  /**
-   * A remote server that is expected to RUN the Remote Browser.
-   *
-   * Everything security-related matches `production`. The single difference is
-   * the one the measurement above forces: the browser is headed, on a virtual
-   * display the server starts itself, because that is the only mode in which
-   * an extension exists at all.
-   */
-  server: {
-    REAL_CHROME_HEADLESS: {
-      value: 'false',
-      why: 'Extensions only load in a headed Chrome (measured: 0 extensions headless, 1 headed). '
-        + 'The Element Inspector and cookie extensions are the point of the Remote Browser.',
-      whyFa: 'افزونه‌ها فقط در کروم آشکار بارگذاری می‌شوند (اندازه‌گیری‌شده: صفر افزونه در حالت پنهان، '
-        + 'یک افزونه در حالت آشکار). Element Inspector و افزونه‌های کوکی، هدف اصلی Remote Browser هستند.',
-    },
-    // TRUE, and the earlier draft of this table had it FALSE. The reasoning
-    // written there — "the X display comes up on demand, the VNC viewer stays
-    // off, an idle VNC port is attack surface" — sounded responsible and was
-    // wrong on the facts. `DESKTOP_ENABLED` gates NOTHING: the only reader in
-    // the entire codebase is `Desktop.status().enabled` (Desktop.ts:779), and
-    // `Desktop.start()` brings up Xvfb, x11vnc and websockify whether it is set
-    // or not. Declaring it false would therefore have bought exactly zero
-    // security and cost a `/browser/status` that reports `desktop.enabled:
-    // false` on a box whose desktop is running — the same class of lie this
-    // whole change exists to remove.
+  production: {
+    // TRUE: a manual run (the operator pressed Run) is visible on the virtual
+    // display and watched through the live tab. DESKTOP_ENABLED gates nothing
+    // but the reported status (Desktop.status().enabled), so `false` here would
+    // only make /browser/status lie about a running display.
     DESKTOP_ENABLED: {
       value: 'true',
-      why: 'A headed browser needs a display to be headed ON, and this profile is headed. '
-        + 'Also lets the operator watch the Remote Browser, which is why they deployed it.',
-      whyFa: 'مرورگر آشکار به نمایشگری نیاز دارد که روی آن آشکار باشد، و این پروفایل آشکار است. '
-        + 'ضمناً به اپراتور اجازه می‌دهد Remote Browser را تماشا کند، که دلیل استقرار آن است.',
+      why: 'Manual runs are visible (watched through the live tab), so a virtual display is part of a production box.',
+      whyFa: 'اجرای دستی آشکار است (از تب زنده دیده می‌شود)، پس نمایشگر مجازی بخشی از سرور است.',
     },
     REAL_CHROME_DEBUG_PORT: {
       value: '0',
@@ -250,37 +174,7 @@ export const PROFILE_DEFAULTS: ProfileTable = {
     },
   },
 
-  production: {
-    REAL_CHROME_HEADLESS: {
-      value: 'true',
-      why: 'Nobody is watching the screen. A visible browser costs RAM and a display for nothing. '
-        + 'NOTE: no extension loads headless — use APP_ENV=server if you need the Element Inspector.',
-      whyFa: 'کسی صفحه را تماشا نمی‌کند. مرورگر آشکار بی‌دلیل رم و نمایشگر مصرف می‌کند. '
-        + 'توجه: در حالت پنهان هیچ افزونه‌ای بارگذاری نمی‌شود — اگر Element Inspector لازم دارید APP_ENV=server بگذارید.',
-    },
-    DESKTOP_ENABLED: {
-      value: 'false',
-      why: 'A VNC desktop nobody connects to is an idle attack surface.',
-      whyFa: 'دسکتاپ VNC که کسی به آن وصل نمی‌شود، یک سطح حملهٔ بی‌استفاده است.',
-    },
-    REAL_CHROME_DEBUG_PORT: {
-      value: '0',
-      why: 'An open DevTools port is remote code execution and full cookie theft. Off unless asked for.',
-      whyFa: 'پورت باز DevTools یعنی اجرای کد از راه دور و سرقت کامل کوکی‌ها. جز با درخواست صریح، خاموش.',
-    },
-    RATE_LIMIT_ENABLED: {
-      value: 'true',
-      why: 'A public endpoint without a rate limit is a bill waiting to happen.',
-      whyFa: 'اندپوینت عمومی بدون محدودیت نرخ، صورت‌حسابی است که در راه است.',
-    },
-  },
-
   test: {
-    REAL_CHROME_HEADLESS: {
-      value: 'true',
-      why: 'CI has no screen. A headed launch there fails in a way that looks like a code bug.',
-      whyFa: 'CI صفحه‌نمایش ندارد. اجرای آشکار در آن، شکستی می‌دهد که شبیه باگ کد به نظر می‌رسد.',
-    },
     DESKTOP_ENABLED: {
       value: 'false',
       why: 'Nothing in a test run looks at a desktop.',
@@ -296,17 +190,8 @@ export const PROFILE_DEFAULTS: ProfileTable = {
       why: 'A rate limit turns a fast test suite into a failing one.',
       whyFa: 'محدودیت نرخ، یک مجموعه تست سریع را به مجموعه‌ای شکست‌خورده تبدیل می‌کند.',
     },
-    // DELIBERATELY ABSENT: REAL_CHROME_RESTORE_TABS.
-    //
-    // An earlier version of this table set it to 'false' here, reasoning that a
-    // test should start from a known state. That reasoning was wrong, and
-    // chrome-tab-restore.test.ts caught it: vitest sets NODE_ENV=test, so the
-    // whole suite began asserting against a value no operator ever runs, and
-    // the profile had quietly overturned the shipped default that the §3.2 tab
-    // -loss fix exists to guarantee. A profile may tune what is merely
-    // environmental; it may not flip a product decision out from under the
-    // tests that pin it. A test that really needs tabs off sets the variable
-    // explicitly, where it is visible in the test rather than hidden in here.
+    // DELIBERATELY ABSENT: REAL_CHROME_RESTORE_TABS (a profile may tune what is
+    // environmental; it may not flip a product decision under the tests).
   },
 };
 
@@ -358,7 +243,9 @@ function coerceProfile(raw: string, allowServer: boolean): ProfileId | null {
   if (v === 'production' || v === 'prod') return 'production';
   if (v === 'development' || v === 'dev') return 'development';
   if (v === 'test' || v === 'testing' || v === 'ci') return 'test';
-  if (allowServer && (v === 'server' || v === 'remote')) return 'server';
+  // Legacy names for a deployed instance. Only APP_ENV may say so (a tool
+  // writing NODE_ENV=server must not switch the instance to production).
+  if (allowServer && (v === 'server' || v === 'remote')) return 'production';
   return null;
 }
 
