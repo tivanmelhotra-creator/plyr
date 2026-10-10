@@ -383,6 +383,13 @@ export interface Workflow {
    * Re-activation re-freezes it from the current design after validation.
    */
   activeSnapshot?: WorkflowActiveSnapshot | null;
+  /**
+   * Outcome of the last Execute Workflow (test) run of this workflow, with the
+   * fingerprint of the design it ran. Activation requires a successful test of
+   * the CURRENT design (core/TestRunGate). Written by the worker; never bumps
+   * `version` or `updatedAt`.
+   */
+  lastTest?: import('./core/TestRunGate').WorkflowTestResult | null;
 }
 
 // The frozen, executable design of an active workflow.

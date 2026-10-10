@@ -3,6 +3,8 @@ import os from 'os';
 import path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
+import { markTested } from '../helpers/test-run';
+let jbConn: any;
 
 // A run is bound to a workflow workspace ONLY if the caller owns that workflow.
 // The binding (`__workspace`) is what lets the worker file a node's output files
@@ -64,7 +66,7 @@ beforeAll(async () => {
   app = express();
   app.use(express.json());
   app.use('/', createUserRoutes({
-    queue: queue as any, connection: makeConnection() as any, profileManager: {} as any,
+    queue: queue as any, connection: (jbConn = makeConnection()) as any, profileManager: {} as any,
     quotaManager: { hasQuotaRemaining: async () => true, getUsage: async () => ({ usedSeconds: 0 }) } as any,
   }));
 });
@@ -81,6 +83,7 @@ describe('workflow workspace binding on a run', () => {
   it('POST /workflows/:u/:id/run always binds the run to that workflow', async () => {
     const id = await saveWorkflow('alice');
     // New workflows start inactive; a background run needs an activated one.
+    await markTested(jbConn, 'alice', id);
     expect((await request(app).patch(`/workflows/alice/${id}/state`).send({ active: true })).status).toBe(200);
     const res = await request(app).post(`/workflows/alice/${id}/run`).send({});
     expect(res.status).toBe(200);

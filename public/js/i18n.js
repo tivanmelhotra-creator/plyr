@@ -175,6 +175,8 @@
       'ws.activationRefusedTitle': 'This workflow cannot be activated yet',
       'ws.activationRefusedHint': 'Fix these problems, then switch Active on again. The currently active version (if any) keeps running.',
       'ws.activationRefusedOk': 'OK',
+      'ws.activationUntested': 'Activation refused: run a successful test first',
+      'ws.activationUntestedHint': 'A workflow is activated only after Execute Workflow has run this exact design successfully. The currently active version (if any) keeps running.',
 
       'ws.never': 'Never',
       'ws.justNow': 'Just now',

@@ -55,11 +55,12 @@
   function showActivationError(err) {
     var body = err && err.body;
     var details = body && Array.isArray(body.details) ? body.details.filter(Boolean) : [];
-    if (!(body && body.code === 'activation_invalid' && details.length)) {
+    var untested = body && body.code === 'activation_untested';
+    if (!(body && (body.code === 'activation_invalid' || untested) && details.length)) {
       U().toast((err && err.message) || t('ws.stateFailed'), 'error');
       return;
     }
-    U().toast(t('ws.activationRefused'), 'error');
+    U().toast(t(untested ? 'ws.activationUntested' : 'ws.activationRefused'), 'error');
     var old = document.getElementById('activation-error-dialog');
     if (old) old.remove();
     var dlg = document.createElement('div');
@@ -71,7 +72,7 @@
     dlg.innerHTML =
       '<div class="fe-version-dialog-card">' +
         '<h3 id="act-err-title" class="fe-version-dialog-title">' + esc(t('ws.activationRefusedTitle')) + '</h3>' +
-        '<p class="fe-version-dialog-hint">' + esc(t('ws.activationRefusedHint')) + '</p>' +
+        '<p class="fe-version-dialog-hint">' + esc(t(untested ? 'ws.activationUntestedHint' : 'ws.activationRefusedHint')) + '</p>' +
         '<ul class="act-err-list">' + details.slice(0, 20).map(function (d) {
           return '<li>' + esc(String(d)) + '</li>';
         }).join('') + (details.length > 20 ? '<li>…</li>' : '') + '</ul>' +
@@ -998,7 +999,7 @@
             '<button type="button" class="fe-tbbtn" id="fe-extract" title="' + esc(t('sh.extractHint')) + '">' +
               IC('download', 14) + '<span>' + esc(t('sh.extract')) + '</span></button>' +
             '<button type="button" class="fe-tbbtn fe-importbtn" id="fe-import" title="' + esc(t('sh.importHint')) + '"' +
-              ' aria-label="' + esc(t('sh.import')) + '">' + IC('upload', 14) + '</button>' +
+              '>' + IC('upload', 14) + '<span>' + esc(t('sh.import')) + '</span></button>' +
             '</span>' +
             '<button class="fe-icobtn fe-filesbtn" id="fe-files" type="button"' +
               ' aria-haspopup="dialog" aria-expanded="false"' +
@@ -2012,7 +2013,12 @@
     }
     if (activeBtn) activeBtn.addEventListener('click', function () {
       var cur = savedWf();
-      if (cur) flipState({ active: !(cur.active !== false) });
+      if (!cur) return;
+      var turnOn = !(cur.active !== false);
+      // The server validates the STORED design. Flush any pending autosave
+      // first so it judges exactly what is on the canvas.
+      var flush = turnOn && FE.autosaveNow ? FE.autosaveNow() : Promise.resolve();
+      Promise.resolve(flush).catch(function () {}).then(function () { flipState({ active: turnOn }); });
     });
     if (liveBtn) liveBtn.addEventListener('click', function () {
       var cur = savedWf();

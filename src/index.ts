@@ -754,6 +754,29 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
     }
   };
 
+  // Execute Workflow of a saved workflow = its test run. The outcome and the
+  // fingerprint of the design that ran are stored on the workflow; activation
+  // is refused until the CURRENT design has a successful test (TestRunGate).
+  const recordTestOutcome = async (status: ExecutionStatus, error?: string | null) => {
+    const t = job.data.__testOf;
+    if (!t || typeof t.workflowId !== 'string' || typeof job.data.__testFingerprint !== 'string') return;
+    try {
+      const outs = profileManager.getJobOutputs(job.id!) || [];
+      const failed = outs.find((o) => o && o.success === false);
+      await new WorkflowService(workflowStoreFor(connection)).recordTestResult(String(t.owner || userId), t.workflowId, {
+        status,
+        fingerprint: job.data.__testFingerprint,
+        jobId: String(job.id),
+        finishedAt: new Date().toISOString(),
+        error: status === 'success' ? null : (error ? String(error).slice(0, 1000) : null),
+        failedStep: status === 'success' || !failed ? null
+          : { step: failed.step, action: failed.action, error: failed.error ? String(failed.error).slice(0, 500) : undefined },
+      });
+    } catch (e) {
+      console.warn(`[JOB:${job.id}] could not record the test result: ${(e as Error).message}`);
+    }
+  };
+
   const log = (msg: string) => {
     const safe = sanitizeLogMessage(msg);
     console.log(`[JOB:${job.id}] ${safe}`);
@@ -845,6 +868,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
     const outputs = profileManager.getJobOutputs(job.id!);
     await persistJob(userId, job.id!, outputs, { ...result, success: true });
     recordExecution('success');
+    await recordTestOutcome('success');
 
     if (webhookUrl) {
       sendWebhook(webhookUrl, {
@@ -883,6 +907,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
         userCancelled: cancelled
       });
       recordExecution(cancelled ? 'cancelled' : 'error', error.message);
+      await recordTestOutcome(cancelled ? 'cancelled' : 'error', error.message);
 
       if (webhookUrl) {
         sendWebhook(webhookUrl, {
@@ -925,6 +950,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       message: error.message
     });
     recordExecution('error', error.message);
+    await recordTestOutcome('error', error.message);
 
     if (webhookUrl) {
       sendWebhook(webhookUrl, {

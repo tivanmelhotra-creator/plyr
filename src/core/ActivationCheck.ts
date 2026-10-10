@@ -73,6 +73,34 @@ const REQUIRED: Record<string, { keys: string[]; label: string }[]> = {
   foreach: [{ keys: ['items'], label: 'an items variable' }],
 };
 
+/** Actions whose `url` param is handed to the browser / HTTP client as-is. */
+const URL_ACTIONS = new Set(['goto', 'navigate', 'goto-url', 'http-request', 'fetch', 'http', 'api']);
+
+/**
+ * Why `raw` is not a URL the runtime can open, or null when it is (or when it
+ * is an expression resolved at run time). Playwright's page.goto() refuses
+ * anything without a scheme ("Cannot navigate to invalid URL"), so `arena.ai`
+ * is filled in but still guaranteed to fail.
+ */
+export function urlProblem(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim();
+  if (!v || v.includes('{{')) return null;
+  // `localhost:3000` / `example.com:8080` parse as a "scheme" - they are hosts.
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(v) || /^[^/:]+:\d+(\/|$)/.test(v)) {
+    return `has an incomplete URL "${v.slice(0, 80)}" - add https:// (for example https://${v.replace(/^\/+/, '').slice(0, 60)})`;
+  }
+  let u: URL;
+  try { u = new URL(v); } catch { return `has an invalid URL "${v.slice(0, 80)}"`; }
+  if (!['http:', 'https:', 'about:', 'file:', 'data:', 'chrome:', 'chrome-extension:'].includes(u.protocol)) {
+    return `has a URL with an unsupported scheme "${u.protocol}"`;
+  }
+  if ((u.protocol === 'http:' || u.protocol === 'https:') && !u.hostname) {
+    return `has a URL without a host "${v.slice(0, 80)}"`;
+  }
+  return null;
+}
+
 function paramsOf(step: any): Record<string, unknown> {
   if (step && typeof step.params === 'object' && step.params && !Array.isArray(step.params)) return step.params;
   return step && typeof step === 'object' ? step : {};
@@ -116,6 +144,10 @@ export function activationIssues(steps: unknown, opts: ActivationOptions = {}): 
       const p = paramsOf(step);
       for (const req of REQUIRED[action] || []) {
         if (!req.keys.some((k) => has(p[k]))) issues.push({ path, action, message: `needs ${req.label}` });
+      }
+      if (URL_ACTIONS.has(action)) {
+        const bad = urlProblem(p.url);
+        if (bad) issues.push({ path, action, message: bad });
       }
       if (action === 'router') {
         let paths: unknown = p.paths ?? step.paths;

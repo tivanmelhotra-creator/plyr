@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
+import { markTested } from '../helpers/test-run';
 
 // ── Workflow Storage (Step 17, G2) route test ─────────────────────────────
 // Exercises the real /workflows CRUD + re-run handlers wired into the user
@@ -200,7 +201,7 @@ describe('Workflow CRUD (G2)', () => {
   it('a new workflow is inactive: a background run is refused until it is activated', async () => {
     const off = await request(app).post(`/workflows/u1/${createdId}/run`).send({});
     expect(off.status).toBe(409);
-    const on = await request(app).patch(`/workflows/u1/${createdId}/state`).send({ active: true });
+    const on = await (await markTested(conn, 'u1', createdId), request(app)).patch(`/workflows/u1/${createdId}/state`).send({ active: true });
     expect(on.status).toBe(200);
     expect(on.body.workflow.active).toBe(true);
   });
@@ -242,7 +243,7 @@ describe('Active isolation and manual versions (HTTP)', () => {
     const created = await request(app).post('/workflows/iso1').send({ name: 'Iso', steps: stepsA });
     wfId = created.body.workflow.id;
 
-    const on = await request(app).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
+    const on = await (await markTested(conn, 'iso1', wfId), request(app)).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
     expect(on.status).toBe(200);
     expect(on.body.workflow.activeSnapshot.steps).toEqual(stepsA);
 
@@ -262,7 +263,7 @@ describe('Active isolation and manual versions (HTTP)', () => {
   it('re-activation with an invalid design is refused and the old snapshot is kept', async () => {
     stepValidation.rejectWith = 'Step 1: unknown action';
     try {
-      const res = await request(app).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
+      const res = await (await markTested(conn, 'iso1', wfId), request(app)).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
       expect(res.status).toBe(422);
       expect(res.body.code).toBe('activation_invalid');
       expect(res.body.details[0]).toContain('unknown action');
@@ -275,7 +276,7 @@ describe('Active isolation and manual versions (HTTP)', () => {
   });
 
   it('re-activation with a valid design replaces the snapshot', async () => {
-    const res = await request(app).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
+    const res = await (await markTested(conn, 'iso1', wfId), request(app)).patch(`/workflows/iso1/${wfId}/state`).send({ active: true });
     expect(res.status).toBe(200);
     expect(res.body.workflow.activeSnapshot.steps).toEqual(stepsB);
   });
@@ -334,7 +335,7 @@ describe('Active isolation and manual versions (HTTP)', () => {
   it('activating an empty workflow is refused with the reason, and nothing is frozen', async () => {
     const created = await request(app).post('/workflows/iso1').send({ name: 'Empty', steps: [] });
     const emptyId = created.body.workflow.id;
-    const res = await request(app).patch(`/workflows/iso1/${emptyId}/state`).send({ active: true });
+    const res = await (await markTested(conn, 'iso1', emptyId), request(app)).patch(`/workflows/iso1/${emptyId}/state`).send({ active: true });
     expect(res.status).toBe(422);
     expect(res.body.code).toBe('activation_invalid');
     expect(res.body.details[0]).toBe('Steps cannot be empty');
@@ -357,7 +358,7 @@ describe('Phase-1 completion: activation errors, versions, import, schedules', (
       ],
     });
     const id = created.body.workflow.id;
-    const res = await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    const res = await (await markTested(conn, 'ph1', id), request(app)).patch(`/workflows/ph1/${id}/state`).send({ active: true });
     expect(res.status).toBe(422);
     expect(res.body.code).toBe('activation_invalid');
     expect(res.body.details).toEqual([
@@ -374,12 +375,12 @@ describe('Phase-1 completion: activation errors, versions, import, schedules', (
     const good = [{ action: 'goto', params: { url: 'https://ok.example' } }];
     const created = await request(app).post('/workflows/ph1').send({ name: 'Cycle', steps: good });
     const id = created.body.workflow.id;
-    expect((await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true })).status).toBe(200);
+    expect((await (await markTested(conn, 'ph1', id), request(app)).patch(`/workflows/ph1/${id}/state`).send({ active: true })).status).toBe(200);
     expect((await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: false })).status).toBe(200);
 
     const broken = [...good, { action: 'fill', params: { text: 'x' } }];
     await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Cycle', steps: broken });
-    const refused = await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    const refused = await (await markTested(conn, 'ph1', id), request(app)).patch(`/workflows/ph1/${id}/state`).send({ active: true });
     expect(refused.status).toBe(422);
     expect(refused.body.details).toEqual(['Node 2 (fill) needs a selector']);
     const mid = await request(app).get(`/workflows/ph1/${id}`);
@@ -388,7 +389,7 @@ describe('Phase-1 completion: activation errors, versions, import, schedules', (
 
     const fixed = [...good, { action: 'fill', params: { selector: '#q', text: 'x' } }];
     await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Cycle', steps: fixed });
-    const ok = await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    const ok = await (await markTested(conn, 'ph1', id), request(app)).patch(`/workflows/ph1/${id}/state`).send({ active: true });
     expect(ok.status).toBe(200);
     expect(ok.body.workflow.activeSnapshot.steps).toEqual(fixed);
   });
@@ -397,7 +398,7 @@ describe('Phase-1 completion: activation errors, versions, import, schedules', (
     const good = [{ action: 'goto', params: { url: 'https://live.example' } }];
     const created = await request(app).post('/workflows/ph1').send({ name: 'Live', steps: good });
     const id = created.body.workflow.id;
-    await request(app).patch(`/workflows/ph1/${id}/state`).send({ active: true });
+    await (await markTested(conn, 'ph1', id), request(app)).patch(`/workflows/ph1/${id}/state`).send({ active: true });
     await request(app).put(`/workflows/ph1/${id}`).send({ name: 'Live', steps: [{ action: 'nope', params: {} }] });
     queue.lastData = null;
     const run = await request(app).post(`/workflows/ph1/${id}/run`).send({});
@@ -452,7 +453,7 @@ describe('Phase-1 completion: activation errors, versions, import, schedules', (
     const steps = [{ action: 'goto', params: { url: 'https://sched.example' } }];
     const created = await request(app).post('/workflows/ph3').send({ name: 'Sched', steps });
     const id = created.body.workflow.id;
-    await request(app).patch(`/workflows/ph3/${id}/state`).send({ active: true });
+    await (await markTested(conn, 'ph3', id), request(app)).patch(`/workflows/ph3/${id}/state`).send({ active: true });
     const sched = await request(app).post('/schedule').send({ userId: 'ph3', cron: '0 9 * * *', name: 's', workflowId: id });
     expect(sched.status).toBe(200);
     expect(queue.lastData.__scheduleWorkflowId).toBe(id);
@@ -463,5 +464,60 @@ describe('Phase-1 completion: activation errors, versions, import, schedules', (
 
     await request(app).patch(`/workflows/ph3/${id}/state`).send({ active: false });
     expect(await resolveScheduledWorkflow(svc, 'ph3', id)).toEqual({ skip: 'bound workflow is inactive' });
+  });
+});
+
+describe('Activation requires a passed test run (TestRunGate)', () => {
+  const good = { name: 'Gate', steps: [{ action: 'goto', params: { url: 'https://e.com' } }] };
+
+  it('a workflow with filled fields but no test run is refused (422 activation_untested)', async () => {
+    const id = (await request(app).post('/workflows/gate1').send(good)).body.workflow.id;
+    const res = await request(app).patch(`/workflows/gate1/${id}/state`).send({ active: true });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('activation_untested');
+    expect(res.body.details[0]).toMatch(/never been tested/);
+    expect((await request(app).get(`/workflows/gate1/${id}`)).body.workflow.active).toBe(false);
+  });
+
+  it('a FAILED test run blocks activation with the run error', async () => {
+    const id = (await request(app).post('/workflows/gate1').send(good)).body.workflow.id;
+    await markTested(conn, 'gate1', id, 'error', { error: 'page.goto: Protocol error', failedStep: { step: 1, action: 'navigate', error: 'Cannot navigate to invalid URL' } });
+    const res = await request(app).patch(`/workflows/gate1/${id}/state`).send({ active: true });
+    expect(res.status).toBe(422);
+    expect(res.body.details[0]).toMatch(/failed at step 1 \(navigate\)/);
+  });
+
+  it('a green test, then an edit, makes the test stale; a new green test allows activation', async () => {
+    const id = (await request(app).post('/workflows/gate1').send(good)).body.workflow.id;
+    await markTested(conn, 'gate1', id);
+    await request(app).put(`/workflows/gate1/${id}`).send({ name: 'Gate', steps: [{ action: 'goto', params: { url: 'https://other.example' } }] }).expect(200);
+    const stale = await request(app).patch(`/workflows/gate1/${id}/state`).send({ active: true });
+    expect(stale.status).toBe(422);
+    expect(stale.body.details[0]).toMatch(/changed after its last test run/);
+    await markTested(conn, 'gate1', id);
+    const on = await request(app).patch(`/workflows/gate1/${id}/state`).send({ active: true });
+    expect(on.status).toBe(200);
+    expect(on.body.workflow.active).toBe(true);
+  });
+
+  it('a URL without a scheme is refused statically even with a green test', async () => {
+    const id = (await request(app).post('/workflows/gate1').send({ name: 'Bad URL', steps: [{ action: 'goto', params: { url: 'arena.ai' } }] })).body.workflow.id;
+    await markTested(conn, 'gate1', id);
+    const res = await request(app).patch(`/workflows/gate1/${id}/state`).send({ active: true });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('activation_invalid');
+    expect(res.body.details.join(' ')).toMatch(/incomplete URL "arena\.ai"/);
+  });
+
+  it('POST /run with a saved workflowId is stamped as that workflow\'s test (fingerprint of the run)', async () => {
+    const id = (await request(app).post('/workflows/gate1').send(good)).body.workflow.id;
+    const res = await request(app).post('/run').send({ userId: 'gate1', steps: good.steps, workflowId: id });
+    expect(res.status).toBe(200);
+    expect(queue.lastData.__testOf).toEqual({ owner: 'gate1', workflowId: id });
+    const { designFingerprint } = await import('../../src/core/TestRunGate');
+    expect(queue.lastData.__testFingerprint).toBe(designFingerprint(good.steps));
+    // An ad-hoc run (no workflowId) is nobody's test.
+    await request(app).post('/run').send({ userId: 'gate1', steps: good.steps });
+    expect(queue.lastData.__testOf).toBeUndefined();
   });
 });

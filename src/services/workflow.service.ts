@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 
 import { config } from '../config';
 import type { Workflow, WorkflowActiveSnapshot, WorkflowVersionSnapshot } from '../types';
+import type { WorkflowTestResult } from '../core/TestRunGate';
 import {
   RedisWorkflowRepository,
   type WorkflowRepository,
@@ -293,6 +294,19 @@ export class WorkflowService {
   }
 
   /**
+   * Store the outcome of a test run on the workflow. Only `lastTest` changes:
+   * no version bump, no history entry, `updatedAt` untouched (a test is not an
+   * edit). The record is re-read right before the write so a concurrent
+   * autosave is never rolled back.
+   */
+  async recordTestResult(userId: string, workflowId: string, result: WorkflowTestResult): Promise<boolean> {
+    const existing = await this.repo.get(userId, workflowId);
+    if (!existing) return false;
+    await this.repo.save({ ...existing, lastTest: result });
+    return true;
+  }
+
+/**
    * Build the frozen snapshot for activation from the CURRENT design. Pure: no
    * storage write. The route validates the steps before calling this.
    */
