@@ -209,16 +209,17 @@ describe('WorkflowService.update — flags survive an editor save', () => {
     expect(saved?.liveBrowser).toBe(false);
   });
 
-  it('snapshots the flags into version history', async () => {
+  it('does not snapshot Workspace flags into history on an edit (no per-edit versions)', async () => {
     const wf = await svc.create('u1', sampleInput());
     await svc.setState('u1', wf.id, { active: false, liveBrowser: true });
     await svc.update('u1', wf.id, sampleInput({ name: 'v2' }));
 
-    const versions = await svc.listVersions('u1', wf.id);
-    const newest = versions[0];
-    expect(newest.version).toBe(2);
-    expect(newest.active).toBe(false);
-    expect(newest.liveBrowser).toBe(true);
+    const current = await svc.get('u1', wf.id);
+    expect(current?.version).toBe(2);
+    expect(current?.active).toBe(false);
+    expect(current?.liveBrowser).toBe(true);
+    // Only the creation entry exists; the edit wrote none.
+    expect((await svc.listVersions('u1', wf.id)).length).toBe(1);
   });
 });
 

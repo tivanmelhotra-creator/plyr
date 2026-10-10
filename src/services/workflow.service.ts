@@ -186,8 +186,9 @@ export class WorkflowService {
     return out;
   }
 
-  // Update a workflow's editable fields. Bumps version + snapshots the NEW state
-  // into history. Returns null if the workflow does not exist for this user.
+  // Update a workflow's editable fields (autosave). Bumps the design version
+  // and replaces the single current state; it never creates a history entry.
+  // Returns null if the workflow does not exist for this user.
   async update(
     userId: string,
     workflowId: string,
@@ -213,8 +214,10 @@ export class WorkflowService {
       // an Editor save must never change what an active workflow executes.
       activeSnapshot: existing.activeSnapshot ?? null,
     };
+    // Autosave: the current state is the single live record. No history entry
+    // is written per edit - history only grows through explicit manual saves
+    // (saveManual) so a long editing session cannot flood storage.
     await this.repo.save(updated);
-    await this.saveVersion(updated);
     return updated;
   }
 
@@ -315,10 +318,10 @@ export class WorkflowService {
   }
 
   /**
-   * Restore a saved version into the editable design. Restoring is an ordinary
-   * design edit: it bumps `version`, writes an auto history entry, and leaves
-   * the Workspace switches and the frozen activation snapshot untouched. Other
-   * versions are never deleted by a restore.
+   * Restore a saved version into the editable design. The restored content
+   * becomes the single current state (like an autosave edit): it bumps
+   * `version` but writes NO history entry, and leaves the Workspace switches
+   * and the frozen activation snapshot untouched. No version is deleted.
    */
   async restoreVersion(userId: string, workflowId: string, version: number): Promise<Workflow | null | 'not_found_version'> {
     const existing = await this.get(userId, workflowId);
@@ -340,7 +343,6 @@ export class WorkflowService {
       activeSnapshot: existing.activeSnapshot ?? null,
     };
     await this.repo.save(updated);
-    await this.saveVersion(updated);
     return updated;
   }
 

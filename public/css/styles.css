@@ -8397,11 +8397,27 @@ body.route-fullbleed .fe-shell .fe-topbar {
 .fe-toggle { margin-inline-start: 6px; border: 0; background: transparent; }
 .fe-toggle .al-sw-label { display: inline !important; color: #8E95A1; font-size: 11.5px; }
 .fe-toggle.on .al-sw-label { color: var(--success); }
+/* Workflow name: a quiet, editable title in the top bar. Rest = plain text
+   (no box), hover = faint well, focus = thin accent ring while editing. The
+   input keeps its real behaviour (Enter/Escape/blur in views.js). */
 .fe-wfname {
-  max-width: 240px;
+  box-sizing: border-box;
+  width: clamp(120px, 22vw, 260px); max-width: 260px; min-width: 0;
+  height: 26px; padding: 0 8px; margin: 0;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: #C9CED8;
+  font: 600 12.5px/1 var(--font); letter-spacing: -.1px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: #8E95A1; font-size: 12px;
+  outline: none; cursor: text;
+  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
 }
+.fe-wfname::placeholder { color: #5C636F; }
+.fe-wfname:hover:not(:disabled):not(:focus) { background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.08); }
+.fe-wfname:focus {
+  background: #15171C; color: #F1F3F6; text-overflow: clip;
+  border-color: rgba(255, 138, 31, 0.55); box-shadow: 0 0 0 2px rgba(255, 138, 31, 0.14);
+}
+.fe-wfname:disabled { color: #5C636F; cursor: default; }
 .fe-brand { display: inline-flex; align-items: center; gap: 9px; font-size: 13.5px !important; font-weight: 600; color: #E7E9EE; }
 .fe-brand-mark { width: 26px; height: 26px; border-radius: 50%; color: var(--primary); }
 
@@ -8663,7 +8679,7 @@ body.route-fullbleed .fe-statusbar { grid-area: extra; }
 .fe-tb-start { gap: 12px; }
 .fe-brand { gap: 9px; }
 .fe-brand-name { white-space: nowrap; }
-.fe-wfname { padding-inline-start: 12px; border-inline-start: 1px solid rgba(255, 255, 255, 0.08); }
+.fe-wfname { margin-inline-start: 4px; }
 .fe-tb-end { gap: 8px; }
 .fe-tb-end .fe-toggle { margin-inline-start: 0; margin-inline-end: 4px; }
 
@@ -8862,3 +8878,39 @@ body.route-fullbleed .fe-statusbar { grid-area: extra; }
 .fe-version-restore:hover:not(:disabled) { background: #2A2B31; }
 .fe-version-restore:disabled { opacity: .5; cursor: default; }
 .fe-versions-empty, .fe-versions-loading { list-style: none; color: #8E95A1; padding: 8px 4px; margin: 0; }
+
+/* Named manual-version dialog (views.js openVersionNameDialog). Sits above the
+   versions panel; Cancel / Escape close it without writing a version. */
+.fe-version-dialog {
+  position: fixed; inset: 0; z-index: 1100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 7, 10, 0.55);
+}
+.fe-version-dialog-card {
+  width: min(360px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 8px;
+  padding: 16px; margin: 0; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12); background: #1A1B20; color: #D9DDE4;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); font: 500 12px/1.4 var(--font);
+}
+.fe-version-dialog-title { margin: 0; font: 600 13px/1.3 var(--font); color: #F1F3F6; }
+.fe-version-dialog-label { color: #8E95A1; font-size: 11.5px; }
+.fe-version-dialog-input {
+  height: 32px; padding: 0 10px; border-radius: 7px; box-sizing: border-box; width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.14); background: #0F141B; color: #F1F3F6;
+  font: 500 12.5px/1 var(--font); outline: none;
+}
+.fe-version-dialog-input::placeholder { color: #5C636F; }
+.fe-version-dialog-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(255, 138, 31, 0.18); }
+.fe-version-dialog-hint { margin: 0; color: #8E95A1; font-size: 11px; }
+.fe-version-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.fe-version-dialog-actions button {
+  height: 28px; padding: 0 12px; border-radius: 7px; cursor: pointer;
+  font: 600 12px/1 var(--font);
+}
+.fe-version-dialog-cancel { border: 1px solid rgba(255, 255, 255, 0.14); background: transparent; color: #D9DDE4; }
+.fe-version-dialog-cancel:hover { background: #2A2B31; }
+.fe-version-dialog-confirm { border: 1px solid rgba(255, 138, 31, 0.5); background: var(--primary); color: #111; }
+.fe-version-dialog-confirm:hover { filter: brightness(1.08); }
+.fe-version-dialog-confirm:focus-visible, .fe-version-dialog-cancel:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 2px;
+}

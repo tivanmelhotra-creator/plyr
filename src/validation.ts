@@ -188,6 +188,30 @@ export const validateHeadless = (value: unknown, defaultValue: boolean = true): 
 
 // === STEPS VALIDATION ===
 
+// Blocking rules the editor enforces (graph-serialize.js validateGraph). Only the
+// ones readable from a step's own parameters are checked here: the server never
+// sees the canvas, so cycles and dangling edges cannot be re-derived from steps[].
+// Refusing these at activation stops a red-marked node from running in the background.
+const checkBlockingStepRules = (step: any, action: string, index: number): void => {
+  const params = (step && typeof step.params === 'object' && step.params) || step || {};
+  const has = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== '';
+  if (action === 'switch' && !has(params.variable)) {
+    throw new Error(`Step at index ${index} (switch): a variable is required`);
+  }
+  if (action === 'foreach' && !has(params.items)) {
+    throw new Error(`Step at index ${index} (foreach): an items variable is required`);
+  }
+  if (action === 'router') {
+    let paths: unknown = params.paths;
+    if (typeof paths === 'string') {
+      try { paths = JSON.parse(paths); } catch { paths = null; }
+    }
+    if (paths !== undefined && (!Array.isArray(paths) || paths.length === 0)) {
+      throw new Error(`Step at index ${index} (router): at least one path is required`);
+    }
+  }
+};
+
 export const validateSteps = (
   input: unknown,
   userPlan?: PlanConfig,
@@ -267,6 +291,7 @@ export const validateSteps = (
       params = { ...params, browserOptions: parsed.options };
     }
 
+    if (!opts.allowEmpty) checkBlockingStepRules(step, action, index);
     const cleanStep: StepInput = { action, params };
 
     // Optional fields

@@ -162,7 +162,8 @@ describe('Workflow CRUD (G2)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('PUT bumps version and records history', async () => {
+  it('PUT (autosave) updates the current state without adding history entries', async () => {
+    const before = await request(app).get(`/workflows/u1/${createdId}/versions`);
     const res = await request(app)
       .put(`/workflows/u1/${createdId}`)
       .send({ name: 'My Flow v2', steps: wfBody.steps });
@@ -172,9 +173,22 @@ describe('Workflow CRUD (G2)', () => {
 
     const hist = await request(app).get(`/workflows/u1/${createdId}/versions`);
     expect(hist.status).toBe(200);
-    expect(hist.body.count).toBe(2);
-    expect(hist.body.versions.map((v: any) => v.version)).toEqual([2, 1]);
+    expect(hist.body.count).toBe(before.body.count); // no new entry per edit
+    expect(hist.body.versions.every((v: any) => v.kind !== 'manual')).toBe(true);
   });
+
+  it('a thousand autosaves keep a single history entry (no per-edit versions)', async () => {
+    const id = createdId;
+    const before = await request(app).get(`/workflows/u1/${id}/versions`);
+    for (let i = 0; i < 1000; i++) {
+      const r = await request(app).put(`/workflows/u1/${id}`).send({ name: `n${i}`, steps: wfBody.steps });
+      if (r.status !== 200) throw new Error(`autosave ${i} failed: ${r.status}`);
+    }
+    const after = await request(app).get(`/workflows/u1/${id}/versions`);
+    expect(after.body.count).toBe(before.body.count);
+    const cur = await request(app).get(`/workflows/u1/${id}`);
+    expect(cur.body.workflow.name).toBe('n999');
+  }, 60_000);
 
   it('POST /workflows/:userId/:id/run enqueues a job tagged with the workflow', async () => {
     const before = queue.addCalls;
@@ -280,7 +294,7 @@ describe('Active isolation and manual versions (HTTP)', () => {
     expect(res.body.workflow.activeSnapshot.steps).toEqual(stepsB); // Active untouched
 
     const after = await request(app).get(`/workflows/iso1/${wfId}/versions`);
-    expect(after.body.versions.length).toBeGreaterThan(countBefore); // restore is an edit: new entry, nothing removed
+    expect(after.body.versions.length).toBe(countBefore); // restore writes no history entry
     expect(after.body.versions.some((v: any) => v.kind === 'manual')).toBe(true);
   });
 

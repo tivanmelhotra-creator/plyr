@@ -49,9 +49,9 @@ const I18N_SRC = readFileSync(join(PUBLIC, 'js', 'i18n.js'), 'utf8');
  *   (`#/jobs`) · Settings (bottom). Dashboard and Admin stay reachable as routes
  *   and through the launcher, but are not rail entries any more.
  */
-const NAV = ['home', 'workspace', 'settings'];
+const NAV = ['workspace', 'settings'];
 /** Every product area the App Launcher lists (unchanged by the rail redesign). */
-const LAUNCHER = ['home', 'workspace', 'admin', 'settings'];
+const LAUNCHER = ['workspace', 'admin', 'settings'];
 
 /** Retired from the chrome — they are per-workflow capabilities now. */
 const RETIRED = ['live', 'browser', 'schedules', 'run', 'workflows', 'editor', 'quota'];
@@ -112,10 +112,10 @@ describe('sidebar — the focused rail (new ui §4)', () => {
   );
   const routes = [...navBlock.matchAll(/data-route="([a-z]+)"/g)].map((m) => m[1]);
 
-  it('has the four route entries, in the locked order, after + New workflow', () => {
+  it('has the route entries (Home removed; Workspace is the entry point), after + New workflow', () => {
     expect(routes).toEqual(NAV);
     expect(navBlock.indexOf('id="nav-new-workflow"')).toBeGreaterThan(-1);
-    expect(navBlock.indexOf('id="nav-new-workflow"')).toBeLessThan(navBlock.indexOf('data-route="home"'));
+    expect(navBlock.indexOf('id="nav-new-workflow"')).toBeLessThan(navBlock.indexOf('data-route="workspace"'));
     expect(navBlock).toMatch(/class="nav-item nav-bottom" data-route="settings"/);
   });
 
@@ -142,7 +142,7 @@ describe('sidebar — the focused rail (new ui §4)', () => {
     // check — the earlier `layout` / `layers` / `shield` set was a guess.
     // Jobs is no longer in the rail (Executions lives inside the workflow).
     for (const [route, icon] of Object.entries({
-      home: 'home', workspace: 'grid', settings: 'settings',
+      workspace: 'grid', settings: 'settings',
     })) {
       const row = navBlock.slice(navBlock.indexOf(`data-route="${route}"`));
       expect(row.slice(0, 200), `${route} -> ${icon}`).toContain(`data-icon="${icon}"`);
@@ -291,8 +291,10 @@ describe('brand — the shell has a single product name', () => {
 });
 
 describe('router — the six areas plus addressable deep routes', () => {
-  it('declares the six nav routes explicitly', () => {
+  it('declares the nav routes explicitly (Home is no longer one of them)', () => {
     expect(APP).toMatch(/var NAV_ROUTES = \['home', 'workspace', 'admin', 'settings'\]/);
+    // Home stays a routable screen (#/home) but has no sidebar or launcher entry.
+    expect(APP).toContain("if (route === 'home')");
   });
 
   it('keeps the retired screens reachable rather than deleting them', () => {

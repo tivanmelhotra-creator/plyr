@@ -2053,6 +2053,49 @@
         });
       });
     }
+    // Asks for a name before a MANUAL version is written. Autosave never goes
+    // through here. `onConfirm(label)` runs only after the user confirms; Cancel
+    // and Escape write nothing.
+    function openVersionNameDialog(onConfirm) {
+      var existing = document.getElementById('fe-version-name-dialog');
+      if (existing) existing.remove();
+      var dlg = document.createElement('div');
+      dlg.id = 'fe-version-name-dialog';
+      dlg.className = 'fe-version-dialog';
+      dlg.setAttribute('role', 'dialog');
+      dlg.setAttribute('aria-modal', 'true');
+      dlg.setAttribute('aria-labelledby', 'fe-version-name-title');
+      dlg.innerHTML =
+        '<form class="fe-version-dialog-card" novalidate>' +
+        '<h3 id="fe-version-name-title" class="fe-version-dialog-title">' + esc(t('sh.versionNameTitle')) + '</h3>' +
+        '<label class="fe-version-dialog-label" for="fe-version-name-input">' + esc(t('sh.versionNameLabel')) + '</label>' +
+        '<input id="fe-version-name-input" class="fe-version-dialog-input" type="text" maxlength="120" ' +
+        'placeholder="' + esc(t('sh.versionNamePlaceholder')) + '" autocomplete="off">' +
+        '<p class="fe-version-dialog-hint">' + esc(t('sh.versionNameHint')) + '</p>' +
+        '<div class="fe-version-dialog-actions">' +
+        '<button type="button" class="fe-version-dialog-cancel">' + esc(t('sh.versionNameCancel')) + '</button>' +
+        '<button type="submit" class="fe-version-dialog-confirm">' + esc(t('sh.versionNameConfirm')) + '</button>' +
+        '</div></form>';
+      document.body.appendChild(dlg);
+      var input = dlg.querySelector('#fe-version-name-input');
+      var form = dlg.querySelector('form');
+      var close = function () { dlg.remove(); };
+      dlg.querySelector('.fe-version-dialog-cancel').addEventListener('click', close);
+      dlg.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') { ev.stopPropagation(); close(); }
+      });
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var label = input.value.trim();
+        if (!label) { input.focus(); return; }
+        close();
+        Promise.resolve().then(function () { return onConfirm(label); }).catch(function (err) {
+          U().toast((err && err.message) || t('sh.versionSaveFailed'), 'error');
+        });
+      });
+      input.focus();
+    }
+
     function openVersions() {
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
       if (!cur || !cur.id) { U().toast(t('fe.filesNeedSave'), 'info'); return; }
@@ -2080,16 +2123,16 @@
         });
       };
       versionsPanel.querySelector('.fe-versions-save').addEventListener('click', function () {
-        // Flush the current design first so the manual version is the latest one.
-        var flush = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
-        flush.then(function () {
-          var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
-          return API.saveWorkflowVersion(effectiveUserId(), c.id, null);
-        }).then(function () {
-          U().toast(t('sh.versionSaved'), 'success');
-          loadList();
-        }).catch(function (err) {
-          U().toast((err && err.message) || t('sh.versionSaveFailed'), 'error');
+        openVersionNameDialog(function (label) {
+          // Flush the current design first so the manual version is the latest one.
+          var flush = FE.autosaveNow ? FE.autosaveNow() : Promise.resolve(null);
+          return flush.then(function () {
+            var c = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+            return API.saveWorkflowVersion(effectiveUserId(), c.id, label);
+          }).then(function () {
+            U().toast(t('sh.versionSaved'), 'success');
+            loadList();
+          });
         });
       });
       loadList();
@@ -2101,6 +2144,10 @@
     document.addEventListener('click', function (ev) {
       if (!versionsPanel) return;
       if (versionsPanel.contains(ev.target) || (versionsBtn && versionsBtn.contains(ev.target))) return;
+      // The name dialog is appended to <body>, outside the panel. Clicks inside
+      // it (Cancel / Save) must not dismiss the versions list behind it.
+      var nameDlg = document.getElementById('fe-version-name-dialog');
+      if (nameDlg && nameDlg.contains(ev.target)) return;
       closeVersions();
     });
 

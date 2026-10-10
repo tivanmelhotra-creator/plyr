@@ -106,7 +106,7 @@ describe('POST /workflows/:u/import', () => {
         c(),
         { action: 'if', condition: { left: 'a', operator: 'equals', right: 'a' }, then: [c()], else: [c()] },
         { action: 'router', paths: [{ id: 'p1', condition: { left: 'a', operator: 'equals', right: 'a' }, steps: [c()] }], fallback: [c()] },
-        { action: 'switch', cases: { x: [c()] } },
+        { action: 'switch', variable: 'a', cases: { x: [c()] } },
         { action: 'try', steps: [c()], catch: [c()], finally: [c()] },
       ];
       const pre = await request(app).post('/workflows/mallory/import/preview').send(file(steps));
