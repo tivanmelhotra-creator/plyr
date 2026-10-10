@@ -519,7 +519,12 @@ app.use('/', routes.user);
 app.use('/', routes.browser);
 app.use('/', routes.mode);
 app.use('/', routes.workflowFiles);
-app.use('/admin', routes.admin);
+// The Admin API exists for the multi-tenant product (users, plans, keys).
+// A single-user install has no admin area: the owner already holds the API
+// token. It is NOT mounted there, because it is guarded by ADMIN_SECRET alone,
+// whose default (admin_secret_change_me) is public - a stock install let
+// anyone who could reach the port restart the server via /admin/system/restart.
+if (!config.IS_SINGLE_USER) app.use('/admin', routes.admin);
 const settingsRoutes = createSettingsRoutes();
 app.use('/', settingsRoutes.publicRouter);
 app.use('/', settingsRoutes.router);

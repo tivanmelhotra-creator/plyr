@@ -158,15 +158,6 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
     ],
   },
   {
-    key: 'WORKFLOW_MAX_VERSIONS', group: 'storage', type: 'choice', apply: 'live', dflt: '20',
-    fa: 'تعداد نسخه‌های نگه‌داشته از هر workflow', en: 'Versions kept per workflow',
-    hintFa: 'نسخه‌های قدیمی‌تر هنگام ذخیرهٔ بعدی حذف می‌شوند.', hintEn: 'Older versions are dropped on the next save.',
-    options: [
-      { value: '5', fa: '۵', en: '5' }, { value: '10', fa: '۱۰', en: '10' },
-      { value: '20', fa: '۲۰ (پیش‌فرض)', en: '20 (default)' }, { value: '50', fa: '۵۰', en: '50' },
-    ],
-  },
-  {
     key: 'EXECUTION_RETENTION_DAYS', group: 'storage', type: 'choice', apply: 'restart', dflt: '30',
     fa: 'نگهداری تاریخچهٔ اجراها', en: 'Keep run history',
     hintFa: 'اجراهای قدیمی‌تر پاک می‌شوند.', hintEn: 'Older runs are deleted.',

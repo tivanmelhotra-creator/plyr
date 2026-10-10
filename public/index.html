@@ -68,8 +68,8 @@
            from the editor. Do not re-add them here. -->
       <!-- Focused rail (docs/uiux/new ui.md §4), top to bottom:
              + New workflow · Home · Workspace · Executions … Settings (bottom).
-           `Dashboard` and `Admin` stay reachable as routes (Home links to the
-           dashboard; Settings to the admin panel) but are not rail entries. -->
+           Single-user product: there is no Admin area (the owner IS the admin);
+           server configuration lives in Settings. -->
       <nav class="sidebar-nav">
         <button type="button" class="nav-item nav-new" id="nav-new-workflow" title="New workflow" aria-label="New workflow">
           <span class="nav-icon" data-icon="plus" data-icon-size="18"></span>
@@ -133,10 +133,6 @@
             <button class="launcher-item" type="button" role="menuitem" data-route="workspace">
               <span class="launcher-item-icon" data-icon="grid" data-icon-size="20"></span>
               <span data-i18n="nav.workspace">Workspace</span>
-            </button>
-            <button class="launcher-item" type="button" role="menuitem" data-route="admin">
-              <span class="launcher-item-icon" data-icon="shield-check" data-icon-size="20"></span>
-              <span data-i18n="nav.admin">Admin</span>
             </button>
             <button class="launcher-item" type="button" role="menuitem" data-route="settings">
               <span class="launcher-item-icon" data-icon="settings" data-icon-size="20"></span>

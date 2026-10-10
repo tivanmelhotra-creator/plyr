@@ -8,7 +8,6 @@
   'use strict';
 
   var KEY_STORAGE = 'ab_api_key';
-  var ADMIN_STORAGE = 'ab_admin_token';
 
   function getKey() {
     return localStorage.getItem(KEY_STORAGE) || '';
@@ -19,21 +18,15 @@
   }
   function clearKey() {
     localStorage.removeItem(KEY_STORAGE);
-    localStorage.removeItem(ADMIN_STORAGE);
+    // Drop the admin token older (multi-user) builds stored.
+    localStorage.removeItem('ab_admin_token');
     localStorage.removeItem('ab_user_id');
-  }
-  function getAdminToken() {
-    return localStorage.getItem(ADMIN_STORAGE) || '';
-  }
-  function setAdminToken(t) {
-    if (t) localStorage.setItem(ADMIN_STORAGE, t);
-    else localStorage.removeItem(ADMIN_STORAGE);
   }
 
   /**
    * Core request. Resolves with parsed JSON.
    * Throws { status, message, body } on non-2xx.
-   * opts: { method, body, auth (bool, default true), admin (bool) }
+   * opts: { method, body, auth (bool, default true) }
    */
   /**
    * Turn a non-JSON error body into ONE readable line.
@@ -72,10 +65,6 @@
     if (opts.auth !== false) {
       var key = getKey();
       if (key) headers['x-api-key'] = key;
-    }
-    if (opts.admin) {
-      var at = getAdminToken();
-      if (at) headers['x-admin-token'] = at;
     }
 
     return fetch(path, {
@@ -209,9 +198,6 @@
   function cancelJob(userId, jobId) {
     return del('/cancel/' + encodeURIComponent(userId) + '/' + encodeURIComponent(jobId));
   }
-  function getQuota(userId) {
-    return get('/quota/' + encodeURIComponent(userId));
-  }
   function listSchedules(userId) {
     return get('/schedules/' + encodeURIComponent(userId));
   }
@@ -277,23 +263,6 @@
   /** Aggregated Workspace counters + per-workflow run stats. */
   function workspaceStats(userId) {
     return get('/workspace/' + encodeURIComponent(userId) + '/stats');
-  }
-
-  /** Admin stats (requires admin token). */
-  function adminStats() {
-    return get('/admin/stats', { admin: true });
-  }
-
-  /**
-   * Validate an admin secret by calling /admin/stats with the token.
-   * Returns true on 2xx, false on 403.
-   */
-  function validateAdminToken(token) {
-    return fetch('/admin/stats', {
-      headers: { 'x-admin-token': token, Accept: 'application/json' },
-    }).then(function (res) {
-      return res.ok;
-    });
   }
 
   function getRaw(path, opts) {
@@ -384,15 +353,12 @@
     clearKey: clearKey,
     getUserId: getUserId,
     setUserId: setUserId,
-    getAdminToken: getAdminToken,
-    setAdminToken: setAdminToken,
     runFlow: runFlow,
     liveShare: liveShare,
     runNode: runNode,
     listJobs: listJobs,
     getJob: getJob,
     cancelJob: cancelJob,
-    getQuota: getQuota,
     listSchedules: listSchedules,
     deleteSchedule: deleteSchedule,
     listWorkflows: listWorkflows,
@@ -408,8 +374,6 @@
     runWorkflow: runWorkflow,
     setWorkflowState: setWorkflowState,
     workspaceStats: workspaceStats,
-    adminStats: adminStats,
-    validateAdminToken: validateAdminToken,
     request: request,
     get: get,
     post: post,

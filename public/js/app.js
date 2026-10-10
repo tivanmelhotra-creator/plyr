@@ -273,7 +273,7 @@
   // ---------------------------------------------
   // The six product areas — and ONLY these six — appear in the sidebar and in
   // the App Launcher (docs/uiux/workspace-overview.md § 3A).
-  var NAV_ROUTES = ['home', 'workspace', 'admin', 'settings'];
+  var NAV_ROUTES = ['home', 'workspace', 'settings'];
 
   /**
    * Deep routes: still addressable, but deliberately absent from the chrome.
@@ -282,20 +282,20 @@
    */
   // `jobs` is no longer a rail/launcher area, but its deep links (run logs,
   // Executions) must still resolve, so it stays routable here.
-  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'quota', 'jobs'];
+  var DEEP_ROUTES = ['workflows', 'editor', 'run', 'live', 'browser', 'schedules', 'jobs'];
 
   var ROUTES = NAV_ROUTES.concat(DEEP_ROUTES);
 
   /**
    * Which sidebar entry lights up for a deep route. A user standing in the
-   * editor is still "in" the Workspace area; Quota is a Settings sub-page.
+   * editor is NOT lit as Workspace (see below).
    */
   // Routes that live INSIDE a workflow do not light up Workspace: the Workspace
   // item means the list of workflows, and an open workflow is not that list. Only
   // Settings-owned routes still map to their parent area.
-  var ROUTE_PARENT = {
-    quota: 'settings',
-  };
+  // Quota and Admin were Settings sub-pages of the multi-user product; a
+  // single-user install has neither (old hashes land on Settings, see ROUTE_ALIAS).
+  var ROUTE_PARENT = {};
 
   /**
    * Routes that own the whole viewport. The design images for the editor
@@ -311,7 +311,7 @@
 
   // Legacy hashes kept working so bookmarks and in-app links from before the
   // architecture change do not 404 into the default route.
-  var ROUTE_ALIAS = { flows: 'workspace', library: 'workspace', account: 'settings' };
+  var ROUTE_ALIAS = { flows: 'workspace', library: 'workspace', account: 'settings', quota: 'settings', admin: 'settings' };
 
   var DEFAULT_ROUTE = 'workspace';
 
@@ -411,7 +411,6 @@
   var HOME_TILES = [
     { route: 'workspace', icon: 'layout', title: 'nav.workspace', desc: 'home.workspaceDesc' },
     { route: 'jobs', icon: 'layers', title: 'nav.jobs', desc: 'home.jobsDesc' },
-    { route: 'admin', icon: 'shield', title: 'nav.admin', desc: 'home.adminDesc' },
     { route: 'settings', icon: 'settings', title: 'nav.settings', desc: 'home.settingsDesc' },
   ];
 
