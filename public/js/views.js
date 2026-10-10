@@ -297,7 +297,7 @@
     if (!uid) { U().toast(t('run.needUserId'), 'error'); return; }
     if (builderSteps.length === 0) { U().toast(t('run.needStep'), 'error'); return; }
 
-    var payload = { userId: uid, steps: buildPayloadSteps(), headless: headless };
+    var payload = { userId: uid, steps: buildPayloadSteps(), origin: 'manual', headless: headless };
     if (webhook) payload.webhookUrl = webhook;
 
     var btn = root.querySelector('#run-submit');
@@ -622,7 +622,7 @@
             b.addEventListener('click', function () {
               var id = b.getAttribute('data-run');
               b.disabled = true;
-              API.runWorkflow(uid, id, {})
+              API.runWorkflow(uid, id, { origin: 'manual' })
                 .then(function (d) {
                   U().toast(t('wf.queued') + ' ' + (d.jobId || ''), 'success');
                   location.hash = '#/jobs?job=' + encodeURIComponent(d.jobId) +
@@ -1233,7 +1233,7 @@
       // the read-only live tab has something to show (docs/uiux/new ui.md §9).
       // Background runs (Active: triggers / schedules) keep the workflow's own
       // headless setting — they never come through this handler.
-      var runPayload = { userId: uid, steps: steps, headless: !wantLiveBrowser() };
+      var runPayload = { userId: uid, steps: steps, origin: 'manual', headless: !wantLiveBrowser() };
       // A saved workflow files its node outputs in ITS OWN workspace
       // (Workflow Files > downloads/<node>); the server verifies ownership.
       if (runWf && runWf.id) runPayload.workflowId = runWf.id;
