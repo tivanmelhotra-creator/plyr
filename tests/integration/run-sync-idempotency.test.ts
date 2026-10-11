@@ -9,19 +9,11 @@ import request from 'supertest';
 //   2. ?wait=true sync mode returning the persisted result inline
 //   3. ?wait=true timeout -> HTTP 202 with a pollUrl
 //
-// Heavy collaborators (UserManager plan lookup, deep step validation, the
+// Heavy collaborators (deep step validation, the
 // on-disk job file reader) are mocked so we can run without Redis / Playwright
 // and assert the control-flow precisely. The Redis `connection` is a tiny
 // in-memory stub implementing only the methods the handler touches.
 
-// Mock plan lookup (no Redis).
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: {
-    getUserPlan: vi.fn(async () => ({
-      quota: 0, maxTabs: 2, maxSteps: 100, priority: 1, maxSchedules: 5, runLimit: 0,
-    })),
-  },
-}));
 
 // Mock validation so we don't need full step sanitization here.
 vi.mock('../../src/validation', () => ({
@@ -102,10 +94,6 @@ beforeAll(async () => {
     queue: queue as any,
     connection: connection as any,
     profileManager: {} as any,
-    quotaManager: {
-      hasQuotaRemaining: async () => true,
-      getUsage: async () => ({ usedSeconds: 0, date: '2026-06-04' }),
-    } as any,
   });
   app = express();
   app.use(express.json());

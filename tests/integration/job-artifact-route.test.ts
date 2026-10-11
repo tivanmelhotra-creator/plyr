@@ -7,7 +7,6 @@ import path from 'path';
 // GET /job/:userId/:jobId/artifact/:file - serves the screenshots a run saved.
 // The router is the real one; the mocks only remove Redis / queue concerns.
 
-vi.mock('../../src/core/UserManager', () => ({ UserManager: { getUserPlan: vi.fn(async () => ({})) } }));
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
   validateSteps: (s: unknown) => s as unknown[],
@@ -47,7 +46,7 @@ beforeAll(async () => {
   const { createUserRoutes } = await import('../../src/Routes/user.routes');
   app = express();
   app.use('/', createUserRoutes({
-    queue: {} as any, connection: {} as any, profileManager: {} as any, quotaManager: {} as any,
+    queue: {} as any, connection: {} as any, profileManager: {} as any, 
   }));
 });
 

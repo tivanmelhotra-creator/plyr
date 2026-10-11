@@ -9,13 +9,6 @@ import { markTested } from '../helpers/test-run';
 // and heavy collaborators (plan lookup, deep step validation, the on-disk job
 // reader) are mocked so the control flow can be asserted precisely.
 
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: {
-    getUserPlan: vi.fn(async () => ({
-      quota: 0, maxTabs: 2, maxSteps: 100, priority: 1, maxSchedules: 5, runLimit: 0,
-    })),
-  },
-}));
 
 // Test hook: when set, validateSteps rejects with this message (simulates an invalid design).
 const stepValidation = { rejectWith: null as string | null };
@@ -111,10 +104,6 @@ beforeAll(async () => {
     queue: queue as any,
     connection: connection as any,
     profileManager: {} as any,
-    quotaManager: {
-      hasQuotaRemaining: async () => true,
-      getUsage: async () => ({ usedSeconds: 0, date: '2026-06-04' }),
-    } as any,
   });
   app = express();
   app.use(express.json());

@@ -12,9 +12,6 @@ let jbConn: any;
 // request body: naming someone else's workflow, a missing one, or a malformed id
 // has to yield NO workspace (the run still works, outputs stay in the job store).
 
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: { getUserPlan: vi.fn(async () => ({ quota: 0, maxTabs: 2, maxSteps: 100, priority: 3, maxSchedules: 5, runLimit: 0 })) },
-}));
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
   validateSteps: (s: unknown) => s as unknown[],
@@ -68,7 +65,6 @@ beforeAll(async () => {
   app.use(express.json());
   app.use('/', createUserRoutes({
     queue: queue as any, connection: (jbConn = makeConnection()) as any, profileManager: {} as any,
-    quotaManager: { hasQuotaRemaining: async () => true, getUsage: async () => ({ usedSeconds: 0 }) } as any,
   }));
 });
 

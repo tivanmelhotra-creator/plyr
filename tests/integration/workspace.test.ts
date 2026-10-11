@@ -20,13 +20,6 @@ let wsConn: any;
 // profileManager.getActiveBrowserCount(). The sibling suite mocks profileManager
 // as `{}`, which would throw here — so this harness stubs that single method.
 
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: {
-    getUserPlan: vi.fn(async () => ({
-      quota: 0, maxTabs: 2, maxSteps: 100, priority: 1, maxSchedules: 5, runLimit: 0,
-    })),
-  },
-}));
 
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
@@ -164,10 +157,6 @@ beforeAll(async () => {
     // The stats route calls this — mocking profileManager as `{}` (as the
     // sibling suite does) makes GET /workspace/:userId/stats throw a 500.
     profileManager: { getActiveBrowserCount: () => browserCount } as any,
-    quotaManager: {
-      hasQuotaRemaining: async () => true,
-      getUsage: async () => ({ usedSeconds: 0, date: '2026-07-28' }),
-    } as any,
   });
   app = express();
   app.use(express.json());

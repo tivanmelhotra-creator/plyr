@@ -230,7 +230,7 @@ export const validateSteps = (
 
   const maxSteps = userPlan?.maxSteps || 200;
   if (input.length > maxSteps) {
-    throw new Error(`Maximum ${maxSteps} steps allowed for your plan`);
+    throw new Error(`Maximum ${maxSteps} steps allowed per workflow`);
   }
 
   // Check total size

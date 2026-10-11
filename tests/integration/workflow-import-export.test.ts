@@ -37,7 +37,6 @@ beforeAll(async () => {
   app.use('/', createUserRoutes({
     queue: { async add() { return { id: '1' }; }, async getJob() { return null; }, async getJobs() { return []; }, async getRepeatableJobs() { return []; } } as any,
     connection: makeConnection() as any, profileManager: {} as any,
-    quotaManager: { hasQuotaRemaining: async () => true, getUsage: async () => ({ usedSeconds: 0 }) } as any,
   }));
 });
 
@@ -70,7 +69,7 @@ describe('POST /workflows/:u/import/preview', () => {
   });
 
   it('refuses a file whose steps fail the real validation', async () => {
-    const tooMany = Array.from({ length: 10001 }, () => goto); // the instance allows 10000
+    const tooMany = [goto, { action: 'switch', params: {} }]; // a switch without a variable fails the real validation
     const res = await request(app).post('/workflows/alice/import/preview').send(file(tooMany));
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('steps');
