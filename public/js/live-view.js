@@ -468,7 +468,13 @@
 
   function startTick() {
     if (tick) return;
-    tick = setInterval(function () { if (!RS.isTerminal(feed.state)) drawElapsed(); }, 1000);
+    // Bound to THIS page's root: once it leaves the document the clock stops
+    // (a later page with the same ids must not be drawn by an old one).
+    var page = $('lv-root');
+    tick = setInterval(function () {
+      if (!page || !page.isConnected) { clearInterval(tick); tick = null; return; }
+      if (!RS.isTerminal(feed.state)) drawElapsed();
+    }, 1000);
   }
   function stopTick() { if (tick) { clearInterval(tick); tick = null; } drawElapsed(); }
 
@@ -582,8 +588,24 @@
       if (!b) return;
       logFilter = b.getAttribute('data-filter'); toggleMenu(false); drawLog(rows());
     });
-    document.addEventListener('click', function () { if (!$('lr-filter-list').hidden) toggleMenu(false); });
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('lr-filter-list').hidden) toggleMenu(false); });
+    // Close the filter menu on an outside click / Escape. These two are the only
+    // listeners on `document`, which outlives this page's DOM (a test harness
+    // swaps the body; one jsdom document is shared by every test file). They
+    // hold the menu they were made for and remove themselves once it is gone,
+    // instead of looking an id up in whatever page is there now.
+    var menu = $('lr-filter-list');
+    var root = $('lv-root');
+    function onDocClick() { if (!alive()) return; if (!menu.hidden) toggleMenu(false); }
+    function onDocKey(e) { if (!alive()) return; if (e.key === 'Escape' && !menu.hidden) toggleMenu(false); }
+    function alive() {
+      if (root && root.isConnected && menu.isConnected) return true;
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('keydown', onDocKey);
+      if (tick) { clearInterval(tick); tick = null; }
+      return false;
+    }
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKey);
     fs.addEventListener('click', function () {
       var fig = $('lv-browser');
       try {

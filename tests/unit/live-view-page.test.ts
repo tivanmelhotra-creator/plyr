@@ -366,3 +366,39 @@ describe('Live Run tab — status, log, browser', () => {
     expect(document.body.textContent).not.toMatch(/[\u0600-\u06FF]/);
   });
 });
+
+describe('Live Run tab — leaves nothing behind when its page is replaced', () => {
+  // CI regression (PR #75): every test file shares ONE jsdom document (pool:
+  // forks, singleFork). The page put click/keydown listeners on `document`
+  // that looked `#lr-filter-list` up by id, so after the next file swapped the
+  // body, every click there threw "Cannot read properties of null (reading
+  // 'hidden')" — 184 unhandled errors in browser-options-ui.test.ts.
+  it('a click or Escape on a different page after this one is gone throws nothing', async () => {
+    boot(); await settle();
+    document.body.innerHTML = '<button id="other">another page</button>';
+    const errors: unknown[] = [];
+    const onErr = (e: ErrorEvent) => { errors.push(e.error || e.message); e.preventDefault(); };
+    window.addEventListener('error', onErr);
+    try {
+      (document.getElementById('other') as HTMLElement).click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      (document.getElementById('other') as HTMLElement).click();
+      vi.advanceTimersByTime(3000);      // the elapsed clock must not draw into the new page either
+    } finally {
+      window.removeEventListener('error', onErr);
+    }
+    expect(errors).toEqual([]);
+  });
+
+  it('the filter menu still closes on an outside click while the page is up', async () => {
+    boot(); await settle(); events().open();
+    $('lr-tab-log').click();
+    $('lr-filter').click();
+    expect(($('lr-filter-list') as any).hidden).toBe(false);
+    document.body.click();
+    expect(($('lr-filter-list') as any).hidden).toBe(true);
+    $('lr-filter').click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(($('lr-filter-list') as any).hidden).toBe(true);
+  });
+});
