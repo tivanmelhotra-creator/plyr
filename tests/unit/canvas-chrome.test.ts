@@ -484,7 +484,7 @@ describe('full-bleed editor route', () => {
     expect(APP).toContain("classList.toggle('route-fullbleed'");
     expect(APP).toContain('FULLBLEED_ROUTES.indexOf(route) !== -1');
     // Logging out must clear it, or the login screen inherits the class.
-    const login = APP.slice(APP.indexOf('function showLogin'), APP.indexOf('function showApp'));
+    const login = APP.slice(APP.indexOf('function showAuthScreen'), APP.indexOf('function showApp'));
     expect(login).toContain("classList.remove('route-fullbleed')");
   });
 

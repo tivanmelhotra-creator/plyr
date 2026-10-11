@@ -44,6 +44,7 @@ import { forgetLocalConnection } from '../core/BrowserAdapter';
 import { inspectorHub, type InspectorRefusal } from '../core/InspectorHub';
 import { targetFields, pairingKeyFor } from '../core/TargetFieldRegistry';
 import { inspectorAuth } from '../core/InspectorAuthorization';
+import { authStore } from '../core/AuthStore';
 import { remoteTargetConsent } from '../core/RemoteTargetConsent';
 import { consentHostPage } from '../core/ConsentHostPage';
 import { resolveBaseUrl, requestHints } from '../core/PublicBaseUrl';
@@ -1041,14 +1042,14 @@ export const createModeRoutes = (): Router => {
         // THIS server's token (InspectorExtension.bootstrapSource). Granting to
         // that same token is therefore granting to the client that will actually
         // submit, not to an arbitrary caller.
-        config.API_TOKEN,
+        authStore.serviceToken(),
         userId,
         target.targetFieldId,
         target.pairingKey,
       );
       // The dashboard's own key may differ from the seeded one in a multi-key
       // setup; bind it too so a pick made through it is not refused.
-      if (req.apiKey && req.apiKey !== config.API_TOKEN) {
+      if (req.apiKey && req.apiKey !== authStore.serviceToken()) {
         inspectorAuth.grant(req.apiKey, userId, target.targetFieldId, target.pairingKey);
       }
 

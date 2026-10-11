@@ -158,7 +158,7 @@ export async function desktopAuthOk(req: IncomingMessage): Promise<boolean> {
   // (the common case) working without the caller having to pass ?userId=.
   const userId = url.searchParams.get('userId') || SINGLE_USER_ID;
   try {
-    const auth = await authorizeLive(key, userId);
+    const auth = await authorizeLive(key, userId, { req });
     return auth.ok;
   } catch {
     return false;

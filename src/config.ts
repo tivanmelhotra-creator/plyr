@@ -11,6 +11,9 @@ import { detectProfile, profiledEnv } from './core/EnvProfile';
 // (data/settings.env) onto process.env before anything below reads it.
 import { liveRaw, envValueOf } from './core/PersistedSettings';
 import { settingValue, setOverride } from './core/RuntimeSettings';
+// The owner's password hash + the server's own internal credentials. Lazy: it
+// reads nothing until first use, so import order does not matter.
+import { authStore } from './core/AuthStore';
 
 const cleanEnv = (val: string | undefined): string | undefined => {
   if (!val) return undefined;
@@ -61,27 +64,18 @@ export interface PlanConfig {
 const REQUESTED_DEPLOYMENT_MODE = (cleanEnv(process.env.DEPLOYMENT_MODE) || 'single').toLowerCase();
 const DEPLOYMENT_MODE = 'single' as const;
 
-// In single mode we accept one shared token.
+// ACCESS MODEL (replaces the old shared token with its public default).
 //
-// DEFAULT: `admin123`, by explicit operator request — a token you can type from
-// memory on a box only you reach beats one you have to dig out of the logs after
-// every restart. It replaces a random `tok_…` that was regenerated on each boot
-// whenever .env was empty, which logged every existing panel out.
+//   development  this machine (loopback socket) needs NO credential at all.
+//   production   the owner chooses a PASSWORD on first run (core/AuthStore;
+//                stored only as a scrypt hash) and signs in with it.
 //
-// THIS IS A WEAK, PUBLICLY-KNOWN DEFAULT. It is not a secret: it is in this
-// source file and in .env.example. Whoever holds it holds the whole instance —
-// this one token drives a real browser, reads and writes the download/upload
-// directories, and runs workflows. So `isDefaultApiToken` is exported and
-// warned about loudly at boot; anything reachable from the internet must set its
-// own API_TOKEN in .env.
-const DEFAULT_SINGLE_USER_API_TOKEN = 'admin123';
-const resolveApiToken = (): string => {
-  const explicit = cleanEnv(process.env.API_TOKEN);
-  if (explicit && explicit.length > 0) return explicit;
-  if (DEPLOYMENT_MODE !== 'single') return '';
-  return DEFAULT_SINGLE_USER_API_TOKEN;
-};
-const API_TOKEN = resolveApiToken();
+// `API_TOKEN` is now OPTIONAL and EMPTY by default: nothing generates one and
+// nothing ships a public default. If the operator sets one (env or Settings) it
+// is accepted as a credential for scripts/integrations, exactly like a session.
+// The server's own components (the extension it side-loads into its own
+// browser) use an internal credential derived from the install's secret
+// (AuthStore.serviceToken) that is never shown to anyone.
 
 /**
  * The value a setting has RIGHT NOW: a save in the Settings page during this
@@ -110,11 +104,8 @@ const cur = (key: string): string | undefined =>
  */
 const assigned = new Map<string, unknown>();
 const pick = <T>(key: string, compute: () => T): T => (assigned.has(key) ? (assigned.get(key) as T) : compute());
-const tokenNow = (): string => {
-  const v = cur('API_TOKEN');
-  if (v) return v;
-  return DEPLOYMENT_MODE === 'single' ? DEFAULT_SINGLE_USER_API_TOKEN : '';
-};
+/** The OPTIONAL API token an operator chose on purpose. '' = none. */
+const tokenNow = (): string => cur('API_TOKEN') || '';
 const intNow = (key: string, dflt: number, min = 0): number => {
   const n = parseInt(cur(key) || String(dflt), 10);
   return Number.isFinite(n) && n >= min ? n : dflt;
@@ -132,11 +123,6 @@ const intNow = (key: string, dflt: number, min = 0): number => {
  * it is ignored outside development.
  */
 const keylessLocalAccess = (): boolean => ACTIVE_PROFILE.id === 'development';
-// Kept for the boot message and for anything that wants to nag the operator.
-// Renamed in spirit, not in name: it is still "the operator did not choose this
-// token", it just no longer means "and it is therefore unguessable".
-const API_TOKEN_AUTO_GENERATED = DEPLOYMENT_MODE === 'single' && !cleanEnv(process.env.API_TOKEN);
-const API_TOKEN_IS_DEFAULT = API_TOKEN === DEFAULT_SINGLE_USER_API_TOKEN;
 
 // The one set of limits every run of this instance is checked against.
 const INSTANCE_LIMITS: PlanConfig = Object.freeze({
@@ -178,16 +164,15 @@ export const config = {
   // ============================================
   DEPLOYMENT_MODE,
   IS_SINGLE_USER: DEPLOYMENT_MODE === 'single',
-  // Getters: the Settings page can rotate the token with no restart.
+  // OPTIONAL API token for scripts ('' = none). A getter: the Settings page can
+  // set / rotate / clear it with no restart.
   get API_TOKEN(): string { return pick('API_TOKEN', () => tokenNow()); },
   set API_TOKEN(v: string) { assigned.set('API_TOKEN', v); },
-  API_TOKEN_AUTO_GENERATED,
-  get API_TOKEN_IS_DEFAULT(): boolean { return tokenNow() === DEFAULT_SINGLE_USER_API_TOKEN; },
   /** `DEPLOYMENT_MODE` as written in the environment (only for the boot warning). */
   REQUESTED_DEPLOYMENT_MODE,
   /**
-   * Development: requests from this machine need no token (keylessLocalAccess).
-   * Production: the token is always required. Not a panel setting.
+   * Development: requests from this machine need no credential (keylessLocalAccess).
+   * Production: every request needs a session (password login). Not a panel setting.
    */
   get AUTH_OPEN(): boolean { return pick('AUTH_OPEN', () => keylessLocalAccess()); },
   set AUTH_OPEN(v: boolean) { assigned.set('AUTH_OPEN', v); },
@@ -626,9 +611,10 @@ export const config = {
   // existing job-only webhook behaviour.
   STEP_WEBHOOK_ENABLED: cleanEnv(process.env.STEP_WEBHOOK_ENABLED) === 'true',
   // Secret used to sign shareable live-view tokens. Falls back to
-  // WEBHOOK_SECRET, then API_TOKEN, so a token can always be minted.
+  // WEBHOOK_SECRET, then a secret derived from this install's own auth secret,
+  // so a share link can always be minted.
   get LIVE_SHARE_SECRET(): string {
-    return pick('LIVE_SHARE_SECRET', () => cur('LIVE_SHARE_SECRET') || cur('WEBHOOK_SECRET') || tokenNow() || '');
+    return pick('LIVE_SHARE_SECRET', () => cur('LIVE_SHARE_SECRET') || cur('WEBHOOK_SECRET') || authStore.derive('live-share-v1'));
   },
   set LIVE_SHARE_SECRET(v: string) { assigned.set('LIVE_SHARE_SECRET', v); },
   // Default share-link lifetime (seconds). 0 = never expires.
@@ -636,10 +622,6 @@ export const config = {
   // that a leaked link is dead the same afternoon. It was 24 h.
   get LIVE_SHARE_TTL_SEC(): number { return pick('LIVE_SHARE_TTL_SEC', () => intNow('LIVE_SHARE_TTL_SEC', 7200, 0)); },
   set LIVE_SHARE_TTL_SEC(v: number) { assigned.set('LIVE_SHARE_TTL_SEC', v); },
-
-  // Lets the built-in public token admin123 pass the server/production startup
-  // check. Set ONLY by docker-compose.dev.yml (disposable, loopback-only).
-  ALLOW_DEFAULT_API_TOKEN: cleanEnv(process.env.ALLOW_DEFAULT_API_TOKEN) === 'true',
 
   // ============================================
   // API Integration (F3)
@@ -751,25 +733,6 @@ if (REQUESTED_DEPLOYMENT_MODE === 'multi') {
 
 if (config.IS_SINGLE_USER) {
   console.log(`[CONFIG] 🏠 Self-hosted single-owner instance (environment: ${ACTIVE_PROFILE.id}).`);
-  if (config.API_TOKEN_IS_DEFAULT) {
-    // Loud, and it says what the risk actually is. The old message said "we
-    // generated a random one", which was reassuring; this default is the
-    // opposite of reassuring and the log must not pretend otherwise.
-    console.warn(
-      '[CONFIG] 🔓 API_TOKEN is the built-in default (API_TOKEN=admin123).\n' +
-      '        This token is PUBLIC — it is in .env.example and in the source.\n' +
-      '        It grants full control of this instance: it drives a real browser,\n' +
-      '        reads/writes the download and upload directories, and runs workflows.\n' +
-      '        Fine on a machine only you can reach. If this host is reachable from\n' +
-      '        the internet, set your own API_TOKEN in .env and restart.'
-    );
-  } else if (config.API_TOKEN_AUTO_GENERATED) {
-    console.warn(
-      '[CONFIG] 🔐 No API_TOKEN set — using a generated one for this run:\n' +
-      `        API_TOKEN=${config.API_TOKEN}\n` +
-      '        Set API_TOKEN in your .env to keep it stable across restarts.'
-    );
-  }
 }
 
 // ============================================

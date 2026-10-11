@@ -19,9 +19,6 @@
 #      (Coolify will request a Let's Encrypt certificate automatically).
 #   4. Add environment variables (Coolify UI → Environment Variables):
 #        DEPLOYMENT_MODE=single
-#        API_TOKEN=tok_xxxxxxxx...   (REQUIRED: with APP_ENV=server an empty
-#                                     token falls back to the public admin123,
-#                                     and the server refuses to start with it)
 #        NODE_ENV=production
 #        APP_ENV=server            (headed browser -> extensions load)
 #        PUBLIC_DOMAIN=https://your-domain   <-- the domain you attached in 3.
@@ -34,7 +31,10 @@
 #      network, which the Extension can never reach. Do not set BASE_URL as
 #      well — it is accepted only as a synonym when reading, and setting both
 #      is the duplicate configuration this project exists to avoid.
-#   5. Deploy. Open https://your-domain/ and log in with the API_TOKEN.
+#   5. Deploy, then open https://your-domain/ IMMEDIATELY: the first page asks you
+#      to choose the owner password (10+ chars, A-Z, a-z, 0-9). It is stored hashed
+#      in the app-data volume, so it survives redeploys. Until you set it, whoever
+#      opens the page first can - do not leave a fresh deploy unattended.
 #
 # Cloudflare note (if your domain is on Cloudflare):
 #   Create an A record -> server IP and set it to "DNS only"
@@ -82,6 +82,7 @@ services:
       # Defaults provided here so the stack boots even before you
       # customise them; override in Coolify for production.
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-single}
+      # OPTIONAL script token (empty = none). The panel itself uses the owner password.
       API_TOKEN: ${API_TOKEN:-}
       # The address the Extension must connect to, shown beside the
       # Authorization Code when pairing a Local Browser.

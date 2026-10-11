@@ -1,24 +1,22 @@
 /**
  * Settings routes — change configuration from the panel, no .env, no shell.
  *
- *   GET  /auth/mode                      public. Tells the login screen whether
- *                                        to sign in by itself (AUTH_MODE=open).
  *   GET  /settings                       catalog + current value + source.
  *                                        Secrets are masked.
  *   POST /settings/reveal   {key}        the plain value of one secret.
  *   PUT  /settings          {changes}    validate ALL, then apply ALL.
  *   POST /settings/generate {key}        server-generated token/secret, applied.
  *
- * Everything but /auth/mode is mounted behind requireApiKey (see index.ts).
- * One install = one owner, so passing that check is the whole authorization.
+ * Mounted behind requireApiKey (see index.ts). Sign-in itself (owner password
+ * setup / login) lives in auth.routes.ts. One install = one owner, so passing
+ * the gate is the whole authorization.
  */
 import { Router, type Response } from 'express';
 import { config } from '../config';
 import type { AuthenticatedRequest } from '../middleware/auth';
-import { isOpenAuthRequest } from '../middleware/auth';
 import { saveSetting, sourceOf, envValueOf, settingsFilePath, liveRaw } from '../core/PersistedSettings';
 import {
-  CATALOG, specOf, validateValue, generateSecret, PUBLIC_DEFAULT_TOKEN,
+  CATALOG, specOf, validateValue, generateSecret,
   type SettingSpec, type ValidateCtx,
 } from '../core/SettingsCatalog';
 
@@ -75,7 +73,6 @@ function describe(spec: SettingSpec) {
     value: isSecret ? mask(value) : value,
     active: isSecret ? undefined : active,
     hasValue: value !== '',
-    isPublicDefault: spec.key === 'API_TOKEN' ? config.API_TOKEN_IS_DEFAULT : undefined,
     pendingRestart: spec.apply === 'restart' && value !== active,
     source,
     // The panel's value hides a different one in .env: say so, so nobody edits
@@ -102,10 +99,7 @@ function normProfile(p: string): string {
 }
 
 function ctxFor(profileAfter: string): ValidateCtx {
-  return {
-    profile: normProfile(profileAfter),
-    allowDefaultToken: config.ALLOW_DEFAULT_API_TOKEN === true,
-  };
+  return { profile: normProfile(profileAfter) };
 }
 
 async function applyOne(key: string, value: string | null) {
@@ -118,21 +112,6 @@ async function applyOne(key: string, value: string | null) {
 export function createSettingsRoutes(): { publicRouter: Router; router: Router } {
   const publicRouter = Router();
   const router = Router();
-
-  publicRouter.get('/auth/mode', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    const open = isOpenAuthRequest(req);
-    res.json({
-      success: true,
-      // Keyless access is not a setting: development + a request from this
-      // machine. Everything else must present the access token.
-      mode: open ? 'open' : 'token',
-      profile: config.APP_PROFILE,
-      // Only to a caller open mode already treats as the owner. The panel needs
-      // the real token anyway for WebSockets, download links and the extension.
-      token: open ? config.API_TOKEN : undefined,
-    });
-  });
 
   router.get('/settings', (req: AuthenticatedRequest, res) => {
     if (!isAllowed(req)) return deny(res);
@@ -184,14 +163,6 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
       const r = validateValue(spec, input, ctx);
       if ('error' in r) errors[key] = r; else accepted.set(key, r.value);
     }
-    // A server profile with the public token would refuse to boot.
-    if (!errors.APP_ENV && accepted.has('APP_ENV') && profileAfter === 'production') {
-      const tokenAfter = accepted.has('API_TOKEN') ? accepted.get('API_TOKEN') : config.API_TOKEN;
-      if ((tokenAfter ?? PUBLIC_DEFAULT_TOKEN) === PUBLIC_DEFAULT_TOKEN && !config.ALLOW_DEFAULT_API_TOKEN) {
-        errors.APP_ENV = { error: 'Generate an API token first: a server refuses to start with admin123.',
-          errorFa: 'ابتدا یک توکن API بسازید؛ سرور با admin123 بالا نمی‌آید.' };
-      }
-    }
     if (Object.keys(errors).length) {
       res.status(400).json({ success: false, error: 'Some values are not valid', errors });
       return;
@@ -208,7 +179,7 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
       success: true,
       results,
       restartNeeded,
-      // The client stores this so the session that rotated the token stays in.
+      // Shown once so the owner can copy the script token; it never signs the panel in.
       newApiToken: accepted.has('API_TOKEN') ? config.API_TOKEN : undefined,
       settings: CATALOG.map(describe),
     });

@@ -23,9 +23,12 @@ import { sanitizeLogMessage, validateSteps } from './validation';
 import { WorkflowService, resolveScheduledWorkflow } from './services/workflow.service';
 import {
   requireApiKey,
+  isAcceptedCredential,
   AuthenticatedRequest,
   SINGLE_USER_ID
 } from './middleware/auth';
+import { createAuthRoutes } from './Routes/auth.routes';
+import { authStore } from './core/AuthStore';
 
 // Utils & Services
 import { STATS_KEY, getUserActiveJobsKey, getLiveChannel } from './utils/redis-keys';
@@ -437,7 +440,7 @@ const inspectorAuthMiddleware = (
     // extension keeps its identity and its existing bindings instead of being
     // handed a second, anonymous one.
     const presented = readPresentedKey(req);
-    if (presented && config.IS_SINGLE_USER && presented === config.API_TOKEN) {
+    if (presented && config.IS_SINGLE_USER && isAcceptedCredential(presented)) {
       (req as AuthenticatedRequest).apiKey = presented;
       (req as AuthenticatedRequest).apiKeyUserId = SINGLE_USER_ID;
     }
@@ -505,6 +508,8 @@ app.use('/', routes.user);
 app.use('/', routes.browser);
 app.use('/', routes.mode);
 app.use('/', routes.workflowFiles);
+// Owner-password setup / login (public by design; change-password self-guards).
+app.use('/', createAuthRoutes());
 const settingsRoutes = createSettingsRoutes();
 app.use('/', settingsRoutes.publicRouter);
 app.use('/', settingsRoutes.router);
@@ -528,7 +533,7 @@ app.post('/live/share/:userId/:jobId', async (req, res) => {
   const jobId = String(req.params.jobId);
   const apiKey = (req.headers['x-api-key'] as string | undefined)
     || (req.body && req.body.api_key ? String(req.body.api_key) : undefined);
-  const auth = await authorizeLive(apiKey, userId);
+  const auth = await authorizeLive(apiKey, userId, { req });
   if (!auth.ok) {
     res.status(auth.reason === 'missing_api_key' ? 401 : 403).json({
       success: false, error: 'Share denied', reason: auth.reason
@@ -570,7 +575,7 @@ app.get('/live/sse/:userId/:jobId', async (req, res) => {
   // Step 29: optional shareable-link token (read-only access).
   const share = req.query.share ? String(req.query.share) : undefined;
 
-  const auth = await authorizeLive(apiKey, userId, { share, jobId });
+  const auth = await authorizeLive(apiKey, userId, { share, jobId, req });
   if (!auth.ok) {
     res.status(auth.reason === 'missing_api_key' ? 401 : 403).json({
       success: false,
@@ -1167,7 +1172,7 @@ const startServer = async () => {
       ? (config.REAL_CHROME_HEADLESS ? '! headless — extensions OFF' : '✓ headed — extensions ON')
       : '✗ disabled').padEnd(47)}║`);
     console.log(`║  Runs:              ${'one per browser profile (queued when busy)'.padEnd(47)}║`);
-    console.log(`║  Access:            ${(config.AUTH_OPEN ? 'token, or keyless from this machine' : 'access token required').padEnd(47)}║`);
+    console.log(`║  Access:            ${(config.AUTH_OPEN ? 'no login (development, this machine)' : authStore.state() === 'set' ? 'owner password' : authStore.state() === 'unset' ? 'SETUP REQUIRED: open the panel' : 'auth file unusable').padEnd(47)}║`);
     console.log(`║  Turbo Mode:        ${(config.TURBO_MODE ? '✓ Enabled' : '✗ Disabled').padEnd(47)}║`);
     console.log('╠══════════════════════════════════════════════════════════════════╣');
     console.log('║  📁 Modular Structure:                                          ║');

@@ -4,7 +4,9 @@ import request from 'supertest';
 
 // NOTE: tests/integration/setup.ts (wired via vitest setupFiles) forces a
 // deterministic env BEFORE the middleware modules import src/config.ts:
-//   API_TOKEN=test_key_123 (the ONE instance access token; no admin, no accounts)
+//   API_TOKEN=test_key_123 (the OPTIONAL scripts token; no admin, no accounts)
+// The auth store is in memory under NODE_ENV=test; a password is set below so
+// the 'not signed in' path is the real production one.
 //
 // These integration tests intentionally DO NOT import src/index.ts, because
 // index.ts calls startServer() at module load (GlobalBrowser.initialize +
@@ -17,6 +19,9 @@ let app: Express;
 
 beforeAll(async () => {
   const { requireApiKey } = await import('../../src/middleware/auth');
+  const { authStore } = await import('../../src/core/AuthStore');
+  authStore.resetForTests();
+  await authStore.setInitialPassword('Integration-Pass-1');
 
   app = express();
   app.use(express.json());
@@ -46,19 +51,19 @@ describe('health route', () => {
   });
 });
 
-describe('requireApiKey — the instance access token', () => {
+describe('requireApiKey — production credentials', () => {
   it('401 when no API key is provided', async () => {
     const res = await request(app).get('/protected');
     expect(res.status).toBe(401);
     expect(res.body.success).toBe(false);
-    expect(res.body.error).toMatch(/authentication required/i);
+    expect(res.body.code).toBe('auth_required');
   });
 
   it('403 when an invalid API key is provided', async () => {
     const res = await request(app).get('/protected').set('x-api-key', 'totally_wrong_key');
     expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
-    expect(res.body.error).toMatch(/invalid api token/i);
+    expect(res.body.code).toBe('invalid_credential');
   });
 
   it('200 and the owner identity when the instance token is provided', async () => {

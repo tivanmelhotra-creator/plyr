@@ -59,15 +59,6 @@ ensure_env() {
     [[ -f "$ROOT_DIR/.env.example" ]] || fail ".env.example is missing"
     cp "$ROOT_DIR/.env.example" "$ENV_FILE"
     chmod 600 "$ENV_FILE" 2>/dev/null || true
-    # .env.example ships the PUBLIC token admin123, and the server refuses to
-    # start with it under APP_ENV=server/production. A freshly created .env gets
-    # its own random token so the first `./plyr start` just works.
-    local fresh_token
-    fresh_token="$(wz_gen_token)"
-    if [[ -n "$fresh_token" ]]; then
-      sed -i.bak "s|^API_TOKEN=admin123\r\{0,1\}$|API_TOKEN=${fresh_token}|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
-      say "generated a random API_TOKEN in $ENV_FILE (the panel login key)"
-    fi
     PLYR_ENV_FRESH=1
     say "created $ENV_FILE from .env.example (existing state was preserved)"
   fi
@@ -546,28 +537,24 @@ dev_docker_build_local() {
 
 dev_docker() {
   local -a orig_args=("$@")
-  local source=auto ref='' fresh=0 dev_mode='' dev_token=''
+  local source=auto ref='' fresh=0 dev_mode=''
   while (( $# )); do
     case "$1" in
       --mode) [[ $# -ge 2 ]] || fail "--mode needs dev or prod"; dev_mode="$2"; shift ;;
       --mode=*) dev_mode="${1#--mode=}" ;;
       --dev) dev_mode=dev ;;
       --prod) dev_mode=prod ;;
-      --token) [[ $# -ge 2 ]] || fail "--token needs new, keep or a value"; dev_token="$2"; shift ;;
-      --token=*) dev_token="${1#--token=}" ;;
       --yes|-y) PLYR_YES=1 ;;
       --build) source=build ;;
       --fresh) source=build; fresh=1 ;;
       --prebuilt) source=prebuilt ;;
       --ref) [[ $# -ge 2 ]] || fail "--ref needs a branch, tag, SHA or pr-N"; ref="$2"; source=prebuilt; shift ;;
       --ref=*) ref="${1#--ref=}"; source=prebuilt ;;
-      *) fail "unknown dev-docker option: $1 (use --build, --fresh, --prebuilt, --ref <branch|sha|pr-N>, --dev, --prod, --token new|keep|<value>, --yes)" ;;
+      *) fail "unknown dev-docker option: $1 (use --build, --fresh, --prebuilt, --ref <branch|sha|pr-N>, --dev, --prod, --yes)" ;;
     esac
     shift
   done
   case "$dev_mode" in ''|dev|prod) ;; development) dev_mode=dev ;; production|server) dev_mode=prod ;; *) fail "--mode must be dev or prod" ;; esac
-  [[ -z "$dev_token" || "$dev_mode" != dev ]] || fail "--token only applies to --prod (development needs no login)"
-  [[ -z "$dev_token" || -n "$dev_mode" ]] || dev_mode=prod
   if [[ -n "$ref" ]]; then
     # Re-run with the ref's own files; pass every option except --ref itself.
     local -a pass=(); local skip=0 a
@@ -578,8 +565,8 @@ dev_docker() {
     dev_docker_use_ref_files "$ref" ${pass[@]+"${pass[@]}"} || return 1
   fi
   # Questions first, before the (slow) image pull/build.
-  local DEV_ENV_FILE='' DEV_SUMMARY_MODE='' DEV_SUMMARY_TOKEN='' DEV_SUMMARY_NOTE=''
-  dev_docker_setup "$dev_mode" "$dev_token" "$PLYR_HOME" || return 1
+  local DEV_ENV_FILE='' DEV_SUMMARY_MODE=''
+  dev_docker_setup "$dev_mode" "$PLYR_HOME" || return 1
   [[ -f "$DEV_COMPOSE_FILE" ]] || fail "Missing docker-compose.dev.yml"
   have docker || install_dev_docker_engine || return 1
   local docker_cmd=(docker)
@@ -630,8 +617,8 @@ dev_docker() {
   fi
   if [[ "$DEV_SUMMARY_MODE" == prod ]]; then
     ready "Development Docker stack (production-like login): http://localhost:3000"
-    printf '[plyr]        API token: %s%s\n' "$DEV_SUMMARY_TOKEN" "$([[ "$DEV_SUMMARY_NOTE" == kept ]] && echo '  (same as last time)')"
-    printf '[plyr]        Change it any time in the panel: Settings > Server settings.\n'
+    printf '[plyr]        First visit: the panel asks you to choose a password (10+ chars, A-Z, a-z, 0-9).\n'
+    printf '[plyr]        Nothing is generated or printed here; change it any time in Settings > Access.\n'
   else
     ready "Development Docker stack: http://localhost:3000 (no login needed; loopback only)"
   fi
@@ -785,15 +772,15 @@ Examples:
   ./plyr doctor --deep
   ./plyr dev-docker     # disposable, loopback-only test stack (pulls CI image when available)
   ./plyr dev-docker --ref pr-47   # test a pushed branch/PR/SHA without checking it out
-  ./plyr dev-docker --ref pr-47 --prod --token new   # same, no questions, real token
-  ./plyr setup          # environment, login/token, domain — numbered choices
+  ./plyr dev-docker --ref pr-47 --prod   # same, no questions, password login
+  ./plyr setup          # environment, domain — numbered choices
 
 Commands:
-  dev-docker [--build|--fresh|--prebuilt|--ref <branch|sha|pr-N>] [--dev|--prod] [--token new|keep|<value>] [--yes]
+  dev-docker [--build|--fresh|--prebuilt|--ref <branch|sha|pr-N>] [--dev|--prod] [--yes]
                           Get image (CI-built for clean HEAD, else cached local build),
                           replace dev stack, wait for health. --fresh = --no-cache --pull.
-                          Asks: development (no login) or production-like (real token).
-  setup                   Environment, login/token, domain as numbered choices.
+                          Asks: development (no login) or production-like (you choose a password in the browser).
+  setup                   Environment and domain as numbered choices.
                           Same values as the panel: Settings > Server settings.
   install                 Bootstrap .env, dependencies, browsers and build
   start [--dev|--build|--native|--docker] [--yes]

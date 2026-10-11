@@ -20,8 +20,8 @@ import {
 } from '../../src/core/SettingsCatalog';
 import { isLoopbackAddress } from '../../src/middleware/auth';
 
-const dev: ValidateCtx = { profile: 'development', allowDefaultToken: false, openAllowed: true, singleUser: true };
-const server: ValidateCtx = { profile: 'server', allowDefaultToken: false, openAllowed: false, singleUser: true };
+const dev: ValidateCtx = { profile: 'development' };
+const server: ValidateCtx = { profile: 'server' };
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plyr-settings-')); resetLiveSettingsForTests(); });
@@ -77,12 +77,14 @@ describe('validation', () => {
     expect(specOf('APP_ENV')!.options!.map((o) => o.value)).toEqual(['development', 'production']);
   });
 
-  it('refuses admin123 and short tokens on a server, allows admin123 in development', () => {
-    expect(v('API_TOKEN', 'admin123', server)).toHaveProperty('error');
-    expect(v('API_TOKEN', 'admin123', dev)).toEqual({ value: 'admin123' });
+  it('the API token is OPTIONAL: empty is valid everywhere, admin123 is just a short-list value like any other', () => {
+    expect(v('API_TOKEN', '', server)).toEqual({ value: '' });
+    expect(v('API_TOKEN', null, server)).not.toHaveProperty('error');
+    expect(v('API_TOKEN', 'admin123', server)).toHaveProperty('error');   // < 16 chars
+    expect(v('API_TOKEN', 'admin123', dev)).toHaveProperty('error');
     expect(v('API_TOKEN', 'short', dev)).toHaveProperty('error');
     expect(v('API_TOKEN', 'has space in it 1234567', dev)).toHaveProperty('error');
-    expect(v('API_TOKEN', null, server)).toHaveProperty('error');
+    expect(v('API_TOKEN', 'my_script_token_1234567', dev)).toEqual({ value: 'my_script_token_1234567' });
   });
 
   it('normalises a bare domain to https and rejects paths', () => {
@@ -172,7 +174,6 @@ describe('config getters follow a panel save without a restart', () => {
     expect(config.API_TOKEN).toBe('boot_token_abcdefghij');
     store.saveSetting('API_TOKEN', 'rotated_token_abcdefgh', { file: path.join(dir, 's.env') });
     expect(config.API_TOKEN).toBe('rotated_token_abcdefgh');
-    expect(config.API_TOKEN_IS_DEFAULT).toBe(false);
     store.saveSetting('API_TOKEN', null, { file: path.join(dir, 's.env') });
     expect(config.API_TOKEN).toBe('boot_token_abcdefghij');
   });

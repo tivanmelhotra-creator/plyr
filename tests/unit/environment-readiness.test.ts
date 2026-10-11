@@ -113,7 +113,7 @@ const STEERING = [
   'ADMIN_SECRET', 'RATE_LIMIT_ENABLED', 'REQUIRE_BROWSER_RUNTIME',
   'BROWSER_MODE_DEFAULT', 'LOCAL_BROWSER_ENABLED',
   'ALLOW_DEFAULT_API_TOKEN', 'REAL_CHROME_DEBUG_BIND', 'PUBLIC_DOMAIN', 'BASE_URL',
-  'WEBHOOK_SECRET', 'LIVE_SHARE_TTL_SEC', 'REDIS_URL',
+  'WEBHOOK_SECRET', 'LIVE_SHARE_TTL_SEC', 'REDIS_URL', 'AUTH_FILE',
 ];
 
 /**
@@ -261,39 +261,48 @@ describe('3. production config', () => {
     });
   });
 
-  it('REFUSES to start with the public default token under server/production', async () => {
-    // A weak default is defensible on a laptop. On a profile that means
-    // "reachable" it is a published credential, so it is a refusal, in writing.
-    for (const profile of ['production', 'server']) {
+  it('has no default-token check any more: there is no default credential to refuse', async () => {
+    for (const profile of ['production', 'server', 'development']) {
       await withEnv({ APP_ENV: profile }, async ({ startup }) => {
         const report = await startup.validateStartup();
-        const issue = report.issues.find((i) => i.id === 'default_token_in_production');
-        expect(issue, profile).toBeDefined();
-        expect(issue!.severity).toBe('fatal');
-        expect(issue!.problem).toMatch(/admin123/);
-        expect(issue!.fix).toMatch(/API_TOKEN/);
-        expect(report.ok).toBe(false);
+        expect(report.issues.find((i) => i.id === 'default_token_in_production'), profile).toBeUndefined();
+        expect(JSON.stringify(report.issues)).not.toMatch(/admin123/);
       });
     }
   });
 
-  it('only warns for admin123 on development, and for the dev compose opt-out', async () => {
-    await withEnv({ APP_ENV: 'development' }, async ({ startup }) => {
-      const report = await startup.validateStartup();
-      expect(report.issues.find((i) => i.id === 'default_token_in_production')).toBeUndefined();
-    });
-    await withEnv({ APP_ENV: 'server', ALLOW_DEFAULT_API_TOKEN: 'true' }, async ({ startup }) => {
-      const report = await startup.validateStartup();
-      const issue = report.issues.find((i) => i.id === 'default_token_in_production');
-      expect(issue!.severity).toBe('warn');
-      expect(report.ok).toBe(true);
-    });
+  it('production with no password chosen yet: starts, and says setup is pending (warn, not fatal)', async () => {
+    for (const profile of ['production', 'server']) {
+      await withEnv({ APP_ENV: profile, AUTH_FILE: '' }, async ({ startup }) => {
+        const report = await startup.validateStartup();
+        const issue = report.issues.find((i) => i.id === 'owner_password_not_set');
+        expect(issue, profile).toBeDefined();
+        expect(issue!.severity).toBe('warn');
+        expect(issue!.problem).not.toMatch(/token/i);
+        expect(report.issues.filter((i) => i.severity === 'fatal')).toEqual([]);
+      });
+    }
   });
 
-  it('accepts a custom token under production', async () => {
-    await withEnv({ APP_ENV: 'production', API_TOKEN: 'a-real-secret-token' }, async ({ startup }) => {
+  it('production REFUSES to start when the auth file is corrupt (fail closed, never re-open setup)', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'plyr-auth-bad-'));
+    const f = path.join(d, 'auth.json');
+    fs.writeFileSync(f, '{ this is not json');
+    try {
+      await withEnv({ APP_ENV: 'production', AUTH_FILE: f }, async ({ startup }) => {
+        const report = await startup.validateStartup();
+        const issue = report.issues.find((i) => i.id === 'auth_store_unavailable');
+        expect(issue).toBeDefined();
+        expect(issue!.severity).toBe('fatal');
+        expect(report.ok).toBe(false);
+      });
+    } finally { fs.rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it('development never asks for a password and never reports the auth store', async () => {
+    await withEnv({ APP_ENV: 'development' }, async ({ startup }) => {
       const report = await startup.validateStartup();
-      expect(report.issues.find((i) => i.id === 'default_token_in_production')).toBeUndefined();
+      expect(report.issues.find((i) => /^(owner_password|auth_store)/.test(i.id))).toBeUndefined();
     });
   });
 

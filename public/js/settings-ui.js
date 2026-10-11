@@ -134,7 +134,6 @@
         '<input class="set-input mono" type="text" autocomplete="off" spellcheck="false" aria-label="' + esc(s.en) + '" placeholder="' + esc(t('set.ownPlaceholder')) + '">' +
         '<button class="btn btn-primary btn-sm" type="submit">' + esc(t('set.save')) + '</button>' +
       '</form>' +
-      (s.isPublicDefault ? '<p class="set-warn">' + IC('alert-triangle', 14) + ' ' + esc(t('set.tokenIsDefault')) + '</p>' : '') +
       '</div>';
   }
 
@@ -216,7 +215,75 @@
     ['access', 'security', 'runs', 'storage'].forEach(function (id) {
       out[id] = section(t('set.sec.' + id), rows(id) || '<p class="set-row-hint">' + esc(t('set.nothing')) + '</p>');
     });
+    out.access = passwordSection(d) + out.access;
     return out;
+  }
+
+  // ---- Owner password -------------------------------------------------------
+  // Production only. The password is never readable back (server keeps a salted
+  // hash); this form is the one place it can be replaced.
+  function passwordSection(d) {
+    if (d.authOpen) {
+      return section(t('pw.title'), '<p class="set-row-hint">' + esc(t('pw.devNone')) + '</p>');
+    }
+    return section(t('pw.title'),
+      '<p class="set-row-hint">' + esc(t('pw.hint')) + '</p>' +
+      '<form class="set-pw" id="set-pw-form" autocomplete="off">' +
+        '<label class="field"><span class="field-label">' + esc(t('pw.current')) + '</span>' +
+          '<input class="set-input" type="password" id="set-pw-current" autocomplete="current-password" required></label>' +
+        '<label class="field"><span class="field-label">' + esc(t('pw.new')) + '</span>' +
+          '<input class="set-input" type="password" id="set-pw-new" autocomplete="new-password" required></label>' +
+        '<label class="field"><span class="field-label">' + esc(t('pw.confirm')) + '</span>' +
+          '<input class="set-input" type="password" id="set-pw-confirm" autocomplete="new-password" required></label>' +
+        '<ul class="pw-rules" id="set-pw-rules">' +
+          '<li data-rule="length"></li><li data-rule="upper">' + esc(t('setup.ruleUpper')) + '</li>' +
+          '<li data-rule="lower">' + esc(t('setup.ruleLower')) + '</li><li data-rule="digit">' + esc(t('setup.ruleDigit')) + '</li>' +
+          '<li data-rule="match">' + esc(t('setup.ruleMatch')) + '</li></ul>' +
+        '<p class="login-error" id="set-pw-error" hidden></p>' +
+        '<button class="btn btn-primary btn-sm" type="submit">' + esc(t('pw.change')) + '</button>' +
+      '</form>');
+  }
+
+  function bindPassword(root) {
+    var form = root.querySelector('#set-pw-form');
+    if (!form) return;
+    var cur = form.querySelector('#set-pw-current');
+    var nw = form.querySelector('#set-pw-new');
+    var cf = form.querySelector('#set-pw-confirm');
+    var err = form.querySelector('#set-pw-error');
+    var minLen = 10;
+    var check = function () {
+      var v = nw.value;
+      var st = { length: v.length >= minLen && v.length <= 512, upper: /[A-Z]/.test(v), lower: /[a-z]/.test(v), digit: /[0-9]/.test(v), match: v.length > 0 && v === cf.value };
+      var ok = true;
+      form.querySelectorAll('#set-pw-rules li').forEach(function (li) {
+        var r = li.getAttribute('data-rule');
+        if (r === 'length') li.textContent = t('setup.ruleLength').replace('{n}', String(minLen));
+        li.classList.toggle('ok', !!st[r]); if (!st[r]) ok = false;
+      });
+      return ok;
+    };
+    window.API.authStatus().then(function (m) { if (m && m.policy && m.policy.minLength) { minLen = m.policy.minLength; check(); } });
+    nw.addEventListener('input', check); cf.addEventListener('input', check); check();
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      err.hidden = true;
+      if (!check()) { err.textContent = t('setup.rulesNotMet'); err.hidden = false; return; }
+      window.API.changePassword(cur.value, nw.value).then(function (r) {
+        // The server ended every old session (incl. this one); it returns a fresh one.
+        if (r && r.token) window.API.setKey(r.token);
+        form.reset(); check();
+        toast(t('pw.changed'), 'success');
+      }).catch(function (e) {
+        var b = e && e.body || {};
+        var msg = b.code === 'invalid_password' ? t('pw.wrongCurrent')
+          : b.code === 'same_password' ? t('pw.same')
+          : b.code === 'too_many_attempts' ? t('login.tooMany')
+          : (b.problems && b.problems.length) ? b.problems.map(function (p) { return t('setup.problem.' + p.code); }).join(' ')
+          : (e && e.message) || t('login.unreachable');
+        err.textContent = msg; err.hidden = false;
+      });
+    });
   }
 
   // ---- Layout ---------------------------------------------------------------
@@ -360,13 +427,13 @@
     });
     if (window.Icons && window.Icons.hydrate) window.Icons.hydrate(root);
     bindSettings(root, d);
+    bindPassword(root);
     restoreDrafts(root, drafts);
   }
 
   function save(root, changes, okMsg) {
     return window.API.put('/settings', { changes: changes })
       .then(function (r) {
-        if (r.newApiToken) window.API.setKey(r.newApiToken);
         var notPersisted = Object.keys(r.results || {}).filter(function (k) { return !r.results[k].persisted; });
         if (notPersisted.length) toast(t('set.notPersisted'), 'error');
         else toast(okMsg || (r.restartNeeded ? t('set.savedRestart') : t('set.saved')), 'success');
@@ -378,7 +445,6 @@
 
   function generate(key) {
     return window.API.post('/settings/generate', { key: key }).then(function (g) {
-      if (g.newApiToken) window.API.setKey(g.newApiToken);
       if (!g.persisted) toast(t('set.notPersisted'), 'error');
       return g;
     });
@@ -394,17 +460,6 @@
           if (b.classList.contains('on') || b.disabled) return;
           var value = b.getAttribute('data-value');
           var changes = {}; changes[key] = value;
-          if (key === 'APP_ENV' && (value === 'server' || value === 'production')) {
-            var tok = d.settings.filter(function (s) { return s.key === 'API_TOKEN'; })[0];
-            if (tok && tok.isPublicDefault) {
-              // A server refuses admin123: offer to generate one in the same click.
-              if (!window.confirm(t('set.confirmServerToken'))) return;
-              generate('API_TOKEN').then(function (g) {
-                return save(root, changes).then(function () { showNewToken(g.value); });
-              }).catch(function (err) { toast(errText(err), 'error'); });
-              return;
-            }
-          }
           save(root, changes);
         });
       });
@@ -454,7 +509,7 @@
             else copy(r.value);
           }).catch(function (err) { toast(errText(err), 'error'); });
         } else if (act === 'generate') {
-          if (key === 'API_TOKEN' && !window.confirm(t('set.confirmRotate'))) return;
+          if (key === 'API_TOKEN' && box.querySelector('[data-act="reveal"]') && !window.confirm(t('set.confirmRotate'))) return;
           generate(key).then(function (g) {
             toast(t('set.generated'), 'success');
             load(root);

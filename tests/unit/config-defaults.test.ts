@@ -7,7 +7,8 @@
  * later "tidy up the config" commit silently flips back:
  *
  *   REAL_CHROME_ENABLED  false → true   (opt-in → opt-OUT)
- *   API_TOKEN            random → admin123
+ *   API_TOKEN            admin123 → NO default at all (optional; the owner's
+ *                        password is chosen on first run, see AuthStore)
  *
  * The first one matters because with Real Chrome off, Chrome loads NO extensions
  * at all — the cookie import/export extension that is the headline reason to run
@@ -16,10 +17,9 @@
  * fresh random token on every boot whenever .env was empty, which logged every
  * open panel out.
  *
- * The API_TOKEN default is DELIBERATELY WEAK AND PUBLIC, so the boot warning is
- * pinned too: a convenience default is defensible, a convenience default that
- * says nothing is not. `admin123` grants full control of the instance — it drives
- * a real browser and reads/writes the download and upload directories.
+ * There must NEVER again be a public default credential: `admin123` granted full
+ * control of the instance (it drives a real browser and reads/writes the
+ * download and upload directories). API_TOKEN is optional and empty by default.
  *
  * These tests read the REAL module with a real (temporarily emptied) environment
  * rather than mocking config, because the thing under test IS the resolution of
@@ -99,49 +99,32 @@ describe('config defaults with no .env', () => {
   // API_TOKEN
   // ────────────────────────────────────────────────────────────────────────
 
-  it('uses admin123 as the single-user token by default', async () => {
+  it('has NO default token: no admin123, nothing generated, nothing to show', async () => {
     const config = await loadConfig({});
-    expect(config.API_TOKEN).toBe('admin123');
-    expect(config.API_TOKEN_IS_DEFAULT).toBe(true);
+    expect(config.API_TOKEN).toBe('');
+    expect(JSON.stringify(config)).not.toContain('admin123');
+    expect((config as any).API_TOKEN_IS_DEFAULT).toBeUndefined();
   });
 
-  it('is stable across restarts, unlike the random token it replaced', async () => {
-    // The actual regression being prevented: two boots used to produce two
-    // different tokens, so every open panel was logged out on every restart.
+  it('is stable across restarts (nothing random is minted per boot)', async () => {
     const a = await loadConfig({});
     const b = await loadConfig({});
     expect(a.API_TOKEN).toBe(b.API_TOKEN);
   });
 
-  it('prefers an operator-supplied token and stops calling it default', async () => {
+  it('uses an operator-supplied token as the optional scripts credential', async () => {
     const config = await loadConfig({ API_TOKEN: 'my-own-long-token' });
     expect(config.API_TOKEN).toBe('my-own-long-token');
-    expect(config.API_TOKEN_IS_DEFAULT).toBe(false);
   });
 
-  it('an old DEPLOYMENT_MODE=multi is ignored: still one instance token', async () => {
+  it('an old DEPLOYMENT_MODE=multi is ignored: still one instance', async () => {
     const config = await loadConfig({ DEPLOYMENT_MODE: 'multi' });
     expect(config.DEPLOYMENT_MODE).toBe('single');
-    expect(config.API_TOKEN).toBe('admin123');
+    expect(config.API_TOKEN).toBe('');
   });
 
-  it('warns loudly that the default token is public and total', async () => {
+  it('prints no default-token warning (there is no default to warn about)', async () => {
     await loadConfig({});
-    const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
-    // Names the value, so the reader can tell whether it applies to them.
-    expect(said).toContain('admin123');
-    // Says it is not a secret. The previous message said "generated a random
-    // one", which was reassuring — and would now be a lie.
-    expect(said).toMatch(/PUBLIC/);
-    // Says what is at stake, and what to do about it.
-    expect(said).toMatch(/internet/i);
-    expect(said).toMatch(/set your own API_TOKEN/i);
-  });
-
-  it('says nothing about the default when the operator set their own', async () => {
-    // A warning that fires when it does not apply is a warning people learn to
-    // ignore, which costs us the one above.
-    await loadConfig({ API_TOKEN: 'my-own-long-token' });
     const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(said).not.toContain('admin123');
     expect(said).not.toMatch(/PUBLIC/);
@@ -158,8 +141,8 @@ describe('config defaults with no .env', () => {
     const { join } = await import('node:path');
     const example = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');
     expect(example).toMatch(/^REAL_CHROME_ENABLED=true$/m);
-    expect(example).toMatch(/^API_TOKEN=admin123$/m);
-    // And it must carry the same warning, since this is the file people read.
-    expect(example).toMatch(/PUBLIC/);
+    // No credential is shipped in the example file: API_TOKEN is optional.
+    expect(example).not.toMatch(/^API_TOKEN=\S/m);
+    expect(example).not.toContain('admin123');
   });
 });

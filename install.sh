@@ -187,17 +187,6 @@ maybe_sudo() {
   if [ "$(id -u)" = "0" ]; then "$@"; else sudo "$@"; fi
 }
 
-# Generate a random single-user API token: tok_<48 hex>
-gen_token() {
-  if has node; then
-    printf "tok_%s" "$(node -e 'console.log(require("crypto").randomBytes(24).toString("hex"))')"
-  elif has openssl; then
-    printf "tok_%s" "$(openssl rand -hex 24)"
-  else
-    printf "tok_%s" "$(head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  fi
-}
-
 # Cross-platform in-place sed.
 sed_inplace() {
   local expr="$1"; local file="$2"
@@ -358,13 +347,12 @@ install_node_offer() {
 }
 
 # ---------------------------------------------------------------------------
-# .env bootstrap (shared by server paths) — stores token in global TOKEN_OUT
+# .env bootstrap (shared by server paths). No credential is generated: the owner
+# chooses a password in the browser on first visit.
 # ---------------------------------------------------------------------------
-TOKEN_OUT=""
 ensure_env_file() {
   if [ -f .env ]; then
     ok ".env already exists — leaving it untouched."
-    TOKEN_OUT="$(grep -E '^API_TOKEN=' .env | head -1 | cut -d= -f2- || true)"
     return 0
   fi
   if [ ! -f .env.example ]; then
@@ -374,16 +362,6 @@ ensure_env_file() {
   if confirm "Create .env (config file) from .env.example now?"; then
     cp .env.example .env
     ok "Created .env"
-    if confirm "Generate a random API_TOKEN (your panel login key) and write it into .env?"; then
-      local token; token="$(gen_token)"
-      if grep -q '^API_TOKEN=' .env; then
-        sed_inplace "s|^API_TOKEN=.*|API_TOKEN=${token}|" .env
-      else
-        printf "\nAPI_TOKEN=%s\n" "$token" >> .env
-      fi
-      TOKEN_OUT="$token"
-      ok "Wrote API_TOKEN to .env"
-    fi
   else
     warn "Skipped .env creation. The server needs a .env to run."
   fi
@@ -555,10 +533,6 @@ install_server_docker() {
   else
     PANEL_URL="http://localhost:3000"
   fi
-  if [ -f .env ] && grep -q '^API_TOKEN=$' .env 2>/dev/null; then
-    warn "API_TOKEN is empty in .env — the server falls back to the public admin123 and REFUSES to start."
-    info "Set one:  openssl rand -hex 24   (then API_TOKEN=<value> in .env)"
-  fi
   info "Follow logs:    ./plyr logs"
   info "Stop the stack: ./plyr stop --docker"
   print_server_summary "3000"
@@ -585,9 +559,9 @@ ${BOLD}Deploy on Coolify (each app runs isolated; Coolify handles domain + TLS):
      Coolify requests a Let's Encrypt certificate automatically.
   ${BOLD}5.${RESET} Environment Variables (Coolify UI):
        ${CYAN}DEPLOYMENT_MODE=single${RESET}
-       ${CYAN}API_TOKEN=$(gen_token)${RESET}   ${DIM}# required: the public default admin123 is refused${RESET}
        ${CYAN}NODE_ENV=production${RESET}
-  ${BOLD}6.${RESET} Deploy, then open ${BOLD}https://your-domain/${RESET} and log in with the API_TOKEN.
+  ${BOLD}6.${RESET} Deploy, then open ${BOLD}https://your-domain/${RESET} right away: the first page asks you to
+     choose the owner password (10+ chars, A-Z, a-z, 0-9). Nothing is generated for you.
 
 ${BOLD}Cloudflare note:${RESET} create an A record → server IP, set it to
 ${BOLD}DNS only${RESET} (grey cloud / proxy OFF) so Coolify can issue the certificate.
@@ -630,7 +604,7 @@ ${BOLD}Load the Chrome extension on this PC:${RESET}
        ${CYAN}${ext_dir}${RESET}
   5. Open the extension popup and set:
        • Server URL   (e.g. https://panel.example.com)
-       • API token    (your single-user API_TOKEN)
+       (No token to paste: the extension is paired from the panel.)
 EOF
   ok "Chrome extension instructions printed."
 }
@@ -646,12 +620,8 @@ print_server_summary() {
   printf "%s\n" "${GREEN}${BOLD}============================================================${RESET}"
   printf "  %s %s\n" "${BOLD}Panel URL:${RESET}" "${CYAN}${PANEL_URL}${RESET}"
   printf "  %s %s\n" "${BOLD}Health:   ${RESET}" "${CYAN}${PANEL_URL}/health${RESET}"
-  if [ -n "$TOKEN_OUT" ]; then
-    printf "  %s %s\n" "${BOLD}API Token:${RESET}" "${YELLOW}${TOKEN_OUT}${RESET}"
-    printf "  %s\n" "${DIM}Open the panel, then paste this token on the login screen.${RESET}"
-  else
-    printf "  %s\n" "${DIM}API Token: see your .env (API_TOKEN=...) — if empty, check the startup logs.${RESET}"
-  fi
+  printf "  %s\n" "${DIM}First visit: the panel asks you to choose the owner password.${RESET}"
+  printf "  %s\n" "${DIM}Do it now - until then, whoever opens the page first can set it.${RESET}"
   printf "%s\n\n" "${GREEN}${BOLD}============================================================${RESET}"
 }
 

@@ -249,7 +249,7 @@ describe('GET /live/frames/:userId/:jobId', () => {
     const s = await serve(async () => ({ ok: true }), hub);
     const r = await readSse(`${s.url}/live/frames/alice/job-9?share=TOK`);
     expect(s.authCalls[0].u).toBe('alice');
-    expect(s.authCalls[0].o).toEqual({ share: 'TOK', jobId: 'job-9' });
+    expect(s.authCalls[0].o).toMatchObject({ share: 'TOK', jobId: 'job-9' });
     r.abort(); await s.close(); await hub.shutdown();
   });
 

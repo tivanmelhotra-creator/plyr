@@ -59,17 +59,17 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
     hintEn: 'Decides the security model only; browser visibility follows how a run was started.',
     options: [
       { value: 'development', fa: 'توسعه', en: 'Development',
-        hintFa: 'روی سیستم خودتان؛ از همین سیستم بدون توکن.', hintEn: 'Your own machine; no token needed from this machine.' },
+        hintFa: 'روی سیستم خودتان؛ بدون ورود و بدون توکن.', hintEn: 'Your own machine; no login and no token from this machine.' },
       { value: 'production', fa: 'پروداکشن', en: 'Production',
-        hintFa: 'نمونهٔ مستقرشده؛ توکن برای هر درخواست لازم است.', hintEn: 'A deployed instance; the access token is required for every request.' },
+        hintFa: 'نمونهٔ مستقرشده؛ رمز عبور مالک در اولین اجرا انتخاب می‌شود و ورود لازم است.', hintEn: 'A deployed instance; you choose the owner password on first run and sign in afterwards.' },
     ],
   },
 
   {
-    key: 'API_TOKEN', group: 'access', type: 'secret', apply: 'live', dflt: 'admin123', generatable: true,
-    fa: 'توکن API (کلید ورود)', en: 'API token (login key)',
-    hintFa: 'کلید ورود به پنل و API. با تغییر آن، نشست فعلی شما خودکار به‌روز می‌شود.',
-    hintEn: 'The key for the panel and the API. Changing it updates your current session automatically.',
+    key: 'API_TOKEN', group: 'access', type: 'secret', apply: 'live', dflt: '', generatable: true, clearable: true,
+    fa: 'توکن اسکریپت/API (اختیاری)', en: 'Script/API token (optional)',
+    hintFa: 'فقط برای اسکریپت‌ها و ابزارهای خارجی (هدر x-api-key). برای ورود به پنل لازم نیست؛ ورود با رمز عبور است. خالی = غیرفعال.',
+    hintEn: 'Only for scripts and external tools (x-api-key header). Not used to sign in to the panel — that is the owner password. Empty = disabled.',
   },
   {
     key: 'PUBLIC_DOMAIN', group: 'server', type: 'text', apply: 'live', dflt: '',
@@ -149,13 +149,10 @@ export function generateSecret(): string {
   return randomBytes(24).toString('hex');
 }
 
-export const PUBLIC_DEFAULT_TOKEN = 'admin123';
-
 /** Context the validator needs; passed in so this module stays pure. */
 export interface ValidateCtx {
   /** Environment the change will run under ('development' | 'production'). */
   profile: string;
-  allowDefaultToken: boolean;
 }
 
 type Err = { error: string; errorFa: string };
@@ -165,12 +162,7 @@ type Err = { error: string; errorFa: string };
  * `null` means "remove the panel's value" (fall back to .env / default).
  */
 export function validateValue(spec: SettingSpec, value: unknown, ctx: ValidateCtx): { value: string | null } | Err {
-  const devLike = ctx.profile === 'development' || ctx.profile === 'test';
   if (value === null) {
-    if (spec.key === 'API_TOKEN' && !devLike) {
-      return { error: 'The API token cannot be reset on a server; generate a new one instead.',
-        errorFa: 'روی سرور نمی‌توان توکن را به پیش‌فرض برگرداند؛ یک توکن جدید بسازید.' };
-    }
     return { value: null };
   }
   if (typeof value === 'boolean') value = value ? 'true' : 'false';
@@ -185,11 +177,7 @@ export function validateValue(spec: SettingSpec, value: unknown, ctx: ValidateCt
     }
   }
   if (spec.key === 'API_TOKEN') {
-    if (v === PUBLIC_DEFAULT_TOKEN) {
-      if (!devLike && !ctx.allowDefaultToken) {
-        return { error: 'admin123 is public and refused on a server profile.', errorFa: 'admin123 عمومی است و روی سرور پذیرفته نمی‌شود.' };
-      }
-    } else {
+    if (v !== '') {
       if (v.length < 16) return { error: 'Use at least 16 characters (or press Generate).', errorFa: 'حداقل ۱۶ کاراکتر (یا دکمهٔ «ساخت خودکار» را بزنید).' };
       if (!/^[A-Za-z0-9._~-]+$/.test(v)) return { error: 'Use letters, digits and . _ ~ - only.', errorFa: 'فقط حروف انگلیسی، عدد و . _ ~ - مجاز است.' };
     }

@@ -94,6 +94,12 @@
     } catch (e) { return ''; }
   }
 
+  /** Development on this machine: no credential exists or is needed. */
+  function keyless() {
+    try { return !!(window.API && window.API.isOpen && window.API.isOpen()); } catch (e) { return false; }
+  }
+  function canAuth() { return keyless() || !!apiKey(); }
+
   function userId() {
     try {
       return (window.API && typeof window.API.getUserId === 'function')
@@ -602,16 +608,16 @@
 
   function wsUrl() {
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var qs = 'api_key=' + encodeURIComponent(apiKey());
+    var qs = apiKey() ? 'api_key=' + encodeURIComponent(apiKey()) : '';
     var uid = userId();
-    if (uid) qs += '&userId=' + encodeURIComponent(uid);
+    if (uid) qs += (qs ? '&' : '') + 'userId=' + encodeURIComponent(uid);
     // No session id: the socket is a per-USER delivery channel now, and which
     // FIELD a pick belongs to travels with the delivery itself.
     return proto + '//' + location.host + '/inspector/ws?' + qs;
   }
 
   function connect() {
-    if (!apiKey()) return;                 // not logged in yet
+    if (!canAuth()) return;                // not logged in yet
     if (state.ws) return;                  // already connected or connecting
     if (typeof WebSocket === 'undefined') { startPolling(); return; }
 
@@ -692,7 +698,7 @@
   function startPolling() {
     if (state.pollTimer || !state.started) return;
     state.pollTimer = setInterval(function () {
-      if (!apiKey()) return;
+      if (!canAuth()) return;
       drainInbox();
     }, 3000);
   }
@@ -740,10 +746,10 @@
    */
   window.addEventListener('beforeunload', function () {
     var key = apiKey();
-    if (!key) return;
+    if (!key && !keyless()) return;
     try {
       if (!navigator.sendBeacon) return;
-      var url = '/inspector/target/release?api_key=' + encodeURIComponent(key);
+      var url = '/inspector/target/release' + (key ? '?api_key=' + encodeURIComponent(key) : '');
       for (var id in state.mine) {
         if (!Object.prototype.hasOwnProperty.call(state.mine, id)) continue;
         var blob = new Blob([JSON.stringify({ targetFieldId: id })], { type: 'application/json' });

@@ -69,7 +69,7 @@ export class BrowserStreamServer {
       return;
     }
 
-    authorizeLive(apiKey, userId).then((auth) => {
+    authorizeLive(apiKey, userId, { req }).then((auth) => {
       if (!auth.ok) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();

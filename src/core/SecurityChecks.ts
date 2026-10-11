@@ -12,8 +12,8 @@
  *   debug_bind_exposed     REAL_CHROME_DEBUG_BIND is not loopback. Chrome's
  *                          DevTools port is remote code execution + full cookie
  *                          theft for whoever can reach it.
- *   default_token_*        (decided in StartupValidation) admin123 under a
- *                          server/production profile.
+ *   auth_store_*           (decided in StartupValidation) the owner-password file
+ *                          is unreadable on the production profile.
  *   redis_port_exposed     Redis answers on a non-loopback address of this
  *                          host, or a compose file publishes 6379 to the world.
  *                          Redis is the job queue: write access == run code.
@@ -374,7 +374,7 @@ export async function runSecurityChecks(i: SecurityInputs): Promise<SecurityRepo
       add({ id: 'https', label: 'HTTPS for the public domain', state: 'warn', detail: origin },
         {
           id: 'public_domain_not_https', severity: 'warn', feature: 'HTTPS',
-          problem: `PUBLIC_DOMAIN is ${origin} — plain http on a non-local host. The API token, the pairing code `
+          problem: `PUBLIC_DOMAIN is ${origin} — plain http on a non-local host. The owner password, the pairing code `
             + 'and the session cookie cross the network in clear text.',
           fix: 'Terminate TLS in front of the app (Caddy does it automatically: see Caddyfile.example / install.sh) '
             + 'and set PUBLIC_DOMAIN=https://<your-domain>.',

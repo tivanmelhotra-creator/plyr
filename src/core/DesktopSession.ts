@@ -107,7 +107,9 @@ export const DESKTOP_SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
  * answer to "a secret that is always present in both deployment modes".
  */
 function secret(): string {
-  return config.LIVE_SHARE_SECRET || config.API_TOKEN || '';
+  // LIVE_SHARE_SECRET always resolves (it falls back to a secret derived from
+  // this install's own auth secret), so a session can always be signed.
+  return config.LIVE_SHARE_SECRET || '';
 }
 
 function sign(payload: string): string {

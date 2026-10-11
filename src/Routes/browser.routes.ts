@@ -1152,7 +1152,7 @@ export const createBrowserRoutes = (): Router => {
         const asked = String(req.query.userId || '').trim();
         let owner = resolveUserId(req);
         if (asked && asked !== owner) {
-          const auth = await authorizeLive(apiKeyOf(req), asked);
+          const auth = await authorizeLive(apiKeyOf(req), asked, { req });
           if (!auth.ok) {
             return fail(res, 403, 'This API key may not upload for that user.',
               'Use the same userId the browser socket was opened with.');
@@ -1196,7 +1196,7 @@ export const createBrowserRoutes = (): Router => {
       const asked = String(req.query.userId || '').trim();
       let owner = resolveUserId(req);
       if (asked && asked !== owner) {
-        const auth = await authorizeLive(apiKeyOf(req), asked);
+        const auth = await authorizeLive(apiKeyOf(req), asked, { req });
         if (!auth.ok) {
           return fail(res, 403, 'This API key may not read downloads for that user.',
             'Use the same userId the browser socket was opened with.');

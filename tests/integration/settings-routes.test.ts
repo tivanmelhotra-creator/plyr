@@ -12,7 +12,7 @@ import path from 'path';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plyr-settings-routes-'));
 const file = path.join(dir, 'settings.env');
 const BOOT_TOKEN = 'boot_token_abcdefghijklmn';
-const ENV_KEYS = ['DEPLOYMENT_MODE', 'APP_ENV', 'NODE_ENV', 'AUTH_MODE', 'API_TOKEN', 'SETTINGS_FILE', 'ALLOW_OPEN_AUTH'];
+const ENV_KEYS = ['DEPLOYMENT_MODE', 'APP_ENV', 'NODE_ENV', 'AUTH_MODE', 'API_TOKEN', 'SETTINGS_FILE', 'ALLOW_OPEN_AUTH', 'AUTH_FILE'];
 
 let app: Express;
 const saved: Record<string, string | undefined> = {};
@@ -20,7 +20,7 @@ const saved: Record<string, string | undefined> = {};
 beforeAll(async () => {
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
   Object.assign(process.env, {
-    DEPLOYMENT_MODE: 'single', APP_ENV: 'development', AUTH_MODE: 'open',
+    DEPLOYMENT_MODE: 'single', APP_ENV: 'development',
     API_TOKEN: BOOT_TOKEN, SETTINGS_FILE: file,
   });
   vi.resetModules();
@@ -53,20 +53,24 @@ afterAll(() => {
 const LOCAL = { 'x-test-peer': '127.0.0.1' };
 const LAN = { 'x-test-peer': '192.168.1.20', 'x-forwarded-for': '127.0.0.1' };
 
-describe('open login (development)', () => {
-  it('signs a local browser in and hands it the token', async () => {
+describe('development — no login, no token', () => {
+  it('a local browser is simply let in: no token is handed out or asked for', async () => {
     const r = await request(app).get('/auth/mode').set(LOCAL);
-    expect(r.body.mode).toBe('open');
-    expect(r.body.token).toBe(BOOT_TOKEN);
-    expect(r.headers['cache-control']).toBe('no-store');
+    // The old token handoff endpoint is gone.
+    expect(r.status).toBe(404);
+    expect((await request(app).get('/settings').set(LOCAL)).status).toBe(200);
+    expect((await request(app).get('/me').set(LOCAL)).status).toBe(200);
   });
 
-  it('still asks a LAN peer for the token, even with a forged X-Forwarded-For', async () => {
-    const r = await request(app).get('/auth/mode').set(LAN);
-    expect(r.body.mode).toBe('token');
-    expect(r.body.token).toBeUndefined();
-    expect((await request(app).get('/settings').set(LAN)).status).toBe(401);
-    expect((await request(app).get('/settings').set(LOCAL)).status).toBe(200);
+  it('refuses a LAN peer, even with a forged X-Forwarded-For', async () => {
+    const r = await request(app).get('/settings').set(LAN);
+    expect(r.status).toBe(401);
+    expect(r.body.code).toBe('local_only');
+  });
+
+  it('a loopback request that carries a forwarding header is not local either', async () => {
+    const r = await request(app).get('/settings').set({ ...LOCAL, 'x-forwarded-for': '203.0.113.7' });
+    expect(r.status).toBe(401);
   });
 });
 
@@ -76,6 +80,8 @@ describe('GET /settings', () => {
     const tok = r.body.settings.find((s: { key: string }) => s.key === 'API_TOKEN');
     expect(tok.source).toBe('env');
     expect(JSON.stringify(r.body)).not.toContain(BOOT_TOKEN);
+    // No password, hash or session ever appears in the settings payload.
+    expect(JSON.stringify(r.body)).not.toMatch(/scrypt\$|passwordHash|svc_/);
     expect(r.body.authOpen).toBe(true);
     // Removed settings never come back through the API.
     const keys = r.body.settings.map((x: { key: string }) => x.key);
@@ -117,11 +123,18 @@ describe('PUT /settings', () => {
     expect(r.body.errors.MAX_CONCURRENT.error).toBe('Unknown setting');
   });
 
-  it('refuses to switch to a server profile while the token is admin123', async () => {
-    await request(app).put('/settings').set(LOCAL).send({ changes: { API_TOKEN: 'admin123' } }).expect(200);
+  it('switching to production needs no token: the password is chosen on first run', async () => {
+    await request(app).put('/settings').set(LOCAL).send({ changes: { API_TOKEN: '' } }).expect(200);
     const r = await request(app).put('/settings').set(LOCAL).send({ changes: { APP_ENV: 'server' } });
+    expect(r.status).toBe(200);
+    expect(r.body.restartNeeded).toBe(true);
+    await request(app).put('/settings').set(LOCAL).send({ changes: { APP_ENV: 'development' } }).expect(200);
+  });
+
+  it('a short operator API token is still refused', async () => {
+    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { API_TOKEN: 'short' } });
     expect(r.status).toBe(400);
-    expect(r.body.errors.APP_ENV).toBeTruthy();
+    expect(r.body.errors.API_TOKEN).toBeTruthy();
   });
 
   it('switching to production is saved and needs a restart (the environment is read at boot)', async () => {
@@ -139,14 +152,17 @@ describe('PUT /settings', () => {
   });
 });
 
-describe('token generation', () => {
+describe('optional API token (scripts only) generation', () => {
   it('generates a token the server uses at once; the old one stops working', async () => {
+    await request(app).put('/settings').set(LOCAL).send({ changes: { API_TOKEN: 'my_own_token_1234567890' } }).expect(200);
     const before = (await request(app).post('/settings/reveal').set(LOCAL).send({ key: 'API_TOKEN' })).body.value;
+    expect(before).toBe('my_own_token_1234567890');
     const g = await request(app).post('/settings/generate').set(LOCAL).send({ key: 'API_TOKEN' });
     expect(g.status).toBe(200);
     expect(g.body.value).toMatch(/^[0-9a-f]{48}$/);
     expect(g.body.newApiToken).toBe(g.body.value);
-    expect((await request(app).get('/me').set({ ...LAN, 'x-api-key': before })).status).toBe(403);
+    // (development refuses an unknown credential from off-machine as local_only)
+    expect((await request(app).get('/me').set({ ...LAN, 'x-api-key': before })).status).toBe(401);
     expect((await request(app).get('/me').set({ ...LAN, 'x-api-key': g.body.value })).status).toBe(200);
     expect(fs.readFileSync(file, 'utf8')).toContain(`API_TOKEN=${g.body.value}`);
   });

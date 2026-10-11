@@ -47,6 +47,7 @@
 
 import path from 'node:path';
 import { config } from '../config';
+import { authStore } from './AuthStore';
 import { runSecurityChecks, probeTcp, type CheckLine } from './SecurityChecks';
 import {
   inspectBrowserRuntime,
@@ -142,32 +143,36 @@ export async function validateStartup(): Promise<StartupReport> {
       severity: 'warn',
       feature: 'Authentication',
       problem: `DEPLOYMENT_MODE=${config.REQUESTED_DEPLOYMENT_MODE} is no longer supported and is ignored. `
-        + 'This server is a single-owner install protected by one access token (API_TOKEN).',
+        + 'This server is a single-owner install protected by one owner password.',
       fix: 'Remove DEPLOYMENT_MODE, API_KEYS, ADMIN_SECRET and plan settings from .env.',
     });
   }
 
-  // The public default credential, on a profile that means "reachable".
-  // A warning rather than fatal: an operator running production behind a VPN
-  // is making a defensible choice, and refusing to boot would strand them.
-  // `admin123` is for the disposable dev compose stack and for a laptop. On a
-  // profile that means "deployed" (production) it is REFUSED: the token
-  // is in the source and in .env.example, and it drives a real browser. The one
-  // legitimate server-profile use (docker-compose.dev.yml, loopback-only, wiped
-  // on every run) opts in explicitly with ALLOW_DEFAULT_API_TOKEN=true, so the
-  // exception is visible in the file that needs it instead of being implicit.
-  if (config.API_TOKEN_IS_DEFAULT && config.APP_PROFILE === 'production') {
-    const allowed = config.ALLOW_DEFAULT_API_TOKEN === true;
-    issues.push({
-      id: 'default_token_in_production',
-      severity: allowed ? 'warn' : 'fatal',
-      feature: 'Authentication',
-      problem: `API_TOKEN is the built-in public default (admin123) and the profile is ${config.APP_PROFILE}. `
-        + 'This token is in .env.example and in the source; it grants full control of this instance.'
-        + (allowed ? ' (Allowed only because ALLOW_DEFAULT_API_TOKEN=true — the dev compose stack.)' : ''),
-      fix: 'Set your own API_TOKEN in .env (e.g. `openssl rand -hex 24`) and restart. '
-        + 'Only a disposable, loopback-only dev stack may set ALLOW_DEFAULT_API_TOKEN=true.',
-    });
+  // Owner password (production). There is no shipped default credential any
+  // more: the first visit sets one. Two states deserve a line at boot:
+  //   unavailable -> auth.json exists but cannot be read/parsed. REFUSED: with
+  //                  a half-readable store the only safe answer is to stop, a
+  //                  visitor must never be able to "claim" a configured box.
+  //   unset       -> the setup page is open to whoever reaches the port first.
+  if (config.APP_PROFILE === 'production') {
+    const st = authStore.state();
+    if (st === 'unavailable') {
+      issues.push({
+        id: 'auth_store_unavailable',
+        severity: 'fatal',
+        feature: 'Authentication',
+        problem: `The owner-password file (${authStore.filePath() || 'auth.json'}) cannot be used: ${authStore.unavailableReason() || 'unreadable'}.`,
+        fix: 'Fix the file permissions/JSON, or delete it deliberately to run first-time setup again.',
+      });
+    } else if (st === 'unset') {
+      issues.push({
+        id: 'owner_password_not_set',
+        severity: 'warn',
+        feature: 'Authentication',
+        problem: 'No owner password has been chosen yet: the first visitor to open the panel will be asked to set it.',
+        fix: 'Open the panel now (over a trusted network / HTTPS) and complete the one-time setup.',
+      });
+    }
   }
 
   // ── Security minimums (Redis exposure, DevTools bind, HTTPS, webhooks, …) ──

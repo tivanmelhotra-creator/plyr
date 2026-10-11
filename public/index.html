@@ -17,21 +17,40 @@
     <div class="login-card">
       <div class="login-logo" data-icon="zap" data-icon-size="30"></div>
       <h1 class="login-title" data-i18n="app.title">Aria Automate</h1>
-      <p class="login-subtitle" data-i18n="login.subtitle">Enter your API key to sign in</p>
+      <p class="login-subtitle" id="login-subtitle" data-i18n="login.subtitle">Enter your password to sign in</p>
 
-      <form id="login-form" autocomplete="off">
+      <!-- First run (production): the owner chooses the password. The rules are
+           listed here AND enforced again by the server (POST /auth/setup). -->
+      <form id="setup-form" autocomplete="off" hidden>
         <label class="field">
-          <span class="field-label" data-i18n="login.apiKey">API Key</span>
+          <span class="field-label" data-i18n="setup.password">Choose a password</span>
           <div class="field-input-wrap">
-            <input
-              type="password"
-              id="api-key-input"
-              class="field-input"
-              placeholder="••••••••••••••••"
-              autocomplete="off"
-              spellcheck="false"
-              required
-            />
+            <input type="password" id="setup-password" class="field-input" autocomplete="new-password" spellcheck="false" required />
+            <button type="button" id="toggle-setup-pw" class="icon-btn" aria-label="toggle" data-icon="eye"></button>
+          </div>
+        </label>
+        <label class="field">
+          <span class="field-label" data-i18n="setup.confirm">Repeat the password</span>
+          <input type="password" id="setup-confirm" class="field-input" autocomplete="new-password" spellcheck="false" required />
+        </label>
+        <ul id="setup-rules" class="pw-rules" aria-live="polite">
+          <li data-rule="length"></li>
+          <li data-rule="upper" data-i18n="setup.ruleUpper">One uppercase English letter (A-Z)</li>
+          <li data-rule="lower" data-i18n="setup.ruleLower">One lowercase English letter (a-z)</li>
+          <li data-rule="digit" data-i18n="setup.ruleDigit">One digit (0-9)</li>
+          <li data-rule="match" data-i18n="setup.ruleMatch">Both entries are the same</li>
+        </ul>
+        <div id="setup-error" class="login-error" hidden></div>
+        <button type="submit" id="setup-btn" class="btn btn-primary btn-block">
+          <span data-i18n="setup.submit">Save password and continue</span>
+        </button>
+      </form>
+
+      <form id="login-form" autocomplete="off" hidden>
+        <label class="field">
+          <span class="field-label" data-i18n="login.password">Password</span>
+          <div class="field-input-wrap">
+            <input type="password" id="login-password" class="field-input" placeholder="••••••••••••" autocomplete="current-password" spellcheck="false" required />
             <button type="button" id="toggle-key" class="icon-btn" aria-label="toggle" data-icon="eye"></button>
           </div>
         </label>
@@ -47,6 +66,8 @@
           <span data-i18n="login.submit">Sign in</span>
         </button>
       </form>
+
+      <div id="auth-blocked" class="login-error" hidden></div>
 
       <div class="login-footer">
         <button type="button" class="link-btn" id="lang-toggle-login" hidden>English</button>

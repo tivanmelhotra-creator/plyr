@@ -11,11 +11,16 @@
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:3000}"
-API_TOKEN="${API_TOKEN:-admin123}"
+# The dev stack runs APP_ENV=development: no credential is needed from this
+# machine. Set API_TOKEN only to smoke-test a production-like instance that has
+# an optional script token configured.
+API_TOKEN="${API_TOKEN:-}"
 USER_ID="${USER_ID:-local}"
 
 die() { printf '[smoke] FAIL: %s\n' "$*" >&2; exit 1; }
 say() { printf '[smoke] %s\n' "$*" >&2; }
+
+auth=(); [[ -z "$API_TOKEN" ]] || auth=(-H "x-api-key: $API_TOKEN")
 
 json_field() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const v=$1;process.stdout.write(v===undefined||v===null?'':String(v))}catch{process.exit(1)}})"; }
 
@@ -30,7 +35,7 @@ probe() {
 write() {
   local body id
   body="$(curl -fsS --max-time 15 -X POST "$BASE_URL/workflows/$USER_ID" \
-    -H "x-api-key: $API_TOKEN" -H 'Content-Type: application/json' \
+    "${auth[@]}" -H 'Content-Type: application/json' \
     --data '{"name":"ci-smoke","steps":[{"action":"goto","params":{"url":"https://example.com"}}]}')" \
     || die "saving a workflow failed (storage unavailable?)"
   id="$(json_field 'JSON.parse(s).workflow.id' <<<"$body")"
@@ -41,7 +46,7 @@ write() {
 
 read_back() {
   local id="${1:?workflow id}" body
-  body="$(curl -fsS --max-time 15 -H "x-api-key: $API_TOKEN" "$BASE_URL/workflows/$USER_ID/$id")" \
+  body="$(curl -fsS --max-time 15 "${auth[@]}" "$BASE_URL/workflows/$USER_ID/$id")" \
     || die "workflow $id could not be read back"
   [[ "$(json_field 'JSON.parse(s).workflow.name' <<<"$body")" == ci-smoke ]] || die "unexpected workflow: $body"
   say "workflow $id read back OK"
