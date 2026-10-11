@@ -1049,7 +1049,6 @@ export class RealChrome {
    * true and the running browser is left alone; the next launch is visible.
    */
   static async forOperator(busy: () => Promise<boolean> = async () => false): Promise<BrowserContext> {
-    this.headlessOverride = null;
     const want = config.REAL_CHROME_HEADLESS === true;
     if (this.context && this.runningHeadless !== want && !(await busy())) await this.stop();
     return this.getContext();
@@ -1069,10 +1068,16 @@ export class RealChrome {
    */
   static async ensureVisibility(headless: boolean): Promise<BrowserContext> {
     this.headlessOverride = headless;
-    if (this.context && this.runningHeadless !== headless) {
-      await this.stop();
+    try {
+      if (this.context && this.runningHeadless !== headless) {
+        await this.stop();
+      }
+      return await this.getContext();
+    } finally {
+      // The choice applies to THIS launch only. Any later cold start (the
+      // operator's viewer, SelfHeal) uses the operator default again.
+      this.headlessOverride = null;
     }
-    return this.getContext();
   }
 
   /**

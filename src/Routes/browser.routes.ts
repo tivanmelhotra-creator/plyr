@@ -1534,9 +1534,13 @@ export const createBrowserRoutes = (): Router => {
 
     // The operator wants to SEE the browser: if a hidden automatic run left it
     // headless, bring it back visible - unless a run holds its profile now.
-    const ctx = await RealChrome.forOperator(async () => {
-      try { return !!(await realChromeLeaseHolder()); } catch { return false; }
-    });
+    // Only when it is running HIDDEN (left so by an automatic run) is there
+    // anything to change; the normal path stays RealChrome.getContext().
+    const ctx = RealChrome.isRunning() && RealChrome.isHeadless?.() === true
+      ? await RealChrome.forOperator(async () => {
+        try { return !!(await realChromeLeaseHolder()); } catch { return false; }
+      })
+      : await RealChrome.getContext();
 
     // ─────────────────────────────────────────────────────────────────────
     // THE WINDOW MUST LAND ON A PAGE THAT CAN HOST THE CONSENT ALERT
