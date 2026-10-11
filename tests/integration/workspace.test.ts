@@ -157,6 +157,8 @@ beforeAll(async () => {
     // The stats route calls this — mocking profileManager as `{}` (as the
     // sibling suite does) makes GET /workspace/:userId/stats throw a 500.
     profileManager: { getActiveBrowserCount: () => browserCount } as any,
+    // Busy browser profiles come from the leases (core/ProfileLease).
+    profileLeases: { list: async () => Array.from({ length: browserCount }, (_, i) => ({ profileId: `p${i}`, jobId: `j${i}` })) } as any,
   });
   app = express();
   app.use(express.json());
@@ -190,49 +192,19 @@ describe('PATCH /workflows/:userId/:workflowId/state', () => {
     expect(res.body.workflow.active).toBe(false);
     // A toggle is not a new design of the automation: no version bump.
     expect(res.body.workflow.version).toBe(versionBefore);
-    // Nothing to watch on a flow that never runs.
-    expect(res.body.liveBrowserViewable).toBe(false);
   });
 
-  it('reports liveBrowserViewable=true when the flow is active and streamed', async () => {
-    const id = await createWorkflow('Watchable Flow');
+  it('Live Browser is no longer a switch: the state endpoint refuses it', async () => {
+    const id = await createWorkflow('No Live Switch');
     const res = await request(app).patch(`/workflows/u1/${id}/state`).send({ liveBrowser: true });
-    expect(res.status).toBe(200);
-    expect(res.body.workflow.active).toBe(true);
-    expect(res.body.workflow.liveBrowser).toBe(true);
-    expect(res.body.liveBrowserViewable).toBe(true);
+    expect(res.status).toBe(400);
   });
 
-  it('keeps liveBrowser intent but reports viewable=false on an inactive flow', async () => {
-    // Middle row of the truth table (docs/uiux/workspace-overview.md section 4),
-    // asserted SERVER side: intent is preserved, viewability is denied.
-    const id = await createWorkflow('Intent Kept');
-    await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false });
-
-    const res = await request(app).patch(`/workflows/u1/${id}/state`).send({ liveBrowser: true });
-    expect(res.status).toBe(200);
-    expect(res.body.workflow.liveBrowser).toBe(true);
-    expect(res.body.workflow.active).toBe(false);
-    expect(res.body.liveBrowserViewable).toBe(false);
-  });
-
-  it('leaves the sibling flag untouched on a partial patch', async () => {
-    const id = await createWorkflow('Partial Patch');
-    await request(app).patch(`/workflows/u1/${id}/state`).send({ liveBrowser: true });
-
-    const res = await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false });
-    expect(res.status).toBe(200);
-    expect(res.body.workflow.liveBrowser).toBe(true); // survived
-    expect(res.body.workflow.active).toBe(false);
-  });
-
-  it('persists the flags so a later GET reads them back', async () => {
+  it('persists Active so a later GET reads it back', async () => {
     const id = await createWorkflow('Persisted Flags');
-    await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false, liveBrowser: true });
-
+    await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false });
     const res = await request(app).get(`/workflows/u1/${id}`);
     expect(res.body.workflow.active).toBe(false);
-    expect(res.body.workflow.liveBrowser).toBe(true);
   });
 
   it('rejects an empty body (400) — at least one switch is required', async () => {
@@ -288,27 +260,26 @@ describe('PATCH /workflows/:userId/:workflowId/state', () => {
     const countBefore = before.body.count;
 
     await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false });
-    await request(app).patch(`/workflows/u1/${id}/state`).send({ liveBrowser: true });
 
     const after = await request(app).get(`/workflows/u1/${id}/versions`);
     expect(after.body.count).toBe(countBefore);
   });
 
-  it('PUT preserves the flags and ignores them if sent in the update body', async () => {
+  it('PUT preserves Active, ignores it in the body, and saves the browser profile', async () => {
     const id = await createWorkflow('Editor Save');
-    await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false, liveBrowser: true });
+    await request(app).patch(`/workflows/u1/${id}/state`).send({ active: false });
 
     const res = await request(app).put(`/workflows/u1/${id}`).send({
       name: 'Editor Save v2',
       steps: [{ action: 'goto', params: { url: 'https://e.com' } }],
       // A client sending these here must NOT be able to re-enable the flow.
       active: true,
-      liveBrowser: false,
+      profileId: 'shop',
     });
     expect(res.status).toBe(200);
     expect(res.body.workflow.version).toBe(2);
     expect(res.body.workflow.active).toBe(false);
-    expect(res.body.workflow.liveBrowser).toBe(true);
+    expect(res.body.workflow.profileId).toBe('shop');
   });
 });
 
@@ -359,7 +330,7 @@ describe('POST /workflows/:userId/:workflowId/run — inactive gate', () => {
 describe('GET /workspace/:userId/stats', () => {
   const STAT_KEYS = [
     'activeSchedules', 'totalFlows', 'activeFlows',
-    'successRate', 'failures', 'activeJobs', 'liveBrowsers',
+    'successRate', 'failures', 'activeJobs', 'busyProfiles',
   ];
 
   it('returns all seven stat keys and a perWorkflow array', async () => {
@@ -482,10 +453,10 @@ describe('GET /workspace/:userId/stats', () => {
     expect(res.body.stats.activeFlows).toBe(2);
   });
 
-  it('surfaces the live browser count from profileManager', async () => {
+  it('surfaces how many browser profiles are held by a run', async () => {
     browserCount = 4;
     const res = await request(app).get('/workspace/u1/stats');
-    expect(res.body.stats.liveBrowsers).toBe(4);
+    expect(res.body.stats.busyProfiles).toBe(4);
   });
 
   it('returns empty aggregates for a user with no workflows', async () => {
@@ -503,8 +474,8 @@ describe('GET /workspace/:userId/stats', () => {
     const res = await request(app).get('/workspace/u1/stats');
     for (const row of res.body.perWorkflow) {
       expect(Object.keys(row).sort()).toEqual([
-        'completed', 'failed', 'lastRunAt', 'lastRunState',
-        'scheduleCount', 'successRate', 'workflowId',
+        'completed', 'failed', 'lastRunAt', 'lastRunState', 'profile', 'running',
+        'scheduleCount', 'successRate', 'waiting', 'workflowId',
       ]);
     }
   });
