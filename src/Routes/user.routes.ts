@@ -4,7 +4,15 @@ import type IORedis from 'ioredis';
 
 import { config } from '../config';
 import type { ProfileManager } from '../core/ProfileManager';
-import type { ProfileLeases } from '../core/ProfileLease';
+import { sanitizeProfileId, type ProfileLeases } from '../core/ProfileLease';
+
+/** A workflow's browser profile name: a plain path segment, or 'default'. */
+function profileIdOrThrow(raw: unknown): string {
+  if (raw === null || raw === '' || raw === 'default') return 'default';
+  const id = sanitizeProfileId(raw);
+  if (!id) throw new Error('profileId: use letters, digits, - and _ only (max 64), starting with a letter or digit');
+  return id;
+}
 import {
   sanitizeUserId,
   validateSteps,
@@ -112,6 +120,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   function workspaceFor(userId: string, workflowId: string): JobWorkspace {
     return { owner: config.IS_SINGLE_USER ? SINGLE_USER_ID : userId, workflowId };
   }
+  /** The browser profile a saved workflow's runs use (Workflow Settings). */
+  async function profileOf(ws: JobWorkspace): Promise<string | undefined> {
+    try {
+      const wf = await workflowService.get(ws.owner, ws.workflowId);
+      const p = wf?.profileId;
+      return typeof p === 'string' && p && p !== 'default' ? p : undefined;
+    } catch { return undefined; }
+  }
   async function resolveJobWorkspace(userId: string, workflowId: unknown): Promise<JobWorkspace | undefined> {
     if (typeof workflowId !== 'string' || !isValidWorkflowId(workflowId)) return undefined;
     try {
@@ -211,12 +227,15 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // A run that names a saved workflow files its node outputs in THAT
       // workflow's workspace (only if the caller really owns it).
       const workspace = await resolveJobWorkspace(userId, body.workflowId);
+      // ...and uses THAT workflow's browser profile (Workflow Settings).
+      const runProfileId = workspace ? await profileOf(workspace) : undefined;
 
       // Add job to queue
       const job = await queue.add(
         'run',
         {
           userId, steps, webhookUrl, triggerData, __origin: origin, ...(workspace ? { __workspace: workspace } : {}),
+          ...(runProfileId ? { profileId: runProfileId } : {}),
           // A run of a saved workflow's canvas (Execute Workflow) is its TEST:
           // the worker stores the outcome + the design fingerprint on the
           // workflow, and activation requires a green test of the current
@@ -344,10 +363,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Output files only: still NO `__workflowId`, so a node test is not
       // filed as an execution. The workspace is where its files belong.
       const nodeWorkspace = await resolveJobWorkspace(userId, body.workflowId);
+      const nodeProfileId = nodeWorkspace ? await profileOf(nodeWorkspace) : undefined;
       const job = await queue.add(
         'run',
         {
           userId, steps, triggerData, __origin: origin, __runNode: true, __nodeIndex: nodeIndex,
+          ...(nodeProfileId ? { profileId: nodeProfileId } : {}),
           ...(nodeWorkspace ? { __workspace: nodeWorkspace } : {}),
         },
         { priority: plan.priority }
@@ -990,6 +1011,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         steps,
         headless: body.headless ?? null,
         webhookUrl,
+        ...(body.profileId ? { profileId: profileIdOrThrow(body.profileId) } : {}),
       });
       await provisionWorkspace(userId, wf.id);
       return res.status(201).json({ success: true, workflow: wf });
@@ -1153,7 +1175,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         webhookUrl,
         // Workflow Settings: which browser profile its runs use (one run per
         // profile at a time, core/ProfileLease). Omitted = unchanged.
-        ...(body.profileId !== undefined ? { profileId: body.profileId || 'default' } : {}),
+        ...(body.profileId !== undefined ? { profileId: profileIdOrThrow(body.profileId) } : {}),
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
       return res.json({ success: true, workflow: wf });
