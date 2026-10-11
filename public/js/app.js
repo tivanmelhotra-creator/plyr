@@ -19,7 +19,16 @@
   var el = {
     loginScreen: document.getElementById('login-screen'),
     loginForm: document.getElementById('login-form'),
-    apiKeyInput: document.getElementById('api-key-input'),
+    loginPassword: document.getElementById('login-password'),
+    loginSubtitle: document.getElementById('login-subtitle'),
+    authBlocked: document.getElementById('auth-blocked'),
+    setupForm: document.getElementById('setup-form'),
+    setupPassword: document.getElementById('setup-password'),
+    setupConfirm: document.getElementById('setup-confirm'),
+    setupRules: document.getElementById('setup-rules'),
+    setupError: document.getElementById('setup-error'),
+    setupBtn: document.getElementById('setup-btn'),
+    toggleSetupPw: document.getElementById('toggle-setup-pw'),
     rememberKey: document.getElementById('remember-key'),
     loginError: document.getElementById('login-error'),
     loginBtn: document.getElementById('login-btn'),
@@ -122,29 +131,125 @@
   }
 
   // ---------------------------------------------
-  // Login flow
+  // Sign-in flow
+  //
+  // Development on this machine: no screen at all (mode 'open').
+  // Production: first run -> choose a password (setup); afterwards -> log in.
+  // The password is NOT an API token: the server answers a correct password
+  // with a session token, which is what the rest of the UI sends as x-api-key.
   // ---------------------------------------------
-  function showLogin() {
+  var authMode = 'login';
+  // Mirrors src/core/AuthStore.ts; the server's /auth/status policy wins, and
+  // the server re-checks everything, so this is only for instant feedback.
+  var policy = { minLength: 10, maxLength: 512 };
+
+  function showAuthScreen(mode) {
     stopHealthPolling();
     document.body.classList.remove('route-fullbleed');
     el.app.hidden = true;
     el.loginScreen.hidden = false;
-    el.apiKeyInput.value = '';
+    el.setupForm.hidden = mode !== 'setup';
+    el.loginForm.hidden = mode !== 'login';
+    el.authBlocked.hidden = true;
+    el.loginPassword.value = '';
+    el.setupPassword.value = '';
+    el.setupConfirm.value = '';
+    el.setupError.hidden = true;
     if (!el.loginError.dataset.sticky) el.loginError.hidden = true;
+    el.loginSubtitle.setAttribute('data-i18n', mode === 'setup' ? 'setup.subtitle' : 'login.subtitle');
+    el.loginSubtitle.textContent = I18N.t(mode === 'setup' ? 'setup.subtitle' : 'login.subtitle');
+    if (mode === 'setup') { checkRules(); el.setupPassword.focus(); } else if (mode === 'login') { el.loginPassword.focus(); }
+  }
+
+  function showLogin() { showAuthScreen(authMode === 'setup' ? 'setup' : 'login'); }
+
+  /** A server that refuses to let anyone in (wrong place / unreadable store). */
+  function showBlocked(msgKey) {
+    showAuthScreen('none');
+    el.loginSubtitle.textContent = '';
+    el.authBlocked.textContent = I18N.t(msgKey);
+    el.authBlocked.hidden = false;
   }
 
   function showApp() {
     el.loginScreen.hidden = true;
     el.app.hidden = false;
     startHealthPolling();
-    // The Element Inspector's listener needs a valid key: both its socket and
-    // its inbox are authenticated, so it starts HERE rather than on page load.
-    // start() is idempotent, so arriving via a remembered key and via a fresh
-    // login both land in the same single connection.
+    // The Element Inspector's listener starts HERE (after sign-in). In
+    // development there is no key at all and its socket is accepted from this
+    // machine; in production it uses the session token.
     if (window.InspectorClient) {
       try { window.InspectorClient.start(); } catch (e) { /* never block the app */ }
     }
     handleRoute();
+  }
+
+  // Live password rules, same wording as the server's policy.
+  function ruleState(pw, confirm) {
+    return {
+      length: pw.length >= policy.minLength && pw.length <= policy.maxLength,
+      upper: /[A-Z]/.test(pw),
+      lower: /[a-z]/.test(pw),
+      digit: /[0-9]/.test(pw),
+      match: pw.length > 0 && pw === confirm,
+    };
+  }
+
+  function checkRules() {
+    var st = ruleState(el.setupPassword.value, el.setupConfirm.value);
+    var lengthLi = el.setupRules.querySelector('[data-rule="length"]');
+    if (lengthLi) lengthLi.textContent = I18N.t('setup.ruleLength').replace('{n}', String(policy.minLength));
+    var ok = true;
+    Array.prototype.forEach.call(el.setupRules.querySelectorAll('li'), function (li) {
+      var pass = !!st[li.getAttribute('data-rule')];
+      li.classList.toggle('ok', pass);
+      if (!pass) ok = false;
+    });
+    // A stale "rules not met" banner must not outlive the fix.
+    if (ok && el.setupError && !el.setupError.hidden) el.setupError.hidden = true;
+    return ok;
+  }
+
+  function problemText(body) {
+    var probs = body && body.problems;
+    if (probs && probs.length) {
+      return probs.map(function (p) { return I18N.t('setup.problem.' + p.code) || p.message; }).join(' ');
+    }
+    return null;
+  }
+
+  function busy(btn, on, doneKey) {
+    btn.disabled = on;
+    var span = btn.querySelector('span');
+    if (!span) return;
+    if (on) { btn.dataset.label = span.textContent; span.textContent = I18N.t('login.checking'); }
+    else span.textContent = btn.dataset.label || I18N.t(doneKey);
+  }
+
+  function signedIn(token, remember) {
+    API.setKey(token);
+    API.setUserId('local');
+    if (remember) sessionStorage.removeItem('ab_session_only');
+    else sessionStorage.setItem('ab_session_only', '1');
+    authMode = 'login';
+    showApp();
+  }
+
+  function doLogin(ev) {
+    if (ev) ev.preventDefault();
+    var pw = el.loginPassword.value;
+    if (!pw) { setLoginError('login.empty'); return; }
+    el.loginError.hidden = true;
+    busy(el.loginBtn, true);
+    API.login(pw)
+      .then(function (r) { signedIn(r.token, el.rememberKey.checked); })
+      .catch(function (e) {
+        if (e && e.code === 'setup_required') { authMode = 'setup'; showAuthScreen('setup'); return; }
+        if (e && e.status === 429) { setLoginError('login.tooMany'); return; }
+        if (e && e.code === 'auth_unavailable') { showBlocked('login.unavailable'); return; }
+        setLoginError(e && e.status === 401 ? 'login.invalid' : 'login.unreachable');
+      })
+      .then(function () { busy(el.loginBtn, false, 'login.submit'); });
   }
 
   function setLoginError(msgKey) {
@@ -152,40 +257,30 @@
     el.loginError.hidden = false;
   }
 
-  function doLogin(ev) {
+  function doSetup(ev) {
     if (ev) ev.preventDefault();
-    var key = (el.apiKeyInput.value || '').trim();
-    if (!key) { setLoginError('login.empty'); return; }
-
-    el.loginError.hidden = true;
-    el.loginBtn.disabled = true;
-    var labelSpan = el.loginBtn.querySelector('span');
-    var origLabel = labelSpan ? labelSpan.textContent : '';
-    if (labelSpan) labelSpan.textContent = I18N.t('login.checking');
-
-    API.validateKey(key)
-      .then(function (result) {
-        if (!result || !result.valid) { setLoginError('login.invalid'); return; }
-        API.setKey(key);
-        API.setUserId(result.userId || '');
-        if (!el.rememberKey.checked) {
-          // mark as session-only: clear on tab close
-          sessionStorage.setItem('ab_session_only', '1');
-        } else {
-          sessionStorage.removeItem('ab_session_only');
-        }
-        showApp();
+    el.setupError.hidden = true;
+    if (!checkRules()) { setupError(I18N.t('setup.rulesNotMet')); return; }
+    busy(el.setupBtn, true);
+    API.setupPassword(el.setupPassword.value)
+      .then(function (r) { signedIn(r.token, true); })
+      .catch(function (e) {
+        if (e && e.code === 'already_set') { authMode = 'login'; showAuthScreen('login'); setLoginError('setup.alreadySet'); return; }
+        if (e && e.status === 429) { setupError(I18N.t('login.tooMany')); return; }
+        // The server's own verdict (UI checks are only a convenience).
+        setupError(problemText(e && e.body) || (e && e.message) || I18N.t('login.unreachable'));
       })
-      .catch(function () {
-        setLoginError('login.invalid');
-      })
-      .finally(function () {
-        el.loginBtn.disabled = false;
-        if (labelSpan) labelSpan.textContent = origLabel || I18N.t('login.submit');
-      });
+      .then(function () { busy(el.setupBtn, false, 'setup.submit'); });
+  }
+
+  function setupError(msg) {
+    el.setupError.textContent = msg;
+    el.setupError.hidden = false;
   }
 
   function doLogout() {
+    // Development on this machine has no session to end.
+    if (authMode === 'open') { toast(I18N.t('login.noLoginInDev')); return; }
     // Stop the Inspector BEFORE the key is cleared: its socket reconnects with
     // backoff, and a logged-out page retrying an authenticated upgrade forever
     // would be a rejected request every few seconds for as long as the tab is
@@ -198,6 +293,22 @@
     toast(I18N.t('common.logoutDone'));
     showLogin();
   }
+
+  // A request was refused because the session is gone (expired, password
+  // changed elsewhere, server reset): leave the panel and ask again, once.
+  var authLostHandled = false;
+  window.addEventListener('auth:required', function (ev) {
+    if (authMode === 'open' || authLostHandled || el.app.hidden) return;
+    authLostHandled = true;
+    API.clearKey();
+    if (window.InspectorClient) { try { window.InspectorClient.stop(); } catch (e) {} }
+    API.authStatus().then(function (m) {
+      authMode = m && m.mode === 'setup' ? 'setup' : 'login';
+      if (m && m.policy) policy = m.policy;
+      showAuthScreen(authMode);
+      authLostHandled = false;
+    });
+  });
 
   // ---------------------------------------------
   // Health / system status
@@ -812,8 +923,15 @@
   // ---------------------------------------------
   function bind() {
     el.loginForm.addEventListener('submit', doLogin);
+    el.setupForm.addEventListener('submit', doSetup);
+    el.setupPassword.addEventListener('input', checkRules);
+    el.setupConfirm.addEventListener('input', checkRules);
+    el.toggleSetupPw.addEventListener('click', function () {
+      var t = el.setupPassword.type === 'password' ? 'text' : 'password';
+      el.setupPassword.type = t; el.setupConfirm.type = t;
+    });
     el.toggleKey.addEventListener('click', function () {
-      el.apiKeyInput.type = el.apiKeyInput.type === 'password' ? 'text' : 'password';
+      el.loginPassword.type = el.loginPassword.type === 'password' ? 'text' : 'password';
     });
     el.langToggleLogin.addEventListener('click', function () { I18N.toggle(); });
 
@@ -877,50 +995,53 @@
     el.langToggleLogin.textContent = I18N.meta().label;
     bind();
 
-    // AUTH_MODE=open (development only): the server hands this machine the
-    // token and the panel signs itself in. Asked FIRST so a stale stored key
-    // from an earlier token never lands a developer on the login screen.
-    API.authMode()
-      .then(function (m) {
-        if (m && m.mode === 'open' && m.token) {
-          API.setKey(m.token);
-          API.setUserId('local');
-          sessionStorage.removeItem('ab_session_only');
-          showApp();
-          return;
-        }
-        if (m && m.openRefused && el.loginError) {
-          el.loginError.textContent = I18N.t(m.openRefused === 'profile' ? 'login.openRefusedProfile' : 'login.openRefusedRemote');
-          el.loginError.hidden = false;
-          el.loginError.dataset.sticky = '1';
-        }
+    // Ask the server how to get in. Development on this machine answers
+    // 'open': no login screen, no token. Anything else is a real sign-in.
+    API.authStatus().then(function (m) {
+      var mode = m && m.mode;
+      if (m && m.policy) policy = m.policy;
+      authMode = mode || 'login';
+      API.setOpenMode(mode === 'open');
+      if (mode === 'open') {
+        // A key left over from an earlier production login must not be sent.
+        API.clearKey();
+        API.setUserId('local');
+        sessionStorage.removeItem('ab_session_only');
+        showApp();
+      } else if (mode === 'setup') {
+        API.clearKey();
+        showAuthScreen('setup');
+      } else if (mode === 'login') {
         bootWithStoredKey();
-      })
-      .catch(bootWithStoredKey);
+      } else if (mode === 'local_only') {
+        showBlocked('login.localOnly');
+      } else if (mode === 'unavailable') {
+        showBlocked('login.unavailable');
+      } else {
+        showBlocked('login.unreachable');
+      }
+    });
   }
 
   function bootWithStoredKey() {
     var storedKey = API.getKey();
-    if (storedKey) {
-      // Re-validate the stored key once on boot so revoked/expired keys
-      // fall back to the login screen instead of a broken dashboard.
-      API.validateKey(storedKey)
-        .then(function (result) {
-          if (result && result.valid) {
-            if (result.userId) API.setUserId(result.userId);
-            showApp();
-          } else {
-            API.clearKey();
-            showLogin();
-          }
-        })
-        .catch(function () {
-          // network error: optimistically show the app, health polling will warn
+    if (!storedKey) { showAuthScreen('login'); return; }
+    // Re-validate the stored session once on boot so an expired one falls back
+    // to the login screen instead of a broken dashboard.
+    API.validateKey(storedKey)
+      .then(function (result) {
+        if (result && result.valid) {
+          if (result.userId) API.setUserId(result.userId);
           showApp();
-        });
-    } else {
-      showLogin();
-    }
+        } else {
+          API.clearKey();
+          showAuthScreen('login');
+        }
+      })
+      .catch(function () {
+        // network error: optimistically show the app, health polling will warn
+        showApp();
+      });
   }
 
   if (document.readyState === 'loading') {

@@ -1,7 +1,30 @@
+/**
+ * Instance access — ONE install, ONE owner.
+ *
+ * There are no user accounts, no roles and no per-user keys. Every request that
+ * passes acts as the owner, whose fixed identity is `local`.
+ *
+ * WHO NEEDS A CREDENTIAL (the environment decides, it is not a setting)
+ * ---------------------------------------------------------------------
+ *   development  a request from THIS machine (loopback SOCKET address — never
+ *                X-Forwarded-For, which a client writes) needs NOTHING: no login,
+ *                no token, and no credential is looked at. A request that carries
+ *                a forwarding header is not treated as local (a reverse proxy on
+ *                the same host would otherwise open the whole instance).
+ *                Any other peer is refused: development is a this-machine mode.
+ *   production   every request needs a credential, from anywhere:
+ *                  • a SESSION issued after the owner's password (POST /auth/login),
+ *                  • the optional API token an operator chose on purpose
+ *                    (Settings → Access & API), for scripts, or
+ *                  • the INTERNAL service credential the server's own side-loaded
+ *                    extension uses (never shown to anyone).
+ *
+ * The password is not a credential you send on every request; it is exchanged
+ * once for a session. See core/AuthStore.ts.
+ */
 import type { Request, Response, NextFunction } from 'express';
-import type { Redis } from 'ioredis';
-import { randomInt } from 'crypto';
 import { config } from '../config';
+import { authStore, safeEqual } from '../core/AuthStore';
 
 export interface AuthenticatedRequest extends Request {
   apiKey?: string;
@@ -9,470 +32,129 @@ export interface AuthenticatedRequest extends Request {
   apiKeyUserId?: string;
 }
 
-// Redis keys
-const API_KEYS_HASH = 'api_keys:active';
-const API_KEYS_META = 'api_keys:metadata';
-const API_KEY_REVOKED_CHANNEL = 'api_key:revoked';
-
-// [H — Step 18] Fixed identity for single-user self-hosted mode.
+/** The owner's fixed identity. Every route scopes data to it. */
 export const SINGLE_USER_ID = 'local';
 
-/** A loopback peer, read from the SOCKET (never from X-Forwarded-For, which a client writes). */
+/** A loopback peer, read from the SOCKET (never from X-Forwarded-For). */
 export function isLoopbackAddress(addr: string | undefined): boolean {
   if (!addr) return false;
   const a = addr.replace(/^::ffff:/, '');
   return a === '127.0.0.1' || a === '::1' || a.startsWith('127.');
 }
 
+type PeerLike = {
+  socket?: { remoteAddress?: string };
+  headers?: Record<string, string | string[] | undefined>;
+};
+
 /**
- * Does AUTH_MODE=open apply to THIS request?
- *
- * Open mode is only ever in force on a development profile (config.AUTH_OPEN).
- * Even then it covers only callers that cannot be anyone but the owner: a
- * connection from this same machine, or any caller on a stack that is
- * loopback-only by construction and says so with ALLOW_OPEN_AUTH=true
- * (docker-compose.dev.yml publishes 127.0.0.1:3000 only). A dev box on a LAN
- * therefore still asks a colleague's laptop for the token.
+ * Does keyless access apply to THIS request? Development only, and only for a
+ * caller that cannot be anyone but the owner: this machine, or (with
+ * ALLOW_OPEN_AUTH=true, set only by the loopback-only dev compose file) the
+ * container's bridge peer.
  */
-export function isOpenAuthRequest(req: { socket?: { remoteAddress?: string } }): boolean {
+export function isOpenAuthRequest(req: PeerLike): boolean {
   if (!config.AUTH_OPEN) return false;
+  const h = req.headers || {};
+  // A proxy in front of us (even on this machine) says so. Such a request is
+  // not "from this machine", whatever the socket looks like.
+  if (h['x-forwarded-for'] || h['forwarded'] || h['x-real-ip']) return false;
   if (config.ALLOW_OPEN_AUTH) return true;
   return isLoopbackAddress(req.socket?.remoteAddress);
 }
 
-// Interface for metadata
-export interface ApiKeyMetadata {
-  userId: string;
-  note: string;
-  createdAt: string;
-  expiresAt: string | null;
+/**
+ * Is `presented` a credential this server issued or was told to accept?
+ * Constant-time for every comparison.
+ */
+export function isAcceptedCredential(presented: string | undefined | null): boolean {
+  if (!presented) return false;
+  const p = String(presented);
+  if (authStore.verifySession(p)) return true;
+  if (authStore.isServiceToken(p)) return true;
+  const optional = config.API_TOKEN;
+  return !!optional && safeEqual(p, optional);
 }
 
-// Validation result interface (NEW)
-export interface ApiKeyValidationResult {
-  valid: boolean;
-  userId?: string;
-  isEnvKey?: boolean;
+/** @deprecated name kept for older callers/tests: same as isAcceptedCredential. */
+export const isInstanceToken = isAcceptedCredential;
+
+/** Every place a credential may arrive, in one order (header, query, bearer). */
+export function presentedKey(req: Request): string | undefined {
+  const headerKey = req.headers['x-api-key'];
+  if (typeof headerKey === 'string' && headerKey.length > 0) return headerKey;
+  if (req.query?.api_key) return String(req.query.api_key);
+  if (req.query?.token) return String(req.query.token);
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) return authHeader.substring(7).trim();
+  return undefined;
 }
 
-/**
- * API Key Manager - Redis-based with caching, pub/sub, and strict user binding
- */
-export class ApiKeyManager {
-  private redis: Redis;
-  private subscriber: Redis | null = null;
-  private localCache = new Map<string, { userId: string; valid: boolean; cachedAt: number }>();
-  private cacheLifetimeMs = 60000; // 1 minute
+/** Machine-readable reason, so the panel can tell "sign in again" from "forbidden". */
+export type AuthFailureCode = 'auth_required' | 'invalid_credential' | 'setup_required' | 'local_only' | 'auth_unavailable';
 
-  constructor(redis: Redis) {
-    this.redis = redis;
+function refuse(req: Request, res: Response, presented: string | undefined): void {
+  const dev = config.AUTH_OPEN;
+  const st = authStore.state();
+  let code: AuthFailureCode;
+  let status = 401;
+  let error: string;
+  let hint: string;
+  if (dev) {
+    code = 'local_only';
+    error = 'Development mode is only available from the machine the server runs on';
+    hint = 'Open the panel on the server itself, or switch the environment to production to sign in with a password.';
+  } else if (st === 'unavailable') {
+    code = 'auth_unavailable';
+    status = 503;
+    error = 'The authentication store cannot be read';
+    hint = authStore.unavailableReason() || 'Check the auth.json file in the data directory.';
+  } else if (st === 'unset' && !presented) {
+    code = 'setup_required';
+    error = 'No password has been set yet';
+    hint = 'Open the panel in a browser and choose a password (first-run setup).';
+  } else if (!presented) {
+    code = 'auth_required';
+    error = 'Authentication required';
+    hint = 'Sign in with your password (POST /auth/login) and send the session in the x-api-key header (or Authorization: Bearer).';
+  } else {
+    code = 'invalid_credential';
+    status = 403;
+    error = 'Invalid or expired credential';
+    hint = 'Sign in again.';
   }
-
-  /**
-   * Initialize: Load .env keys and setup pub/sub
-   */
-  async initialize(): Promise<void> {
-    // Load keys from .env into Redis (one-time migration)
-    // Changed: env_imported -> env_root for admin access
-    for (const key of config.API_KEYS) {
-      const exists = await this.redis.hexists(API_KEYS_HASH, key);
-      if (!exists) {
-        await this.addKey(key, 'env_root', 'Imported from .env (Admin Key)');
-        console.log(`[AUTH] Migrated key from .env: ${key.substring(0, 15)}...`);
-      }
-    }
-
-    // Setup pub/sub for multi-instance cache invalidation
-    await this.setupPubSub();
-
-    const totalKeys = await this.redis.hlen(API_KEYS_HASH);
-    console.log(`[AUTH] API Key Manager initialized with ${totalKeys} key(s)`);
-  }
-
-  /**
-   * Setup pub/sub for cache invalidation across instances
-   */
-  private async setupPubSub(): Promise<void> {
-    try {
-      // Create a duplicate connection for subscribing
-      this.subscriber = this.redis.duplicate();
-
-      await this.subscriber.subscribe(API_KEY_REVOKED_CHANNEL);
-
-      this.subscriber.on('message', (channel, message) => {
-        if (channel === API_KEY_REVOKED_CHANNEL) {
-          this.localCache.delete(message);
-          console.log(`[AUTH] Cache invalidated for key: ${message.substring(0, 15)}...`);
-        }
-      });
-
-      console.log('[AUTH] Pub/Sub setup complete for cache invalidation');
-    } catch (e) {
-      console.warn('[AUTH] Pub/Sub setup failed, running in single-instance mode:', e);
-    }
-  }
-
-  /**
-   * Cleanup on shutdown
-   */
-  async shutdown(): Promise<void> {
-    if (this.subscriber) {
-      try {
-        await this.subscriber.unsubscribe(API_KEY_REVOKED_CHANNEL);
-        await this.subscriber.quit();
-      } catch (e) {
-        console.error('[AUTH] Error during shutdown:', e);
-      }
-    }
-  }
-
-  /**
-   * Validate API key AND return owner userId (NEW - for Strict Binding)
-   */
-  async validateAndGetOwner(apiKey: string): Promise<ApiKeyValidationResult> {
-    const now = Date.now();
-
-    // 1. Check local cache first
-    const cached = this.localCache.get(apiKey);
-    if (cached && (now - cached.cachedAt) < this.cacheLifetimeMs) {
-      return {
-        valid: cached.valid,
-        userId: cached.userId,
-        isEnvKey: cached.userId === 'env_root'
-      };
-    }
-
-    // 2. Check .env keys (Admin keys - no specific user binding)
-    if (config.API_KEYS.has(apiKey)) {
-      this.localCache.set(apiKey, { userId: 'env_root', valid: true, cachedAt: now });
-      return { valid: true, userId: 'env_root', isEnvKey: true };
-    }
-
-    // 3. Check Redis
-    const exists = await this.redis.hexists(API_KEYS_HASH, apiKey);
-
-    if (!exists) {
-      this.localCache.set(apiKey, { userId: '', valid: false, cachedAt: now });
-      return { valid: false };
-    }
-
-    // 4. Get Metadata to find owner
-    const meta = await this.getKeyInfo(apiKey);
-
-    // 5. Check expiration
-    if (meta?.expiresAt) {
-      const expiresAt = new Date(meta.expiresAt).getTime();
-      if (now > expiresAt) {
-        await this.revokeKey(apiKey);
-        return { valid: false };
-      }
-    }
-
-    const ownerId = meta?.userId || '';
-
-    // 6. Cache the result WITH userId
-    this.localCache.set(apiKey, { userId: ownerId, valid: true, cachedAt: now });
-
-    return { 
-      valid: true, 
-      userId: ownerId, 
-      isEnvKey: ownerId === 'env_root' 
-    };
-  }
-
-  /**
-   * Simple validation (backwards compatibility - kept from original)
-   */
-  async isValid(apiKey: string): Promise<boolean> {
-    const result = await this.validateAndGetOwner(apiKey);
-    return result.valid;
-  }
-
-  /**
-   * Get key metadata with type safety
-   */
-  async getKeyInfo(apiKey: string): Promise<ApiKeyMetadata | null> {
-    const meta = await this.redis.hget(API_KEYS_META, apiKey);
-    if (!meta) return null;
-
-    try {
-      return JSON.parse(meta) as ApiKeyMetadata;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Add new API key with strict user binding
-   */
-  async addKey(
-    apiKey: string,
-    userId: string,
-    note?: string,
-    expiresInDays?: number
-  ): Promise<void> {
-    const metadata: ApiKeyMetadata = {
-      userId, // This is the STRICT BINDING
-      note: note || '',
-      createdAt: new Date().toISOString(),
-      expiresAt: expiresInDays
-        ? new Date(Date.now() + expiresInDays * 86400000).toISOString()
-        : null
-    };
-
-    await this.redis.hset(API_KEYS_HASH, apiKey, '1');
-    await this.redis.hset(API_KEYS_META, apiKey, JSON.stringify(metadata));
-
-    // Clear local cache
-    this.localCache.delete(apiKey);
-  }
-
-  /**
-   * Revoke API key with pub/sub notification
-   */
-  async revokeKey(apiKey: string): Promise<boolean> {
-    const deleted = await this.redis.hdel(API_KEYS_HASH, apiKey);
-    await this.redis.hdel(API_KEYS_META, apiKey);
-
-    // Clear local cache
-    this.localCache.delete(apiKey);
-
-    // Notify other instances via pub/sub
-    await this.redis.publish(API_KEY_REVOKED_CHANNEL, apiKey).catch(() => {});
-
-    return deleted > 0;
-  }
-
-  /**
-   * List all keys (metadata only)
-   */
-  async listKeys(): Promise<Array<{ prefix: string; meta: ApiKeyMetadata | null }>> {
-    const allKeys = await this.redis.hkeys(API_KEYS_HASH);
-    const result: Array<{ prefix: string; meta: ApiKeyMetadata | null }> = [];
-
-    for (const key of allKeys) {
-      const meta = await this.getKeyInfo(key);
-      result.push({
-        prefix: key.substring(0, 15) + '...',
-        meta
-      });
-    }
-
-    return result;
-  }
-
-  /**
-   * Get total key count
-   */
-  async getKeyCount(): Promise<number> {
-    const redisCount = await this.redis.hlen(API_KEYS_HASH);
-    return redisCount + config.API_KEYS.size;
-  }
-
-  /**
-   * Clear local cache (for testing or manual refresh)
-   */
-  clearCache(): void {
-    this.localCache.clear();
-  }
+  res.status(status).json({ success: false, error, code, hint });
 }
 
-// Global instance
-let apiKeyManager: ApiKeyManager | null = null;
-
-export const initApiKeyManager = (redis: Redis): ApiKeyManager => {
-  apiKeyManager = new ApiKeyManager(redis);
-  return apiKeyManager;
-};
-
-export const getApiKeyManager = (): ApiKeyManager | null => apiKeyManager;
-
-/**
- * Generate a new API key (Secure Version using crypto)
- */
-export const generateApiKey = (type: 'live' | 'test' = 'live'): string => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let random = '';
-
-  for (let i = 0; i < 32; i++) {
-    const randomIndex = randomInt(chars.length);
-    random += chars.charAt(randomIndex);
-  }
-
-  return `sk_${type}_${random}`;
-};
-
-/**
- * Extract userId from request (body, params, or query)
- */
-const extractRequestUserId = (req: Request): string | undefined => {
-  return req.body?.userId || req.params?.userId || (req.query?.userId as string);
-};
-
-/**
- * Middleware: Require valid API key with STRICT USER BINDING
- */
+/** Middleware: the request must be the owner (open dev-local, or a valid credential). */
 export const requireApiKey = async (
   req: AuthenticatedRequest,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ): Promise<void> => {
-  // Skip if auth disabled
-  if (!config.API_KEYS_ENABLED) {
-    return next();
-  }
+  const apiKey = presentedKey(req);
 
-  // Extract API key
-  let apiKey: string | undefined;
-
-  // 1. Header: x-api-key
-  const headerKey = req.headers['x-api-key'];
-  if (typeof headerKey === 'string' && headerKey.length > 0) {
-    apiKey = headerKey;
-  }
-
-  // 2. Query: ?api_key=xxx OR ?token=xxx (downloads/links)
-  if (!apiKey && req.query.api_key) {
-    apiKey = String(req.query.api_key);
-  }
-  if (!apiKey && req.query.token) {
-    apiKey = String(req.query.token);
-  }
-
-  // 3. Authorization: Bearer xxx
-  if (!apiKey) {
-    const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      apiKey = authHeader.substring(7).trim();
-    }
-  }
-
-  // ============================================
-  // [H — Step 18] SINGLE-USER MODE: one shared API_TOKEN authenticates the
-  // whole instance and resolves to a fixed identity. No Redis key lookup, no
-  // multi-user strict binding.
-  // ============================================
-  if (config.IS_SINGLE_USER) {
-    // AUTH_MODE=open (development only): a keyless request IS the owner.
-    if (!apiKey && isOpenAuthRequest(req)) {
-      req.apiKey = config.API_TOKEN;
-      req.apiKeyPrefix = 'open';
-      req.apiKeyUserId = (process.env.API_TOKEN_USER_ID) || SINGLE_USER_ID;
-      next();
-      return;
-    }
-    if (!apiKey) {
-      res.status(401).json({
-        success: false,
-        error: 'Authentication required',
-        hint: 'Provide the API_TOKEN via x-api-key header, api_key query param, or Bearer token'
-      });
-      return;
-    }
-    if (!config.API_TOKEN || apiKey !== config.API_TOKEN) {
-      const masked = apiKey.length > 8 ? apiKey.substring(0, 8) + '...' : '***';
-      console.warn(`[AUTH] ❌ Invalid API_TOKEN: ${masked} from ${req.ip}`);
-      res.status(403).json({ success: false, error: 'Invalid API token' });
-      return;
-    }
-    req.apiKey = apiKey;
-    req.apiKeyPrefix = apiKey.substring(0, Math.min(15, apiKey.length));
-    // استفاده از user از config API_TOKEN_USER_ID یا SINGLE_USER_ID به عنوان پیش‌فرض
-    req.apiKeyUserId = (typeof process !== 'undefined' && process.env && process.env.API_TOKEN_USER_ID) || SINGLE_USER_ID;
+  if (isOpenAuthRequest(req)) {
+    // NOTHING is validated here: in development a local request IS the owner.
+    // A presented key is kept only as the caller's identity (the side-loaded
+    // extension presents the service credential, and the Inspector files its
+    // bindings under it); with none, the owner is the service identity.
+    req.apiKey = apiKey || authStore.serviceToken();
+    req.apiKeyPrefix = 'local';
+    req.apiKeyUserId = SINGLE_USER_ID;
     next();
     return;
   }
-
-  // No key provided
-  if (!apiKey) {
-    res.status(401).json({
-      success: false,
-      error: 'Authentication required',
-      hint: 'Provide API key via x-api-key header, api_key query param, or Bearer token'
-    });
-    return;
-  }
-
-  // Validate key and get owner
-  let validationResult: ApiKeyValidationResult = { valid: false };
-
-  if (config.API_KEYS.has(apiKey)) {
-    // Environment keys are admin keys
-    validationResult = { valid: true, userId: 'env_root', isEnvKey: true };
-  } else if (apiKeyManager) {
-    validationResult = await apiKeyManager.validateAndGetOwner(apiKey);
-  }
-
-  // Invalid key
-  if (!validationResult.valid) {
-    const maskedKey = apiKey.length > 8 ? apiKey.substring(0, 8) + '...' : '***';
-    console.warn(`[AUTH] ❌ Invalid API key: ${maskedKey} from ${req.ip}`);
-
-    res.status(403).json({
-      success: false,
-      error: 'Invalid API key'
-    });
-    return;
-  }
-
-  // ============================================
-  // ✅ NEW: STRICT USER BINDING CHECK
-  // ============================================
-
-  const requestUserId = extractRequestUserId(req);
-  const keyOwnerId = validationResult.userId;
-  const isEnvKey = validationResult.isEnvKey;
-
-  // If NOT an env/admin key AND userId is provided in request
-  if (!isEnvKey && requestUserId && keyOwnerId) {
-    if (String(requestUserId) !== String(keyOwnerId)) {
-      const maskedKey = apiKey.length > 8 ? apiKey.substring(0, 8) + '...' : '***';
-
-      console.warn(
-        `[AUTH] 🚨 SECURITY ALERT: Key owner "${keyOwnerId}" attempted to act as "${requestUserId}" | ` +
-        `Key: ${maskedKey} | IP: ${req.ip} | Path: ${req.path}`
-      );
-
-      res.status(403).json({
-        success: false,
-        error: 'Access Denied',
-        message: 'This API key is not authorized for the specified User ID.',
-        hint: 'Each API key is strictly bound to its owner. You cannot use it for other users.'
-      });
-      return;
+  if (!apiKey || !isAcceptedCredential(apiKey)) {
+    if (apiKey) {
+      const masked = apiKey.length > 8 ? apiKey.substring(0, 8) + '...' : '***';
+      console.warn(`[AUTH] ❌ Invalid credential: ${masked} from ${req.ip}`);
     }
+    refuse(req, res, apiKey);
+    return;
   }
-
-  // ============================================
-  // Attach to request (same as before + userId)
-  // ============================================
-
   req.apiKey = apiKey;
   req.apiKeyPrefix = apiKey.substring(0, Math.min(15, apiKey.length));
-  req.apiKeyUserId = keyOwnerId; // NEW: for downstream use
-
+  req.apiKeyUserId = SINGLE_USER_ID;
   next();
-};
-
-/**
- * Middleware: Require Admin API key (env_root only) - NEW
- */
-export const requireAdminApiKey = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  // First run normal auth
-  await requireApiKey(req, res, () => {
-    // Then check if it's an admin key
-    if (req.apiKeyUserId !== 'env_root') {
-      res.status(403).json({
-        success: false,
-        error: 'Admin access required',
-        message: 'This endpoint requires an admin API key defined in .env'
-      });
-      return;
-    }
-    next();
-  });
 };

@@ -18,7 +18,7 @@ import { randomBytes } from 'crypto';
 import { PERSISTABLE_KEYS } from './PersistedSettings';
 
 export type SettingType = 'choice' | 'bool' | 'secret' | 'text';
-export type SettingGroup = 'environment' | 'access' | 'security' | 'browser' | 'runs' | 'storage';
+export type SettingGroup = 'general' | 'server' | 'access' | 'security' | 'runs' | 'storage';
 
 export interface ChoiceOption {
   value: string;
@@ -53,37 +53,26 @@ const BOOL: ChoiceOption[] = [
 
 export const CATALOG: readonly SettingSpec[] = Object.freeze([
   {
-    key: 'APP_ENV', group: 'environment', type: 'choice', apply: 'restart', dflt: 'development',
+    key: 'APP_ENV', group: 'server', type: 'choice', apply: 'restart', dflt: 'development',
     fa: 'نوع اجرا', en: 'Environment',
-    hintFa: 'رفتار امنیتی و مرورگر را یکجا تنظیم می‌کند.',
-    hintEn: 'Tunes security and browser behaviour in one choice.',
+    hintFa: 'فقط مدل امنیتی را تعیین می‌کند؛ نمایش مرورگر به نحوهٔ شروع اجرا بستگی دارد.',
+    hintEn: 'Decides the security model only; browser visibility follows how a run was started.',
     options: [
-      { value: 'development', fa: 'در حال توسعه', en: 'Development',
-        hintFa: 'روی سیستم خودتان؛ ورود بدون توکن مجاز است.', hintEn: 'On your own machine; login without a token is allowed.' },
-      { value: 'server', fa: 'سرور (پروداکشن با مرورگر)', en: 'Server (production with browser)',
-        hintFa: 'برای سرور واقعی؛ توکن اجباری، افزونه‌ها و مرورگر از راه دور فعال.', hintEn: 'For a real server; token required, extensions and Remote Browser on.' },
-      { value: 'production', fa: 'پروداکشن بدون نمایشگر', en: 'Production (headless)',
-        hintFa: 'فقط صف اجرا؛ مرورگر پنهان و بدون افزونه.', hintEn: 'Job queue only; hidden browser, no extensions.' },
+      { value: 'development', fa: 'توسعه', en: 'Development',
+        hintFa: 'روی سیستم خودتان؛ بدون ورود و بدون توکن.', hintEn: 'Your own machine; no login and no token from this machine.' },
+      { value: 'production', fa: 'پروداکشن', en: 'Production',
+        hintFa: 'نمونهٔ مستقرشده؛ رمز عبور مالک در اولین اجرا انتخاب می‌شود و ورود لازم است.', hintEn: 'A deployed instance; you choose the owner password on first run and sign in afterwards.' },
     ],
   },
+
   {
-    key: 'AUTH_MODE', group: 'access', type: 'choice', apply: 'live', dflt: 'token',
-    fa: 'ورود به پنل', en: 'Panel login',
-    hintFa: 'حالت «بدون ورود» فقط در حالت توسعه و فقط از همین سیستم کار می‌کند.',
-    hintEn: '"No login" only works in development, and only from this machine.',
-    options: [
-      { value: 'open', fa: 'بدون ورود (فقط توسعه)', en: 'No login (development only)' },
-      { value: 'token', fa: 'با توکن API', en: 'API token required' },
-    ],
+    key: 'API_TOKEN', group: 'access', type: 'secret', apply: 'live', dflt: '', generatable: true, clearable: true,
+    fa: 'توکن اسکریپت/API (اختیاری)', en: 'Script/API token (optional)',
+    hintFa: 'فقط برای اسکریپت‌ها و ابزارهای خارجی (هدر x-api-key). برای ورود به پنل لازم نیست؛ ورود با رمز عبور است. خالی = غیرفعال.',
+    hintEn: 'Only for scripts and external tools (x-api-key header). Not used to sign in to the panel — that is the owner password. Empty = disabled.',
   },
   {
-    key: 'API_TOKEN', group: 'access', type: 'secret', apply: 'live', dflt: 'admin123', generatable: true,
-    fa: 'توکن API (کلید ورود)', en: 'API token (login key)',
-    hintFa: 'کلید ورود به پنل و API. با تغییر آن، نشست فعلی شما خودکار به‌روز می‌شود.',
-    hintEn: 'The key for the panel and the API. Changing it updates your current session automatically.',
-  },
-  {
-    key: 'PUBLIC_DOMAIN', group: 'access', type: 'text', apply: 'live', dflt: '',
+    key: 'PUBLIC_DOMAIN', group: 'server', type: 'text', apply: 'live', dflt: '',
     fa: 'آدرس عمومی سرور', en: 'Public address',
     hintFa: 'آدرسی که افزونه و لینک‌ها به آن وصل می‌شوند. خالی = تشخیص خودکار.',
     hintEn: 'Where the extension and links connect. Empty = detected automatically.',
@@ -113,20 +102,8 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
     hintFa: 'اجازهٔ اجرای کد دلخواه در workflow. کد با دسترسی همین سرور اجرا می‌شود.',
     hintEn: 'Lets workflows run your own code, with this server\'s privileges.',
   },
-  {
-    key: 'REAL_CHROME_ENABLED', group: 'browser', type: 'bool', apply: 'live', dflt: 'true', options: BOOL,
-    fa: 'مرورگر از راه دور (کروم واقعی)', en: 'Remote Browser (real Chrome)',
-    hintFa: 'کروم واقعی با افزونه‌ها و پروفایل ماندگار.', hintEn: 'Real Chrome with extensions and a persistent profile.',
-  },
-  {
-    key: 'DEFAULT_HEADLESS', group: 'browser', type: 'choice', apply: 'live', dflt: 'true',
-    fa: 'نمایش مرورگر هنگام اجرا', en: 'Browser during runs',
-    hintFa: 'وقتی workflow خودش مشخص نکرده باشد.', hintEn: 'When a workflow does not say.',
-    options: [
-      { value: 'true', fa: 'پنهان (سریع‌تر)', en: 'Hidden (faster)' },
-      { value: 'false', fa: 'آشکار', en: 'Visible' },
-    ],
-  },
+
+
   {
     key: 'STEP_TIMEOUT_MS', group: 'runs', type: 'choice', apply: 'live', dflt: '300000',
     fa: 'حداکثر زمان هر مرحله', en: 'Step timeout',
@@ -139,15 +116,7 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
       { value: '600000', fa: '۱۰ دقیقه', en: '10 minutes' },
     ],
   },
-  {
-    key: 'MAX_CONCURRENT', group: 'runs', type: 'choice', apply: 'restart', dflt: '20',
-    fa: 'تعداد اجرای هم‌زمان', en: 'Concurrent runs',
-    hintFa: 'عدد کمتر = مصرف رم کمتر.', hintEn: 'Lower = less memory.',
-    options: [
-      { value: '1', fa: '۱', en: '1' }, { value: '2', fa: '۲', en: '2' }, { value: '5', fa: '۵', en: '5' },
-      { value: '10', fa: '۱۰', en: '10' }, { value: '20', fa: '۲۰ (پیش‌فرض)', en: '20 (default)' },
-    ],
-  },
+
   {
     key: 'DOWNLOAD_TTL_MINUTES', group: 'storage', type: 'choice', apply: 'live', dflt: '30',
     fa: 'نگهداری فایل‌های دانلودی موقت', en: 'Keep temporary downloads',
@@ -157,8 +126,9 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
       { value: '60', fa: '۱ ساعت', en: '1 hour' }, { value: '240', fa: '۴ ساعت', en: '4 hours' },
     ],
   },
+
   {
-    key: 'EXECUTION_RETENTION_DAYS', group: 'storage', type: 'choice', apply: 'restart', dflt: '30',
+    key: 'EXECUTION_RETENTION_DAYS', group: 'storage', type: 'choice', apply: 'live', dflt: '30',
     fa: 'نگهداری تاریخچهٔ اجراها', en: 'Keep run history',
     hintFa: 'اجراهای قدیمی‌تر پاک می‌شوند.', hintEn: 'Older runs are deleted.',
     options: [
@@ -179,15 +149,10 @@ export function generateSecret(): string {
   return randomBytes(24).toString('hex');
 }
 
-export const PUBLIC_DEFAULT_TOKEN = 'admin123';
-
 /** Context the validator needs; passed in so this module stays pure. */
 export interface ValidateCtx {
-  /** Profile the change will run under ('development' | 'server' | 'production'). */
+  /** Environment the change will run under ('development' | 'production'). */
   profile: string;
-  allowDefaultToken: boolean;
-  openAllowed: boolean;
-  singleUser: boolean;
 }
 
 type Err = { error: string; errorFa: string };
@@ -197,12 +162,7 @@ type Err = { error: string; errorFa: string };
  * `null` means "remove the panel's value" (fall back to .env / default).
  */
 export function validateValue(spec: SettingSpec, value: unknown, ctx: ValidateCtx): { value: string | null } | Err {
-  const devLike = ctx.profile === 'development' || ctx.profile === 'test';
   if (value === null) {
-    if (spec.key === 'API_TOKEN' && !devLike) {
-      return { error: 'The API token cannot be reset on a server; generate a new one instead.',
-        errorFa: 'روی سرور نمی‌توان توکن را به پیش‌فرض برگرداند؛ یک توکن جدید بسازید.' };
-    }
     return { value: null };
   }
   if (typeof value === 'boolean') value = value ? 'true' : 'false';
@@ -216,19 +176,8 @@ export function validateValue(spec: SettingSpec, value: unknown, ctx: ValidateCt
       return { error: `Choose one of: ${spec.options.map((o) => o.value).join(', ')}`, errorFa: 'یکی از گزینه‌ها را انتخاب کنید.' };
     }
   }
-  if (spec.key === 'AUTH_MODE' && v === 'open') {
-    if (!ctx.singleUser) return { error: 'Login without a token is not available in multi-user mode.', errorFa: 'در حالت چندکاربره ورود بدون توکن ممکن نیست.' };
-    if (!ctx.openAllowed) {
-      return { error: 'Login without a token is only allowed in development.',
-        errorFa: 'ورود بدون توکن فقط در حالت توسعه مجاز است. ابتدا «نوع اجرا» را «در حال توسعه» کنید و ری‌استارت کنید.' };
-    }
-  }
   if (spec.key === 'API_TOKEN') {
-    if (v === PUBLIC_DEFAULT_TOKEN) {
-      if (!devLike && !ctx.allowDefaultToken) {
-        return { error: 'admin123 is public and refused on a server profile.', errorFa: 'admin123 عمومی است و روی سرور پذیرفته نمی‌شود.' };
-      }
-    } else {
+    if (v !== '') {
       if (v.length < 16) return { error: 'Use at least 16 characters (or press Generate).', errorFa: 'حداقل ۱۶ کاراکتر (یا دکمهٔ «ساخت خودکار» را بزنید).' };
       if (!/^[A-Za-z0-9._~-]+$/.test(v)) return { error: 'Use letters, digits and . _ ~ - only.', errorFa: 'فقط حروف انگلیسی، عدد و . _ ~ - مجاز است.' };
     }

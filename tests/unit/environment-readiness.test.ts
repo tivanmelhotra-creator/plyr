@@ -113,7 +113,7 @@ const STEERING = [
   'ADMIN_SECRET', 'RATE_LIMIT_ENABLED', 'REQUIRE_BROWSER_RUNTIME',
   'BROWSER_MODE_DEFAULT', 'LOCAL_BROWSER_ENABLED',
   'ALLOW_DEFAULT_API_TOKEN', 'REAL_CHROME_DEBUG_BIND', 'PUBLIC_DOMAIN', 'BASE_URL',
-  'WEBHOOK_SECRET', 'LIVE_SHARE_TTL_SEC', 'REDIS_URL',
+  'WEBHOOK_SECRET', 'LIVE_SHARE_TTL_SEC', 'REDIS_URL', 'AUTH_FILE',
 ];
 
 /**
@@ -238,12 +238,12 @@ describe('2. default env behaviour', () => {
   });
 
   it('reports WHERE each value came from, so a surprise is diagnosable', async () => {
-    await withEnv({ APP_ENV: 'server', REAL_CHROME_DISPLAY: ':77' }, ({ profile }) => {
-      const explicit = profile.resolveVar('REAL_CHROME_DISPLAY', process.env, 'server');
+    await withEnv({ APP_ENV: 'production', REAL_CHROME_DISPLAY: ':77' }, ({ profile }) => {
+      const explicit = profile.resolveVar('REAL_CHROME_DISPLAY', process.env, 'production');
       expect(explicit.source).toBe('explicit');
-      const fromProfile = profile.resolveVar('REAL_CHROME_HEADLESS', process.env, 'server');
+      const fromProfile = profile.resolveVar('RATE_LIMIT_ENABLED', process.env, 'production');
       expect(fromProfile.source).toBe('profile');
-      expect(fromProfile.value).toBe('false');
+      expect(fromProfile.value).toBe('true');
     });
   });
 });
@@ -261,59 +261,61 @@ describe('3. production config', () => {
     });
   });
 
-  it('REFUSES to start with the public default token under server/production', async () => {
-    // A weak default is defensible on a laptop. On a profile that means
-    // "reachable" it is a published credential, so it is a refusal, in writing.
-    for (const profile of ['production', 'server']) {
+  it('has no default-token check any more: there is no default credential to refuse', async () => {
+    for (const profile of ['production', 'server', 'development']) {
       await withEnv({ APP_ENV: profile }, async ({ startup }) => {
         const report = await startup.validateStartup();
-        const issue = report.issues.find((i) => i.id === 'default_token_in_production');
-        expect(issue, profile).toBeDefined();
-        expect(issue!.severity).toBe('fatal');
-        expect(issue!.problem).toMatch(/admin123/);
-        expect(issue!.fix).toMatch(/API_TOKEN/);
-        expect(report.ok).toBe(false);
+        expect(report.issues.find((i) => i.id === 'default_token_in_production'), profile).toBeUndefined();
+        expect(JSON.stringify(report.issues)).not.toMatch(/admin123/);
       });
     }
   });
 
-  it('only warns for admin123 on development, and for the dev compose opt-out', async () => {
+  it('production with no password chosen yet: starts, and says setup is pending (warn, not fatal)', async () => {
+    for (const profile of ['production', 'server']) {
+      await withEnv({ APP_ENV: profile, AUTH_FILE: '' }, async ({ startup }) => {
+        const report = await startup.validateStartup();
+        const issue = report.issues.find((i) => i.id === 'owner_password_not_set');
+        expect(issue, profile).toBeDefined();
+        expect(issue!.severity).toBe('warn');
+        expect(issue!.problem).not.toMatch(/token/i);
+        expect(report.issues.filter((i) => i.severity === 'fatal')).toEqual([]);
+      });
+    }
+  });
+
+  it('production REFUSES to start when the auth file is corrupt (fail closed, never re-open setup)', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'plyr-auth-bad-'));
+    const f = path.join(d, 'auth.json');
+    fs.writeFileSync(f, '{ this is not json');
+    try {
+      await withEnv({ APP_ENV: 'production', AUTH_FILE: f }, async ({ startup }) => {
+        const report = await startup.validateStartup();
+        const issue = report.issues.find((i) => i.id === 'auth_store_unavailable');
+        expect(issue).toBeDefined();
+        expect(issue!.severity).toBe('fatal');
+        expect(report.ok).toBe(false);
+      });
+    } finally { fs.rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it('development never asks for a password and never reports the auth store', async () => {
     await withEnv({ APP_ENV: 'development' }, async ({ startup }) => {
       const report = await startup.validateStartup();
-      expect(report.issues.find((i) => i.id === 'default_token_in_production')).toBeUndefined();
-    });
-    await withEnv({ APP_ENV: 'server', ALLOW_DEFAULT_API_TOKEN: 'true' }, async ({ startup }) => {
-      const report = await startup.validateStartup();
-      const issue = report.issues.find((i) => i.id === 'default_token_in_production');
-      expect(issue!.severity).toBe('warn');
-      expect(report.ok).toBe(true);
+      expect(report.issues.find((i) => /^(owner_password|auth_store)/.test(i.id))).toBeUndefined();
     });
   });
 
-  it('accepts a custom token under production', async () => {
-    await withEnv({ APP_ENV: 'production', API_TOKEN: 'a-real-secret-token' }, async ({ startup }) => {
-      const report = await startup.validateStartup();
-      expect(report.issues.find((i) => i.id === 'default_token_in_production')).toBeUndefined();
-    });
-  });
-
-  it('does NOT abort a running multi-tenant server merely for an empty API_KEYS', async () => {
-    // This rule was written as `fatal` and that was a BUG, kept as a test
-    // because the reasoning is the point. `config.API_KEYS` is only the .env
-    // SEED — the real store is Redis (ApiKeyManager), and /admin/api-keys/generate
-    // sits behind ADMIN_SECRET, not behind API-key auth. Aborting would have
-    // killed healthy instances AND removed the endpoint that repairs the very
-    // state being complained about.
+  it('an old DEPLOYMENT_MODE=multi is ignored with a warning, never a different behaviour', async () => {
     await withEnv(
-      { APP_ENV: 'production', DEPLOYMENT_MODE: 'multi', API_KEYS_ENABLED: 'true', API_KEYS: '' },
-      async ({ startup }) => {
+      { APP_ENV: 'production', API_TOKEN: 'a-real-secret-token', DEPLOYMENT_MODE: 'multi' },
+      async ({ config, startup }) => {
+        expect(config.DEPLOYMENT_MODE).toBe('single');
         const report = await startup.validateStartup();
-        const issue = report.issues.find((i) => i.id === 'no_api_keys');
+        const issue = report.issues.find((i) => i.id === 'deployment_mode_ignored');
         expect(issue).toBeDefined();
         expect(issue!.severity).toBe('warn');
         expect(report.ok).toBe(true);
-        // The fix must be runnable, not advice.
-        expect(issue!.fix).toMatch(/admin\/api-keys\/generate/);
       },
     );
   });
@@ -323,12 +325,11 @@ describe('3. production config', () => {
 // 4 + 5. Remote Browser enabled / Real Chrome enabled where required
 // ===========================================================================
 describe('4+5. Remote Browser and Real Chrome enablement', () => {
-  it('the server profile runs HEADED, because extensions need it', async () => {
-    // MEASURED, not assumed: headless Chrome loads 0 extension service workers,
-    // headed loads 1. The Element Inspector IS an extension, so a headless
-    // server profile would ship the product without its headline feature.
+  it('the old `server` value means production, and the operator Chrome stays headed', async () => {
+    // The operator's interactive Real Chrome (viewer, Inspector) is a window to
+    // look at in every environment; workflow RUNS follow core/RunPolicy.
     await withEnv({ APP_ENV: 'server' }, ({ config }) => {
-      expect(config.APP_PROFILE).toBe('server');
+      expect(config.APP_PROFILE).toBe('production');
       expect(config.REAL_CHROME_ENABLED).toBe(true);
       expect(config.REAL_CHROME_HEADLESS).toBe(false);
     });
@@ -368,7 +369,7 @@ describe('4+5. Remote Browser and Real Chrome enablement', () => {
       expect(config.APP_PROFILE).toBe('development');
     });
     await withEnv({ APP_ENV: 'server' }, ({ config }) => {
-      expect(config.APP_PROFILE).toBe('server');
+      expect(config.APP_PROFILE).toBe('production');
     });
   });
 });
@@ -685,11 +686,11 @@ describe('11. startup readiness', () => {
 // 12. Local / Remote switching
 // ===========================================================================
 describe('12. local and remote switching', () => {
-  it('all four profiles resolve a complete, deterministic configuration', async () => {
+  it('every profile resolves a complete, deterministic configuration', async () => {
     // The explicit prohibition: "Environment A → Real Chrome enabled,
     // Environment B → Real Chrome silently disabled". Every profile must have a
     // defined answer for the values that decide whether the browser works.
-    for (const id of ['development', 'server', 'production', 'test'] as const) {
+    for (const id of ['development', 'production', 'test'] as const) {
       await withEnv({ APP_ENV: id }, ({ config }) => {
         expect(config.APP_PROFILE).toBe(id);
         expect(typeof config.REAL_CHROME_ENABLED).toBe('boolean');

@@ -494,7 +494,8 @@ describe('5. the dashboard can see how the prompt is going', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('6. only the browser it was addressed to may answer', () => {
-  it('refuses an answer from a key in another account', async () => {
+  // N/A since S23: one install = one owner; there is no second account to isolate from.
+  it.skip('refuses an answer from a key in another account', async () => {
     // An unguessable id is not an authorization model. KEY_OTHER is a perfectly
     // valid credential — it simply belongs to somebody else.
     const started = await begin({}, KEY_A);
@@ -505,12 +506,14 @@ describe('6. only the browser it was addressed to may answer', () => {
     expect([403, 404]).toContain(res.status);
   });
 
-  it('does not list one account’s prompts to another', async () => {
+  // N/A since S23: one install = one owner; there is no second account to isolate from.
+  it.skip('does not list one account’s prompts to another', async () => {
     await begin({}, KEY_A);
     expect((await asked(KEY_OTHER)).body.count).toBe(0);
   });
 
-  it('does not report another account’s prompt through status either', async () => {
+  // N/A since S23: one install = one owner; there is no second account to isolate from.
+  it.skip('does not report another account’s prompt through status either', async () => {
     const started = await begin({}, KEY_A);
     const res = await status(started.body.consent.consentId, KEY_OTHER);
     expect(res.body.found).toBe(false);
@@ -519,7 +522,8 @@ describe('6. only the browser it was addressed to may answer', () => {
     expect(res.body.nodeId).toBeUndefined();
   });
 
-  it('a refused answer leaves the prompt answerable by the right browser', async () => {
+  // N/A since S23: one install = one owner; there is no second account to isolate from.
+  it.skip('a refused answer leaves the prompt answerable by the right browser', async () => {
     // A stranger's Deny must not consume the question. Otherwise anyone holding
     // a valid key for any account could cancel someone else's targeting.
     const started = await begin({}, KEY_A);

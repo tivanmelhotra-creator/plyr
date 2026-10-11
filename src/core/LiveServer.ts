@@ -9,7 +9,7 @@ import { URL } from 'url';
 
 import { config } from '../config';
 import { LiveBus } from './LiveBus';
-import { getApiKeyManager } from '../middleware/auth';
+import { isAcceptedCredential, isOpenAuthRequest } from '../middleware/auth';
 import { getLiveChannel } from '../utils/redis-keys';
 import { verifyShareToken } from './StepReporter';
 
@@ -40,7 +40,16 @@ export interface LiveAuthResult {
 export const authorizeLive = async (
   apiKey: string | undefined,
   userId: string,
-  opts?: { share?: string | undefined; jobId?: string | undefined }
+  opts?: {
+    share?: string | undefined;
+    jobId?: string | undefined;
+    /**
+     * The incoming request (HTTP or WebSocket upgrade). Needed so development's
+     * "this machine needs no credential" rule applies to sockets too: the peer
+     * address is read from it. Omitted = credential required.
+     */
+    req?: { socket?: { remoteAddress?: string }; headers?: Record<string, string | string[] | undefined> };
+  }
 ): Promise<LiveAuthResult> => {
   // Step 29: a valid signed share token grants read-only live access to
   // exactly the (userId, jobId) it was minted for — no API key required.
@@ -55,50 +64,12 @@ export const authorizeLive = async (
     // A share token was supplied but did not check out: fall through to
     // API-key auth so a legitimate owner can still connect.
   }
-  // If auth is globally disabled, allow (dev/self-hosted convenience).
-  if (!config.API_KEYS_ENABLED) {
-    return { ok: true };
-  }
-  // ============================================================
-  // Single-user self-hosted mode (DEPLOYMENT_MODE=single, the DEFAULT).
-  // ------------------------------------------------------------
-  // One shared API_TOKEN authenticates the whole instance and resolves to
-  // the fixed identity `local` (see middleware/auth.ts § SINGLE-USER MODE).
-  // There is no Redis key record for it and it is NOT in config.API_KEYS,
-  // so the multi-tenant path below rejected it with `invalid_api_key` and
-  // the upgrade was answered 403 — which killed BOTH WebSocket channels on
-  // the default deployment: /browser/ws (Live Browser View + the Element
-  // Picker: no frames, no navigation) and /live/ws (live run events).
-  // The token is instance-wide, so any userId it asks for is its own.
-  if (config.IS_SINGLE_USER) {
-    if (apiKey && config.API_TOKEN && apiKey === config.API_TOKEN) {
-      return { ok: true };
-    }
-    return { ok: false, reason: apiKey ? 'invalid_api_key' : 'missing_api_key' };
-  }
-  if (!apiKey) {
-    return { ok: false, reason: 'missing_api_key' };
-  }
-  // Env (admin) key: full access.
-  if (config.API_KEYS.has(apiKey)) {
-    return { ok: true };
-  }
-  const mgr = getApiKeyManager();
-  if (!mgr) {
-    return { ok: false, reason: 'auth_unavailable' };
-  }
-  const res = await mgr.validateAndGetOwner(apiKey);
-  if (!res.valid) {
-    return { ok: false, reason: 'invalid_api_key' };
-  }
-  if (res.isEnvKey) {
-    return { ok: true };
-  }
-  // Strict owner binding: key owner must match requested userId.
-  if (res.userId && String(res.userId) === String(userId)) {
-    return { ok: true };
-  }
-  return { ok: false, reason: 'forbidden_user' };
+  // Development: this machine is the owner, no credential involved.
+  if (opts?.req && isOpenAuthRequest(opts.req)) return { ok: true };
+  // One install, one owner: a valid session / service credential / optional API
+  // token is instance-wide, so any userId it asks for is its own.
+  if (isAcceptedCredential(apiKey)) return { ok: true };
+  return { ok: false, reason: apiKey ? 'invalid_api_key' : 'missing_api_key' };
 };
 
 export class LiveServer {
@@ -184,7 +155,7 @@ export class LiveServer {
         return;
       }
 
-      authorizeLive(apiKey, userId, { share, jobId }).then((auth) => {
+      authorizeLive(apiKey, userId, { share, jobId, req }).then((auth) => {
         if (!auth.ok) {
           socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
           socket.destroy();

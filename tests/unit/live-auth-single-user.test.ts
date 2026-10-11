@@ -18,11 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // long. These tests fail if the single-user branch is ever removed.
 
 const cfg: Record<string, unknown> = {
-  IS_SINGLE_USER: true,
-  DEPLOYMENT_MODE: 'single',
   API_TOKEN: 'tok_single_shared',
-  API_KEYS_ENABLED: true,
-  API_KEYS: new Set<string>(),      // empty in single mode — this is expected
   LIVE_SHARE_SECRET: '',
 };
 
@@ -32,29 +28,15 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-// The manager is only consulted on the multi-tenant path; if the single-user
-// branch is missing, these tests would fall through to it — so make that
-// visible instead of silently returning `auth_unavailable`.
-const validateAndGetOwner = vi.fn(async () => ({ valid: false }));
-vi.mock('../../src/middleware/auth', () => ({
-  getApiKeyManager: () => ({ validateAndGetOwner }),
-}));
-
-describe('authorizeLive — single-user mode (DEPLOYMENT_MODE=single)', () => {
+describe('authorizeLive — one instance token', () => {
   beforeEach(() => {
-    cfg.IS_SINGLE_USER = true;
-    cfg.DEPLOYMENT_MODE = 'single';
     cfg.API_TOKEN = 'tok_single_shared';
-    cfg.API_KEYS_ENABLED = true;
-    validateAndGetOwner.mockClear();
   });
 
   it('allows the shared API_TOKEN (this is what unblocks /browser/ws)', async () => {
     const { authorizeLive } = await import('../../src/core/LiveServer');
     const res = await authorizeLive('tok_single_shared', 'local');
     expect(res.ok).toBe(true);
-    // It must NOT have gone down the multi-tenant path.
-    expect(validateAndGetOwner).not.toHaveBeenCalled();
   });
 
   it('accepts any userId for that token — the instance IS the user', async () => {
@@ -82,10 +64,9 @@ describe('authorizeLive — single-user mode (DEPLOYMENT_MODE=single)', () => {
     expect(res.reason).toBe('missing_api_key');
   });
 
-  it('still short-circuits when auth is globally disabled', async () => {
-    cfg.API_KEYS_ENABLED = false;
+  it('a token that differs only in length is refused (no prefix match)', async () => {
     const { authorizeLive } = await import('../../src/core/LiveServer');
-    const res = await authorizeLive(undefined, 'local');
-    expect(res.ok).toBe(true);
+    expect((await authorizeLive('tok_single_shared_x', 'local')).ok).toBe(false);
+    expect((await authorizeLive('tok_single', 'local')).ok).toBe(false);
   });
 });

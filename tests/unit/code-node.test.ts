@@ -193,8 +193,8 @@ describe('config gate', () => {
   it('can be switched off in single mode', async () => {
     expect((await load({ DEPLOYMENT_MODE: 'single', CODE_NODE_ENABLED: 'false' })).CODE_NODE_ENABLED).toBe(false);
   });
-  it('is always off in multi mode, even when asked for', async () => {
-    expect((await load({ DEPLOYMENT_MODE: 'multi', CODE_NODE_ENABLED: 'true' })).CODE_NODE_ENABLED).toBe(false);
+  it('an old DEPLOYMENT_MODE=multi changes nothing (multi mode no longer exists)', async () => {
+    expect((await load({ DEPLOYMENT_MODE: 'multi', CODE_NODE_ENABLED: 'true' })).CODE_NODE_ENABLED).toBe(true);
   });
 });
 

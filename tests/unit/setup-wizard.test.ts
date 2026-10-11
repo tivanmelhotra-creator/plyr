@@ -31,32 +31,30 @@ function drive(snippet: string, answers: string[] = [], tty = true): string {
 const env = () => fs.readFileSync(path.join(dir, '.env'), 'utf8');
 
 describe('./plyr setup', () => {
-  it.skipIf(!hasScript)('development: Enter, Enter = no login, a random token still exists', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'APP_ENV=development\nAPI_TOKEN=admin123\n');
+  it.skipIf(!hasScript)('development: Enter, Enter = no login, no token anywhere', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'APP_ENV=development\n');
     const out = drive('plyr_setup "$ROOT_DIR" "$ENV_FILE" --if-needed', ['', '']);
     expect(out).toContain('(recommended — press Enter)');
-    expect(env()).toMatch(/^AUTH_MODE=open$/m);
-    expect(env()).toMatch(/^API_TOKEN=[0-9a-f]{48}$/m);
     expect(env()).toMatch(/^APP_ENV=development$/m);
+    expect(env()).not.toMatch(/API_TOKEN|AUTH_MODE|admin123/);
+    expect(out).toMatch(/Login\s+: none/);
   });
 
-  it.skipIf(!hasScript)('server: generates the token and the webhook secret and shows the token', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'APP_ENV=development\nAPI_TOKEN=admin123\n');
-    const out = drive('plyr_setup "$ROOT_DIR" "$ENV_FILE"', ['2', '', '2', 'panel.example.com', '']);
-    const tok = /^API_TOKEN=([0-9a-f]{48})$/m.exec(env())![1];
-    expect(out).toContain(tok);
+  it.skipIf(!hasScript)('server: asks no token, shows none, tells you the password is chosen in the browser', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'APP_ENV=development\n');
+    const out = drive('plyr_setup "$ROOT_DIR" "$ENV_FILE"', ['2', '2', 'panel.example.com', '']);
     expect(env()).toMatch(/^APP_ENV=server$/m);
-    expect(env()).toMatch(/^AUTH_MODE=token$/m);
     expect(env()).toMatch(/^PUBLIC_DOMAIN=https:\/\/panel\.example\.com$/m);
-    expect(env()).toMatch(/^WEBHOOK_SECRET=[0-9a-f]{48}$/m);
-    // One line per key, always.
-    expect(env().match(/^API_TOKEN=/gm)).toHaveLength(1);
+    expect(env()).toMatch(/^WEBHOOK_SECRET=[0-9a-f]{48}$/m);   // signs webhooks; not a login credential
+    expect(env()).not.toMatch(/API_TOKEN|AUTH_MODE|admin123/);
+    expect(out).toMatch(/owner password — you choose it in the browser/);
+    // The only long hex string that may be printed is none: no secret is shown.
+    expect(out).not.toMatch(/[0-9a-f]{48}/);
   });
 
-  it.skipIf(!hasScript)('accepts the user\'s own token and rejects a weak one first', () => {
-    fs.writeFileSync(path.join(dir, '.env'), 'API_TOKEN=admin123\n');
-    const out = drive('plyr_setup "$ROOT_DIR" "$ENV_FILE"', ['2', '2', 'short', 'my_own_token_1234567890', '', '']);
-    expect(out).toContain('Use at least 16 characters');
+  it.skipIf(!hasScript)('does not touch an API_TOKEN the operator chose on purpose', () => {
+    fs.writeFileSync(path.join(dir, '.env'), 'API_TOKEN=my_own_token_1234567890\n');
+    drive('plyr_setup "$ROOT_DIR" "$ENV_FILE"', ['2', '1', '']);
     expect(env()).toMatch(/^API_TOKEN=my_own_token_1234567890$/m);
   });
 
@@ -72,10 +70,10 @@ describe('./plyr setup', () => {
   it.skipIf(!hasScript)('a value written to .env replaces the same key saved in the panel', () => {
     fs.writeFileSync(path.join(dir, '.env'), 'APP_ENV=development\n');
     fs.mkdirSync(path.join(dir, 'data'));
-    fs.writeFileSync(path.join(dir, 'data/settings.env'), 'AUTH_MODE=token\nCODE_NODE_ENABLED=false\n');
+    fs.writeFileSync(path.join(dir, 'data/settings.env'), 'APP_ENV=server\nCODE_NODE_ENABLED=false\n');
     drive('plyr_setup "$ROOT_DIR" "$ENV_FILE"', ['', '']);
     const panel = fs.readFileSync(path.join(dir, 'data/settings.env'), 'utf8');
-    expect(panel).not.toMatch(/AUTH_MODE/);
+    expect(panel).not.toMatch(/APP_ENV/);
     expect(panel).toMatch(/CODE_NODE_ENABLED=false/);
   });
 
@@ -88,42 +86,36 @@ describe('./plyr setup', () => {
 });
 
 describe('./plyr dev-docker questions', () => {
-  it('--dev needs no token question and writes an open, random-token stack', () => {
-    const out = drive(`dev_docker_setup dev '' "$ROOT_DIR/.plyr" && cat "$DEV_ENV_FILE"`, [], false);
-    expect(out).toMatch(/^PLYR_DEV_AUTH_MODE=open$/m);
-    expect(out).toMatch(/^PLYR_DEV_API_TOKEN=[0-9a-f]{48}$/m);
+  it('--dev writes a stack that needs no login and holds no secret', () => {
+    const out = drive(`dev_docker_setup dev "$ROOT_DIR/.plyr" && cat "$DEV_ENV_FILE"`, [], false);
+    expect(out).toMatch(/^PLYR_DEV_MODE=dev$/m);
+    expect(out).toMatch(/^PLYR_DEV_APP_ENV=development$/m);
+    expect(out).not.toMatch(/TOKEN|AUTH_MODE|admin123|[0-9a-f]{32}/);
   });
 
-  it('--prod --token new generates; --token keep reuses it next time', () => {
-    const a = drive(`dev_docker_setup prod new "$ROOT_DIR/.plyr" && cat "$DEV_ENV_FILE"`, [], false);
-    const t1 = /^PLYR_DEV_API_TOKEN=(\w+)$/m.exec(a)![1];
-    expect(a).toMatch(/^PLYR_DEV_AUTH_MODE=token$/m);
-    const b = drive(`dev_docker_setup prod keep "$ROOT_DIR/.plyr" && cat "$DEV_ENV_FILE"`, [], false);
-    expect(b).toContain(`PLYR_DEV_API_TOKEN=${t1}`);
-  });
-
-  it('rejects a weak --token value', () => {
-    const out = drive(`dev_docker_setup prod short "$ROOT_DIR/.plyr"; echo RC=$?`, [], false);
-    expect(out).toContain('at least 16');
-    expect(out).toContain('RC=1');
+  it('--prod writes a production-like stack: the password is chosen in the browser', () => {
+    const out = drive(`dev_docker_setup prod "$ROOT_DIR/.plyr" && cat "$DEV_ENV_FILE"`, [], false);
+    expect(out).toMatch(/^PLYR_DEV_MODE=prod$/m);
+    expect(out).toMatch(/^PLYR_DEV_APP_ENV=production$/m);
+    expect(out).not.toMatch(/TOKEN|AUTH_MODE|admin123|[0-9a-f]{32}/);
   });
 
   it.skipIf(!hasScript)('asks dev or prod when nothing is given', () => {
-    const out = drive(`dev_docker_setup '' '' "$ROOT_DIR/.plyr" && echo "MODE=$DEV_SUMMARY_MODE"`, ['2', '']);
+    const out = drive(`dev_docker_setup '' "$ROOT_DIR/.plyr" && echo "MODE=$DEV_SUMMARY_MODE"`, ['2', '']);
     expect(out).toContain('How should this test stack run?');
     expect(out).toContain('MODE=prod');
   });
 
-  it('plyr rejects --token with --dev before touching Docker', () => {
+  it('plyr no longer has a --token option (a token is never asked for or created)', () => {
     const r = spawnSync(path.join(root, 'plyr'), ['dev-docker', '--dev', '--token', 'new'], { encoding: 'utf8' });
     expect(r.status).not.toBe(0);
-    expect(`${r.stdout}${r.stderr}`).toContain('--token only applies to --prod');
+    expect(`${r.stdout}${r.stderr}`).toMatch(/unknown dev-docker option: --token/);
   });
 
   it('the dev compose file reads the answers and is still loopback-only', () => {
     const compose = fs.readFileSync(path.join(root, 'docker-compose.dev.yml'), 'utf8');
-    expect(compose).toContain('${PLYR_DEV_API_TOKEN:-admin123}');
-    expect(compose).toContain('${PLYR_DEV_AUTH_MODE:-open}');
+    expect(compose).toContain('${PLYR_DEV_APP_ENV:-development}');
+    expect(compose).not.toMatch(/API_TOKEN|AUTH_MODE|admin123/);
     expect(compose).toContain('127.0.0.1:3000:3000');
     const manager = fs.readFileSync(path.join(root, 'scripts/plyr.sh'), 'utf8');
     expect(manager).toContain('--env-file "$DEV_ENV_FILE"');
@@ -170,9 +162,8 @@ describe('wz_gen_token (Windows / Git Bash regressions)', () => {
     expect(r.out).toMatch(/^[0-9a-f]{48}$/);
   });
 
-  it('plyr.sh reuses wz_gen_token instead of its own head-pipe, and reports unexpected failures', () => {
+  it('plyr.sh has no head-pipe token generator of its own, and reports unexpected failures', () => {
     const manager = fs.readFileSync(path.join(root, 'scripts/plyr.sh'), 'utf8');
-    expect(manager).toContain('fresh_token="$(wz_gen_token)"');
     expect(manager).not.toMatch(/\| head -c 48\)/);
     expect(manager).toMatch(/trap .*ERR/);
   });

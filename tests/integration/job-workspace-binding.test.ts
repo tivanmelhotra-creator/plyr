@@ -12,9 +12,6 @@ let jbConn: any;
 // request body: naming someone else's workflow, a missing one, or a malformed id
 // has to yield NO workspace (the run still works, outputs stay in the job store).
 
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: { getUserPlan: vi.fn(async () => ({ quota: 0, maxTabs: 2, maxSteps: 100, priority: 3, maxSchedules: 5, runLimit: 0 })) },
-}));
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
   validateSteps: (s: unknown) => s as unknown[],
@@ -28,6 +25,7 @@ vi.mock('../../src/services/job.service', () => ({
 }));
 vi.mock('../../src/config', () => ({
   config: {
+    INSTANCE_LIMITS: { quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0 },
     DEFAULT_HEADLESS: true, MAX_QUEUED_JOBS_PER_USER: 50, VIP_PRIORITY_THRESHOLD: 100,
     RUN_WAIT_MAX_MS: 300, RUN_WAIT_POLL_MS: 20, IDEMPOTENCY_TTL_SECONDS: 86400, WORKFLOW_MAX_VERSIONS: 20,
     IS_SINGLE_USER: false,
@@ -67,7 +65,6 @@ beforeAll(async () => {
   app.use(express.json());
   app.use('/', createUserRoutes({
     queue: queue as any, connection: (jbConn = makeConnection()) as any, profileManager: {} as any,
-    quotaManager: { hasQuotaRemaining: async () => true, getUsage: async () => ({ usedSeconds: 0 }) } as any,
   }));
 });
 
@@ -127,5 +124,33 @@ describe('workflow workspace binding on a run', () => {
     const bobs = await saveWorkflow('bob');
     await request(app).post('/run-node').send({ userId: 'alice', steps, workflowId: bobs });
     expect(lastData.__workspace).toBeUndefined();
+  });
+});
+
+describe('run origin + browser profile on the job', () => {
+  it('a run of a saved workflow uses THAT workflow\'s browser profile', async () => {
+    const res = await request(app).post('/workflows/alice').send({ name: 'Shop', steps, profileId: 'shopA' });
+    const id = res.body.workflow.id;
+    expect(res.body.workflow.profileId).toBe('shopA');
+    await request(app).post('/run').send({ userId: 'alice', steps, workflowId: id, origin: 'manual' });
+    expect(lastData.profileId).toBe('shopA');
+    expect(lastData.__origin).toBe('manual');
+    await request(app).post('/run-node').send({ userId: 'alice', steps, workflowId: id, origin: 'manual' });
+    expect(lastData.profileId).toBe('shopA');
+  });
+
+  it('only an explicit origin=manual is manual; everything else is automatic', async () => {
+    await request(app).post('/run').send({ userId: 'alice', steps });
+    expect(lastData.__origin).toBe('automatic');
+    expect(lastData.headless).toBeUndefined(); // visibility is not a request field any more
+    await request(app).post('/run').send({ userId: 'alice', steps, headless: false });
+    expect(lastData.__origin).toBe('automatic');
+  });
+
+  it('refuses a profile name that is not a plain path segment', async () => {
+    for (const bad of ['../etc', 'a/b', '.hidden', 'x'.repeat(65)]) {
+      const res = await request(app).post('/workflows/alice').send({ name: 'Bad', steps, profileId: bad });
+      expect(res.status, bad).toBe(400);
+    }
   });
 });

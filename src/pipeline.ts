@@ -16,7 +16,8 @@ import {
 } from './core/ErrorPolicy';
 import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './core/CodeNode';
 import { isTriggerAction } from './core/TriggerEngine';
-import { QuotaManager } from './core/QuotaManager';
+import { hiddenLaunchOptions, describeVisibility } from './core/RunPolicy';
+import type { ProfileRef } from './core/ProfileLease';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
   EXT_BROWSER_FLAG,
@@ -164,9 +165,6 @@ async function checkBrowserHealth(browserContext: any, log?: (msg: string) => vo
   }
 }
 
-function isVipUser(userPlan: PlanConfig): boolean {
-  return userPlan.priority < config.VIP_PRIORITY_THRESHOLD;
-}
 
 function isPageValid(page: any, context?: any): boolean {
   try {
@@ -640,11 +638,12 @@ export function toCsv(data: any): string {
 // VIP BROWSER SETUP
 // ════════════════════════════════════════════════════════════════
 
-// What each user's persistent (VIP) browser was last built with. A persistent
-// context is reused across jobs, so without this a changed Launch Browser option
-// would be "applied" to a browser that was opened with the old one: a control
-// that changes nothing. Keyed by userId, value is the BrowserOptions plan hash.
-const vipOptionHash = new Map<string, string>();
+// What each profile's browser was last built with (options + visibility). A
+// profile's browser is reused while it is open, so without this a changed
+// Launch Browser option — or a manual (visible) run arriving after an
+// automatic (hidden) one — would reuse a browser built differently. Keyed by
+// the profile's lease id.
+const profileBuildHash = new Map<string, string>();
 
 /** Tell the user which options could not apply to the browser they are on. */
 function logIgnoredOptions(context: AutomationContext, plan: { ignored: Array<{ id: string; reason: string }> }): void {
@@ -653,11 +652,23 @@ function logIgnoredOptions(context: AutomationContext, plan: { ignored: Array<{ 
   }
 }
 
-async function ensureVipBrowser(context: AutomationContext): Promise<void> {
-  const { userId, profileManager, log, userPlan, jobId, headless } = context;
+/**
+ * The run's own browser, on the profile it holds the lease for.
+ *
+ * ONE path for every server-side run that does not use extensions: a
+ * persistent Chromium context on the profile's user-data-dir, visible or hidden
+ * as the run's origin decided (core/RunPolicy). The worker only calls the
+ * pipeline after taking the profile's lease, so nothing else can be using this
+ * user-data-dir right now.
+ */
+async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
+  const { profileManager, log, userPlan, jobId, headless } = context;
+  const profile = context.profile;
+  const key = profile?.id || 'default';
   const optPlan = planFor(context.browserOptions, 'vip');
-  const wantHash = optPlan.hash;
-  const profileDir = path.join(config.PROFILES_DIR, userId, 'chrome-profile');
+  const wantHash = `${optPlan.hash}|headless=${headless ? 1 : 0}`;
+  const profileDir = profile?.userDataDir || path.join(config.PROFILES_DIR, context.userId, 'chrome-profile');
+  const userId = key; // ProfileManager's persistent-context map is keyed by profile
 
   await fs.promises.mkdir(profileDir, { recursive: true });
 
@@ -667,8 +678,8 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
   if (existing) {
     try {
-      const optionsChanged = (vipOptionHash.get(userId) ?? '') !== wantHash;
-      if (optionsChanged) log('[BROWSER] Browser options changed - relaunching with the new options');
+      const optionsChanged = (profileBuildHash.get(key) ?? '') !== wantHash;
+      if (optionsChanged) log('[BROWSER] Browser options or visibility changed - relaunching the profile browser');
       if (!optionsChanged && await checkBrowserHealth(existing.context, log)) {
         const pages = existing.context.pages();
         const currentPageCount = pages.length;
@@ -688,7 +699,7 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
         profileManager.setVipContext(userId, existing.context, jobId);
         profileManager.registerPage(jobId, context.page);
         profileManager.updateActivity(userId);
-        log('[BROWSER] Reusing VIP browser');
+        log(`[BROWSER] Reusing the browser of profile "${profile?.label || key}" (${describeVisibility(headless)})`);
         return;
       }
     } catch (err: any) {
@@ -697,7 +708,7 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
     try {
       await existing.context.close();
-      log('[BROWSER] Closed unhealthy VIP context');
+      log('[BROWSER] Closed the previous profile browser');
     } catch (err: any) {
       log(`[BROWSER] Error closing unhealthy context: ${err.message}`);
     }
@@ -706,9 +717,9 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
-  log('[BROWSER] Launching new VIP browser...');
+  log(`[BROWSER] Launching profile "${profile?.label || key}" — ${describeVisibility(headless)} browser`);
 
-  // A VISIBLE browser (Live browser on) needs an X display. On a server there
+  // A VISIBLE browser (a manual run) needs an X display. On a server there
   // is none until we start one, and without it Playwright dies with the opaque
   // "Missing X server or $DISPLAY". Same degrade-never-throw rule as RealChrome:
   // if provisioning is impossible a display may still exist, and the launch
@@ -716,9 +727,9 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
   if (!headless) {
     try {
       await Desktop.ensureDisplay();
-      log(`[BROWSER] Live browser: using display ${process.env.DISPLAY || '(default)'}`);
+      log(`[BROWSER] Visible run: using display ${process.env.DISPLAY || '(default)'}`);
     } catch (err: any) {
-      log(`[BROWSER] Live browser requested but no display could be prepared automatically: ${err.message}`);
+      log(`[BROWSER] Visible run requested but no display could be prepared automatically: ${err.message}`);
     }
   }
 
@@ -739,6 +750,9 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
       timeout: config.BROWSER_LAUNCH_TIMEOUT_MS,
       // Use a system Chrome only if CHROME_EXE is set; otherwise Playwright bundled Chromium.
       ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),
+      // Hidden runs use Chromium's NEW headless mode (full binary), never the
+      // extension-less headless shell (core/RunPolicy).
+      ...hiddenLaunchOptions(headless, config.CHROME_EXE),
       // Per-run options (core/BrowserOptions). `headless` is the EFFECTIVE value
       // (Launch node option over the run switch) and always comes last.
       ...(optPlan.launch.slowMo ? { slowMo: optPlan.launch.slowMo } : {}),
@@ -771,16 +785,16 @@ async function ensureVipBrowser(context: AutomationContext): Promise<void> {
 
     profileManager.setVipContext(userId, browserContext, jobId);
     profileManager.registerPage(jobId, page);
-    vipOptionHash.set(userId, wantHash);
-    context.browserOptionsHash = wantHash;
+    profileBuildHash.set(key, wantHash);
+    context.browserOptionsHash = optPlan.hash;
 
     context.browserContext = browserContext;
     context.page = page;
 
-    log('[BROWSER] VIP browser ready');
+    log('[BROWSER] Profile browser ready');
 
   } catch (err: any) {
-    throw new BrowserError(`Failed to launch VIP browser: ${err.message}`);
+    throw new BrowserError(`Failed to launch the browser for profile "${profile?.label || key}": ${err.message}`);
   }
 }
 
@@ -834,8 +848,10 @@ async function ensureExtensionContext(context: AutomationContext): Promise<void>
 
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
-  log('[BROWSER] This workflow uses extensions — attaching to the server\'s Real Chrome...');
-  const real = await acquireExtensionBrowser();
+  log(`[BROWSER] This workflow uses extensions — attaching to the server's Real Chrome (${describeVisibility(context.headless)})...`);
+  // The run's origin decides visibility here too: manual = visible, automatic =
+  // hidden new-headless (extensions still load). See core/RunPolicy.
+  const real = await acquireExtensionBrowser(context.headless);
 
   // Real Chrome is shared with the viewer, so the run only ever sees, and may
   // only close, tabs it opened itself (see confineContextToOwnedPages).
@@ -852,125 +868,6 @@ async function ensureExtensionContext(context: AutomationContext): Promise<void>
   profileManager.registerPage(jobId, page);
 
   log('[BROWSER] Attached to Real Chrome (extensions available)');
-}
-
-// ════════════════════════════════════════════════════════════════
-// FREE BROWSER SETUP
-// ════════════════════════════════════════════════════════════════
-
-async function ensureFreeContext(context: AutomationContext): Promise<void> {
-  const { userId, profileManager, log, jobId } = context;
-
-  if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
-
-  if (!GlobalBrowser.isHealthy()) {
-    log('[BROWSER] GlobalBrowser not healthy, waiting...');
-    await new Promise(r => setTimeout(r, 3000));
-
-    if (!GlobalBrowser.isHealthy()) {
-      throw new BrowserError('GlobalBrowser unavailable after retry');
-    }
-  }
-
-  // Say so instead of silently ignoring the choice: free-tier jobs share one
-  // headless pool, so "Live browser" cannot apply to them.
-  if (context.headless === false) {
-    log('[BROWSER] Live browser is not available on this plan (shared headless pool) - running headless.');
-  }
-  log('[BROWSER] Acquiring Free Context...');
-
-  let browserContext: any;
-
-  // Shared pool: only context-scope options can apply (the browser process is
-  // not ours to relaunch). The rest are reported, never silently dropped.
-  const freePlan = planFor(context.browserOptions, 'free');
-  if (context.browserOptions && Object.keys(context.browserOptions).length) {
-    log(`[BROWSER] Applying browser options: ${describeOptions(context.browserOptions)}`);
-  }
-  logIgnoredOptions(context, freePlan);
-  context.browserOptionsHash = freePlan.hash;
-
-  try {
-    browserContext = await GlobalBrowser.getContext(freePlan.context);
-  } catch (err: any) {
-    throw new BrowserError(`Failed to get free context: ${err.message}`);
-  }
-
-  if (await context.isCancelled()) {
-    await browserContext.close().catch((e: any) => log(`[BROWSER] Error closing on cancel: ${e.message}`));
-    throw new Error('CANCELLED_BY_USER');
-  }
-
-  profileManager.setFreeContext(jobId, browserContext, userId);
-
-  if (config.FREE_RESOURCE_BLOCKING) {
-    await browserContext.route('**/*', (route: any) => {
-      const type = route.request().resourceType();
-      if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
-        return route.abort();
-      }
-      return route.continue();
-    });
-  }
-
-  if (config.FREE_FLATTENER_ENABLED) {
-    await browserContext.addInitScript(() => {
-      (window as any).open = (url?: string) => {
-        if (url && typeof url === 'string' && url !== 'about:blank') {
-          try {
-            window.location.href = url;
-          } catch { }
-        }
-        return null;
-      };
-
-      const fixLinks = () => {
-        document.querySelectorAll('a[target="_blank"]').forEach(link => {
-          link.setAttribute('target', '_self');
-        });
-      };
-
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', fixLinks);
-      } else {
-        fixLinks();
-      }
-    });
-  }
-
-  const page = await browserContext.newPage();
-
-  if (config.FREE_FLATTENER_ENABLED) {
-    browserContext.on('page', async (newPage: any) => {
-      if (browserContext.pages().length > 1) {
-        let url: string | null = null;
-
-        try {
-          await newPage.waitForLoadState('domcontentloaded', { timeout: 2000 });
-          url = newPage.url();
-        } catch (err: any) {
-          log(`[BROWSER] Popup load error: ${err.message}`);
-        }
-
-        try {
-          await newPage.close();
-        } catch { }
-
-        if (url && url !== 'about:blank') {
-          const mainPage = browserContext.pages().find((p: any) => !p.isClosed());
-          if (mainPage) {
-            await mainPage.goto(url).catch((e: any) => log(`[BROWSER] Redirect error: ${e.message}`));
-          }
-        }
-      }
-    });
-  }
-
-  profileManager.registerPage(jobId, page);
-  context.browserContext = browserContext;
-  context.page = page;
-
-  log('[BROWSER] Free context ready');
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -995,8 +892,11 @@ async function runPipelineImpl(params: {
   isCancelled?: CancelChecker;
   profileManager: ProfileManager;
   userPlan: PlanConfig;
-  quotaManager: QuotaManager;
+  /** The browser profile this run holds the lease for (core/ProfileLease). */
+  profile?: ProfileRef;
   onEvent?: (type: string, data?: Record<string, unknown>) => void;
+  /** Who started the run (core/RunPolicy). Informational here: `headless` already follows it. */
+  origin?: 'manual' | 'automatic';
   // Step 28: optional initial item stream injected by a trigger
   // (webhook body/headers/query, schedule context, or manual data).
   // When omitted, the workflow starts with a single empty item.
@@ -1012,7 +912,7 @@ async function runPipelineImpl(params: {
     isCancelled,
     profileManager,
     userPlan,
-    quotaManager,
+    profile,
     onEvent,
     initialItems
   } = params;
@@ -1051,7 +951,7 @@ async function runPipelineImpl(params: {
     userPlan,
     variables: new Map<string, any>(),
     globalLoopCounter: 0,
-    quotaManager,
+    profile,
     onEvent,
     // Step 21: start every workflow with a single empty item, like n8n,
     // so the first node always has exactly one input item to act on.
@@ -1064,25 +964,19 @@ async function runPipelineImpl(params: {
 
   let globalStepNumber = 0;
 
-  if (!(await quotaManager.hasQuotaRemaining(userId, userPlan.quota))) {
-    throw new Error('Daily quota exhausted');
-  }
-
-  const isVip = isVipUser(userPlan);
+  // Every server-side run owns its profile's browser for the duration of the
+  // run (the worker holds the profile lease). There is no quota and no tier.
+  const ownsProfileBrowser = true;
+  log(`[BROWSER] Run origin: ${params.origin || 'automatic'} -> ${describeVisibility(context.headless)} browser`);
 
   try {
-    // Local mode is checked FIRST and independently of the plan: it is a choice
-    // about which machine renders, not a tier. A user's own browser costs this
-    // server nothing, so gating it behind VIP would be charging for the cheaper
-    // option.
+    // Local mode is checked FIRST: it is a choice about which machine renders.
     if (browserModes.modeOf(userId) === 'local') {
       await ensureLocalContext(context);
     } else if (stepsUseExtensions(steps)) {
       await ensureExtensionContext(context);
-    } else if (isVip) {
-      await ensureVipBrowser(context);
     } else {
-      await ensureFreeContext(context);
+      await ensureProfileBrowser(context);
     }
 
     if (await context.isCancelled()) {
@@ -1097,8 +991,6 @@ async function runPipelineImpl(params: {
   }
 
   const startTime = Date.now();
-  let lastQuotaCheck = Date.now();
-  let quotaExhausted = false;
   let lastTouchTime = Date.now();
   let watchdogActive = true;
 
@@ -1114,21 +1006,6 @@ async function runPipelineImpl(params: {
         return;
       }
 
-      const now = Date.now();
-
-      if (now - lastQuotaCheck > 5000) {
-        const elapsed = Math.round((now - lastQuotaCheck) / 1000);
-        const hasQuota = await quotaManager.consumeQuota(userId, elapsed, userPlan.quota);
-
-        if (!hasQuota) {
-          quotaExhausted = true;
-          watchdogActive = false;
-          clearInterval(watchdog);
-          log('[QUOTA] Quota exhausted');
-        }
-
-        lastQuotaCheck = now;
-      }
     } catch (err: any) {
       log(`[WATCHDOG] Error: ${err.message}`);
     }
@@ -1273,10 +1150,6 @@ async function runPipelineImpl(params: {
 
       if (context.globalLoopCounter > config.MAX_TOTAL_EXECUTION_OPS) {
         throw new Error('Safety Stop: Maximum operations exceeded');
-      }
-
-      if (quotaExhausted) {
-        throw new Error('QUOTA_EXHAUSTED');
       }
 
       if (await context.isCancelled()) {
@@ -2421,7 +2294,7 @@ async function runPipelineImpl(params: {
             }
 
             if (!found) {
-              if (newTab && isVip) {
+              if (newTab) {
                 const newPage = await context.browserContext.newPage();
                 await newPage.goto(url, { waitUntil, timeout });
                 context.page = newPage;
@@ -2650,7 +2523,7 @@ async function runPipelineImpl(params: {
           const followRedirects = parseBoolean(finalParams.followRedirects ?? true);
           const allowInternal = parseBoolean(finalParams.allowInternal);
 
-          validateHttpUrl(url, allowInternal && isVip);
+          validateHttpUrl(url, allowInternal);
 
           url = appendApiKeyToUrl(url, auth);
 
@@ -2824,10 +2697,8 @@ async function runPipelineImpl(params: {
               await ensureLocalContext(context);
             } else if (stepsUseExtensions(steps)) {
               await ensureExtensionContext(context);
-            } else if (isVip) {
-              await ensureVipBrowser(context);
             } else {
-              await ensureFreeContext(context);
+              await ensureProfileBrowser(context);
             }
             launchAction = 'launched';
           } else {
@@ -2927,10 +2798,9 @@ async function runPipelineImpl(params: {
 
           if (context.browserShared) {
             // Nothing to un-register with a pool: the browser was never ours.
-          } else if (isVip) {
-            profileManager.removeVipContext(userId);
           } else {
-            profileManager.removeFreeContext(jobId);
+            profileManager.removeVipContext(context.profile?.id || 'default');
+            profileBuildHash.delete(context.profile?.id || 'default');
           }
           profileManager.unregisterPage(jobId);
 
@@ -3050,7 +2920,7 @@ async function runPipelineImpl(params: {
             }
           }
 
-          if (!target && finalParams.createIfNotFound && isVip) {
+          if (!target && finalParams.createIfNotFound) {
             target = await context.browserContext.newPage();
             if (finalParams.newTabUrl) {
               await target.goto(finalParams.newTabUrl);
@@ -3462,14 +3332,14 @@ async function runPipelineImpl(params: {
           await savePartialOutputs(userId, jobId, stepOutputs, log);
         }
 
-        if (isVip) {
-          profileManager.updateActivity(userId);
+        if (ownsProfileBrowser && !context.browserShared) {
+          profileManager.updateActivity(context.profile?.id || 'default');
         }
 
       } catch (stepError: any) {
         // Step 27: never retry/swallow fatal control-flow errors.
         const __fatal = stepError instanceof WorkflowFailError
-          || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|QUOTA_EXHAUSTED|Safety Stop)/.test(String(stepError && stepError.message));
+          || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|Safety Stop)/.test(String(stepError && stepError.message));
         // Retry-on-fail: roll back this attempt's bookkeeping and try again.
         if (!__fatal && __policy.retryOnFail && shouldRetry(__attempt, __policy.maxTries)) {
           globalStepNumber = __sgBefore;
@@ -3532,25 +3402,15 @@ async function runPipelineImpl(params: {
     watchdogActive = false;
     clearInterval(watchdog);
 
-    const finalElapsed = Math.round((Date.now() - lastQuotaCheck) / 1000);
-    if (finalElapsed > 0) {
-      await quotaManager.consumeQuota(userId, finalElapsed, userPlan.quota);
-    }
-
     // Real Chrome runs: close the tabs this run opened, and only those.
     if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
 
     if (context.browserContext) {
       // 'browserShared' is local mode (the user's own browser) — never ours to
       // close. A finished run must leave their tabs exactly as it found them.
-      if (!isVip && !context.browserShared) {
-        try {
-          await context.browserContext.close();
-        } catch (err: any) {
-          log(`[BROWSER] Error closing context: ${err.message}`);
-        }
-        profileManager.removeFreeContext(jobId);
-      }
+      // The profile's browser stays open for the next run on the same profile
+      // (closed by the idle collector, or relaunched when visibility/options
+      // differ). Shared browsers (local mode, Real Chrome) are never ours.
       profileManager.unregisterPage(jobId);
     }
 
@@ -3573,13 +3433,6 @@ async function runPipelineImpl(params: {
     watchdogActive = false;
     clearInterval(watchdog);
 
-    const finalElapsed = Math.round((Date.now() - lastQuotaCheck) / 1000);
-    if (finalElapsed > 0) {
-      try {
-        await quotaManager.consumeQuota(userId, finalElapsed, userPlan.quota);
-      } catch { }
-    }
-
     await savePartialOutputs(userId, jobId, stepOutputs, log).catch(() => { });
 
     if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
@@ -3587,17 +3440,10 @@ async function runPipelineImpl(params: {
     if (context.browserContext) {
       // Same rule on the failure path, and it matters MORE here: a run that
       // errored must not also take the user's browser down with it.
-      if (!isVip && !context.browserShared) {
-        try {
-          await context.browserContext.close();
-        } catch { }
-        profileManager.removeFreeContext(jobId);
-      }
+      // The profile's browser stays open for the next run on the same profile
+      // (closed by the idle collector, or relaunched when visibility/options
+      // differ). Shared browsers (local mode, Real Chrome) are never ours.
       profileManager.unregisterPage(jobId);
-    }
-
-    if (err.message === 'QUOTA_EXHAUSTED') {
-      throw new Error('Daily quota exhausted');
     }
 
     if (err instanceof WorkflowFailError) {

@@ -40,6 +40,7 @@
  */
 
 import { config } from '../config';
+import { authStore } from '../core/AuthStore';
 import { describeProfile, PROFILES } from '../core/EnvProfile';
 import { inspectBrowserRuntime, formatRuntimeReport } from '../core/BrowserRuntime';
 import { validateStartup, collectSecurity } from '../core/StartupValidation';
@@ -53,6 +54,12 @@ function mask(v: string): string {
   if (!v) return '(empty)';
   if (v.length <= 8) return '*'.repeat(v.length);
   return `${v.slice(0, 4)}…${v.slice(-2)} (${v.length} chars)`;
+}
+
+function authLine(): string {
+  if (config.APP_PROFILE === 'development') return '(not required in development)';
+  const st = authStore.state();
+  return st === 'set' ? 'set (hashed)' : st === 'unset' ? 'NOT SET — setup page will be shown' : `UNAVAILABLE (${authStore.unavailableReason()})`;
 }
 
 async function main(): Promise<void> {
@@ -105,7 +112,6 @@ async function main(): Promise<void> {
   out.push('KEY SETTINGS');
   out.push(DASH);
   out.push(`  PORT                       = ${config.PORT}`);
-  out.push(`  DEPLOYMENT_MODE            = ${config.DEPLOYMENT_MODE}`);
   out.push(`  REAL_CHROME_ENABLED        = ${config.REAL_CHROME_ENABLED}`
     + (process.env.REAL_CHROME_ENABLED ? '   [explicit in env]' : '   [default]'));
   out.push(`  CHROME_EXE                 = ${config.CHROME_EXE || '(unset — uses bundled Chromium)'}`);
@@ -113,10 +119,8 @@ async function main(): Promise<void> {
   out.push(`  DESKTOP_AUTO_PROVISION     = ${config.DESKTOP_AUTO_PROVISION}`);
   out.push(`  REAL_CHROME_USER_DATA_DIR  = ${config.REAL_CHROME_USER_DATA_DIR}`);
   out.push(`  REAL_CHROME_EXTENSIONS_DIR = ${config.REAL_CHROME_EXTENSIONS_DIR}`);
-  out.push(`  API_TOKEN                  = ${mask(config.API_TOKEN)}`
-    + (config.API_TOKEN_IS_DEFAULT ? '   ⚠️  SHIPPED DEFAULT' : ''));
-  out.push(`  ADMIN_SECRET               = ${mask(config.ADMIN_SECRET)}`);
-  out.push(`  API_KEYS                   = ${config.API_KEYS.size} key(s) in .env`);
+  out.push(`  OWNER PASSWORD             = ${authLine()}`);
+  out.push(`  API_TOKEN (scripts)        = ${config.API_TOKEN ? mask(config.API_TOKEN) : '(none — optional)'}`);
   out.push(`  REAL_CHROME_DEBUG_BIND     = ${config.REAL_CHROME_DEBUG_BIND}`);
   out.push(`  REDIS_URL                  = ${config.REDIS_URL.replace(/\/\/[^@/]*@/, '//***@')}`);
   out.push(`  PUBLIC_DOMAIN              = ${config.PUBLIC_DOMAIN || '(unset)'}`);
@@ -143,12 +147,13 @@ async function main(): Promise<void> {
   for (const c of [...security.checks, ...https.checks]) {
     out.push(`  ${mark(c)} ${c.label.padEnd(38)} ${c.detail}`);
   }
-  if (config.API_TOKEN_IS_DEFAULT) {
-    const refused = (config.APP_PROFILE === 'server' || config.APP_PROFILE === 'production') && !config.ALLOW_DEFAULT_API_TOKEN;
-    out.push(`  ${refused ? '✗' : '⚠️ '} ${'API_TOKEN is not the public default'.padEnd(38)} admin123`
-      + (refused ? ` — REFUSED under profile ${config.APP_PROFILE}` : ' — acceptable only on a machine nobody else can reach'));
-  } else {
-    out.push(`  ✓ ${'API_TOKEN is not the public default'.padEnd(38)} custom token`);
+  {
+    const st = authStore.state();
+    const dev = config.APP_PROFILE === 'development';
+    if (dev) out.push(`  ✓ ${'Owner authentication'.padEnd(38)} development: no login on this machine`);
+    else if (st === 'set') out.push(`  ✓ ${'Owner password'.padEnd(38)} set (hashed, ${authStore.filePath()})`);
+    else if (st === 'unset') out.push(`  ⚠️  ${'Owner password'.padEnd(38)} not chosen yet — open the panel to run setup`);
+    else out.push(`  ✗ ${'Owner password'.padEnd(38)} auth file unusable — ${authStore.unavailableReason()}`);
   }
 
   // ── 6. The verdict, in the same words the server will use at boot ────────

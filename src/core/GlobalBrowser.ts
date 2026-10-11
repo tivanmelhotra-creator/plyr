@@ -57,7 +57,10 @@ export class GlobalBrowser {
       console.log('[GlobalBrowser] Launching shared browser instance...');
       
       this.instance = await chromium.launch({
-        headless: config.DEFAULT_HEADLESS,
+        // The shared pool backs only the editor's simulated-browser picker
+        // contexts; no workflow run uses it any more (runs use their own
+        // profile, see pipeline ensureProfileBrowser). Always hidden.
+        headless: true,
         timeout: config.BROWSER_LAUNCH_TIMEOUT_MS,
         // Use a system Chrome only if CHROME_EXE is set; otherwise Playwright bundled Chromium.
         ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),

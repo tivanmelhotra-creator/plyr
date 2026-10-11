@@ -118,7 +118,7 @@ describe('precedence — explicit beats profile beats default', () => {
   });
 
   it('the profile fills the gap when nothing was set', () => {
-    const r = resolveVar('REAL_CHROME_HEADLESS', { APP_ENV: 'production' } as NodeJS.ProcessEnv);
+    const r = resolveVar('RATE_LIMIT_ENABLED', { APP_ENV: 'production' } as NodeJS.ProcessEnv);
     expect(r.value).toBe('true');
     expect(r.source).toBe('profile');
     expect(r.profile).toBe('production');
@@ -126,9 +126,9 @@ describe('precedence — explicit beats profile beats default', () => {
 
   it('an EMPTY variable counts as unset, not as a choice', () => {
     // `FOO=` in a .env file and a commented-out FOO are the same intent.
-    const r = resolveVar('REAL_CHROME_HEADLESS', {
+    const r = resolveVar('RATE_LIMIT_ENABLED', {
       APP_ENV: 'production',
-      REAL_CHROME_HEADLESS: '',
+      RATE_LIMIT_ENABLED: '',
     } as NodeJS.ProcessEnv);
     expect(r.source).toBe('profile');
     expect(r.value).toBe('true');
@@ -154,50 +154,29 @@ describe('precedence — explicit beats profile beats default', () => {
 // ===========================================================================
 // C. The operator's own example, end to end
 // ===========================================================================
-describe("the operator's example: headless follows the situation", () => {
-  it('development gives a VISIBLE browser', () => {
-    expect(profiledEnv('REAL_CHROME_HEADLESS', { APP_ENV: 'development' } as NodeJS.ProcessEnv))
-      .toBe('false');
+describe('browser visibility is NOT an environment decision', () => {
+  // Visibility follows each RUN (core/RunPolicy: manual = visible, automatic =
+  // hidden). No environment may decide it, or "Development"/"Production" would
+  // again mean "visible"/"hidden".
+  it('no profile sets REAL_CHROME_HEADLESS or any headless default', () => {
+    for (const id of PROFILE_IDS) {
+      for (const name of Object.keys(PROFILE_DEFAULTS[id])) expect(name).not.toMatch(/HEADLESS/);
+      expect(profiledEnv('REAL_CHROME_HEADLESS', { APP_ENV: id } as NodeJS.ProcessEnv)).toBeUndefined();
+    }
   });
 
-  it('production gives a HIDDEN browser', () => {
-    expect(profiledEnv('REAL_CHROME_HEADLESS', { APP_ENV: 'production' } as NodeJS.ProcessEnv))
-      .toBe('true');
+  it('only development and production are operator environments (server = production)', () => {
+    expect(PROFILE_IDS).toEqual(['development', 'production', 'test']);
   });
 
-  it('test gives a hidden browser too, because CI has no screen', () => {
-    expect(profiledEnv('REAL_CHROME_HEADLESS', { APP_ENV: 'test' } as NodeJS.ProcessEnv))
-      .toBe('true');
-  });
-
-  it('development turns the desktop ON, production turns it OFF', () => {
-    // A headed browser with no display cannot start; a VNC desktop nobody
-    // connects to is idle attack surface. The pair must move together.
-    const dev = { APP_ENV: 'development' } as NodeJS.ProcessEnv;
-    const prod = { APP_ENV: 'production' } as NodeJS.ProcessEnv;
-    expect(profiledEnv('DESKTOP_ENABLED', dev)).toBe('true');
-    expect(profiledEnv('REAL_CHROME_HEADLESS', dev)).toBe('false');
-    expect(profiledEnv('DESKTOP_ENABLED', prod)).toBe('false');
-    expect(profiledEnv('REAL_CHROME_HEADLESS', prod)).toBe('true');
+  it('development and production keep a display (manual runs are visible in both)', () => {
+    expect(profiledEnv('DESKTOP_ENABLED', { APP_ENV: 'development' } as NodeJS.ProcessEnv)).toBe('true');
+    expect(profiledEnv('DESKTOP_ENABLED', { APP_ENV: 'production' } as NodeJS.ProcessEnv)).toBe('true');
   });
 
   it('never leaves the DevTools port open in production or test', () => {
-    // An open DevTools port is remote code execution and full cookie theft.
-    expect(profiledEnv('REAL_CHROME_DEBUG_PORT', { APP_ENV: 'production' } as NodeJS.ProcessEnv))
-      .toBe('0');
-    expect(profiledEnv('REAL_CHROME_DEBUG_PORT', { APP_ENV: 'test' } as NodeJS.ProcessEnv))
-      .toBe('0');
-  });
-
-  it('a headed profile is never combined with a disabled desktop', () => {
-    // Guards the combination, not each variable: the failure mode is a browser
-    // that cannot start, and it only appears when the two disagree.
-    for (const id of PROFILE_IDS) {
-      const env = { APP_ENV: id } as NodeJS.ProcessEnv;
-      const headless = profiledEnv('REAL_CHROME_HEADLESS', env) === 'true';
-      const desktop = profiledEnv('DESKTOP_ENABLED', env) === 'true';
-      if (!headless) expect(desktop).toBe(true);
-    }
+    expect(profiledEnv('REAL_CHROME_DEBUG_PORT', { APP_ENV: 'production' } as NodeJS.ProcessEnv)).toBe('0');
+    expect(profiledEnv('REAL_CHROME_DEBUG_PORT', { APP_ENV: 'test' } as NodeJS.ProcessEnv)).toBe('0');
   });
 });
 
@@ -206,26 +185,23 @@ describe("the operator's example: headless follows the situation", () => {
 // ===========================================================================
 describe('the profile report tells the operator who decided what', () => {
   it('marks an explicit override as overridden, and keeps the profile value visible', () => {
-    // "You set this" and "development set this for you" must never look alike.
     const rep = describeProfile({
       APP_ENV: 'development',
-      REAL_CHROME_HEADLESS: 'true',
+      RATE_LIMIT_ENABLED: 'true',
     } as NodeJS.ProcessEnv);
-    const row = rep.values.find((v) => v.name === 'REAL_CHROME_HEADLESS');
+    const row = rep.values.find((v) => v.name === 'RATE_LIMIT_ENABLED');
     expect(row?.source).toBe('explicit');
     expect(row?.value).toBe('true');
     expect(row?.overridden).toBe(true);
-    // Still shows what development WOULD have chosen, so the operator can see
-    // exactly what their override cost them.
     expect(row?.profileValue).toBe('false');
   });
 
   it('does not cry "overridden" when the explicit value agrees with the profile', () => {
     const rep = describeProfile({
       APP_ENV: 'development',
-      REAL_CHROME_HEADLESS: 'false',
+      RATE_LIMIT_ENABLED: 'false',
     } as NodeJS.ProcessEnv);
-    const row = rep.values.find((v) => v.name === 'REAL_CHROME_HEADLESS');
+    const row = rep.values.find((v) => v.name === 'RATE_LIMIT_ENABLED');
     expect(row?.source).toBe('explicit');
     expect(row?.overridden).toBe(false);
   });

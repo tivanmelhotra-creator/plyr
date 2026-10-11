@@ -19,13 +19,6 @@ import request from 'supertest';
 // Same harness as workflows.test.ts: the real router, an in-memory Redis stub and
 // a fake queue, so no Redis, no browser and no worker are needed.
 
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: {
-    getUserPlan: vi.fn(async () => ({
-      quota: 0, maxTabs: 2, maxSteps: 100, priority: 3, maxSchedules: 5, runLimit: 0,
-    })),
-  },
-}));
 
 vi.mock('../../src/validation', () => ({
   sanitizeUserId: (id: unknown) => String(id),
@@ -45,6 +38,7 @@ vi.mock('../../src/services/job.service', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
+    INSTANCE_LIMITS: { quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0 },
     DEFAULT_HEADLESS: true,
     MAX_QUEUED_JOBS_PER_USER: 50,
     VIP_PRIORITY_THRESHOLD: 100,
@@ -139,10 +133,6 @@ beforeAll(async () => {
     queue: queue as any,
     connection: connection as any,
     profileManager: {} as any,
-    quotaManager: {
-      hasQuotaRemaining: async () => true,
-      getUsage: async () => ({ usedSeconds: 0, date: '2026-07-30' }),
-    } as any,
   });
   app = express();
   app.use(express.json());

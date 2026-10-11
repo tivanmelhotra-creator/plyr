@@ -18,7 +18,11 @@ import { TooManyViewersError } from '../core/JobScreencast';
 export type LiveAuthFn = (
   apiKey: string | undefined,
   userId: string,
-  opts?: { share?: string | undefined; jobId?: string | undefined },
+  opts?: {
+    share?: string | undefined;
+    jobId?: string | undefined;
+    req?: { socket?: { remoteAddress?: string }; headers?: Record<string, string | string[] | undefined> };
+  },
 ) => Promise<{ ok: boolean; reason?: string }>;
 
 export interface LiveFramesDeps {
@@ -41,7 +45,7 @@ export function createLiveFramesRouter(deps: LiveFramesDeps): Router {
 
     let auth: { ok: boolean; reason?: string };
     try {
-      auth = await deps.authorize(apiKey, userId, { share, jobId });
+      auth = await deps.authorize(apiKey, userId, { share, jobId, req });
     } catch {
       auth = { ok: false, reason: 'auth_unavailable' };
     }

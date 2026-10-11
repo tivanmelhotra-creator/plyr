@@ -4,14 +4,19 @@ import type IORedis from 'ioredis';
 
 import { config } from '../config';
 import type { ProfileManager } from '../core/ProfileManager';
-import { UserManager } from '../core/UserManager';
-import type { QuotaManager } from '../core/QuotaManager';
+import { sanitizeProfileId, type ProfileLeases } from '../core/ProfileLease';
+
+/** A workflow's browser profile name: a plain path segment, or 'default'. */
+function profileIdOrThrow(raw: unknown): string {
+  if (raw === null || raw === '' || raw === 'default') return 'default';
+  const id = sanitizeProfileId(raw);
+  if (!id) throw new Error('profileId: use letters, digits, - and _ only (max 64), starting with a letter or digit');
+  return id;
+}
 import {
   sanitizeUserId,
   validateSteps,
   validateWebhookUrl,
-  validateHeadless,
-  validateBackgroundHeadless
 } from '../validation';
 import {
   runBodySchema,
@@ -21,7 +26,6 @@ import {
   workflowStateSchema,
   parseBody
 } from '../schemas';
-import { isVipUser } from '../utils/helpers';
 import { getUserActiveJobsKey, getIdempotencyKey, isValidIdempotencyKey, isValidWorkflowId } from '../utils/redis-keys';
 import { readJobFile, readPartialJobFile } from '../services/job.service';
 import { resolveArtifact } from '../core/JobArtifacts';
@@ -58,7 +62,8 @@ interface UserRoutesDeps {
   queue: Queue;
   connection: IORedis;
   profileManager: ProfileManager;
-  quotaManager: QuotaManager;
+  /** Optional: lets the Workspace report which profile is busy. */
+  profileLeases?: ProfileLeases;
 }
 
 const SCHEDULE_PREFIX = 'sched';
@@ -100,7 +105,7 @@ const waitForJobResult = async (
 
 export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   const router = Router();
-  const { queue, connection, profileManager, quotaManager } = deps;
+  const { queue, connection, profileManager, profileLeases } = deps;
   const workflowService = new WorkflowService(workflowStoreFor(connection));
 
   /**
@@ -114,6 +119,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
    */
   function workspaceFor(userId: string, workflowId: string): JobWorkspace {
     return { owner: config.IS_SINGLE_USER ? SINGLE_USER_ID : userId, workflowId };
+  }
+  /** The browser profile a saved workflow's runs use (Workflow Settings). */
+  async function profileOf(ws: JobWorkspace): Promise<string | undefined> {
+    try {
+      const wf = await workflowService.get(ws.owner, ws.workflowId);
+      const p = wf?.profileId;
+      return typeof p === 'string' && p && p !== 'default' ? p : undefined;
+    } catch { return undefined; }
   }
   async function resolveJobWorkspace(userId: string, workflowId: unknown): Promise<JobWorkspace | undefined> {
     if (typeof workflowId !== 'string' || !isValidWorkflowId(workflowId)) return undefined;
@@ -136,10 +149,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
     res.json({
       success: true,
       userId,
-      isAdmin: config.IS_SINGLE_USER ? false : userId === 'env_root',
       keyPrefix: req.apiKeyPrefix || null,
-      mode: config.DEPLOYMENT_MODE,
-      isSingleUser: config.IS_SINGLE_USER,
       codeNodeEnabled: config.CODE_NODE_ENABLED
     });
   });
@@ -155,9 +165,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!body) return;
 
       const userId = sanitizeUserId(body.userId);
-      const headless = validateHeadless(body.headless, config.DEFAULT_HEADLESS);
+      // Browser visibility is NOT a request field any more (core/RunPolicy):
+      // the editor's Execute Workflow / Run node says it is the operator's
+      // click (`origin: 'manual'` = visible); every other caller is automatic.
+      const origin = body.origin === 'manual' ? 'manual' : 'automatic';
 
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       const steps = validateSteps(body.steps, plan);
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
       // Step 28: optional trigger data to seed the first node's input items.
@@ -195,17 +208,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
       }
 
-      // Check quota
-      const hasQuota = await quotaManager.hasQuotaRemaining(userId, plan.quota);
-      if (!hasQuota) {
-        const usage = await quotaManager.getUsage(userId);
-        return res.status(429).json({
-          success: false,
-          error: 'Daily quota exhausted',
-          quotaMinutes: plan.quota,
-          usedMinutes: Math.round(usage.usedSeconds / 60)
-        });
-      }
 
       // Check queue limit
       const currentActiveCount = await connection.scard(getUserActiveJobsKey(userId));
@@ -225,12 +227,15 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // A run that names a saved workflow files its node outputs in THAT
       // workflow's workspace (only if the caller really owns it).
       const workspace = await resolveJobWorkspace(userId, body.workflowId);
+      // ...and uses THAT workflow's browser profile (Workflow Settings).
+      const runProfileId = workspace ? await profileOf(workspace) : undefined;
 
       // Add job to queue
       const job = await queue.add(
         'run',
         {
-          userId, steps, headless, webhookUrl, triggerData, ...(workspace ? { __workspace: workspace } : {}),
+          userId, steps, webhookUrl, triggerData, __origin: origin, ...(workspace ? { __workspace: workspace } : {}),
+          ...(runProfileId ? { profileId: runProfileId } : {}),
           // A run of a saved workflow's canvas (Execute Workflow) is its TEST:
           // the worker stores the outcome + the design fingerprint on the
           // workflow, and activation requires a green test of the current
@@ -257,8 +262,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           config.IDEMPOTENCY_TTL_SECONDS
         );
       }
-
-      const isVip = isVipUser(plan.priority, config.VIP_PRIORITY_THRESHOLD);
 
       // [F3] Synchronous mode: block until the job finishes (bounded), then return
       // the full result inline. On timeout, fall through to the async 202 response
@@ -291,7 +294,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         yourJobNumber: thisJobNumber,
         queueLimit: config.MAX_QUEUED_JOBS_PER_USER,
         priority: plan.priority,
-        userType: isVip ? 'VIP' : 'Free',
         webhookEnabled: !!webhookUrl
       });
 
@@ -324,9 +326,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!body) return;
 
       const userId = sanitizeUserId(body.userId);
-      const headless = validateHeadless(body.headless, config.DEFAULT_HEADLESS);
+      // Run node is the operator's click in the editor -> visible (RunPolicy).
+      const origin = body.origin === 'manual' ? 'manual' : 'automatic';
 
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       const steps = validateSteps(body.steps, plan);
       const triggerData = (body.triggerData && typeof body.triggerData === 'object')
         ? body.triggerData
@@ -343,17 +346,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         });
       }
 
-      // Check quota — identical to POST /run (a node test burns real minutes).
-      const hasQuota = await quotaManager.hasQuotaRemaining(userId, plan.quota);
-      if (!hasQuota) {
-        const usage = await quotaManager.getUsage(userId);
-        return res.status(429).json({
-          success: false,
-          error: 'Daily quota exhausted',
-          quotaMinutes: plan.quota,
-          usedMinutes: Math.round(usage.usedSeconds / 60)
-        });
-      }
 
       // Check queue limit — identical to POST /run.
       const currentActiveCount = await connection.scard(getUserActiveJobsKey(userId));
@@ -371,10 +363,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // Output files only: still NO `__workflowId`, so a node test is not
       // filed as an execution. The workspace is where its files belong.
       const nodeWorkspace = await resolveJobWorkspace(userId, body.workflowId);
+      const nodeProfileId = nodeWorkspace ? await profileOf(nodeWorkspace) : undefined;
       const job = await queue.add(
         'run',
         {
-          userId, steps, headless, triggerData, __runNode: true, __nodeIndex: nodeIndex,
+          userId, steps, triggerData, __origin: origin, __runNode: true, __nodeIndex: nodeIndex,
+          ...(nodeProfileId ? { profileId: nodeProfileId } : {}),
           ...(nodeWorkspace ? { __workspace: nodeWorkspace } : {}),
         },
         { priority: plan.priority }
@@ -442,7 +436,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // design, and only while it is active. Checked BEFORE any queue or plan
       // access so an inactive workflow is refused without side effects.
       let scheduleSteps: unknown = body.steps;
-      let scheduleHeadless: unknown = body.headless;
+      let scheduleProfileId: string | undefined;
       if (body.workflowId) {
         const bound = await workflowService.get(userId, body.workflowId);
         if (!bound) return res.status(404).json({ success: false, error: 'Workflow not found' });
@@ -454,15 +448,13 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
         const design = WorkflowService.executableDesign(bound);
         scheduleSteps = design.steps;
-        scheduleHeadless = design.headless;
+        scheduleProfileId = design.profileId;
       }
       const scheduleName = body.name
         ? String(body.name).substring(0, 50).replace(/[^a-zA-Z0-9_-]/g, '_')
         : `job_${Date.now()}`;
 
-      // ── Get User Plan (includes overrides) ──
-      const plan = await UserManager.getUserPlan(connection, userId);
-      const isVip = isVipUser(plan.priority, config.VIP_PRIORITY_THRESHOLD);
+      const plan = config.INSTANCE_LIMITS;
 
       // ── Check Schedule Limit (From User's Plan) ──
       const maxSchedules = plan.maxSchedules;
@@ -476,16 +468,15 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         return res.status(429).json({
           success: false,
           error: `Schedule limit reached. You have ${userScheduleCount}/${maxSchedules} active schedules.`,
-          hint: isVip ? 'Contact support to increase limit' : 'Upgrade to VIP for more schedules'
+          hint: 'Remove a schedule you no longer need.'
         });
       }
 
       // ── Validate Steps (deep) ──
-      // A schedule is a background run: hidden unless explicitly asked otherwise.
+      // A schedule is an automatic run: its browser is hidden (core/RunPolicy).
       // A schedule bound to a saved workflow runs that workflow's ACTIVE frozen
       // design, and only while the workflow is active. A raw schedule keeps the
       // steps it was sent with.
-      const headless = validateBackgroundHeadless(scheduleHeadless as any);
       const steps = validateSteps(scheduleSteps, plan);
       const webhookUrl = validateWebhookUrl(req.body.webhookUrl);
 
@@ -501,8 +492,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         { 
           userId, 
           steps, 
-          headless, 
           webhookUrl,
+          ...(scheduleProfileId ? { profileId: scheduleProfileId } : {}),
+          __origin: 'automatic',
           __scheduled: true,
           __scheduleName: scheduleName,
           __scheduleId: scheduleId,
@@ -538,8 +530,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           runsLimit: plan.runLimit > 0 ? plan.runLimit : 'unlimited'
         },
         currentSchedules: userScheduleCount + 1,
-        maxSchedules,
-        userType: isVip ? 'VIP' : 'Free'
+        maxSchedules
       });
 
     } catch (e: unknown) {
@@ -556,8 +547,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const userId = sanitizeUserId(req.params.userId);
       
       // Get user's plan (includes personal limits)
-      const plan = await UserManager.getUserPlan(connection, userId);
-      const isVip = isVipUser(plan.priority, config.VIP_PRIORITY_THRESHOLD);
+      const plan = config.INSTANCE_LIMITS;
       const maxSchedules = plan.maxSchedules;
 
       // Get all repeatable jobs
@@ -588,7 +578,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       res.json({
         success: true,
         userId,
-        userType: isVip ? 'VIP' : 'Free',
         count: schedules.length,
         limit: maxSchedules,
         remaining: maxSchedules - schedules.length,
@@ -693,11 +682,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       }
 
       if (closeBrowser) {
-        const vipEntry = profileManager.getVipContext(userId);
-        if (vipEntry) {
-          console.log(`[CANCEL] 🔴 Closing VIP browser for user ${userId}`);
+        // The browser to close is the one of the profile THIS job holds, never
+        // another run's: look the profile up from the job's own lease.
+        const held = profileLeases ? (await profileLeases.list()).find((l) => l.jobId === String(jobId)) : undefined;
+        const vipEntry = held ? profileManager.getVipContext(held.profileId) : undefined;
+        if (held && vipEntry) {
+          console.log(`[CANCEL] 🔴 Closing the profile browser of job ${jobId} (${held.profileId})`);
           await vipEntry.context.close().catch(() => {});
-          profileManager.removeVipContext(userId);
+          profileManager.removeVipContext(held.profileId);
           browserClosed = true;
         }
         profileManager.unregisterPage(jobId);
@@ -754,57 +746,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
             : tabClosed
               ? 'Tab closed, job will stop at next step'
               : 'Job will stop at next cancellation check'
-      });
-
-    } catch (e: unknown) {
-      const error = e as Error;
-      res.status(500).json({ success: false, error: error.message });
-    }
-  });
-
-  // ══════════════════════════════════════════
-  // GET /quota/:userId
-  // ══════════════════════════════════════════
-  router.get('/quota/:userId', async (req: AuthenticatedRequest, res) => {
-    try {
-      const userId = sanitizeUserId(req.params.userId);
-
-      const status = await UserManager.getSubscriptionStatus(connection, userId);
-      const userLevel = await UserManager.getUserLevel(connection, userId);
-      const userSettings = await UserManager.getUserSettings(connection, userId);
-
-      const usage = await quotaManager.getUsage(userId);
-      const remaining = await quotaManager.getRemainingSeconds(userId, status.plan.quota);
-
-      const isVip = isVipUser(status.plan.priority, config.VIP_PRIORITY_THRESHOLD);
-
-      res.json({
-        success: true,
-        userId,
-        date: usage.date,
-        userType: isVip ? 'VIP' : 'Free',
-        forceSequential: userSettings.forceSequential || false,
-        plan: {
-          level: userLevel,
-          quotaMinutes: status.plan.quota,
-          maxTabs: status.plan.maxTabs,
-          maxSteps: status.plan.maxSteps,
-          priority: status.plan.priority,
-          maxSchedules: status.plan.maxSchedules,
-          runLimit: status.plan.runLimit > 0 ? status.plan.runLimit : 'unlimited',
-          hasOverrides: status.hasOverrides,
-          subscription: status.type === 'lifetime'
-            ? 'Lifetime'
-            : (status.daysLeft ? `${status.daysLeft} Days` : 'Free')
-        },
-        usage: {
-          usedSeconds: usage.usedSeconds,
-          usedMinutes: parseFloat((usage.usedSeconds / 60).toFixed(2)),
-          limitMinutes: status.plan.quota,
-          remainingSeconds: remaining === Infinity ? -1 : remaining,
-          remainingMinutes: remaining === Infinity ? -1 : parseFloat((remaining / 60).toFixed(2)),
-          unlimited: status.plan.quota <= 0
-        }
       });
 
     } catch (e: unknown) {
@@ -1060,7 +1001,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!body) return;
 
       // Deep-validate the step tree against the user's plan (same pass as /run).
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
@@ -1070,6 +1011,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         steps,
         headless: body.headless ?? null,
         webhookUrl,
+        ...(body.profileId ? { profileId: profileIdOrThrow(body.profileId) } : {}),
       });
       await provisionWorkspace(userId, wf.id);
       return res.status(201).json({ success: true, workflow: wf });
@@ -1087,7 +1029,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const userId = sanitizeUserId(req.params.userId);
       const parsed = parseExchange(req.body);
       if (!parsed.ok) return res.status(400).json({ success: false, code: parsed.code, error: parsed.message });
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       // Same two passes as /import, so the count shown is what will be saved.
       const checked = enforceImportedCodeDisabled(validateSteps(parsed.workflow.steps as any, plan));
       return res.json({ success: true, summary: parsed.summary, codeDisabled: checked.count, startsInactive: true });
@@ -1105,7 +1047,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const userId = sanitizeUserId(req.params.userId);
       const parsed = parseExchange(req.body);
       if (!parsed.ok) return res.status(400).json({ success: false, code: parsed.code, error: parsed.message });
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       // Disable Code nodes AGAIN on the validated (normalised) steps — the ones
       // actually stored. See enforceImportedCodeDisabled.
       const { steps, count: codeDisabled } = enforceImportedCodeDisabled(validateSteps(parsed.workflow.steps as any, plan));
@@ -1221,7 +1163,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const body = parseBody(workflowBodySchema, req.body, res);
       if (!body) return;
 
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
@@ -1231,6 +1173,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         steps,
         headless: body.headless ?? null,
         webhookUrl,
+        // Workflow Settings: which browser profile its runs use (one run per
+        // profile at a time, core/ProfileLease). Omitted = unchanged.
+        ...(body.profileId !== undefined ? { profileId: profileIdOrThrow(body.profileId) } : {}),
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
       return res.json({ success: true, workflow: wf });
@@ -1288,14 +1233,13 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const design = WorkflowService.executableDesign(wf);
       // Re-validate the frozen steps against the CURRENT plan (plan limits may
       // have changed since activation). Request body may optionally override
-      // headless/webhookUrl for this run only.
-      const plan = await UserManager.getUserPlan(connection, userId);
+      // webhookUrl for this run only.
+      const plan = config.INSTANCE_LIMITS;
       const steps = validateSteps(design.steps, plan);
-      // A saved-workflow run (API, trigger, Workspace) is a background run:
-      // hidden unless the request or the workflow says otherwise.
-      const headless = validateBackgroundHeadless(
-        req.body?.headless !== undefined ? req.body.headless : design.headless
-      );
+      // Visibility follows WHO started the run (core/RunPolicy): the Workspace
+      // "Run" button sends origin=manual (the operator clicked it -> visible);
+      // API clients, triggers and integrations are automatic (hidden).
+      const origin = req.body?.origin === 'manual' ? 'manual' : 'automatic';
       const webhookUrl = validateWebhookUrl(
         req.body?.webhookUrl !== undefined ? req.body.webhookUrl : design.webhookUrl
       );
@@ -1333,17 +1277,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
       }
 
-      // Quota check (same as /run).
-      const hasQuota = await quotaManager.hasQuotaRemaining(userId, plan.quota);
-      if (!hasQuota) {
-        const usage = await quotaManager.getUsage(userId);
-        return res.status(429).json({
-          success: false,
-          error: 'Daily quota exhausted',
-          quotaMinutes: plan.quota,
-          usedMinutes: Math.round(usage.usedSeconds / 60)
-        });
-      }
 
       // Queue limit check (same as /run).
       const activeKey = getUserActiveJobsKey(userId);
@@ -1363,7 +1296,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const job = await queue.add(
         'run',
         {
-          userId, steps, headless, webhookUrl, triggerData,
+          userId, steps, webhookUrl, triggerData, __origin: origin,
+          ...(design.profileId ? { profileId: design.profileId } : {}),
           __workflowId: workflowId, __workflowVersion: design.version,
           // Verified above: `wf` was fetched for this very user.
           __workspace: workspaceFor(userId, workflowId),
@@ -1382,8 +1316,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           config.IDEMPOTENCY_TTL_SECONDS
         );
       }
-
-      const isVip = isVipUser(plan.priority, config.VIP_PRIORITY_THRESHOLD);
 
       if (wait) {
         const result = await waitForJobResult(
@@ -1412,7 +1344,6 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         yourJobNumber: thisJobNumber,
         queueLimit: config.MAX_QUEUED_JOBS_PER_USER,
         priority: plan.priority,
-        userType: isVip ? 'VIP' : 'Free',
         webhookEnabled: !!webhookUrl
       });
     } catch (e: unknown) {
@@ -1461,7 +1392,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         if (!exists) return res.status(404).json({ success: false, error: 'Workflow not found' });
         return res.status(404).json({ success: false, error: 'Version not found' });
       }
-      const plan = await UserManager.getUserPlan(connection, userId);
+      const plan = config.INSTANCE_LIMITS;
       try {
         validateSteps(snap.steps, plan, { allowEmpty: true });
       } catch (err: unknown) {
@@ -1478,7 +1409,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   });
 
   // PATCH /workflows/:userId/:workflowId/state - flip the Workspace row
-  // switches (`active`, `liveBrowser`) WITHOUT bumping the version and without
+  // switch (`active`) WITHOUT bumping the version and without
   // writing a history snapshot: a toggle is not a new design of the automation
   // (docs/uiux/workspace-overview.md section 4 + section 6, B2).
   router.patch('/workflows/:userId/:workflowId/state', async (req: AuthenticatedRequest, res) => {
@@ -1498,7 +1429,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         // so a running automation can never be a design that was never valid.
         const current = await workflowService.get(userId, workflowId);
         if (!current) return res.status(404).json({ success: false, error: 'Workflow not found' });
-        const plan = await UserManager.getUserPlan(connection, userId);
+        const plan = config.INSTANCE_LIMITS;
         const refuse = (details: string[]) => res.status(422).json({
           success: false,
           error: 'Workflow has errors and cannot be activated',
@@ -1538,19 +1469,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       const wf = await workflowService.setState(userId, workflowId, {
         active: body.active,
-        liveBrowser: body.liveBrowser,
         activeSnapshot,
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
-
-      // A workflow that cannot run has no browser to watch, so state 2 of the
-      // spec's truth table is reported explicitly: `liveBrowser` keeps the
-      // user's intent, `liveBrowserViewable` is what the eye button obeys.
-      return res.json({
-        success: true,
-        workflow: wf,
-        liveBrowserViewable: wf.active && wf.liveBrowser,
-      });
+      return res.json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;
       res.status(400).json({ success: false, error: error.message });
@@ -1614,6 +1536,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       let completedTotal = 0;
       let failedTotal = 0;
       let activeJobs = 0;
+      // Running vs waiting (for its browser profile) per workflow: two facts,
+      // never folded into one "live" flag.
+      const runningByWf = new Map<string, number>();
+      const waitingByWf = new Map<string, number>();
 
       for (const j of userJobs) {
         const state = await j.getState();
@@ -1623,6 +1549,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
         const wfId = j.data?.__workflowId ? String(j.data.__workflowId) : null;
         if (!wfId) continue;
+        if (state === 'active') runningByWf.set(wfId, (runningByWf.get(wfId) ?? 0) + 1);
+        else if (state === 'waiting' || state === 'delayed') waitingByWf.set(wfId, (waitingByWf.get(wfId) ?? 0) + 1);
         const b = bucketFor(wfId);
         if (state === 'completed') b.completed += 1;
         else if (state === 'failed') b.failed += 1;
@@ -1648,6 +1576,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         const needle = wf.name.toLowerCase();
         return {
           workflowId: wf.id,
+          running: runningByWf.get(wf.id) ?? 0,
+          waiting: waitingByWf.get(wf.id) ?? 0,
+          profile: (typeof wf.profileId === 'string' && wf.profileId && wf.profileId !== 'default') ? wf.profileId : 'default',
           lastRunAt: b?.lastRunAt ?? null,
           lastRunState: b?.lastRunState ?? null,
           completed: b?.completed ?? 0,
@@ -1657,7 +1588,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         };
       });
 
-      const globalBrowsers = profileManager.getActiveBrowserCount();
+      // Browser profiles held by a run right now (core/ProfileLease).
+      const busyProfiles = profileLeases ? (await profileLeases.list()).length : 0;
 
       return res.json({
         success: true,
@@ -1670,7 +1602,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           successRate: rate(completedTotal, failedTotal),
           failures: failedTotal,
           activeJobs,
-          liveBrowsers: globalBrowsers,
+          busyProfiles,
         },
         perWorkflow,
       });

@@ -2,7 +2,7 @@
 
 import express from 'express';
 import helmet from 'helmet';
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, DelayedError } from 'bullmq';
 import IORedis from 'ioredis';
 import fsExtra from 'fs-extra';
 import path from 'path';
@@ -13,23 +13,24 @@ import { config } from './config';
 import { runPipeline } from './pipeline';
 import { buildItemsFromTrigger, buildManualItems } from './core/TriggerEngine';
 import { ProfileManager } from './core/ProfileManager';
-import { UserManager } from './core/UserManager';
-import { QuotaManager } from './core/QuotaManager';
+import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
+import { runOriginOf, headlessFor, describeVisibility } from './core/RunPolicy';
+import { stepsUseExtensions } from './core/ExtensionStep';
+import { browserModes } from './core/BrowserMode';
 import { GlobalBrowser } from './core/GlobalBrowser';
-import { smartLimiter, adminLimiter, pairingLimiter } from './rate-limit';
+import { smartLimiter, pairingLimiter } from './rate-limit';
 import { sanitizeLogMessage, validateSteps } from './validation';
 import { WorkflowService, resolveScheduledWorkflow } from './services/workflow.service';
 import {
   requireApiKey,
-  initApiKeyManager,
-  getApiKeyManager,
+  isAcceptedCredential,
   AuthenticatedRequest,
   SINGLE_USER_ID
 } from './middleware/auth';
-import { asyncBlockCheck } from './middleware/block-check';
+import { createAuthRoutes } from './Routes/auth.routes';
+import { authStore } from './core/AuthStore';
 
 // Utils & Services
-import { isVipUser } from './utils/helpers';
 import { STATS_KEY, getUserActiveJobsKey, getLiveChannel } from './utils/redis-keys';
 import { sendWebhook, sendStepWebhook } from './services/webhook.service';
 import { persistJob } from './services/job.service';
@@ -157,8 +158,10 @@ connection.on('error', (err) => console.error('[REDIS] Error:', err.message));
 
 const queue = new Queue('automation-jobs', { connection });
 const profileManager = new ProfileManager();
-const quotaManager = new QuotaManager(connection);
-const apiKeyManager = initApiKeyManager(connection);
+// One run per browser profile at a time (core/ProfileLease). The lease TTL is
+// the existing hard run ceiling, refreshed by the holder while it runs.
+const profileLeases = new ProfileLeases(connection, Math.max(60, config.MAX_JOB_DURATION_MINUTES * 60));
+registerProfileLeases(profileLeases);
 
 // Step 16: live event bus (publishes to Redis Pub/Sub + replay buffer).
 const liveBus = new LiveBus(connection);
@@ -166,7 +169,7 @@ const liveBus = new LiveBus(connection);
 // HTTP server exists, so it can attach to the 'upgrade' event.
 let liveServer: LiveServer | null = null;
 // Step 12: interactive Live Browser View (CDP screencast + input + element picker).
-const liveBrowserManager = new LiveBrowserManager(config.MAX_CONCURRENT > 0 ? Math.min(config.MAX_CONCURRENT, 8) : 8);
+const liveBrowserManager = new LiveBrowserManager(8);
 // Let HTTP routes find the live session a user is looking at.
 //
 // The manager stays owned here -- sessions are created and destroyed by the
@@ -303,7 +306,6 @@ function readPresentedKey(req: express.Request): string {
 // Rate limiting
 app.use('/run', smartLimiter);
 app.use('/cancel', smartLimiter);
-app.use('/admin', adminLimiter);
 // Mounted BEFORE the inspector auth middleware, so a flood of guesses is
 // rejected without ever reaching the code-comparison path. Scoped to the exact
 // route that accepts no key — the rest of /inspector is credential-gated and
@@ -438,7 +440,7 @@ const inspectorAuthMiddleware = (
     // extension keeps its identity and its existing bindings instead of being
     // handed a second, anonymous one.
     const presented = readPresentedKey(req);
-    if (presented && config.IS_SINGLE_USER && presented === config.API_TOKEN) {
+    if (presented && config.IS_SINGLE_USER && isAcceptedCredential(presented)) {
       (req as AuthenticatedRequest).apiKey = presented;
       (req as AuthenticatedRequest).apiKeyUserId = SINGLE_USER_ID;
     }
@@ -467,19 +469,6 @@ const inspectorAuthMiddleware = (
 
 app.use('/inspector', inspectorAuthMiddleware);
 
-// Block check
-const blockCheck = asyncBlockCheck(connection);
-app.use('/run', blockCheck);
-app.use('/cancel', blockCheck);
-app.use('/job', blockCheck);
-app.use('/jobs', blockCheck);
-app.use('/quota', blockCheck);
-app.use('/me', blockCheck);
-app.use('/workflows', blockCheck);
-app.use('/workspace', blockCheck);
-app.use('/browser', blockCheck);
-app.use('/browser-mode', blockCheck);
-app.use('/inspector', blockCheck);
 
 // ============================================
 // INITIALIZATION
@@ -509,7 +498,7 @@ const routes = createAllRoutes({
   queue,
   connection,
   profileManager,
-  quotaManager,
+  profileLeases,
   luaScriptsLoaded,
   reloadLuaScripts: initLuaScripts
 });
@@ -519,12 +508,8 @@ app.use('/', routes.user);
 app.use('/', routes.browser);
 app.use('/', routes.mode);
 app.use('/', routes.workflowFiles);
-// The Admin API exists for the multi-tenant product (users, plans, keys).
-// A single-user install has no admin area: the owner already holds the API
-// token. It is NOT mounted there, because it is guarded by ADMIN_SECRET alone,
-// whose default (admin_secret_change_me) is public - a stock install let
-// anyone who could reach the port restart the server via /admin/system/restart.
-if (!config.IS_SINGLE_USER) app.use('/admin', routes.admin);
+// Owner-password setup / login (public by design; change-password self-guards).
+app.use('/', createAuthRoutes());
 const settingsRoutes = createSettingsRoutes();
 app.use('/', settingsRoutes.publicRouter);
 app.use('/', settingsRoutes.router);
@@ -548,7 +533,7 @@ app.post('/live/share/:userId/:jobId', async (req, res) => {
   const jobId = String(req.params.jobId);
   const apiKey = (req.headers['x-api-key'] as string | undefined)
     || (req.body && req.body.api_key ? String(req.body.api_key) : undefined);
-  const auth = await authorizeLive(apiKey, userId);
+  const auth = await authorizeLive(apiKey, userId, { req });
   if (!auth.ok) {
     res.status(auth.reason === 'missing_api_key' ? 401 : 403).json({
       success: false, error: 'Share denied', reason: auth.reason
@@ -590,7 +575,7 @@ app.get('/live/sse/:userId/:jobId', async (req, res) => {
   // Step 29: optional shareable-link token (read-only access).
   const share = req.query.share ? String(req.query.share) : undefined;
 
-  const auth = await authorizeLive(apiKey, userId, { share, jobId });
+  const auth = await authorizeLive(apiKey, userId, { share, jobId, req });
   if (!auth.ok) {
     res.status(auth.reason === 'missing_api_key' ? 401 : 403).json({
       success: false,
@@ -641,7 +626,7 @@ app.get('/live/sse/:userId/:jobId', async (req, res) => {
 // WORKER
 // ============================================
 
-const worker = new Worker('automation-jobs', async (job: Job) => {
+const worker = new Worker('automation-jobs', async (job: Job, token?: string) => {
   const userId = String(job.data.userId);
   const webhookUrl = job.data.webhookUrl;
 
@@ -665,7 +650,8 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
         await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
         return;
       }
-      job.data.steps = validateSteps(r.steps, await UserManager.getUserPlan(connection, userId));
+      job.data.steps = validateSteps(r.steps, config.INSTANCE_LIMITS);
+      if (r.profileId !== undefined) job.data.profileId = r.profileId;
       job.data.__workflowVersion = r.version;
     } catch (e) {
       console.warn(`[JOB:${job.id}] schedule could not resolve its workflow: ${(e as Error).message}`);
@@ -674,32 +660,7 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
     }
   }
 
-  const userPlan = await UserManager.getUserPlan(connection, userId);
-  const userSettings = await UserManager.getUserSettings(connection, userId);
-  const isVip = isVipUser(userPlan.priority, config.VIP_PRIORITY_THRESHOLD);
-
-  // Block check
-  if (userSettings.blockAccess) {
-    console.log(`[JOB:${job.id}] ⛔ User ${userId} blocked - job rejected`);
-    await connection.srem(getUserActiveJobsKey(userId), job.id!);
-    await persistJob(userId, job.id!, [], {
-      success: false,
-      message: 'Account blocked by administrator',
-      blocked: true
-    });
-
-    if (webhookUrl) {
-      sendWebhook(webhookUrl, {
-        event: 'job.blocked',
-        jobId: job.id!,
-        userId,
-        success: false,
-        message: 'Account blocked by administrator',
-        timestamp: new Date().toISOString()
-      });
-    }
-    return;
-  }
+  const userPlan = config.INSTANCE_LIMITS;
 
   // [C1] Ensure the job is tracked in the active set. Idempotent: /run already adds
   // immediate jobs, but SCHEDULED (repeatable) jobs are enqueued by BullMQ and never
@@ -708,24 +669,42 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
   await connection.sadd(getUserActiveJobsKey(userId), job.id!);
   await connection.expire(getUserActiveJobsKey(userId), 90 * 60);
 
-  const shouldLock = isVip || config.FREE_FORCE_SEQUENTIAL || userSettings.forceSequential;
-  // [C5] Hold the lock token returned by tryLockUser so we can release it conditionally.
-  let lockToken: string | null = null;
+  // WHO started this run decides whether its browser is shown (core/RunPolicy):
+  // the operator's click = visible, everything else = hidden. Stamped by the
+  // route that enqueued the job; a schedule never carries 'manual'.
+  const origin = runOriginOf(job.data.__scheduled ? 'automatic' : job.data.__origin);
+  const headless = headlessFor(origin);
 
-  if (shouldLock) {
-    lockToken = await profileManager.tryLockUser(connection, userId);
-    if (!lockToken) {
-      await job.moveToDelayed(Date.now() + config.QUEUE_DELAY_MS);
-      return;
+  // WHICH profile this run needs, and its lease (core/ProfileLease). A busy
+  // profile sends the job back to the delayed set: it waits without holding a
+  // worker slot, and runs on other, free profiles are not affected.
+  const profile: ProfileRef = resolveRunProfile({
+    userId,
+    profileId: typeof job.data.profileId === 'string' ? job.data.profileId : null,
+    usesExtensions: stepsUseExtensions(job.data.steps),
+    localMode: browserModes.modeOf(userId) === 'local',
+    profilesDir: config.PROFILES_DIR,
+    realChromeDir: config.REAL_CHROME_USER_DATA_DIR,
+  });
+  let leaseToken: string | null = null;
+  if (needsLease(profile)) {
+    const got = await profileLeases.acquire(profile.id, String(job.id));
+    if (!got.ok) {
+      if (!job.data.__waitingFor) {
+        await job.updateData({ ...job.data, __waitingFor: profile.id }).catch(() => {});
+        console.log(`[JOB:${job.id}] waiting: profile "${profile.label}" is in use by job ${got.holder?.jobId ?? '?'}`);
+        void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0,
+          data: { message: `Waiting: browser profile "${profile.label}" is in use by run ${got.holder?.jobId ?? '?'}` } }).catch(() => {});
+      }
+      await job.moveToDelayed(Date.now() + Math.max(500, config.QUEUE_DELAY_MS), token);
+      throw new DelayedError();
     }
-
-    if (await hasOlderJobs(userId, job.id!)) {
-      console.log(`[ORDER] Waiting for older jobs -> User ${userId}`);
-      await profileManager.unlockUser(connection, userId, lockToken);
-      await job.moveToDelayed(Date.now() + 1000);
-      return;
-    }
+    leaseToken = got.token;
   }
+  const leaseRefresh = leaseToken
+    ? setInterval(() => { void profileLeases.refresh(profile.id, leaseToken!).catch(() => {}); }, 60_000)
+    : null;
+  if (leaseRefresh && typeof leaseRefresh.unref === 'function') leaseRefresh.unref();
 
   profileManager.initJobOutputs(job.id!);
 
@@ -789,8 +768,8 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
   };
 
   try {
-    livePub.emit('job.start', { isVip, lock: shouldLock });
-    log(`Started (${isVip ? 'VIP' : 'Free'}) [Lock: ${shouldLock}]`);
+    livePub.emit('job.start', { origin, visibility: describeVisibility(headless), profile: profile.label });
+    log(`Started (${origin} run, ${describeVisibility(headless)} browser, profile "${profile.label}")`);
 
     connection.incr(STATS_KEY.TOTAL_JOBS).catch(() => {});
 
@@ -828,7 +807,9 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       userId,
       steps: job.data.steps,
       initialItems,
-      headless: job.data.headless ?? config.DEFAULT_HEADLESS,
+      headless,
+      origin,
+      profile,
       log,
       jobId: job.id!,
       job,
@@ -843,7 +824,6 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
         }
       },
       userPlan,
-      quotaManager,
       // Step 16: forward step-level live events from the pipeline.
       // Step 29: ALSO deliver per-step events to the job webhook URL
       // (channel 1 of two-channel live reporting) when enabled.
@@ -901,9 +881,9 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
       } catch {}
     }
 
-    if (cancelled || error.message === 'CANCELLED_BY_USER' || error.message === 'QUOTA_EXHAUSTED') {
-      livePub.emit('job.error', { reason: error.message === 'QUOTA_EXHAUSTED' ? 'quota_exhausted' : 'cancelled', message: error.message });
-      log(error.message === 'QUOTA_EXHAUSTED' ? 'Quota Exhausted' : 'Cancelled');
+    if (cancelled || error.message === 'CANCELLED_BY_USER') {
+      livePub.emit('job.error', { reason: 'cancelled', message: error.message });
+      log('Cancelled');
 
       await persistJob(userId, job.id!, outputs, {
         success: false,
@@ -911,12 +891,12 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
         cancelledByUser: cancelled,
         userCancelled: cancelled
       });
-      recordExecution(cancelled ? 'cancelled' : 'error', error.message);
-      await recordTestOutcome(cancelled ? 'cancelled' : 'error', error.message);
+      recordExecution('cancelled', error.message);
+      await recordTestOutcome('cancelled', error.message);
 
       if (webhookUrl) {
         sendWebhook(webhookUrl, {
-          event: cancelled ? 'job.cancelled' : 'job.quota_exhausted',
+          event: 'job.cancelled',
           jobId: job.id!,
           userId,
           success: false,
@@ -932,19 +912,11 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
     if (error.message.includes('Session closed') || error.message.includes('Protocol error')) {
       log('Browser crashed - cleaning up');
 
-      if (isVip) {
-        const entry = profileManager.getVipContext(userId);
-        if (entry) {
-          await entry.context.close().catch(() => {});
-        }
-        profileManager.removeVipContext(userId);
-      } else {
-        const entry = profileManager.getFreeContext(job.id!);
-        if (entry) {
-          await entry.context.close().catch(() => {});
-        }
-        profileManager.removeFreeContext(job.id!);
+      const entry = profileManager.getVipContext(profile.id);
+      if (entry) {
+        await entry.context.close().catch(() => {});
       }
+      profileManager.removeVipContext(profile.id);
     }
 
     livePub.emit('job.error', { message: sanitizeLogMessage(error.message) });
@@ -972,11 +944,15 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
     throw err;
 
   } finally {
-    if (shouldLock) {
-      await profileManager.unlockUser(connection, userId, lockToken);
-      if (isVip) {
-        profileManager.updateActivity(userId);
-      }
+    // Release the profile on EVERY exit path (success, failure, cancel). The
+    // release is compare-and-delete on this run's token, so it can never free
+    // a lease another run holds.
+    if (leaseRefresh) clearInterval(leaseRefresh);
+    if (leaseToken) {
+      await profileLeases.release(profile.id, leaseToken).catch((e: Error) => {
+        console.warn(`[JOB:${job.id}] could not release profile "${profile.id}": ${e.message}`);
+      });
+      profileManager.updateActivity(profile.id);
     }
 
     profileManager.clearJobOutputs(job.id!);
@@ -986,7 +962,9 @@ const worker = new Worker('automation-jobs', async (job: Job) => {
   }
 }, {
   connection,
-  concurrency: config.MAX_CONCURRENT,
+  // Not a run limit: runs are limited by their profiles (one run per
+  // profile). This is only the in-process ceiling on simultaneous jobs.
+  concurrency: config.WORKER_SLOTS,
   lockDuration: 300000,
   lockRenewTime: 60000,
   maxStalledCount: 0,
@@ -1056,12 +1034,6 @@ const shutdown = async (signal: string) => {
 
     console.log('[SHUTDOWN] Closing queue...');
     await queue.close();
-
-    console.log('[SHUTDOWN] Closing API Key Manager...');
-    const manager = getApiKeyManager();
-    if (manager) {
-      await manager.shutdown();
-    }
 
     console.log('[SHUTDOWN] Closing Live Browser sessions...');
     if (browserStreamServer) await browserStreamServer.shutdown();
@@ -1172,8 +1144,14 @@ const startServer = async () => {
   }
 
   await cleanupSystem();
-  await apiKeyManager.initialize();
-  await quotaManager.initialize();
+  // Leases of an earlier incarnation of this server cannot still be running
+  // (their browser died with that process): free them before the worker runs.
+  try {
+    const freed = await profileLeases.releaseOrphaned();
+    if (freed.length) console.log(`[PROFILES] Released ${freed.length} lease(s) left by a previous run of the server: ${freed.join(', ')}`);
+  } catch (e) {
+    console.warn(`[PROFILES] Could not check for orphaned profile leases: ${(e as Error).message}`);
+  }
   await GlobalBrowser.initialize();
   await initLuaScripts();
 
@@ -1193,8 +1171,8 @@ const startServer = async () => {
     console.log(`║  Remote Browser:    ${(config.REAL_CHROME_ENABLED
       ? (config.REAL_CHROME_HEADLESS ? '! headless — extensions OFF' : '✓ headed — extensions ON')
       : '✗ disabled').padEnd(47)}║`);
-    console.log(`║  Concurrency:       ${String(config.MAX_CONCURRENT).padEnd(47)}║`);
-    console.log(`║  API Auth:          ${(config.API_KEYS_ENABLED ? '✓ Enabled' : '✗ Disabled').padEnd(47)}║`);
+    console.log(`║  Runs:              ${'one per browser profile (queued when busy)'.padEnd(47)}║`);
+    console.log(`║  Access:            ${(config.AUTH_OPEN ? 'no login (development, this machine)' : authStore.state() === 'set' ? 'owner password' : authStore.state() === 'unset' ? 'SETUP REQUIRED: open the panel' : 'auth file unusable').padEnd(47)}║`);
     console.log(`║  Turbo Mode:        ${(config.TURBO_MODE ? '✓ Enabled' : '✗ Disabled').padEnd(47)}║`);
     console.log('╠══════════════════════════════════════════════════════════════════╣');
     console.log('║  📁 Modular Structure:                                          ║');
@@ -1291,4 +1269,4 @@ const startServer = async () => {
 
 const server = startServer();
 
-export { app, server, queue, connection, profileManager, quotaManager, liveBus };
+export { app, server, queue, connection, profileManager, profileLeases, liveBus };

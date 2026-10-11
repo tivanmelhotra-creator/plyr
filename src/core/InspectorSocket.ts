@@ -101,7 +101,7 @@ export class InspectorSocketServer {
     // Same gate as every other socket here. This channel carries picked element
     // data — including values read off a logged-in page — so it is not a place
     // for a weaker check.
-    authorizeLive(apiKey, userId).then((auth) => {
+    authorizeLive(apiKey, userId, { req }).then((auth) => {
       if (!auth.ok) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();

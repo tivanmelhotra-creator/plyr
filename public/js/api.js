@@ -1,7 +1,8 @@
 /* ============================================
    API client — thin fetch wrapper.
-   Stores the API key in localStorage and attaches
-   it as x-api-key to every authenticated request.
+   In development on this machine there is no key at all. In production the
+   owner-password login returns a session token, kept in localStorage and sent
+   as x-api-key on authenticated requests.
    Step 7. Exposes window.API.
    ============================================ */
 (function () {
@@ -16,6 +17,10 @@
     if (k) localStorage.setItem(KEY_STORAGE, k);
     else localStorage.removeItem(KEY_STORAGE);
   }
+  // Development on this machine: the server needs no credential at all.
+  var openMode = false;
+  function setOpenMode(v) { openMode = !!v; }
+  function isOpen() { return openMode; }
   function clearKey() {
     localStorage.removeItem(KEY_STORAGE);
     // Drop the admin token older (multi-user) builds stored.
@@ -80,6 +85,15 @@
           var err = new Error(msg);
           err.status = res.status;
           err.body = data;
+          // The session ended or the password was (re)set: tell the shell so it
+          // can show the login/setup screen instead of a half-working panel.
+          var code = data && data.code;
+          // 401 = no credential / setup pending; 403 = a credential was sent but
+          // is no longer valid (expired, or the password changed elsewhere).
+          if ((res.status === 401 || res.status === 403) &&
+              (code === 'auth_required' || code === 'invalid_credential' || code === 'setup_required')) {
+            try { window.dispatchEvent(new CustomEvent('auth:required', { detail: { code: code } })); } catch (e) { /* old browser */ }
+          }
           throw err;
         }
         return data;
@@ -123,11 +137,42 @@
    * so any valid key resolves to its owner.
    * Resolves with { valid, userId, isAdmin } — rejects only on network errors.
    */
-  /** Public: does this server want a login at all? (AUTH_MODE, see settings.routes.ts) */
-  function authMode() {
-    return fetch('/auth/mode', { headers: { Accept: 'application/json' }, cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : { mode: 'token' }; });
+  /**
+   * Public: how does this server want me to get in?
+   *   open        development on this machine: no login, no token at all
+   *   setup       production, first run: the owner must choose a password
+   *   login       production, password already chosen
+   *   local_only  development profile reached from another machine: refused
+   *   unavailable the stored password file is unreadable: refused
+   * Also carries the password policy so the UI can show the same rules the
+   * server enforces.
+   */
+  function authStatus() {
+    return fetch('/auth/status', { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      .then(function (r) { return r.json().catch(function () { return { mode: 'unavailable' }; }); })
+      .catch(function () { return { mode: 'unreachable' }; });
   }
+
+  function authPost(path, body, withKey) {
+    var headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
+    if (withKey) { var k = getKey(); if (k) headers['x-api-key'] = k; }
+    return fetch(path, { method: 'POST', headers: headers, body: JSON.stringify(body) })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok || !data || data.success === false) {
+            var err = new Error((data && data.error) || ('HTTP ' + res.status));
+            err.status = res.status; err.body = data || {}; err.code = (data && data.code) || '';
+            throw err;
+          }
+          return data;
+        });
+      });
+  }
+  /** Sign in with the owner password; resolves with { token } (a session). */
+  function login(password) { return authPost('/auth/login', { password: password }); }
+  /** First-run setup; resolves with { token } on success. */
+  function setupPassword(password) { return authPost('/auth/setup', { password: password }); }
+  function changePassword(current, next) { return authPost('/auth/change-password', { current: current, next: next }, true); }
 
   function validateKey(key) {
     return fetch('/me', {
@@ -348,6 +393,12 @@
     isArtifactUrl: isArtifactUrl,
     loadArtifactImage: loadArtifactImage,
     getRaw: getRaw,
+    authStatus: authStatus,
+    login: login,
+    setupPassword: setupPassword,
+    changePassword: changePassword,
+    setOpenMode: setOpenMode,
+    isOpen: isOpen,
     getKey: getKey,
     setKey: setKey,
     clearKey: clearKey,
@@ -382,6 +433,5 @@
     del: del,
     health: health,
     validateKey: validateKey,
-    authMode: authMode,
   };
 })();

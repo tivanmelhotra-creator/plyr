@@ -5,9 +5,6 @@ import request from 'supertest';
 // The native workflow file over HTTP, with the REAL validation (so the
 // `disabled` flag is proven to survive validateSteps) and the real router.
 
-vi.mock('../../src/core/UserManager', () => ({
-  UserManager: { getUserPlan: vi.fn(async () => ({ quota: 0, maxTabs: 2, maxSteps: 100, priority: 3, maxSchedules: 5, runLimit: 0 })) },
-}));
 vi.mock('../../src/services/job.service', () => ({
   readJobFile: vi.fn(async () => null),
   readPartialJobFile: vi.fn(async () => null),
@@ -40,7 +37,6 @@ beforeAll(async () => {
   app.use('/', createUserRoutes({
     queue: { async add() { return { id: '1' }; }, async getJob() { return null; }, async getJobs() { return []; }, async getRepeatableJobs() { return []; } } as any,
     connection: makeConnection() as any, profileManager: {} as any,
-    quotaManager: { hasQuotaRemaining: async () => true, getUsage: async () => ({ usedSeconds: 0 }) } as any,
   }));
 });
 
@@ -73,7 +69,7 @@ describe('POST /workflows/:u/import/preview', () => {
   });
 
   it('refuses a file whose steps fail the real validation', async () => {
-    const tooMany = Array.from({ length: 101 }, () => goto); // plan allows 100
+    const tooMany = [goto, { action: 'switch', params: {} }]; // a switch without a variable fails the real validation
     const res = await request(app).post('/workflows/alice/import/preview').send(file(tooMany));
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('steps');

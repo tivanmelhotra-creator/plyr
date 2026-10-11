@@ -252,14 +252,16 @@ export async function withExtensionRunLock<T>(
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Real Chrome's context, started if needed, with errors a user can act on. */
-export async function acquireExtensionBrowser(): Promise<BrowserContext> {
+export async function acquireExtensionBrowser(headless?: boolean): Promise<BrowserContext> {
   if (!RealChrome.isEnabled()) {
     throw new ExtensionStepError(
       'Real Chrome is disabled on this server (REAL_CHROME_ENABLED), so a run cannot use extensions.',
     );
   }
   try {
-    return await RealChrome.getContext();
+    return typeof headless === 'boolean'
+      ? await RealChrome.ensureVisibility(headless)
+      : await RealChrome.getContext();
   } catch (e) {
     throw new ExtensionStepError(`Could not start the extension browser: ${(e as Error)?.message || e}`);
   }

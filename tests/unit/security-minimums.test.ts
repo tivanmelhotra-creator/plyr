@@ -282,35 +282,41 @@ describe('LIVE_SHARE_TTL_SEC', () => {
   });
 });
 
-describe('dev-only admin123 — repository wiring', () => {
+describe('no default credential — repository wiring', () => {
   const read = (p: string) => fs.readFileSync(path.join(REPO, p), 'utf8');
 
-  it('admin123 as a compose value appears ONLY in docker-compose.dev.yml, with the opt-out beside it', () => {
+  it('no compose file ships an API_TOKEN value, an AUTH_MODE or the old default-token opt-out', () => {
     const files = fs.readdirSync(REPO).filter((n) => /^docker-compose.*\.ya?ml$/.test(n));
+    expect(files.length).toBeGreaterThan(0);
     for (const f of files) {
       const text = read(f);
-      // Literal, or as the bare-compose fallback of ./plyr dev-docker's own token.
-      const sets = /^\s*API_TOKEN:\s*(admin123|\$\{PLYR_DEV_API_TOKEN:-admin123\})/m.test(text);
+      // An EMPTY passthrough (`${API_TOKEN:-}`) is fine; a value or non-empty default is not.
+      expect(text, f).not.toMatch(/^\s*API_TOKEN:\s*(?!\$\{API_TOKEN:-\}\s*$)\S/m);
+      expect(text, f).not.toMatch(/admin123/);
+      expect(text, f).not.toMatch(/ALLOW_DEFAULT_API_TOKEN/);
+      expect(text, f).not.toMatch(/AUTH_MODE/);
       if (f === 'docker-compose.dev.yml') {
-        expect(sets).toBe(true);
-        expect(text).toMatch(/ALLOW_DEFAULT_API_TOKEN:\s*"true"/);
+        // Keyless access exists ONLY on the loopback-only dev stack.
+        expect(text).toMatch(/ALLOW_OPEN_AUTH:\s*"true"/);
         expect(text).toMatch(/127\.0\.0\.1:3000:3000/);
+        expect(text).toMatch(/APP_ENV:\s*\$\{PLYR_DEV_APP_ENV:-development\}/);
       } else {
-        expect(sets, f).toBe(false);
-        expect(text, f).not.toMatch(/ALLOW_DEFAULT_API_TOKEN:\s*"?true/);
-        // Login without a token is allowed only on the loopback-only dev stack.
         expect(text, f).not.toMatch(/ALLOW_OPEN_AUTH:\s*"?true/);
-        expect(text, f).not.toMatch(/AUTH_MODE:\s*"?open/);
       }
     }
   });
 
-  it('a fresh .env made by ./plyr gets a random token instead of admin123', () => {
+  it('./plyr no longer generates, stores or prints an API token', () => {
     const sh = read('scripts/plyr.sh');
-    // The token comes from the wizard's generator (openssl, with fallbacks).
-    expect(sh).toMatch(/fresh_token="\$\(wz_gen_token\)"/);
-    expect(read('scripts/setup-wizard.sh')).toMatch(/openssl rand -hex 24/);
-    expect(sh).toMatch(/s\|\^API_TOKEN=admin123/);
+    expect(sh).not.toMatch(/wz_gen_token/);
+    expect(sh).not.toMatch(/fresh_token/);
+    expect(sh).not.toMatch(/admin123/);
+    expect(sh).not.toMatch(/--token/);
+    // The wizard may still make the WEBHOOK signing secret, but never an API token.
+    const wiz = read('scripts/setup-wizard.sh');
+    expect(wiz).not.toMatch(/API_TOKEN/);
+    expect(wiz).not.toMatch(/AUTH_MODE/);
+    expect(read('install.sh')).not.toMatch(/gen_token|TOKEN_OUT/);
   });
 
   it('doctor prints the security section from the same checks the boot uses', () => {

@@ -262,7 +262,7 @@ describe('POST /browser/uploads', () => {
     // and the hand-over died with a bare ENOENT that read as "Import still
     // does nothing". The id may be supplied, but only if the key owns it.
     expect(routes).toMatch(/const asked = String\(req\.query\.userId/);
-    expect(routes).toMatch(/authorizeLive\(apiKeyOf\(req\), asked\)/);
+    expect(routes).toMatch(/authorizeLive\(apiKeyOf\(req\), asked, \{ req \}\)/);
     expect(routes).toMatch(/saveUpload\(\s*owner,/);
     // …and an unowned id is refused, not silently downgraded.
     expect(routes).toContain('may not upload for that user');

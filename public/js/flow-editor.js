@@ -3073,7 +3073,7 @@
     if (!uid) { if (U() && U().toast) U().toast(t('fe.needUserId'), 'error'); return false; }
     setNodeStatus(nodeId, 'running');
     var wfId = (currentWorkflow && currentWorkflow.id) || '';
-    API.runNode(uid, Object.assign({ steps: steps, nodeIndex: idx, headless: true }, wfId ? { workflowId: wfId } : {}))
+    API.runNode(uid, Object.assign({ steps: steps, nodeIndex: idx, origin: 'manual' }, wfId ? { workflowId: wfId } : {}))
       .then(function (data) {
         if (U() && U().toast) U().toast(t('fe.runNodeQueued'), 'ok');
         var RP = window.RunPanel;

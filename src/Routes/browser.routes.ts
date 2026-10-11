@@ -76,6 +76,7 @@ import { ensureRuntimeReady } from '../core/BrowserRuntimeRecovery';
 // The same gate /browser/ws uses. Uploads must be scoped to the identity the
 // socket runs as, so they must be authorized by the identical rule.
 import { authorizeLive } from '../core/LiveServer';
+import { realChromeLeaseHolder } from '../core/ProfileLease';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 
 /**
@@ -1151,7 +1152,7 @@ export const createBrowserRoutes = (): Router => {
         const asked = String(req.query.userId || '').trim();
         let owner = resolveUserId(req);
         if (asked && asked !== owner) {
-          const auth = await authorizeLive(apiKeyOf(req), asked);
+          const auth = await authorizeLive(apiKeyOf(req), asked, { req });
           if (!auth.ok) {
             return fail(res, 403, 'This API key may not upload for that user.',
               'Use the same userId the browser socket was opened with.');
@@ -1195,7 +1196,7 @@ export const createBrowserRoutes = (): Router => {
       const asked = String(req.query.userId || '').trim();
       let owner = resolveUserId(req);
       if (asked && asked !== owner) {
-        const auth = await authorizeLive(apiKeyOf(req), asked);
+        const auth = await authorizeLive(apiKeyOf(req), asked, { req });
         if (!auth.ok) {
           return fail(res, 403, 'This API key may not read downloads for that user.',
             'Use the same userId the browser socket was opened with.');
@@ -1531,9 +1532,15 @@ export const createBrowserRoutes = (): Router => {
       ? await RealChrome.recycleIfWedged()
       : { action: 'not-running' as const, reason: 'cold start' };
 
-    // The screen must exist before Chrome starts: extensions only load in a
-    // HEADED browser, and a headed browser needs an X display.
-    const ctx = await RealChrome.getContext();
+    // The operator wants to SEE the browser: if a hidden automatic run left it
+    // headless, bring it back visible - unless a run holds its profile now.
+    // Only when it is running HIDDEN (left so by an automatic run) is there
+    // anything to change; the normal path stays RealChrome.getContext().
+    const ctx = RealChrome.isRunning() && RealChrome.isHeadless?.() === true
+      ? await RealChrome.forOperator(async () => {
+        try { return !!(await realChromeLeaseHolder()); } catch { return false; }
+      })
+      : await RealChrome.getContext();
 
     // ─────────────────────────────────────────────────────────────────────
     // THE WINDOW MUST LAND ON A PAGE THAT CAN HOST THE CONSENT ALERT

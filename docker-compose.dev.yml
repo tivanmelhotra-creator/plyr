@@ -19,21 +19,20 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      APP_ENV: server
-      DEPLOYMENT_MODE: single
       # `./plyr dev-docker` asks "development (no login) or production-like
-      # (real token)" and passes the answer through --env-file
-      # .plyr/dev-docker.env. Both modes get a random token; the fallbacks below
-      # only apply to a bare `docker compose -f docker-compose.dev.yml up`.
-      API_TOKEN: ${PLYR_DEV_API_TOKEN:-admin123}
-      AUTH_MODE: ${PLYR_DEV_AUTH_MODE:-open}
-      # Open login is otherwise refused under APP_ENV=server. Allowed here only
-      # because this stack is disposable and published on 127.0.0.1 alone.
+      # (password)" and passes the answer through --env-file
+      # .plyr/dev-docker.env. NO credential is generated or printed:
+      #   development      -> APP_ENV=development: the panel opens with no login
+      #                       and no token (published on 127.0.0.1 only).
+      #   production-like  -> APP_ENV=production: the first page you open asks you
+      #                       to choose a password, then a normal login follows.
+      # A bare `docker compose -f docker-compose.dev.yml up` behaves as development.
+      APP_ENV: ${PLYR_DEV_APP_ENV:-development}
+      DEPLOYMENT_MODE: single
+      # Inside the container the browser reaches the app through Docker's bridge,
+      # not loopback, so keyless development access must accept that peer. Allowed
+      # ONLY here: this stack is disposable and published on 127.0.0.1 alone.
       ALLOW_OPEN_AUTH: "true"
-      # The ONLY place the public default token is acceptable under APP_ENV=server
-      # (the bare-compose fallback above). Anywhere else the server refuses to
-      # start with admin123 (see src/core/StartupValidation.ts).
-      ALLOW_DEFAULT_API_TOKEN: "true"
       REDIS_URL: redis://redis:6379
       PORT: "3000"
       PUBLIC_DOMAIN: http://localhost:3000

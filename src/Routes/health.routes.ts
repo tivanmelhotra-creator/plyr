@@ -38,14 +38,13 @@ export const createHealthRoutes = (deps: HealthRoutesDeps): Router => {
       // disagreement is deliberate and worth being able to see.
       profile: config.APP_PROFILE,
       profileSource: config.APP_PROFILE_SOURCE,
-      mode: config.DEPLOYMENT_MODE,
       uptime: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
       redis: redisStatus,
       luaScripts: luaScriptsLoaded() ? 'loaded' : 'fallback',
       browsers: {
-        vip: profileManager.getVipBrowserCount(),
-        free: profileManager.getFreeContextCount(),
+        persistent: profileManager.getVipBrowserCount(),
+        ephemeral: profileManager.getFreeContextCount(),
         total: profileManager.getActiveBrowserCount(),
         registeredPages: profileManager.getRegisteredPageCount(),
         globalBrowser: globalBrowserStatus
@@ -55,9 +54,6 @@ export const createHealthRoutes = (deps: HealthRoutesDeps): Router => {
         resourceBlocking: config.FREE_RESOURCE_BLOCKING,
         turboMode: config.TURBO_MODE,
         webhookRetries: config.WEBHOOK_MAX_RETRIES,
-        freeForceSequential: config.FREE_FORCE_SEQUENTIAL,
-        planOverrides: true,
-        unifiedUserManagement: true
       }
     });
   });

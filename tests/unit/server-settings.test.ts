@@ -20,8 +20,8 @@ import {
 } from '../../src/core/SettingsCatalog';
 import { isLoopbackAddress } from '../../src/middleware/auth';
 
-const dev: ValidateCtx = { profile: 'development', allowDefaultToken: false, openAllowed: true, singleUser: true };
-const server: ValidateCtx = { profile: 'server', allowDefaultToken: false, openAllowed: false, singleUser: true };
+const dev: ValidateCtx = { profile: 'development' };
+const server: ValidateCtx = { profile: 'server' };
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plyr-settings-')); resetLiveSettingsForTests(); });
@@ -66,18 +66,25 @@ describe('validation', () => {
     expect(v('CODE_NODE_ENABLED', false)).toEqual({ value: 'false' });
   });
 
-  it('refuses "no login" unless the profile in force allows it', () => {
-    expect(v('AUTH_MODE', 'open', dev)).toEqual({ value: 'open' });
-    expect(v('AUTH_MODE', 'open', server)).toHaveProperty('errorFa');
-    expect(v('AUTH_MODE', 'open', { ...dev, singleUser: false })).toHaveProperty('error');
+  it('there is no login-mode setting: keyless access follows the environment', () => {
+    expect(specOf('AUTH_MODE')).toBeUndefined();
+    expect(specOf('DEFAULT_HEADLESS')).toBeUndefined();
+    expect(specOf('REAL_CHROME_ENABLED')).toBeUndefined();
+    expect(specOf('MAX_CONCURRENT')).toBeUndefined();
   });
 
-  it('refuses admin123 and short tokens on a server, allows admin123 in development', () => {
-    expect(v('API_TOKEN', 'admin123', server)).toHaveProperty('error');
-    expect(v('API_TOKEN', 'admin123', dev)).toEqual({ value: 'admin123' });
+  it('the environment offers exactly Development and Production', () => {
+    expect(specOf('APP_ENV')!.options!.map((o) => o.value)).toEqual(['development', 'production']);
+  });
+
+  it('the API token is OPTIONAL: empty is valid everywhere, admin123 is just a short-list value like any other', () => {
+    expect(v('API_TOKEN', '', server)).toEqual({ value: '' });
+    expect(v('API_TOKEN', null, server)).not.toHaveProperty('error');
+    expect(v('API_TOKEN', 'admin123', server)).toHaveProperty('error');   // < 16 chars
+    expect(v('API_TOKEN', 'admin123', dev)).toHaveProperty('error');
     expect(v('API_TOKEN', 'short', dev)).toHaveProperty('error');
     expect(v('API_TOKEN', 'has space in it 1234567', dev)).toHaveProperty('error');
-    expect(v('API_TOKEN', null, server)).toHaveProperty('error');
+    expect(v('API_TOKEN', 'my_script_token_1234567', dev)).toEqual({ value: 'my_script_token_1234567' });
   });
 
   it('normalises a bare domain to https and rejects paths', () => {
@@ -167,20 +174,16 @@ describe('config getters follow a panel save without a restart', () => {
     expect(config.API_TOKEN).toBe('boot_token_abcdefghij');
     store.saveSetting('API_TOKEN', 'rotated_token_abcdefgh', { file: path.join(dir, 's.env') });
     expect(config.API_TOKEN).toBe('rotated_token_abcdefgh');
-    expect(config.API_TOKEN_IS_DEFAULT).toBe(false);
     store.saveSetting('API_TOKEN', null, { file: path.join(dir, 's.env') });
     expect(config.API_TOKEN).toBe('boot_token_abcdefghij');
   });
 
-  it('honours AUTH_MODE=open only in development', async () => {
-    let { config } = await loadConfig({ DEPLOYMENT_MODE: 'single', APP_ENV: 'development', AUTH_MODE: 'open' });
+  it('keyless local access follows the environment, not a setting', async () => {
+    let { config } = await loadConfig({ APP_ENV: 'development' });
     expect(config.AUTH_OPEN).toBe(true);
-    ({ config } = await loadConfig({ DEPLOYMENT_MODE: 'single', APP_ENV: 'server', AUTH_MODE: 'open', API_TOKEN: 'x'.repeat(20) }));
-    expect(config.AUTH_MODE_REQUESTED).toBe('open');
+    ({ config } = await loadConfig({ APP_ENV: 'production', API_TOKEN: 'x'.repeat(20) }));
     expect(config.AUTH_OPEN).toBe(false);
-    ({ config } = await loadConfig({ DEPLOYMENT_MODE: 'single', APP_ENV: 'server', AUTH_MODE: 'open', ALLOW_OPEN_AUTH: 'true' }));
-    expect(config.AUTH_OPEN).toBe(true);
-    ({ config } = await loadConfig({ DEPLOYMENT_MODE: 'multi', APP_ENV: 'development', AUTH_MODE: 'open' }));
+    ({ config } = await loadConfig({ APP_ENV: 'server', API_TOKEN: 'x'.repeat(20), AUTH_MODE: 'open' }));
     expect(config.AUTH_OPEN).toBe(false);
   });
 

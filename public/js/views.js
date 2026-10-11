@@ -297,7 +297,7 @@
     if (!uid) { U().toast(t('run.needUserId'), 'error'); return; }
     if (builderSteps.length === 0) { U().toast(t('run.needStep'), 'error'); return; }
 
-    var payload = { userId: uid, steps: buildPayloadSteps(), headless: headless };
+    var payload = { userId: uid, steps: buildPayloadSteps(), origin: 'manual', headless: headless };
     if (webhook) payload.webhookUrl = webhook;
 
     var btn = root.querySelector('#run-submit');
@@ -622,7 +622,7 @@
             b.addEventListener('click', function () {
               var id = b.getAttribute('data-run');
               b.disabled = true;
-              API.runWorkflow(uid, id, {})
+              API.runWorkflow(uid, id, { origin: 'manual' })
                 .then(function (d) {
                   U().toast(t('wf.queued') + ' ' + (d.jobId || ''), 'success');
                   location.hash = '#/jobs?job=' + encodeURIComponent(d.jobId) +
@@ -883,7 +883,6 @@
                 '<button class="fe-splitbtn" id="fe-export-btn" aria-haspopup="menu" aria-expanded="false"></button>' +
                 '<div class="fe-menu" id="fe-export-menu" role="menu" hidden></div>' +
               '</div>' +
-              '<button type="button" class="al-switch fe-toggle" id="fe-live" role="switch" aria-checked="false"></button>' +
               '<button class="btn btn-primary btn-sm fe-runslot" id="fe-run">' + IC('play', 14) + ' ' + t('fe.testWorkflow') + '</button>' +
               '<button class="fe-icobtn" id="fe-bell"></button>' +
               '<button class="fe-icobtn" id="fe-gear"></button>' +
@@ -1233,7 +1232,7 @@
       // the read-only live tab has something to show (docs/uiux/new ui.md §9).
       // Background runs (Active: triggers / schedules) keep the workflow's own
       // headless setting — they never come through this handler.
-      var runPayload = { userId: uid, steps: steps, headless: !wantLiveBrowser() };
+      var runPayload = { userId: uid, steps: steps, origin: 'manual', headless: !wantLiveBrowser() };
       // A saved workflow files its node outputs in ITS OWN workspace
       // (Workflow Files > downloads/<node>); the server verifies ownership.
       if (runWf && runWf.id) runPayload.workflowId = runWf.id;
@@ -1815,8 +1814,6 @@
     // Live:     server flag for a saved workflow; a session-local choice for a
     //           draft. Test Workflow sends `headless: !live`.
     var activeBtn = root.querySelector('#fe-active');
-    var liveBtn = root.querySelector('#fe-live');
-    var draftLive = false;
     var toggleBusy = false;
     function savedWf() {
       var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
@@ -1841,7 +1838,6 @@
       var busy = toggleBusy;
       paintSwitch(activeBtn, cur ? cur.active !== false : false, !cur || busy,
         t(cur ? (cur.active !== false ? 'fe.activeOnHint' : 'fe.activeOffHint') : 'fe.needSaved'));
-      paintSwitch(liveBtn, wantLiveBrowser(), busy, t('fe.liveHint'));
     }
     function flipState(patch) {
       var cur = savedWf();
@@ -1853,11 +1849,9 @@
         .then(function (data) {
           var w = data && data.workflow ? data.workflow : null;
           if (w && FE.patchCurrentWorkflow) {
-            FE.patchCurrentWorkflow({ active: w.active, liveBrowser: w.liveBrowser });
+            FE.patchCurrentWorkflow({ active: w.active });
           }
-          var key = Object.prototype.hasOwnProperty.call(patch, 'active')
-            ? (patch.active ? 'ws.activated' : 'ws.deactivated')
-            : (patch.liveBrowser ? 'ws.lbOn' : 'ws.lbOff');
+          var key = patch.active ? 'ws.activated' : 'ws.deactivated';
           U().toast(t(key), 'success');
         })
         .catch(function (err) {
@@ -1873,11 +1867,6 @@
       // first so it judges exactly what is on the canvas.
       var flush = turnOn && FE.autosaveNow ? FE.autosaveNow() : Promise.resolve();
       Promise.resolve(flush).catch(function () {}).then(function () { flipState({ active: turnOn }); });
-    });
-    if (liveBtn) liveBtn.addEventListener('click', function () {
-      var cur = savedWf();
-      if (cur) flipState({ liveBrowser: !(cur.liveBrowser === true) });
-      else { draftLive = !draftLive; refreshToggles(); }
     });
 
     // ---- Run / Stop: ONE slot, TWO states -------------------------------
@@ -2646,7 +2635,7 @@
     { key: 'successRate', icon: 'target', tone: 'green', title: 'ws.card.successRate', sub: 'ws.sub.successRate', pct: true },
     { key: 'failures', icon: 'alert-triangle', tone: 'red', title: 'ws.card.failures', sub: 'ws.sub.failures' },
     { key: 'activeJobs', icon: 'briefcase', tone: 'amber', title: 'ws.card.activeJobs', sub: 'ws.sub.activeJobs' },
-    { key: 'liveBrowsers', icon: 'globe', tone: 'blue', title: 'ws.card.liveBrowsers', sub: 'ws.sub.liveBrowsers' },
+    { key: 'busyProfiles', icon: 'globe', tone: 'blue', title: 'ws.card.busyProfiles', sub: 'ws.sub.busyProfiles' },
   ];
 
   var WS_TABS = [
@@ -2667,11 +2656,9 @@
   /** Per-workflow actions menu — exactly the entries the sidebar gave up. */
   var WS_ROW_MENU = [
     { id: 'editor', icon: 'pencil', label: 'ws.menu.openEditor' },
-    { id: 'live', icon: 'eye', label: 'ws.menu.liveBrowser' },
+    { id: 'settings', icon: 'settings', label: 'ws.menu.settings' },
     { id: 'schedules', icon: 'calendar', label: 'ws.menu.schedules' },
     { id: 'executions', icon: 'history', label: 'ws.menu.executions' },
-    { id: 'connections', icon: 'git-branch', label: 'ws.menu.connections' },
-    { id: 'settings', icon: 'settings', label: 'ws.menu.settings' },
     { id: 'duplicate', icon: 'copy', label: 'ws.menu.duplicate' },
     { id: 'export', icon: 'download', label: 'ws.menu.export' },
     { id: 'delete', icon: 'trash', label: 'ws.menu.delete', danger: true },
@@ -2680,7 +2667,7 @@
   // Survives re-render (language switch, refresh) but not a page reload.
   // `filters` is a separate sub-object so "clear filters" is one assignment and
   // the active-filter count is one comparison against WS_FILTER_DEFAULTS.
-  var WS_FILTER_DEFAULTS = { status: 'all', live: 'all', scheduled: false, failing: false };
+  var WS_FILTER_DEFAULTS = { status: 'all', scheduled: false, failing: false };
   var wsState = {
     tab: 'workflows', search: '', sort: 'updated', page: 1, perPage: 10, compact: false,
     filters: Object.assign({}, WS_FILTER_DEFAULTS),
@@ -2708,9 +2695,6 @@
     var active = wf.active !== false;
     if (f.status === 'active' && !active) return false;
     if (f.status === 'inactive' && active) return false;
-    var lb = wf.liveBrowser === true;
-    if (f.live === 'on' && !lb) return false;
-    if (f.live === 'off' && lb) return false;
     if (f.scheduled && !(st && st.scheduleCount > 0)) return false;
     // "Failing" means it HAS a measured rate that is poor. A workflow that never
     // ran has no evidence of failure and must not be accused of one.
@@ -2788,6 +2772,69 @@
   }
 
   /** Hand a workflow to the editor view (same channel the old card list used). */
+  /**
+   * Workflow Settings — the settings OF ONE workflow (not the editor, not the
+   * app Settings): name, description, the webhook its runs report to, and the
+   * browser profile its runs use. Saved with PUT (a new version of the design).
+   */
+  function openWorkflowSettings(wf, onSaved) {
+    var uid = effectiveUserId();
+    var prev = document.getElementById('wf-settings-dlg');
+    if (prev) prev.remove();
+    var dlg = document.createElement('div');
+    dlg.id = 'wf-settings-dlg';
+    dlg.className = 'wfs-backdrop';
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.setAttribute('aria-labelledby', 'wfs-title');
+    dlg.innerHTML =
+      '<form class="wfs-card" id="wfs-form">' +
+        '<h2 class="wfs-title" id="wfs-title">' + esc(t('wfs.title')) + ' — ' + esc(wf.name) + '</h2>' +
+        '<label class="wfs-field"><span>' + esc(t('wfs.name')) + '</span>' +
+          '<input id="wfs-name" maxlength="120" required value="' + esc(wf.name) + '"></label>' +
+        '<label class="wfs-field"><span>' + esc(t('wfs.description')) + '</span>' +
+          '<textarea id="wfs-desc" maxlength="2000" rows="2">' + esc(wf.description || '') + '</textarea></label>' +
+        '<label class="wfs-field"><span>' + esc(t('wfs.webhook')) + '</span>' +
+          '<input id="wfs-webhook" type="url" placeholder="https://…" value="' + esc(wf.webhookUrl || '') + '">' +
+          '<small>' + esc(t('wfs.webhookHint')) + '</small></label>' +
+        '<label class="wfs-field"><span>' + esc(t('wfs.profile')) + '</span>' +
+          '<input id="wfs-profile" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="default" value="' +
+            esc(wf.profileId && wf.profileId !== 'default' ? wf.profileId : '') + '">' +
+          '<small>' + esc(t('wfs.profileHint')) + '</small></label>' +
+        '<p class="wfs-note">' + esc(t('wfs.visibilityNote')) + '</p>' +
+        '<div class="wfs-actions">' +
+          '<button type="button" class="btn btn-ghost btn-sm" id="wfs-cancel">' + esc(t('common.cancel')) + '</button>' +
+          '<button type="submit" class="btn btn-primary btn-sm" id="wfs-save">' + esc(t('common.save')) + '</button>' +
+        '</div>' +
+      '</form>';
+    document.body.appendChild(dlg);
+    var close = function () { dlg.remove(); };
+    dlg.querySelector('#wfs-cancel').addEventListener('click', close);
+    dlg.addEventListener('click', function (e) { if (e.target === dlg) close(); });
+    dlg.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+    dlg.querySelector('#wfs-name').focus();
+    dlg.querySelector('#wfs-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var name = dlg.querySelector('#wfs-name').value.trim();
+      if (!name) { U().toast(t('wf.nameRequired'), 'error'); return; }
+      var btn = dlg.querySelector('#wfs-save');
+      btn.disabled = true;
+      API.updateWorkflow(uid, wf.id, {
+        name: name,
+        description: dlg.querySelector('#wfs-desc').value.trim() || null,
+        steps: wf.steps,
+        webhookUrl: dlg.querySelector('#wfs-webhook').value.trim() || null,
+        profileId: dlg.querySelector('#wfs-profile').value.trim() || 'default',
+      })
+        .then(function (d) {
+          U().toast(t('wfs.saved'), 'success');
+          close();
+          if (onSaved) onSaved(d && d.workflow);
+        })
+        .catch(function (err) { U().toast(err.message, 'error'); btn.disabled = false; });
+    });
+  }
+
   function openInEditorFromWorkspace(wf) {
     pendingWorkflowToOpen = wf;
     location.hash = '#/editor';
@@ -3160,43 +3207,26 @@
     }
 
     /**
-     * Live Browser is a per-workflow capability, and a browser session can only
-     * exist while the workflow is allowed to run — hence the three locked states
-     * (docs/uiux/workspace-overview.md § 4):
-     *   active   + on  -> eye enabled (a session exists / will exist)
-     *   inactive + on  -> toggle rendered gray, eye disabled (intent remembered)
-     *   active   + off -> eye disabled (user opted out of streaming)
+     * What is happening RIGHT NOW, kept apart from `Active` (may triggers start
+     * it?) and from browser visibility (decided per run: a click = visible,
+     * a trigger = hidden). Running / waiting for its profile / idle, plus the
+     * browser profile its runs use.
      */
-    function liveCell(wf) {
-      var active = wf.active !== false;
-      var on = wf.liveBrowser === true;
-      var watchable = active && on;
-      var tip = watchable ? t('ws.watchBrowser')
-        : (!active ? t('ws.watchDisabledInactive') : t('ws.watchDisabledOff'));
-      return '<div class="ws-live">' +
-        '<button type="button" class="ws-switch' + (on ? ' on' : '') + (on && !active ? ' muted-on' : '') + '"' +
-          ' role="switch" aria-checked="' + (on ? 'true' : 'false') + '"' +
-          ' data-lb="' + esc(wf.id) + '" aria-label="' + esc(t('ws.col.liveBrowser')) + '">' +
-          '<span class="ws-switch-knob"></span>' +
-        '</button>' +
-        '<button type="button" class="ws-eye' + (watchable ? '' : ' disabled') + '"' +
-          ' data-watch="' + esc(wf.id) + '"' + (watchable ? '' : ' aria-disabled="true"') +
-          ' title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' +
-          IC(watchable ? 'eye' : 'eye-off', 15) +
-        '</button>' +
-      '</div>';
-    }
-
-    function ownerCell(wf) {
-      var team = wf.owner === 'team';
-      return '<span class="ws-owner">' + IC(team ? 'users' : 'user', 13) + ' ' +
-        t(team ? 'ws.owner.team' : 'ws.owner.personal') + '</span>';
+    function runCell(wf, st) {
+      var running = st && st.running > 0;
+      var waiting = st && !running && st.waiting > 0;
+      var label = running ? t('ws.run.running') : (waiting ? t('ws.run.waiting') : t('ws.run.idle'));
+      var tone = running ? 'amber' : (waiting ? 'violet' : 'muted');
+      var profile = (st && st.profile) || wf.profileId || 'default';
+      return '<span class="ws-run"><span class="ws-run-dot tone-' + tone + '"></span>' + esc(label) + '</span>' +
+        '<span class="ws-run-outcome tone-muted" title="' + esc(t('ws.profileHint')) + '">' +
+          IC('user', 12) + ' ' + esc(profile === 'default' ? t('ws.profileDefault') : profile) + '</span>';
     }
 
     function rowMenu(wf) {
       return '<div class="ws-row-menu" id="ws-menu-' + cssId(wf.id) + '" role="menu" hidden>' +
         WS_ROW_MENU.map(function (m) {
-          var dis = m.id === 'live' && !(wf.active !== false && wf.liveBrowser === true);
+          var dis = false;
           return '<button type="button" role="menuitem" class="' + (m.danger ? 'danger' : '') + '"' +
             ' data-act="' + m.id + '" data-id="' + esc(wf.id) + '"' +
             (dis ? ' aria-disabled="true" disabled' : '') + '>' +
@@ -3219,7 +3249,6 @@
             '</span>' +
           '</div>' +
         '</td>' +
-        '<td>' + ownerCell(wf) + '</td>' +
         '<td>' + lastRunCell(st) + '</td>' +
         '<td>' + rateCell(st) + '</td>' +
         '<td>' +
@@ -3231,7 +3260,7 @@
               t(active ? 'ws.active' : 'ws.inactive') + '</span>' +
           '</div>' +
         '</td>' +
-        '<td>' + liveCell(wf) + '</td>' +
+        '<td>' + runCell(wf, st) + '</td>' +
         '<td>' +
           '<button type="button" class="ws-sched" data-sched="' + esc(wf.id) + '">' +
             IC('calendar', 14) + ' ' +
@@ -3295,7 +3324,7 @@
       var from = (wsState.page - 1) * wsState.perPage;
       var slice = list.slice(from, from + wsState.perPage);
 
-      var cols = ['workflow', 'owner', 'lastRun', 'successRate', 'status', 'liveBrowser', 'schedules', 'actions'];
+      var cols = ['workflow', 'lastRun', 'successRate', 'status', 'runNow', 'schedules', 'actions'];
       elPanel.innerHTML =
         '<div class="ws-table-wrap' + (wsState.compact ? ' compact' : '') + '">' +
           '<table class="ws-table"><thead><tr>' +
@@ -3356,7 +3385,7 @@
     }
 
     /**
-     * Flip `active` / `liveBrowser` through the toggle-only endpoint. PATCH is
+     * Flip `active` through the toggle-only endpoint. PATCH is
      * used on purpose: PUT would bump `Workflow.version` and write a history
      * snapshot, and flipping a switch is not a new design of the automation.
      */
@@ -3367,11 +3396,8 @@
           var wf = findWf(id);
           if (wf && data && data.workflow) {
             wf.active = data.workflow.active;
-            wf.liveBrowser = data.workflow.liveBrowser;
           }
-          var msgKey = Object.prototype.hasOwnProperty.call(patch, 'active')
-            ? (patch.active ? 'ws.activated' : 'ws.deactivated')
-            : (patch.liveBrowser ? 'ws.lbOn' : 'ws.lbOff');
+          var msgKey = patch.active ? 'ws.activated' : 'ws.deactivated';
           U().toast(t(msgKey), 'success');
           paintWorkflowsTab();
         })
@@ -3382,20 +3408,23 @@
     }
 
     function runRowAction(act, wf) {
-      if (act === 'editor' || act === 'connections' || act === 'settings') {
-        // All three open the editor: it is the only place that owns a
-        // workflow's graph, its node connections and its per-flow settings.
-        openInEditorFromWorkspace(wf);
-        return;
+      if (act === 'editor') { openInEditorFromWorkspace(wf); return; }
+      // Settings OF THIS WORKFLOW (not the editor): name, description, the
+      // webhook it reports to and the browser profile its runs use.
+      if (act === 'settings') { openWorkflowSettings(wf, function () { load(); }); return; }
+      // This workflow's schedules / runs, in the Workspace tabs (filtered).
+      if (act === 'schedules') { wsState.tab = 'schedules'; paintTabs(); paintPanel(); return; }
+      if (act === 'executions') {
+        wsState.execWorkflow = wf.id; wsState.tab = 'executions'; paintTabs(); paintPanel(); return;
       }
-      if (act === 'live') { location.hash = '#/browser'; return; }
-      if (act === 'schedules') { location.hash = '#/schedules'; return; }
-      if (act === 'executions') { location.hash = '#/jobs'; return; }
       if (act === 'duplicate') {
+        // A copy of the DESIGN: new id (server-generated), same steps, webhook
+        // and profile; inactive and untested (it must pass its own test run).
         API.createWorkflow(uid, {
           name: wf.name + ' ' + t('wf.copySuffix'),
           description: wf.description || null,
-          steps: wf.steps, headless: wf.headless, webhookUrl: wf.webhookUrl,
+          steps: wf.steps, webhookUrl: wf.webhookUrl || null,
+          profileId: wf.profileId || null,
         })
           .then(function () { U().toast(t('wf.duplicated'), 'success'); load(); })
           .catch(function (err) { U().toast(err.message, 'error'); });
@@ -3415,25 +3444,6 @@
         b.addEventListener('click', function () {
           var wf = findWf(b.getAttribute('data-active'));
           if (wf) setState(wf.id, { active: !(wf.active !== false) }, b);
-        });
-      });
-      elPanel.querySelectorAll('[data-lb]').forEach(function (b) {
-        b.addEventListener('click', function () {
-          var wf = findWf(b.getAttribute('data-lb'));
-          if (wf) setState(wf.id, { liveBrowser: !(wf.liveBrowser === true) }, b);
-        });
-      });
-      elPanel.querySelectorAll('[data-watch]').forEach(function (b) {
-        b.addEventListener('click', function () {
-          var wf = findWf(b.getAttribute('data-watch'));
-          if (!wf) return;
-          // The server enforces this too: an inactive workflow refuses to run,
-          // so there is nothing to watch. The disabled eye is convenience only.
-          if (wf.active === false || wf.liveBrowser !== true) {
-            U().toast(t(wf.active === false ? 'ws.watchDisabledInactive' : 'ws.watchDisabledOff'), 'error');
-            return;
-          }
-          location.hash = '#/browser';
         });
       });
       elPanel.querySelectorAll('[data-sched]').forEach(function (b) {
@@ -3668,9 +3678,6 @@
         chips.push('<span class="ws-conn-chip tone-violet">' + IC('zap', 13) + ' ' +
           esc(t('ws.conn.trigger')) + '<span class="ws-conn-url mono">' + esc(trig) + '</span></span>');
       }
-      chips.push('<span class="ws-conn-chip tone-muted">' +
-        IC(wf.headless === false ? 'eye' : 'eye-off', 13) + ' ' +
-        esc(t(wf.headless === false ? 'ws.conn.visible' : 'ws.conn.headless')) + '</span>');
       return chips;
     }
 
@@ -3784,13 +3791,6 @@
           { v: 'all', label: 'ws.filterAll' },
           { v: 'active', label: 'ws.filterActiveOnly' },
           { v: 'inactive', label: 'ws.filterInactiveOnly' },
-        ],
-      },
-      {
-        key: 'live', label: 'ws.filterLive', options: [
-          { v: 'all', label: 'ws.filterAll' },
-          { v: 'on', label: 'ws.filterLiveOn' },
-          { v: 'off', label: 'ws.filterLiveOff' },
         ],
       },
     ];

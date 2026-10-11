@@ -455,10 +455,10 @@ export async function resolveScheduledWorkflow(
   svc: WorkflowService,
   userId: string,
   workflowId: string
-): Promise<{ skip: string } | { steps: unknown[]; headless?: Workflow['headless']; version: number }> {
+): Promise<{ skip: string } | { steps: unknown[]; profileId?: string; version: number }> {
   const wf = await svc.get(userId, workflowId);
   if (!wf) return { skip: 'bound workflow no longer exists' };
   if (wf.active === false) return { skip: 'bound workflow is inactive' };
   const d = WorkflowService.executableDesign(wf);
-  return { steps: d.steps, headless: d.headless, version: d.version };
+  return { steps: d.steps, profileId: d.profileId, version: d.version };
 }
