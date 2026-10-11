@@ -5259,6 +5259,17 @@
       var n = state && state.nodes ? state.nodes[nodeId] : null;
       return n ? nodeTitle(n) : '';
     },
+    /** Human name of an action id ("Open URL" for goto), id itself as fallback. */
+    actionLabel: function (actionId) { return actionLabel(actionId); },
+    /** The card's second line for a node id (same text the canvas shows). */
+    nodeSummary: function (nodeId) {
+      var n = state && state.nodes ? state.nodes[nodeId] : null;
+      if (!n) return '';
+      var act = actionById(n.action);
+      try { return nodeCardSummary(n, act); } catch (e) { return ''; }
+    },
+    /** Node ids in STEP order (the ids a 1-based step index - 1 addresses). */
+    stepNodeIds: function () { return stepChainIds(); },
     /** Selected node id, so the outline can mirror the canvas selection. */
     getSelected: function () { return state ? state.selected : null; },
     /**
