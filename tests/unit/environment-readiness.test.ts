@@ -238,12 +238,12 @@ describe('2. default env behaviour', () => {
   });
 
   it('reports WHERE each value came from, so a surprise is diagnosable', async () => {
-    await withEnv({ APP_ENV: 'server', REAL_CHROME_DISPLAY: ':77' }, ({ profile }) => {
-      const explicit = profile.resolveVar('REAL_CHROME_DISPLAY', process.env, 'server');
+    await withEnv({ APP_ENV: 'production', REAL_CHROME_DISPLAY: ':77' }, ({ profile }) => {
+      const explicit = profile.resolveVar('REAL_CHROME_DISPLAY', process.env, 'production');
       expect(explicit.source).toBe('explicit');
-      const fromProfile = profile.resolveVar('REAL_CHROME_HEADLESS', process.env, 'server');
+      const fromProfile = profile.resolveVar('RATE_LIMIT_ENABLED', process.env, 'production');
       expect(fromProfile.source).toBe('profile');
-      expect(fromProfile.value).toBe('false');
+      expect(fromProfile.value).toBe('true');
     });
   });
 });
@@ -297,23 +297,16 @@ describe('3. production config', () => {
     });
   });
 
-  it('does NOT abort a running multi-tenant server merely for an empty API_KEYS', async () => {
-    // This rule was written as `fatal` and that was a BUG, kept as a test
-    // because the reasoning is the point. `config.API_KEYS` is only the .env
-    // SEED — the real store is Redis (ApiKeyManager), and /admin/api-keys/generate
-    // sits behind ADMIN_SECRET, not behind API-key auth. Aborting would have
-    // killed healthy instances AND removed the endpoint that repairs the very
-    // state being complained about.
+  it('an old DEPLOYMENT_MODE=multi is ignored with a warning, never a different behaviour', async () => {
     await withEnv(
-      { APP_ENV: 'production', DEPLOYMENT_MODE: 'multi', API_KEYS_ENABLED: 'true', API_KEYS: '' },
-      async ({ startup }) => {
+      { APP_ENV: 'production', API_TOKEN: 'a-real-secret-token', DEPLOYMENT_MODE: 'multi' },
+      async ({ config, startup }) => {
+        expect(config.DEPLOYMENT_MODE).toBe('single');
         const report = await startup.validateStartup();
-        const issue = report.issues.find((i) => i.id === 'no_api_keys');
+        const issue = report.issues.find((i) => i.id === 'deployment_mode_ignored');
         expect(issue).toBeDefined();
         expect(issue!.severity).toBe('warn');
         expect(report.ok).toBe(true);
-        // The fix must be runnable, not advice.
-        expect(issue!.fix).toMatch(/admin\/api-keys\/generate/);
       },
     );
   });
@@ -323,12 +316,11 @@ describe('3. production config', () => {
 // 4 + 5. Remote Browser enabled / Real Chrome enabled where required
 // ===========================================================================
 describe('4+5. Remote Browser and Real Chrome enablement', () => {
-  it('the server profile runs HEADED, because extensions need it', async () => {
-    // MEASURED, not assumed: headless Chrome loads 0 extension service workers,
-    // headed loads 1. The Element Inspector IS an extension, so a headless
-    // server profile would ship the product without its headline feature.
+  it('the old `server` value means production, and the operator Chrome stays headed', async () => {
+    // The operator's interactive Real Chrome (viewer, Inspector) is a window to
+    // look at in every environment; workflow RUNS follow core/RunPolicy.
     await withEnv({ APP_ENV: 'server' }, ({ config }) => {
-      expect(config.APP_PROFILE).toBe('server');
+      expect(config.APP_PROFILE).toBe('production');
       expect(config.REAL_CHROME_ENABLED).toBe(true);
       expect(config.REAL_CHROME_HEADLESS).toBe(false);
     });
@@ -368,7 +360,7 @@ describe('4+5. Remote Browser and Real Chrome enablement', () => {
       expect(config.APP_PROFILE).toBe('development');
     });
     await withEnv({ APP_ENV: 'server' }, ({ config }) => {
-      expect(config.APP_PROFILE).toBe('server');
+      expect(config.APP_PROFILE).toBe('production');
     });
   });
 });
@@ -685,11 +677,11 @@ describe('11. startup readiness', () => {
 // 12. Local / Remote switching
 // ===========================================================================
 describe('12. local and remote switching', () => {
-  it('all four profiles resolve a complete, deterministic configuration', async () => {
+  it('every profile resolves a complete, deterministic configuration', async () => {
     // The explicit prohibition: "Environment A → Real Chrome enabled,
     // Environment B → Real Chrome silently disabled". Every profile must have a
     // defined answer for the values that decide whether the browser works.
-    for (const id of ['development', 'server', 'production', 'test'] as const) {
+    for (const id of ['development', 'production', 'test'] as const) {
       await withEnv({ APP_ENV: id }, ({ config }) => {
         expect(config.APP_PROFILE).toBe(id);
         expect(typeof config.REAL_CHROME_ENABLED).toBe('boolean');
