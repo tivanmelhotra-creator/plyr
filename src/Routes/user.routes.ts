@@ -1151,6 +1151,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         steps,
         headless: body.headless ?? null,
         webhookUrl,
+        // Workflow Settings: which browser profile its runs use (one run per
+        // profile at a time, core/ProfileLease). Omitted = unchanged.
+        ...(body.profileId !== undefined ? { profileId: body.profileId || 'default' } : {}),
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
       return res.json({ success: true, workflow: wf });
@@ -1384,7 +1387,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   });
 
   // PATCH /workflows/:userId/:workflowId/state - flip the Workspace row
-  // switches (`active`, `liveBrowser`) WITHOUT bumping the version and without
+  // switch (`active`) WITHOUT bumping the version and without
   // writing a history snapshot: a toggle is not a new design of the automation
   // (docs/uiux/workspace-overview.md section 4 + section 6, B2).
   router.patch('/workflows/:userId/:workflowId/state', async (req: AuthenticatedRequest, res) => {
@@ -1444,19 +1447,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       const wf = await workflowService.setState(userId, workflowId, {
         active: body.active,
-        liveBrowser: body.liveBrowser,
         activeSnapshot,
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
-
-      // A workflow that cannot run has no browser to watch, so state 2 of the
-      // spec's truth table is reported explicitly: `liveBrowser` keeps the
-      // user's intent, `liveBrowserViewable` is what the eye button obeys.
-      return res.json({
-        success: true,
-        workflow: wf,
-        liveBrowserViewable: wf.active && wf.liveBrowser,
-      });
+      return res.json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;
       res.status(400).json({ success: false, error: error.message });
@@ -1520,6 +1514,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       let completedTotal = 0;
       let failedTotal = 0;
       let activeJobs = 0;
+      // Running vs waiting (for its browser profile) per workflow: two facts,
+      // never folded into one "live" flag.
+      const runningByWf = new Map<string, number>();
+      const waitingByWf = new Map<string, number>();
 
       for (const j of userJobs) {
         const state = await j.getState();
@@ -1529,6 +1527,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
         const wfId = j.data?.__workflowId ? String(j.data.__workflowId) : null;
         if (!wfId) continue;
+        if (state === 'active') runningByWf.set(wfId, (runningByWf.get(wfId) ?? 0) + 1);
+        else if (state === 'waiting' || state === 'delayed') waitingByWf.set(wfId, (waitingByWf.get(wfId) ?? 0) + 1);
         const b = bucketFor(wfId);
         if (state === 'completed') b.completed += 1;
         else if (state === 'failed') b.failed += 1;
@@ -1554,6 +1554,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         const needle = wf.name.toLowerCase();
         return {
           workflowId: wf.id,
+          running: runningByWf.get(wf.id) ?? 0,
+          waiting: waitingByWf.get(wf.id) ?? 0,
+          profile: (typeof wf.profileId === 'string' && wf.profileId && wf.profileId !== 'default') ? wf.profileId : 'default',
           lastRunAt: b?.lastRunAt ?? null,
           lastRunState: b?.lastRunState ?? null,
           completed: b?.completed ?? 0,
@@ -1563,7 +1566,8 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         };
       });
 
-      const globalBrowsers = profileManager.getActiveBrowserCount();
+      // Browser profiles held by a run right now (core/ProfileLease).
+      const busyProfiles = profileLeases ? (await profileLeases.list()).length : 0;
 
       return res.json({
         success: true,
@@ -1576,7 +1580,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           successRate: rate(completedTotal, failedTotal),
           failures: failedTotal,
           activeJobs,
-          liveBrowsers: globalBrowsers,
+          busyProfiles,
         },
         perWorkflow,
       });

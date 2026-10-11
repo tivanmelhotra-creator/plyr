@@ -109,20 +109,16 @@ export const workflowBodySchema = z.object({
   profileId: z.string().trim().min(1).max(128).optional().nullable(),
 });
 
-// [Workspace] PATCH /workflows/:userId/:workflowId/state - the two row switches
+// [Workspace] PATCH /workflows/:userId/:workflowId/state - the Active switch
 // from docs/uiux/workspace-overview.md section 4. Strict booleans (a toggle is
 // never "maybe"), both optional so one switch can be flipped alone, and
 // `.strict()` so a client that mistakenly PATCHes `steps` here gets a clear
 // error instead of silently not saving its design.
 export const workflowStateSchema = z
   .object({
-    active: z.boolean({ invalid_type_error: 'active must be a boolean' }).optional(),
-    liveBrowser: z.boolean({ invalid_type_error: 'liveBrowser must be a boolean' }).optional(),
+    active: z.boolean({ invalid_type_error: 'active must be a boolean' }),
   })
-  .strict()
-  .refine((b) => b.active !== undefined || b.liveBrowser !== undefined, {
-    message: 'Provide at least one of: active, liveBrowser',
-  });
+  .strict();
 
 // [Item N] POST /run-node — the chain PREFIX up to and including the node under
 // test. `steps` is asserted here as a non-empty array (deep-validated by
