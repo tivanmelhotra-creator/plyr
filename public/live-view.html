@@ -3,52 +3,102 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="dark light" />
+  <meta name="color-scheme" content="dark" />
   <meta name="referrer" content="no-referrer" />
-  <title>Live run view</title>
+  <title>Live Run</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/css/styles.css" />
 </head>
-<body class="live-view-body">
-  <main class="live-view-wrap" id="lv-root">
-    <header class="live-view-header">
-      <div class="live-view-title">
-        <span class="live-view-logo" id="lv-logo" aria-hidden="true"></span>
-        <div>
-          <h1 id="lv-title">Live run view</h1>
-          <p class="live-view-sub" id="lv-meta"></p>
-        </div>
+<body class="lr-body">
+  <main class="lr-app" id="lv-root">
+
+    <!-- One header row: Live Run · Workflow · Browser profile · Restart · Stop.
+         (The separate "Live Run" tab above the bar was folded in: the height it
+         took now belongs to the browser picture.) -->
+    <header class="lr-top" id="lr-top">
+      <div class="lr-brand" id="lr-tab">
+        <span class="lr-tab-ic" id="lr-tab-ic" aria-hidden="true"></span>
+        <h1 class="lr-tab-title" id="lv-title">Live Run</h1>
       </div>
-      <div class="live-view-status" role="status" aria-live="polite">
-        <span id="lv-status-dot" class="lv-dot lv-dot-connecting"></span>
-        <span id="lv-status-text"></span>
+      <dl class="lr-facts">
+        <div class="lr-fact" id="lr-fact-workflow">
+          <span class="lr-fact-ic" id="lr-wf-ic" aria-hidden="true"></span>
+          <div>
+            <dt class="lr-fact-k" id="lr-wf-k">Workflow</dt>
+            <dd class="lr-fact-v" id="lr-workflow">&mdash;</dd>
+          </div>
+        </div>
+        <div class="lr-fact" id="lr-fact-profile">
+          <span class="lr-fact-ic lr-fact-ic-profile" id="lr-pf-ic" aria-hidden="true"></span>
+          <div>
+            <dt class="lr-fact-k" id="lr-pf-k">Browser profile</dt>
+            <dd class="lr-fact-v" id="lr-profile">&mdash;</dd>
+          </div>
+        </div>
+      </dl>
+      <div class="lr-actions" id="lr-actions">
+        <button type="button" class="lr-btn lr-btn-restart" id="lr-restart" disabled></button>
+        <button type="button" class="lr-btn lr-btn-stop" id="lr-stop" disabled></button>
       </div>
     </header>
 
-    <div class="lv-layout">
-      <nav class="lv-timeline" aria-label="Steps">
-        <h2 class="lv-h" id="lv-steps-title">Steps</h2>
-        <ol class="lv-steps" id="lv-steps"></ol>
-      </nav>
+    <div class="lr-layout">
+      <!-- Left: status, then the browser window (address bar + picture) taking
+           every pixel that is left, sized to the picture's own aspect ratio. -->
+      <section class="lr-stage" id="lr-stage" aria-label="Run">
+        <div class="lr-status" role="status" aria-live="polite">
+          <span class="lr-badge" id="lr-badge"><span id="lv-status-dot" class="lr-dot"></span><span id="lv-status-text"></span></span>
+          <span class="lr-sep" aria-hidden="true"></span>
+          <span class="lr-progress" id="lr-progress"></span>
+          <span class="lr-sep" aria-hidden="true"></span>
+          <span class="lr-current" id="lr-current"></span>
+          <span class="lr-elapsed"><span class="lr-elapsed-k" id="lr-elapsed-k">Elapsed Time</span><span class="lr-elapsed-v" id="lr-elapsed">00:00:00</span></span>
+        </div>
 
-      <section class="lv-main">
-        <figure class="lv-browser" id="lv-browser">
-          <img id="lv-frame" class="lv-frame" alt="" hidden />
-          <figcaption class="lv-browser-msg" id="lv-browser-msg"></figcaption>
-        </figure>
-
-        <section class="lv-output" aria-live="polite">
-          <h2 class="lv-h" id="lv-output-title">Output</h2>
-          <div class="lv-output-head" id="lv-output-head"></div>
-          <pre class="lv-sample" id="lv-output" tabindex="0"></pre>
-          <div class="lv-step-err" id="lv-output-err" hidden></div>
-        </section>
+        <div class="lr-viewport" id="lr-viewport">
+          <div class="lr-window" id="lr-window">
+            <div class="lr-address" id="lr-address">
+              <span class="lr-address-lock" id="lr-lock" aria-hidden="true"></span>
+              <span class="lr-address-url" id="lr-url"></span>
+              <span class="lr-address-size" id="lr-size"></span>
+              <button type="button" class="lr-icon-btn" id="lr-fullscreen"></button>
+            </div>
+            <figure class="lv-browser lr-browser" id="lv-browser">
+              <img id="lv-frame" class="lv-frame" alt="" hidden />
+              <figcaption class="lv-browser-msg" id="lv-browser-msg"></figcaption>
+            </figure>
+          </div>
+        </div>
       </section>
+
+      <!-- Right: Execution steps | Log (the log is a tab, not a panel under the
+           browser: it is read when something went wrong, and its badge says when) -->
+      <aside class="lr-steps" aria-label="Run details">
+        <header class="lr-steps-head">
+          <div class="lr-side-tabs" role="tablist">
+            <button type="button" class="lr-side-tab is-on" id="lr-tab-steps" role="tab" aria-selected="true" aria-controls="lv-steps"><span id="lv-steps-title">Execution steps</span></button>
+            <button type="button" class="lr-side-tab" id="lr-tab-log" role="tab" aria-selected="false" aria-controls="lr-log"><span id="lr-log-title">Log</span><span class="lr-count" id="lr-log-count" hidden></span></button>
+          </div>
+          <button type="button" class="lr-follow" id="lv-follow" hidden></button>
+        </header>
+        <ol class="lr-step-list" id="lv-steps" role="tabpanel" aria-labelledby="lr-tab-steps"></ol>
+        <section class="lr-log" id="lr-log" role="tabpanel" aria-labelledby="lr-tab-log" hidden>
+          <div class="lr-log-tools">
+            <div class="lr-menu" id="lr-filter-wrap">
+              <button type="button" class="lr-tool" id="lr-filter" aria-haspopup="true" aria-expanded="false"></button>
+              <ul class="lr-menu-list" id="lr-filter-list" role="menu" hidden></ul>
+            </div>
+            <button type="button" class="lr-tool" id="lr-clear"></button>
+          </div>
+          <ol class="lr-log-list" id="lr-log-list" tabindex="0"></ol>
+        </section>
+      </aside>
     </div>
 
-    <footer class="live-view-footer">
-      <span id="lv-error" class="lv-error" hidden></span>
-      <span class="lv-readonly" id="lv-readonly"></span>
+    <footer class="lr-foot">
+      <span id="lv-error" class="lr-error" hidden></span>
+      <span class="lv-meta lr-meta" id="lv-meta"></span>
+      <span class="lr-readonly" id="lv-readonly"></span>
     </footer>
   </main>
 

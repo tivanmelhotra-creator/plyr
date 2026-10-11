@@ -321,3 +321,130 @@ describe('paneMessage — what the browser pane says', () => {
     expect(LT.paneMessage('ended', 'done', true)).toBeNull(); // last picture stays
   });
 });
+
+// ---- Live Run redesign (docs/uiux/24-HANDOFF-live-run-redesign.md) ---------
+
+describe('ACTION_NAMES — the live tab says the same words as the editor', () => {
+  const FE_SRC = readFileSync(join(__dirname, '../../public/js/flow-editor.js'), 'utf8');
+  const I18N_SRC = readFileSync(join(__dirname, '../../public/js/i18n.js'), 'utf8');
+  it('every editor display name resolves to the same English text here', () => {
+    const at = FE_SRC.indexOf('var NODE_DISPLAY_NAMES = {');
+    const body = FE_SRC.slice(at, FE_SRC.indexOf('\n  };', at));
+    const re = /(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:\s*'(nk\.[^']+)'/g;
+    const drift: string[] = [];
+    let m: RegExpExecArray | null; let n = 0;
+    while ((m = re.exec(body))) {
+      n++;
+      const id = m[1] || m[2]; const key = m[3];
+      const en = new RegExp(`'${key.replace('.', '\\.')}':\\s*'([^']+)'`).exec(I18N_SRC);
+      if (!en || LT.ACTION_NAMES[id] !== en[1]) drift.push(`${id}: editor "${en && en[1]}" vs live "${LT.ACTION_NAMES[id]}"`);
+    }
+    expect(n).toBeGreaterThanOrEqual(50);
+    expect(drift).toEqual([]);
+  });
+  it('an unknown action falls back to its id', () => {
+    expect(LT.actionName('brand-new')).toBe('brand-new');
+    expect(LT.actionName('')).toBe('Step');
+  });
+});
+
+describe('stepPhrase', () => {
+  it('reads like the design for each state', () => {
+    expect(LT.stepPhrase({ action: 'launch', status: 'success' })).toBe('Browser launched successfully');
+    expect(LT.stepPhrase({ action: 'goto', status: 'success', target: 'https://www.amazon.com' })).toBe('Opened https://www.amazon.com');
+    expect(LT.stepPhrase({ action: 'click', status: 'running', target: '#add' })).toBe('Clicking #add');
+    expect(LT.stepPhrase({ action: 'screenshot', status: 'pending' })).toBe('Waiting to capture the page');
+    expect(LT.stepPhrase({ action: 'close-browser', status: 'pending' })).toBe('Waiting to close the session');
+    expect(LT.stepPhrase({ action: 'click', status: 'error', error: 'Timeout 30000ms' })).toBe('Timeout 30000ms');
+    expect(LT.stepPhrase({ action: 'click', status: 'skipped' })).toBe('Did not run');
+    expect(LT.stepPhrase({ action: 'if', status: 'running' })).toBe('Running\u2026');
+    expect(LT.stepPhrase({ action: 'click', status: 'success' })).toBe('Completed successfully');
+  });
+});
+
+describe('createFeed + mergePlan', () => {
+  const ev = (seq: number, type: string, data: any, s = seq) => ({ type, seq, ts: new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString(), data });
+  const PLAN = { steps: [{ action: 'launch', target: '' }, { action: 'if', target: '' }, { action: 'screenshot', target: '' }] };
+
+  it('places live steps on their plan rows by `top`; nested steps go under their parent', () => {
+    const f = LT.createFeed(RS);
+    f.push(ev(1, 'step.start', { index: 1, action: 'launch', top: 0 }));
+    f.push(ev(2, 'step.done', { index: 1, action: 'launch', success: true, durationMs: 450 }));
+    f.push(ev(3, 'step.start', { index: 2, action: 'if', top: 1 }));
+    f.push(ev(4, 'step.start', { index: 2, action: 'click', depth: 1 }));   // first child shares the index
+    f.push(ev(5, 'step.done', { index: 2, action: 'click', success: true }));
+    f.push(ev(6, 'step.start', { index: 3, action: 'fill', depth: 1 }));
+    const rows = LT.mergePlan(PLAN, f);
+    expect(rows.map((r: any) => [r.num, r.action, r.depth, r.status])).toEqual([
+      [1, 'launch', 0, 'success'], [2, 'if', 0, 'success'], [3, 'fill', 1, 'running'], [4, 'screenshot', 0, 'pending'],
+    ]);
+    expect(LT.progress(rows)).toMatchObject({ at: 3, total: 4 });
+  });
+
+  it('no plan: the live steps are the rows; a finished run marks unreached plan rows skipped', () => {
+    const f = LT.createFeed(RS);
+    f.push(ev(1, 'step.start', { index: 1, action: 'goto' }));
+    expect(LT.mergePlan(null, f).map((r: any) => r.action)).toEqual(['goto']);
+    // Without `top` (an older server) the live step cannot claim a plan row: it is listed after it.
+    expect(LT.mergePlan(PLAN, f).map((r: any) => r.status)).toEqual(['pending', 'pending', 'pending', 'running']);
+    const g = LT.createFeed(RS);
+    g.push(ev(1, 'step.start', { index: 1, action: 'launch', top: 0 }));
+    g.push(ev(2, 'job.error', { message: 'x' }));
+    expect(LT.mergePlan(PLAN, g).map((r: any) => r.status)).toEqual(['running', 'skipped', 'skipped']);
+  });
+
+  it('remembers server times for the clock, the job.start payload, and a bounded event list', () => {
+    const f = LT.createFeed(RS);
+    f.push(ev(1, 'job.start', { profile: 'Default Profile' }, 0));
+    f.push(ev(2, 'job.done', { durationMs: 24000 }, 24));
+    expect(LT.formatElapsed(f.firstTs, f.endTs)).toBe('00:00:24');
+    expect(f.job.profile).toBe('Default Profile');
+    for (let i = 3; i < 700; i++) f.push(ev(i, 'log', { message: 'm' + i }, 25));
+    expect(f.events.length).toBe(500);
+  });
+
+  it('an event with seq 0 (the worker\'s "waiting for profile" note) is never deduped away', () => {
+    const f = LT.createFeed(RS);
+    expect(f.push({ type: 'log', seq: 0, data: { message: 'a' } })).toBe(true);
+    expect(f.push({ type: 'log', seq: 0, data: { message: 'b' } })).toBe(true);
+  });
+
+  it('logLines: readable text, levels, step numbers; filterLog buckets', () => {
+    const f = LT.createFeed(RS);
+    f.push(ev(1, 'job.start', { profile: 'P', visibility: 'visible' }));
+    f.push(ev(2, 'step.start', { index: 1, action: 'launch', top: 0 }));
+    f.push(ev(3, 'step.done', { index: 1, action: 'launch', success: true, durationMs: 450 }));
+    f.push(ev(4, 'step.retry', { index: 2, action: 'click', attempt: 1, maxTries: 3 }));
+    f.push(ev(5, 'log', { message: '[HTTP] Server error 500' }));
+    f.push(ev(6, 'job.error', { reason: 'cancelled' }));
+    const lines = LT.logLines(f, LT.mergePlan(PLAN, f));
+    expect(lines.map((l: any) => [l.level, l.text, l.step])).toEqual([
+      ['info', 'Run started (profile "P", visible browser)', null],
+      ['running', 'Launch Browser started', 1],
+      ['success', 'Launch Browser finished in 0.45s', 1],
+      ['warn', 'Click Element retry 1/3', null],
+      ['error', '[HTTP] Server error 500', null],
+      ['warn', 'Run stopped', null],
+    ]);
+    expect(LT.filterLog(lines, 'errors')).toHaveLength(3);
+    expect(LT.filterLog(lines, 'steps')).toHaveLength(3);
+    expect(LT.filterLog(lines, 'messages')).toHaveLength(1);
+  });
+});
+
+describe('formatting', () => {
+  it('durations, elapsed, clock', () => {
+    expect(LT.formatDuration(450)).toBe('0.45s');
+    expect(LT.formatDuration(12345)).toBe('12.3s');
+    expect(LT.formatDuration(125000)).toBe('2m 05s');
+    expect(LT.formatDuration(null)).toBe('');
+    expect(LT.formatElapsed(0, 3723000)).toBe('01:02:03');
+    expect(LT.formatElapsed(null, 5)).toBe('00:00:00');
+    expect(LT.formatClock(new Date(2026, 0, 1, 12, 42, 10, 214).getTime())).toBe('12:42:10.214');
+  });
+  it('paths carry the share token only; control paths carry nothing', () => {
+    expect(LT.planPath('local', 'j 1', 'T')).toBe('/live/plan/local/j%201?share=T');
+    expect(LT.restartPath('local', 'j1')).toBe('/live/restart/local/j1');
+    expect(LT.cancelPath('local', 'j1')).toBe('/cancel/local/j1');
+  });
+});

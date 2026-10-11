@@ -48,6 +48,7 @@ import { BrowserStreamServer } from './core/BrowserStreamServer';
 import { DesktopProxy } from './core/DesktopProxy';
 import { JobScreencastHub } from './core/JobScreencast';
 import { createLiveFramesRouter } from './Routes/live-frames.routes';
+import { createLiveControlRouter } from './Routes/live-control.routes';
 import { classifyFault, FaultReporter } from './core/ProcessGuard';
 import { enforceStartupValidation } from './core/StartupValidation';
 // Dual browser mode: the reverse tunnel to a user's own Chrome, and the
@@ -566,6 +567,40 @@ app.get('/live/view/:userId/:jobId', (_req, res) => {
 // split web/worker deployment would need the worker to serve this route.
 const jobScreencast = new JobScreencastHub({ getPage: (jobId) => profileManager.getPage(jobId) as any });
 app.use('/live/frames', createLiveFramesRouter({ hub: jobScreencast, authorize: authorizeLive }));
+
+// Live run tab: the run's plan (share token) and Restart (owner only).
+// Stop reuses DELETE /cancel. See src/Routes/live-control.routes.ts.
+app.use('/live/restart', smartLimiter);
+app.use('/', createLiveControlRouter({
+  authorize: authorizeLive,
+  getJob: async (jobId) => (await queue.getJob(jobId)) as any,
+  workflowName: async (owner, workflowId) => {
+    const wf = await new WorkflowService(workflowStoreFor(connection)).get(owner, workflowId);
+    return wf ? wf.name : null;
+  },
+  cancel: async (job) => {
+    const id = String(job.id);
+    profileManager.setCancelFlag(id);
+    const j = await queue.getJob(id);
+    if (!j) return;
+    await j.updateData({ ...j.data, __cancelledByUser: true });
+    const st = await j.getState();
+    if (st === 'waiting' || st === 'delayed' || st === 'prioritized') {
+      await j.remove().catch(() => {});
+      await connection.srem(getUserActiveJobsKey(String(j.data.userId)), id).catch(() => {});
+    }
+  },
+  enqueue: async (data) => {
+    const job = await queue.add('run', data, { priority: config.INSTANCE_LIMITS.priority });
+    const key = getUserActiveJobsKey(String(data.userId));
+    await connection.sadd(key, job.id!);
+    await connection.expire(key, 90 * 60);
+    return String(job.id);
+  },
+  shareToken: (userId, jobId) => config.LIVE_SHARE_SECRET
+    ? buildShareToken(userId, jobId, config.LIVE_SHARE_SECRET, config.LIVE_SHARE_TTL_SEC)
+    : null,
+}));
 
 app.get('/live/sse/:userId/:jobId', async (req, res) => {
   const userId = String(req.params.userId);
