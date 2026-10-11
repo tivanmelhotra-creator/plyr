@@ -761,11 +761,29 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     }
   };
 
+  // Executions view: what the run SAID (its log lines) and the last variables
+  // bag it reported are kept with the job file, so a finished run can still
+  // show its Logs and Variables tabs after the live stream is gone. Bounded:
+  // RUN_LOG_CAP lines, each already sanitized and clipped.
+  const RUN_LOG_CAP = 500;
+  const runLog: Array<{ t: string; level: 'info' | 'warn' | 'error'; text: string }> = [];
+  let runVariables: Record<string, unknown> | null = null;
+  const runMeta = {
+    origin,
+    visibility: describeVisibility(headless),
+    profile: profile.label,
+    startedAt: new Date().toISOString(),
+  };
   const log = (msg: string) => {
     const safe = sanitizeLogMessage(msg);
     console.log(`[JOB:${job.id}] ${safe}`);
     livePub.emit('log', { message: safe });
+    const level = /\b(fail|error|exception)/i.test(safe) ? 'error'
+      : /\b(warn|retry|skip|timeout)/i.test(safe) ? 'warn' : 'info';
+    runLog.push({ t: new Date().toISOString(), level, text: safe.slice(0, 2000) });
+    if (runLog.length > RUN_LOG_CAP) runLog.splice(0, runLog.length - RUN_LOG_CAP);
   };
+  const runExtras = () => ({ runLog: runLog.slice(), variables: runVariables, runMeta });
 
   try {
     livePub.emit('job.start', { origin, visibility: describeVisibility(headless), profile: profile.label });
@@ -829,6 +847,9 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       // (channel 1 of two-channel live reporting) when enabled.
       onEvent: (type: string, data?: Record<string, unknown>) => {
         livePub.emit(type as Parameters<typeof livePub.emit>[0], data);
+        if (type === 'step.done' && data && data.variables && typeof data.variables === 'object') {
+          runVariables = data.variables as Record<string, unknown>;
+        }
         if (type === 'step.done' && data && typeof data.index === 'number') {
           stepItems.set(data.index, {
             inputItemCount: data.inputItemCount,
@@ -851,7 +872,7 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     connection.incr(STATS_KEY.TOTAL_SUCCESS).catch(() => {});
 
     const outputs = profileManager.getJobOutputs(job.id!);
-    await persistJob(userId, job.id!, outputs, { ...result, success: true });
+    await persistJob(userId, job.id!, outputs, { ...result, ...runExtras(), success: true });
     recordExecution('success');
     await recordTestOutcome('success');
 
@@ -886,6 +907,7 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       log('Cancelled');
 
       await persistJob(userId, job.id!, outputs, {
+        ...runExtras(),
         success: false,
         message: error.message,
         cancelledByUser: cancelled,
@@ -923,6 +945,7 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     log(`Failed: ${sanitizeLogMessage(error.message)}`);
 
     await persistJob(userId, job.id!, outputs, {
+      ...runExtras(),
       success: false,
       message: error.message
     });

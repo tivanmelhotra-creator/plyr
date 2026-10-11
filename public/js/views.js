@@ -952,7 +952,11 @@
         // The ACTIVITY LOG (RunPanel, a body singleton) is re-parented in
         // here as the live/selected run's detail — one log, no second renderer.
         '<section class="fe-execview" id="fe-execview" hidden aria-labelledby="fe-mode-exec">' +
-          '<div class="fe-ex-split">' +
+          // Executions view (executions-view.js) renders into this host. The
+          // older split below stays as an inert, hidden host: its ids still
+          // carry the ACTIVITY LOG dock and listeners that predate the redesign.
+          '<div class="xv-host" id="fe-xv-host"></div>' +
+          '<div class="fe-ex-split" hidden>' +
             '<aside class="fe-ex-list" aria-label="' + esc(t('sh.exRuns')) + '">' +
               '<header class="fe-ex-list-head">' +
                 '<span class="fe-pane-title"><span>' + esc(t('sh.exRuns')) + '</span></span>' +
@@ -2450,6 +2454,38 @@
       } catch (e) { U().toast(t('sh.saveFailed'), 'error'); }
     }
 
+    // -- Executions view: list + hero + stats + Execution/Variables/Logs ------
+    var xvHost = root.querySelector('#fe-xv-host');
+    function execEnvironment() {
+      var h = (U().health && U().health()) || null;
+      var env = h && h.env ? String(h.env) : '';
+      if (!env) return '';
+      var key = ENV_LABEL[env.toLowerCase()];
+      return key ? t(key) : env;
+    }
+    function mountExecView() {
+      if (!xvHost || !window.ExecutionsView) return;
+      window.ExecutionsView.mount(xvHost, {
+        api: API,
+        userId: effectiveUserId,
+        workflowId: curWfId,
+        workflowName: function () {
+          var cur = FE.getCurrentWorkflow && FE.getCurrentWorkflow();
+          return cur && cur.name ? String(cur.name) : '';
+        },
+        environment: execEnvironment,
+        // Jump to a step's node: back to the canvas, node selected, NDV open.
+        openStep: function (index0) {
+          setMode('editor');
+          if (FE.selectByChainIndex) FE.selectByChainIndex(index0);
+        },
+        openEditor: function () { setMode('editor'); },
+      });
+    }
+    function unmountExecView() {
+      if (window.ExecutionsView) window.ExecutionsView.unmount();
+    }
+
     function setMode(mode) {
       feMode = MODES[mode] ? mode : 'editor';
       modeBtns.forEach(function (b) {
@@ -2466,9 +2502,9 @@
       if (xView) xView.hidden = feMode !== 'extract';
       var RP = window.RunPanel;
       if (feMode === 'exec') {
-        if (RP && RP.dockInto) RP.dockInto(execHost);
-        loadRuns();
+        mountExecView();
       } else {
+        unmountExecView();
         if (RP && RP.undock) RP.undock();
         if (feMode === 'editor' && FE.syncDock) FE.syncDock();
       }
@@ -2529,10 +2565,10 @@
           var ph = window.RunPanel.getSummary ? window.RunPanel.getSummary().phase : '';
           if (ph !== lastRunPhase) {
             lastRunPhase = ph;
-            if (feMode === 'exec') loadRuns();
+            if (feMode === 'exec' && window.ExecutionsView) window.ExecutionsView.refresh();
             if (feMode === 'extract' && ph !== 'running') loadExtraction();
           }
-          if (feMode === 'exec') renderRunDetail();
+          if (feMode === 'exec' && window.ExecutionsView) window.ExecutionsView.onRunUpdate();
         })
       : null;
     setOutlineOpen(olOpen, false);
@@ -2581,6 +2617,7 @@
     // Tear-down: the editor view is re-rendered on every language switch and
     // route change, so a leaked document listener would stack up.
     root.__feShellCleanup = function () {
+      unmountExecView();
       if (offChange) offChange();
       if (offRun) offRun();
       if (removeSaveWatch) removeSaveWatch();

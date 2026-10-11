@@ -775,6 +775,23 @@
   }
 
   /**
+   * A deep, detached copy of the CURRENT run (steps, order, log, variables) for
+   * the Executions view. It needs more than getSummary(): the per-step rows,
+   * the event log and the variables bag. JSON round-trip = no aliasing.
+   */
+  function getSnapshot() {
+    if (!state) return null;
+    try {
+      return JSON.parse(JSON.stringify({
+        phase: state.phase, jobId: state.jobId, startedAt: state.startedAt,
+        finishedAt: state.finishedAt, durationMs: state.durationMs, error: state.error,
+        steps: state.steps, order: state.order, log: state.log, variables: state.variables,
+        outcome: RS.outcome(state),
+      }));
+    } catch (e) { return null; }
+  }
+
+  /**
    * Subscribe to run-state republications. Mirrors `FlowEditor.onChange()`:
    * returns an unsubscribe function so the editor view can tear its listener
    * down on re-render (language switch / route change) instead of stacking up.
@@ -802,6 +819,7 @@
     unpin: unpin,
     getPins: getPins,
     getSummary: getSummary,
+    getSnapshot: getSnapshot,
     dockInto: dockInto,
     undock: undock,
     getRuns: getRuns,
