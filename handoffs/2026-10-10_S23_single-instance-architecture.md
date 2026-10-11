@@ -1,24 +1,26 @@
-# S23 — single-instance architecture (IN PROGRESS)
+# S23 — single-instance architecture (PR #73, branch feat/single-instance-architecture)
 
-BRANCH: feat/single-instance-architecture (from main 9cf7ece). Commit after every step.
+## Architecture now
+- One install = one owner. No accounts, roles, Admin API, plans, quotas, per-user keys, Logout.
+- Access: ONE instance token (API_TOKEN). development = keyless only from loopback; production = token on every request.
+- Environments: development / production (+test). `server`/`remote`/`prod` = production. The environment never decides browser visibility.
+- Browser visibility = WHO started the run (core/RunPolicy): editor Execute/Run node and Workspace Run send origin=manual -> visible;
+  schedules, triggers, API -> hidden. Hidden = Chromium NEW headless (`channel: 'chromium'`), extensions load (measured, tests/browser/run-visibility-extensions.test.ts).
+  Real Chrome (extension runs) follows the same rule via RealChrome.ensureVisibility(); the operator's viewer brings it back visible unless a run holds it.
+- Profiles (core/ProfileLease): one run per profile; busy -> job back to delayed set (no slot held); different profiles run in parallel;
+  token-checked release in worker finally (success/fail/cancel); TTL = MAX_JOB_DURATION_MINUTES refreshed by holder; boot frees leases of a dead process.
+  Profile per workflow = Workflow Settings `profileId` (validated path segment). Extension runs use the Real Chrome profile.
+- Settings: General · Server · Access & API · Security · Workflow Runs · Data Retention. Removed: AUTH_MODE, REAL_CHROME_ENABLED, DEFAULT_HEADLESS, MAX_CONCURRENT.
+  WORKFLOW_MAX_VERSIONS not offered (it only trims hidden autosaves; manual versions are never trimmed).
+- Workspace: no Owner, no Live Browser column/toggle/eye/filter. Columns: Workflow, Last run (Never), Success rate (— when none), Status(Active), Now (running / waiting for profile / idle + profile), Schedules, ⋮.
+  ⋮: Open editor, Settings (real dialog: name, description, webhook, profile), Schedules, Executions (filtered), Duplicate, Export, Delete.
 
-## Done (compiles: `npx tsc --noEmit` = 0 errors)
-- EnvProfile: only development / production (+test). `server`/`remote` = alias of production.
-- Multi-tenant removed: admin routes, admin-auth, block-check, UserManager, QuotaManager, per-user API keys, /quota, VIP/Free paths, plans -> config.INSTANCE_LIMITS.
-- Auth: one instance token; dev = keyless from loopback only; production = token on every request.
-- core/RunPolicy.ts: origin manual = visible, automatic = hidden (new-headless `channel: 'chromium'` keeps extensions).
-- core/ProfileLease.ts + worker (src/index.ts): one run per profile, busy -> moveToDelayed + DelayedError,
-  token-checked release in finally, TTL refresh, releaseOrphaned() at boot. Worker concurrency = WORKER_SLOTS (not a setting).
-- Routes: /run, /run-node, /workflows/:id/run take `origin` (only 'manual' = visible); schedules always automatic; profileId passed to the job.
-- UI: Execute Workflow, Run node, Workspace Run send origin:'manual'.
-- Settings catalog: removed AUTH_MODE, REAL_CHROME_ENABLED, DEFAULT_HEADLESS, MAX_CONCURRENT; added WORKFLOW_MAX_VERSIONS; retention live.
+## Verified (real)
+- tsc 0 errors; vitest unit+integration 4335 passed / 9 skipped; browser tier run-visibility-extensions 3/3.
+- Live server (APP_ENV=production): no token 401, wrong 403, right 200, /admin 404.
+- manual run visible, automatic hidden; same profile queued then run; shopA+shopB parallel, 2nd shopA waits; lease freed after success, failure, cancel; stale lease freed at boot.
+- Extension (Real Chrome): manual + automatic both open the extension page and read its content; automatic process had --headless + --load-extension.
 
-## State of tests
-- Unit: 28 failed / 3937 passed (11 files). All failures assert REMOVED behaviour (multi mode, server profile, AUTH_MODE, headless-by-profile, admin mount, free-tier pool).
-
-## Next (in this order)
-1. Update the 28 failing unit tests to the new rules; then integration suite (remove quotaManager deps in test setups).
-2. RealChrome (extension runs): visibility still from REAL_CHROME_HEADLESS -> must follow run origin (relaunch via hiddenLaunchOptions); verify extensions load in both modes.
-3. Settings UI (public/js/settings-ui.js): 6 tabs General/Server/Access & API/Security/Workflow Runs/Data Retention; remove Browser + Administration tab, Logout, account login.
-4. Workspace (views.js): remove Owner/Personal, Live Browser column/toggle (`liveBrowser` in workflowStateSchema), success rate "Never"; More menu Settings -> real workflow-settings dialog (profile, webhook) or remove.
-5. Real tests (visible/hidden + extension, profile lock/queue/release, UI clicks), docs, final report.
+## Open decisions (not invented)
+- Wait time/expiry for a run waiting on a busy profile: none (waits until free, arrival order of BullMQ delayed set).
+- A manual run while a hidden automatic run holds Real Chrome waits for it (no preemption).
