@@ -53,7 +53,7 @@ describe('tab architecture', () => {
       API_TOKEN: 'access',
       WEBHOOK_SECRET: 'security', LIVE_SHARE_TTL_SEC: 'security', CODE_NODE_ENABLED: 'security',
       STEP_TIMEOUT_MS: 'runs',
-      DOWNLOAD_TTL_MINUTES: 'storage', WORKFLOW_MAX_VERSIONS: 'storage', EXECUTION_RETENTION_DAYS: 'storage',
+      DOWNLOAD_TTL_MINUTES: 'storage', EXECUTION_RETENTION_DAYS: 'storage',
     });
   });
 

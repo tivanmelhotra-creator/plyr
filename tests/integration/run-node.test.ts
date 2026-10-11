@@ -45,6 +45,7 @@ vi.mock('../../src/services/job.service', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
+    INSTANCE_LIMITS: { quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0 },
     DEFAULT_HEADLESS: true,
     MAX_QUEUED_JOBS_PER_USER: 50,
     VIP_PRIORITY_THRESHOLD: 100,

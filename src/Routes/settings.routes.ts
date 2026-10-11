@@ -179,7 +179,9 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
     for (const [key, raw] of entries) {
       const spec = specOf(key);
       if (!spec) { errors[key] = { error: 'Unknown setting', errorFa: 'تنظیم ناشناخته' }; continue; }
-      const r = validateValue(spec, raw, ctx);
+      // Older clients / .env files say `server` (or `prod`): that is production.
+      const input = key === 'APP_ENV' && typeof raw === 'string' ? normProfile(raw.trim()) : raw;
+      const r = validateValue(spec, input, ctx);
       if ('error' in r) errors[key] = r; else accepted.set(key, r.value);
     }
     // A server profile with the public token would refuse to boot.

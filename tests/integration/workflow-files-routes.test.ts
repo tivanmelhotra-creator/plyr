@@ -20,6 +20,7 @@ const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-routes-'));
 
 vi.mock('../../src/config', () => ({
   config: {
+    INSTANCE_LIMITS: { quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0 },
     IS_SINGLE_USER: false,
     WORKFLOW_MAX_VERSIONS: 20,
     WORKFLOW_STORAGE_ROOT: tmpRoot,

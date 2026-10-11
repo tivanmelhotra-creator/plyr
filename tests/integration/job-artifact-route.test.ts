@@ -29,6 +29,7 @@ const tmp = vi.hoisted(() => {
 
 vi.mock('../../src/config', () => ({
   config: {
+    INSTANCE_LIMITS: { quota: 0, maxTabs: 50, maxSteps: 10000, priority: 1, maxSchedules: 1000, runLimit: 0 },
     PROFILES_DIR: tmp, ARTIFACT_MAX_AGE_HOURS: 168, ARTIFACT_MAX_BYTES: 15 * 1024 * 1024,
     DEFAULT_HEADLESS: true, MAX_QUEUED_JOBS_PER_USER: 50, VIP_PRIORITY_THRESHOLD: 100,
     RUN_WAIT_MAX_MS: 300, RUN_WAIT_POLL_MS: 20, IDEMPOTENCY_TTL_SECONDS: 86400, WORKFLOW_MAX_VERSIONS: 20,

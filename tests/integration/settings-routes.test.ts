@@ -65,7 +65,6 @@ describe('open login (development)', () => {
     const r = await request(app).get('/auth/mode').set(LAN);
     expect(r.body.mode).toBe('token');
     expect(r.body.token).toBeUndefined();
-    expect(r.body.openRefused).toBe('not_local');
     expect((await request(app).get('/settings').set(LAN)).status).toBe(401);
     expect((await request(app).get('/settings').set(LOCAL)).status).toBe(200);
   });
@@ -77,15 +76,18 @@ describe('GET /settings', () => {
     const tok = r.body.settings.find((s: { key: string }) => s.key === 'API_TOKEN');
     expect(tok.source).toBe('env');
     expect(JSON.stringify(r.body)).not.toContain(BOOT_TOKEN);
-    expect(r.body.openAllowed).toBe(true);
+    expect(r.body.authOpen).toBe(true);
+    // Removed settings never come back through the API.
+    const keys = r.body.settings.map((x: { key: string }) => x.key);
+    for (const k of ['AUTH_MODE', 'DEFAULT_HEADLESS', 'REAL_CHROME_ENABLED', 'MAX_CONCURRENT']) expect(keys).not.toContain(k);
   });
 });
 
 describe('PUT /settings', () => {
   it('rejects the whole change set when any value is invalid', async () => {
-    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { STEP_TIMEOUT_MS: '60000', MAX_CONCURRENT: '7' } });
+    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { STEP_TIMEOUT_MS: '60000', DOWNLOAD_TTL_MINUTES: '7' } });
     expect(r.status).toBe(400);
-    expect(r.body.errors.MAX_CONCURRENT.errorFa).toBeTruthy();
+    expect(r.body.errors.DOWNLOAD_TTL_MINUTES.errorFa).toBeTruthy();
     expect(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '').not.toContain('STEP_TIMEOUT_MS');
   });
 
@@ -97,18 +99,22 @@ describe('PUT /settings', () => {
     expect(r.body.errors.WORKFLOW_MAX_VERSIONS.error).toBe('Unknown setting');
   });
 
-  it('applies and persists valid choices, telling which need a restart', async () => {
-    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { STEP_TIMEOUT_MS: '60000', MAX_CONCURRENT: '2' } });
+  it('applies and persists valid choices; live ones are in force at once', async () => {
+    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { STEP_TIMEOUT_MS: '60000', EXECUTION_RETENTION_DAYS: '7' } });
     expect(r.status).toBe(200);
-    expect(r.body.restartNeeded).toBe(true);
+    expect(r.body.restartNeeded).toBe(false);
     const body = fs.readFileSync(file, 'utf8');
     expect(body).toMatch(/^STEP_TIMEOUT_MS=60000$/m);
-    expect(body).toMatch(/^MAX_CONCURRENT=2$/m);
-    const mc = r.body.settings.find((s: { key: string }) => s.key === 'MAX_CONCURRENT');
-    expect(mc.value).toBe('2');
-    expect(mc.pendingRestart).toBe(true);
+    expect(body).toMatch(/^EXECUTION_RETENTION_DAYS=7$/m);
     const { config } = await import('../../src/config');
     expect(config.STEP_TIMEOUT_MS).toBe(60000);
+    expect(config.EXECUTION_RETENTION_DAYS).toBe(7);
+  });
+
+  it('the removed Concurrent runs setting is refused', async () => {
+    const r = await request(app).put('/settings').set(LOCAL).send({ changes: { MAX_CONCURRENT: '2' } });
+    expect(r.status).toBe(400);
+    expect(r.body.errors.MAX_CONCURRENT.error).toBe('Unknown setting');
   });
 
   it('refuses to switch to a server profile while the token is admin123', async () => {
@@ -118,19 +124,18 @@ describe('PUT /settings', () => {
     expect(r.body.errors.APP_ENV).toBeTruthy();
   });
 
-  it('switching to server also turns login back on', async () => {
+  it('switching to production is saved and needs a restart (the environment is read at boot)', async () => {
     const r = await request(app).put('/settings').set(LOCAL)
       .send({ changes: { APP_ENV: 'server', API_TOKEN: 'my_own_token_1234567890' } });
     expect(r.status).toBe(200);
+    expect(r.body.restartNeeded).toBe(true);
     expect(r.body.newApiToken).toBe('my_own_token_1234567890');
     const body = fs.readFileSync(file, 'utf8');
-    expect(body).toMatch(/^AUTH_MODE=token$/m);
-    expect(body).toMatch(/^APP_ENV=server$/m);
-    // In force at once: open login is gone even for this machine.
-    expect((await request(app).get('/auth/mode').set(LOCAL)).body.mode).toBe('token');
-    // Back to development for the remaining tests.
+    expect(body).toMatch(/^APP_ENV=production$/m);   // `server` is stored as production
+    const env = r.body.settings.find((x: { key: string }) => x.key === 'APP_ENV');
+    expect(env.pendingRestart).toBe(true);
     await request(app).put('/settings').set({ ...LOCAL, 'x-api-key': 'my_own_token_1234567890' })
-      .send({ changes: { APP_ENV: 'development', AUTH_MODE: 'open' } }).expect(200);
+      .send({ changes: { APP_ENV: 'development' } }).expect(200);
   });
 });
 
