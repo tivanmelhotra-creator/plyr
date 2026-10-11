@@ -562,7 +562,7 @@ describe('status bar — the Environment cell tells the truth', () => {
 
   it('the server actually reports env and mode', () => {
     expect(HEALTH).toContain('env: config.NODE_ENV');
-    expect(HEALTH).toContain('mode: config.DEPLOYMENT_MODE');
+    expect(HEALTH).toContain('profile: config.APP_PROFILE');
   });
 
   it('app.js keeps the payload and announces changes', () => {

@@ -1,8 +1,10 @@
 /* ============================================
-   Settings page — tab layout (General · Server · Access & Login · Security ·
-   Browser · Workflow Runs · Data Retention).
+   Settings page — tab layout (General · Server · Access & API · Security ·
+   Workflow Runs · Data Retention).
 
-   Single-user product: there is no separate admin, quota or account area —
+   One install = one owner: there is no admin, account, login or session area.
+   Browser visibility is not a setting either (manual run = visible, automatic
+   run = hidden, decided per run by the server) —
    the person running this server IS the owner. Server configuration (what
    used to require editing .env) comes from GET /settings
    (src/Routes/settings.routes.ts); every value is a choice wherever a choice
@@ -25,10 +27,9 @@
    */
   var TABS = [
     { id: 'general', icon: 'info', label: 'set.tab.general' },
-    { id: 'server', icon: 'terminal', label: 'set.tab.server', keys: ['APP_ENV', 'PUBLIC_DOMAIN'], groups: ['environment'] },
-    { id: 'access', icon: 'lock', label: 'set.tab.access', keys: ['AUTH_MODE', 'API_TOKEN'], groups: ['access'] },
+    { id: 'server', icon: 'terminal', label: 'set.tab.server', keys: ['APP_ENV', 'PUBLIC_DOMAIN'], groups: ['server', 'environment'] },
+    { id: 'access', icon: 'lock', label: 'set.tab.access', keys: ['API_TOKEN'], groups: ['access'] },
     { id: 'security', icon: 'shield', label: 'set.tab.security', groups: ['security'] },
-    { id: 'browser', icon: 'globe', label: 'set.tab.browser', groups: ['browser'] },
     { id: 'runs', icon: 'play-circle', label: 'set.tab.runs', groups: ['runs'] },
     { id: 'storage', icon: 'database', label: 'set.tab.storage', groups: ['storage'] },
   ];
@@ -103,7 +104,7 @@
     if (opts.length <= 3) {
       return '<div class="set-seg" role="radiogroup" aria-labelledby="' + labelId + '" data-key="' + esc(s.key) + '">' +
         opts.map(function (o) {
-          var disabled = s.key === 'AUTH_MODE' && o.value === 'open' && !d.openAllowed;
+          var disabled = false;
           var on = o.value === s.value;
           return '<button type="button" role="radio" class="set-seg-btn' + (on ? ' on' : '') + '"' +
             ' aria-checked="' + on + '" data-value="' + esc(o.value) + '"' +
@@ -179,28 +180,18 @@
   function generalPanel() {
     var h = currentHealth();
     var na = '—';
-    var mode = h ? (h.mode === 'single' ? t('set.gen.modeSingle') : String(h.mode || na)) : na;
     var profile = h && h.profile ? t('set.profile.' + h.profile) : na;
     var redis = h ? (h.redis === 'connected' ? '<span class="badge ok">' + esc(t('set.gen.connected')) + '</span>' : '<span class="badge bad">' + esc(h.redis || na) + '</span>') : na;
     var gb = h && h.browsers && h.browsers.globalBrowser;
     var browser = gb ? (gb.healthy ? '<span class="badge ok">' + esc(t('set.gen.ready')) + '</span>' : '<span class="badge warn">' + esc(t('set.gen.notReady')) + '</span>') : na;
-    var canLogout = !!(window.AppUtil && typeof window.AppUtil.logout === 'function');
     return section(t('set.gen.instance'),
         '<dl class="set-kv">' +
           '<dt>' + esc(t('set.gen.version')) + '</dt><dd class="mono">' + esc(h && h.version ? 'v' + h.version : na) + '</dd>' +
-          '<dt>' + esc(t('set.gen.mode')) + '</dt><dd>' + esc(mode) + '</dd>' +
           '<dt>' + esc(t('set.gen.environment')) + '</dt><dd>' + esc(profile) + '</dd>' +
           '<dt>' + esc(t('set.gen.redis')) + '</dt><dd>' + redis + '</dd>' +
           '<dt>' + esc(t('set.gen.browser')) + '</dt><dd>' + browser + '</dd>' +
         '</dl>' +
-        '<p class="set-row-hint">' + esc(t('set.gen.singleHint')) + '</p>') +
-      section(t('set.gen.session'),
-        '<div class="set-row set-row-flat">' +
-          '<div class="set-row-text"><div class="set-row-head"><span class="set-row-title">' + esc(t('set.gen.signedIn')) + '</span></div>' +
-            '<p class="set-row-hint">' + esc(t('set.gen.signedInHint')) + '</p></div>' +
-          '<div class="set-row-control"><button type="button" class="btn btn-ghost btn-sm" id="set-logout"' + (canLogout ? '' : ' disabled') + '>' +
-            IC('power', 14) + ' ' + esc(t('nav.logout')) + '</button></div>' +
-        '</div>');
+        '<p class="set-row-hint">' + esc(t('set.gen.singleHint')) + '</p>');
   }
 
   function serverSummary(d) {
@@ -208,7 +199,7 @@
     return '<div class="set-summary">' +
       '<div class="set-summary-item"><span class="set-summary-k">' + esc(t('set.profileNow')) + '</span><span class="set-summary-v">' + esc(t('set.profile.' + d.profile)) + '</span></div>' +
       '<div class="set-summary-item"><span class="set-summary-k">' + esc(t('set.sum.login')) + '</span><span class="set-summary-v">' +
-        (d.authOpen ? '<span class="badge warn">' + esc(t('set.openActive')) + '</span>' : esc(t('set.sum.tokenRequired'))) + '</span></div>' +
+        (d.authOpen ? esc(t('set.sum.keylessLocal')) : esc(t('set.sum.tokenRequired'))) + '</span></div>' +
       '<div class="set-summary-item"><span class="set-summary-k">' + esc(t('set.sum.restart')) + '</span><span class="set-summary-v">' +
         (pending ? '<span class="badge warn">' + esc(pending + ' ' + t('set.sum.pending')) + '</span>' : esc(t('set.sum.none'))) + '</span></div>' +
       '</div>' +
@@ -222,7 +213,7 @@
     var out = {};
     out.general = generalPanel();
     out.server = section(t('set.sec.status'), serverSummary(d)) + section(t('set.sec.server'), rows('server'));
-    ['access', 'security', 'browser', 'runs', 'storage'].forEach(function (id) {
+    ['access', 'security', 'runs', 'storage'].forEach(function (id) {
       out[id] = section(t('set.sec.' + id), rows(id) || '<p class="set-row-hint">' + esc(t('set.nothing')) + '</p>');
     });
     return out;
@@ -319,12 +310,7 @@
     bindGeneral(root);
   }
 
-  function bindGeneral(root) {
-    var lo = root.querySelector('#set-logout');
-    if (lo) lo.addEventListener('click', function () {
-      if (window.AppUtil && window.AppUtil.logout) window.AppUtil.logout();
-    });
-  }
+  function bindGeneral(root) { void root; /* General is read-only facts */ }
 
   // ---- Data -------------------------------------------------------------
   function load(root) {

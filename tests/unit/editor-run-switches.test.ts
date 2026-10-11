@@ -71,8 +71,10 @@ describe('editor header: Live browser switch', () => {
     expect(PIPE).toMatch(/if \(!headless\) \{\s*try \{\s*await Desktop\.ensureDisplay\(\)/);
     expect(PIPE).toContain('no display could be prepared automatically');
   });
-  it('tells the user when the free-tier shared pool cannot honour the choice', () => {
-    expect(PIPE).toContain('Live browser is not available on this plan');
+  it('there is no free-tier shared pool any more: every run gets its profile browser', () => {
+    expect(PIPE).not.toContain('Live browser is not available on this plan');
+    expect(PIPE).not.toContain('ensureFreeContext');
+    expect(PIPE).toContain('ensureProfileBrowser');
   });
 });
 

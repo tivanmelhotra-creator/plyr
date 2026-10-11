@@ -119,12 +119,10 @@ describe('config defaults with no .env', () => {
     expect(config.API_TOKEN_IS_DEFAULT).toBe(false);
   });
 
-  it('does not hand a shared token to multi-tenant mode', async () => {
-    // In multi mode identity comes from per-user API_KEYS. Falling back to
-    // admin123 here would be a single public credential across all tenants.
+  it('an old DEPLOYMENT_MODE=multi is ignored: still one instance token', async () => {
     const config = await loadConfig({ DEPLOYMENT_MODE: 'multi' });
-    expect(config.API_TOKEN).toBe('');
-    expect(config.API_TOKEN_IS_DEFAULT).toBe(false);
+    expect(config.DEPLOYMENT_MODE).toBe('single');
+    expect(config.API_TOKEN).toBe('admin123');
   });
 
   it('warns loudly that the default token is public and total', async () => {

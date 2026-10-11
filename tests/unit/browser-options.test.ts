@@ -297,11 +297,12 @@ describe('serializer round trip (UI <-> backend)', () => {
 });
 
 describe('pipeline: the plan reaches the launch call', () => {
-  it('the vip launch uses launch+context keys and relaunches when options change', async () => {
+  it('the profile launch uses launch+context keys and relaunches when options or visibility change', async () => {
     const src = readFileSync(join(__dirname, '..', '..', 'src', 'pipeline.ts'), 'utf8');
-    expect(src).toMatch(/vipOptionHash/);
+    expect(src).toMatch(/profileBuildHash/);
+    expect(src).toMatch(/headless=\$\{headless \? 1 : 0\}/);
     expect(src).toMatch(/\.\.\.optPlan\.context/);
-    expect(src).toMatch(/GlobalBrowser\.getContext\(freePlan\.context\)/);
+    expect(src).toMatch(/hiddenLaunchOptions\(headless, config\.CHROME_EXE\)/);
     void vi;
   });
 });

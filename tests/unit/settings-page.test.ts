@@ -4,7 +4,7 @@
  * (no Admin / Quota / language leftovers anywhere in the client).
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import vm from 'vm';
 import { CATALOG } from '../../src/core/SettingsCatalog';
@@ -30,16 +30,17 @@ describe('tab architecture', () => {
   const UI = loadSettingsUI();
   const ids = UI.TABS.map((t: any) => t.id);
 
-  it('has the settings categories in order (Administration removed: single-user)', () => {
-    expect(ids).toEqual(['general', 'server', 'access', 'security', 'browser', 'runs', 'storage']);
+  it('has exactly the six categories, in order (no Administration, no Browser)', () => {
+    expect(ids).toEqual(['general', 'server', 'access', 'security', 'runs', 'storage']);
     expect(ids).not.toContain('admin');
+    expect(ids).not.toContain('browser');
   });
 
   it('every tab label and every new string resolves in the dictionary', () => {
     const keys = new Set<string>();
     for (const m of SRC.matchAll(/t\('((?:set|settings|nav|common)\.[\w.]+)'\)/g)) keys.add(m[1]);
     for (const t of UI.TABS) keys.add(t.label);
-    for (const id of ['access', 'security', 'browser', 'runs', 'storage']) keys.add(`set.sec.${id}`);
+    for (const id of ['access', 'security', 'runs', 'storage']) keys.add(`set.sec.${id}`);
     const missing = [...keys].filter((k) => !I18N.includes(`'${k}':`));
     expect(missing).toEqual([]);
   });
@@ -49,11 +50,10 @@ describe('tab architecture', () => {
     for (const s of CATALOG) where[s.key] = UI.tabOf({ key: s.key, group: s.group });
     expect(where).toEqual({
       APP_ENV: 'server', PUBLIC_DOMAIN: 'server',
-      AUTH_MODE: 'access', API_TOKEN: 'access',
+      API_TOKEN: 'access',
       WEBHOOK_SECRET: 'security', LIVE_SHARE_TTL_SEC: 'security', CODE_NODE_ENABLED: 'security',
-      REAL_CHROME_ENABLED: 'browser', DEFAULT_HEADLESS: 'browser',
-      STEP_TIMEOUT_MS: 'runs', MAX_CONCURRENT: 'runs',
-      DOWNLOAD_TTL_MINUTES: 'storage', EXECUTION_RETENTION_DAYS: 'storage',
+      STEP_TIMEOUT_MS: 'runs',
+      DOWNLOAD_TTL_MINUTES: 'storage', WORKFLOW_MAX_VERSIONS: 'storage', EXECUTION_RETENTION_DAYS: 'storage',
     });
   });
 
@@ -129,10 +129,17 @@ describe('single-user cleanup: no multi-user leftovers in the client', () => {
   });
 });
 
-describe('server: /admin is not exposed in single-user mode', () => {
+describe('server: there is no Admin API at all', () => {
   const INDEX = readFileSync(join(__dirname, '..', '..', 'src', 'index.ts'), 'utf8');
-  it('mounts the Admin API only for the multi-tenant product', () => {
-    expect(INDEX).toContain("if (!config.IS_SINGLE_USER) app.use('/admin', routes.admin);");
-    expect(INDEX).not.toMatch(/^app\.use\('\/admin', routes\.admin\);/m);
+  it('never mounts /admin, and the admin modules are gone', () => {
+    expect(INDEX).not.toMatch(/app\.use\('\/admin'/);
+    expect(INDEX).not.toContain('routes.admin');
+    expect(existsSync(join(__dirname, '..', '..', 'src', 'Routes', 'admin.routes.ts'))).toBe(false);
+  });
+
+  it('the Settings page has no Logout and no Browser visibility controls', () => {
+    expect(SRC).not.toContain('set-logout');
+    expect(SRC).not.toContain('DEFAULT_HEADLESS');
+    expect(SRC).not.toContain('AUTH_MODE');
   });
 });
