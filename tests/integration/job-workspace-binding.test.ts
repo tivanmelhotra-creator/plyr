@@ -126,3 +126,31 @@ describe('workflow workspace binding on a run', () => {
     expect(lastData.__workspace).toBeUndefined();
   });
 });
+
+describe('run origin + browser profile on the job', () => {
+  it('a run of a saved workflow uses THAT workflow\'s browser profile', async () => {
+    const res = await request(app).post('/workflows/alice').send({ name: 'Shop', steps, profileId: 'shopA' });
+    const id = res.body.workflow.id;
+    expect(res.body.workflow.profileId).toBe('shopA');
+    await request(app).post('/run').send({ userId: 'alice', steps, workflowId: id, origin: 'manual' });
+    expect(lastData.profileId).toBe('shopA');
+    expect(lastData.__origin).toBe('manual');
+    await request(app).post('/run-node').send({ userId: 'alice', steps, workflowId: id, origin: 'manual' });
+    expect(lastData.profileId).toBe('shopA');
+  });
+
+  it('only an explicit origin=manual is manual; everything else is automatic', async () => {
+    await request(app).post('/run').send({ userId: 'alice', steps });
+    expect(lastData.__origin).toBe('automatic');
+    expect(lastData.headless).toBeUndefined(); // visibility is not a request field any more
+    await request(app).post('/run').send({ userId: 'alice', steps, headless: false });
+    expect(lastData.__origin).toBe('automatic');
+  });
+
+  it('refuses a profile name that is not a plain path segment', async () => {
+    for (const bad of ['../etc', 'a/b', '.hidden', 'x'.repeat(65)]) {
+      const res = await request(app).post('/workflows/alice').send({ name: 'Bad', steps, profileId: bad });
+      expect(res.status, bad).toBe(400);
+    }
+  });
+});
