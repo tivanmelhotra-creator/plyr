@@ -13,7 +13,7 @@ import { config } from './config';
 import { runPipeline } from './pipeline';
 import { buildItemsFromTrigger, buildManualItems } from './core/TriggerEngine';
 import { ProfileManager } from './core/ProfileManager';
-import { ProfileLeases, resolveRunProfile, needsLease, type ProfileRef } from './core/ProfileLease';
+import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
 import { runOriginOf, headlessFor, describeVisibility } from './core/RunPolicy';
 import { stepsUseExtensions } from './core/ExtensionStep';
 import { browserModes } from './core/BrowserMode';
@@ -158,6 +158,7 @@ const profileManager = new ProfileManager();
 // One run per browser profile at a time (core/ProfileLease). The lease TTL is
 // the existing hard run ceiling, refreshed by the holder while it runs.
 const profileLeases = new ProfileLeases(connection, Math.max(60, config.MAX_JOB_DURATION_MINUTES * 60));
+registerProfileLeases(profileLeases);
 
 // Step 16: live event bus (publishes to Redis Pub/Sub + replay buffer).
 const liveBus = new LiveBus(connection);

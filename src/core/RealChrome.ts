@@ -1036,6 +1036,46 @@ export class RealChrome {
   private static launchedWith: ResolvedFlags | null = null;
 
   /**
+   * Visibility of the NEXT launch, chosen by a workflow run (core/RunPolicy):
+   * null = the operator's default (REAL_CHROME_HEADLESS, headed) for the
+   * viewer/Inspector. `runningHeadless` is what the live browser was started with.
+   */
+  private static headlessOverride: boolean | null = null;
+  private static runningHeadless: boolean | null = null;
+
+  /**
+   * The operator opens the browser to LOOK at it: back to the default
+   * (visible). If a hidden automatic run currently holds it, `busy` returns
+   * true and the running browser is left alone; the next launch is visible.
+   */
+  static async forOperator(busy: () => Promise<boolean> = async () => false): Promise<BrowserContext> {
+    this.headlessOverride = null;
+    const want = config.REAL_CHROME_HEADLESS === true;
+    if (this.context && this.runningHeadless !== want && !(await busy())) await this.stop();
+    return this.getContext();
+  }
+
+  /** Is the running browser hidden? null when it is not running. */
+  static isHeadless(): boolean | null {
+    return this.context ? this.runningHeadless : null;
+  }
+
+  /**
+   * Make sure Real Chrome runs with the visibility THIS run needs.
+   * A manual run wants it visible, an automatic run hidden (new-headless,
+   * extensions still load). Relaunches only when the mode differs; the profile
+   * (cookies, logins, extensions) is the same user-data-dir either way.
+   * Callers hold the Real Chrome profile lease, so no other run is using it.
+   */
+  static async ensureVisibility(headless: boolean): Promise<BrowserContext> {
+    this.headlessOverride = headless;
+    if (this.context && this.runningHeadless !== headless) {
+      await this.stop();
+    }
+    return this.getContext();
+  }
+
+  /**
    * Choose the flags for the next launch.
    *
    * Returns what WOULD be used, including anything unknown or forced, so the
@@ -1131,7 +1171,7 @@ export class RealChrome {
     }
 
     const extensions = await listExtensions(extensionsDir);
-    const headless = config.REAL_CHROME_HEADLESS === true;
+    const headless = this.headlessOverride ?? (config.REAL_CHROME_HEADLESS === true);
     const vp = this.viewport();
 
     // PROVISION THE DISPLAY BEFORE ASKING A HEADED CHROME TO USE ONE.
@@ -1228,6 +1268,9 @@ export class RealChrome {
     try {
       const context = await chromium.launchPersistentContext(userDataDir, {
         headless,
+        // Hidden = Chromium's NEW headless (full binary), which keeps the
+        // extensions; the default headless shell would load none.
+        ...(headless && !config.CHROME_EXE ? { channel: 'chromium' } : {}),
         timeout: Math.max(config.BROWSER_LAUNCH_TIMEOUT_MS, 60_000),
         ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),
         // Playwright's defaults contain --disable-extensions (which would make
@@ -1257,6 +1300,7 @@ export class RealChrome {
       });
 
       this.loaded = extensions;
+      this.runningHeadless = headless;
 
       // PAGE-CREATION TRACE. The operator asked for the real source of every
       // page, not a count: «اگر چند about:blank ساخته می‌شوند، من می‌خواهم
@@ -1840,7 +1884,7 @@ export class RealChrome {
       restartRequired: this.isRunning() && installed.length !== loaded.length,
       userDataDir: config.REAL_CHROME_USER_DATA_DIR,
       extensionsDir: config.REAL_CHROME_EXTENSIONS_DIR,
-      headless: config.REAL_CHROME_HEADLESS === true,
+      headless: this.isHeadless() ?? (config.REAL_CHROME_HEADLESS === true),
       display: process.env.DISPLAY || config.REAL_CHROME_DISPLAY,
       debugPort,
       debugBind: config.REAL_CHROME_DEBUG_BIND,

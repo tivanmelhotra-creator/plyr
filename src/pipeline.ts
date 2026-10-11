@@ -848,8 +848,10 @@ async function ensureExtensionContext(context: AutomationContext): Promise<void>
 
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
-  log('[BROWSER] This workflow uses extensions — attaching to the server\'s Real Chrome...');
-  const real = await acquireExtensionBrowser();
+  log(`[BROWSER] This workflow uses extensions — attaching to the server's Real Chrome (${describeVisibility(context.headless)})...`);
+  // The run's origin decides visibility here too: manual = visible, automatic =
+  // hidden new-headless (extensions still load). See core/RunPolicy.
+  const real = await acquireExtensionBrowser(context.headless);
 
   // Real Chrome is shared with the viewer, so the run only ever sees, and may
   // only close, tabs it opened itself (see confineContextToOwnedPages).

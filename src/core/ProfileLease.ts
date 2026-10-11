@@ -190,3 +190,13 @@ export class ProfileLeases {
     return freed;
   }
 }
+
+// ── Process-wide lookup, registered by index.ts (which owns the Redis client).
+// Lets modules without Redis (e.g. Routes/browser.routes) ask "is a run using
+// Real Chrome right now?" without importing index.ts (an import cycle).
+let activeLeases: ProfileLeases | null = null;
+export function registerProfileLeases(l: ProfileLeases): void { activeLeases = l; }
+/** The run currently holding Real Chrome's profile, or null. */
+export async function realChromeLeaseHolder(): Promise<LeaseRecord | null> {
+  return activeLeases ? activeLeases.holder('realchrome') : null;
+}

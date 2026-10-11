@@ -76,6 +76,7 @@ import { ensureRuntimeReady } from '../core/BrowserRuntimeRecovery';
 // The same gate /browser/ws uses. Uploads must be scoped to the identity the
 // socket runs as, so they must be authorized by the identical rule.
 import { authorizeLive } from '../core/LiveServer';
+import { realChromeLeaseHolder } from '../core/ProfileLease';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 
 /**
@@ -1531,9 +1532,11 @@ export const createBrowserRoutes = (): Router => {
       ? await RealChrome.recycleIfWedged()
       : { action: 'not-running' as const, reason: 'cold start' };
 
-    // The screen must exist before Chrome starts: extensions only load in a
-    // HEADED browser, and a headed browser needs an X display.
-    const ctx = await RealChrome.getContext();
+    // The operator wants to SEE the browser: if a hidden automatic run left it
+    // headless, bring it back visible - unless a run holds its profile now.
+    const ctx = await RealChrome.forOperator(async () => {
+      try { return !!(await realChromeLeaseHolder()); } catch { return false; }
+    });
 
     // ─────────────────────────────────────────────────────────────────────
     // THE WINDOW MUST LAND ON A PAGE THAT CAN HOST THE CONSENT ALERT
