@@ -338,7 +338,7 @@ describe('Workspace — the seven stat cards', () => {
     // Active Schedules first. The image is the artefact that was signed off.
     expect(keys).toEqual([
       'activeSchedules', 'totalFlows', 'activeFlows', 'successRate',
-      'failures', 'activeJobs', 'liveBrowsers',
+      'failures', 'activeJobs', 'busyProfiles',
     ]);
   });
 
@@ -350,7 +350,7 @@ describe('Workspace — the seven stat cards', () => {
       successRate: ['target', 'green'],
       failures: ['alert-triangle', 'red'],
       activeJobs: ['briefcase', 'amber'],
-      liveBrowsers: ['globe', 'blue'],
+      busyProfiles: ['globe', 'blue'],
     };
     for (const [key, [icon, tone]] of Object.entries(expected)) {
       const row = block.slice(block.indexOf(`key: '${key}'`));
@@ -381,11 +381,11 @@ describe('Workspace — the seven stat cards', () => {
 });
 
 describe('Workspace — the workflow table', () => {
-  it('renders the eight locked columns, in order', () => {
+  it('renders the columns, in order (no Owner, no Live Browser: single owner, visibility is per run)', () => {
     expect(VIEWS).toContain(
-      "var cols = ['workflow', 'owner', 'lastRun', 'successRate', 'status', 'liveBrowser', 'schedules', 'actions'];"
+      "var cols = ['workflow', 'lastRun', 'successRate', 'status', 'runNow', 'schedules', 'actions'];"
     );
-    for (const c of ['workflow', 'owner', 'lastRun', 'successRate', 'status', 'liveBrowser', 'schedules', 'actions']) {
+    for (const c of ['workflow', 'lastRun', 'successRate', 'status', 'runNow', 'schedules', 'actions']) {
       expectKeyInBothDicts(`ws.col.${c}`);
     }
   });
@@ -419,48 +419,36 @@ describe('Workspace — the workflow table', () => {
   });
 });
 
-describe('Live Browser × Active — the three locked states (§ 4)', () => {
-  const cell = VIEWS.slice(VIEWS.indexOf('function liveCell'), VIEWS.indexOf('function ownerCell'));
+describe('Workspace — four separate facts, never one ambiguous badge', () => {
+  const cell = VIEWS.slice(VIEWS.indexOf('function runCell'), VIEWS.indexOf('function rowMenu'));
 
-  it('the eye is watchable only when the flow is active AND streaming is on', () => {
-    expect(cell).toContain('var watchable = active && on;');
+  it('Active (may triggers start it?) is its own switch', () => {
+    expect(VIEWS).toMatch(/data-active="' \+ esc\(wf\.id\)/);
+    expect(VIEWS).toMatch(/role="switch"/);
   });
 
-  it('state 2: an ON toggle on an INACTIVE flow renders gray, not orange', () => {
-    // The intent is remembered, but nothing runs, so the accent colour would
-    // be a lie about there being a live session.
-    expect(cell).toContain("(on && !active ? ' muted-on' : '')");
-    expect(CSS).toContain('.ws-switch.muted-on');
+  it('running / waiting for its profile / idle comes from real job states', () => {
+    expect(cell).toContain('st.running > 0');
+    expect(cell).toContain('st.waiting > 0');
+    for (const k of ['ws.run.running', 'ws.run.waiting', 'ws.run.idle', 'ws.profileDefault', 'ws.profileHint']) expectKeyInBothDicts(k);
   });
 
-  it('states 2 and 3: the eye is disabled but keeps its explanatory tooltip', () => {
-    expect(cell).toContain('aria-disabled="true"');
-    expect(cell).toMatch(/title="' \+ esc\(tip\)/);
-    expect(CSS).toContain('.ws-eye.disabled');
-    expect(CSS).toContain('cursor: not-allowed');
+  it('shows the browser profile the runs use', () => {
+    expect(cell).toContain("st.profile");
   });
 
-  it('swaps to the eye-off glyph when nothing can be watched', () => {
-    expect(cell).toContain("IC(watchable ? 'eye' : 'eye-off', 15)");
-    expect(Icons.has('eye-off')).toBe(true);
+  it('there is no Live Browser switch, eye, filter or Owner column any more', () => {
+    expect(VIEWS).not.toContain('data-lb=');
+    expect(VIEWS).not.toContain('data-watch=');
+    expect(VIEWS).not.toContain('function liveCell');
+    expect(VIEWS).not.toContain('function ownerCell');
+    expect(VIEWS).not.toContain("key: 'live', label: 'ws.filterLive'");
+    expect(VIEWS).not.toContain('id="fe-live"');
   });
 
-  it('explains WHY the eye is disabled, differently per cause', () => {
-    expectKeyInBothDicts('ws.watchDisabledInactive');
-    expectKeyInBothDicts('ws.watchDisabledOff');
-    expectKeyInBothDicts('ws.watchBrowser');
-  });
-
-  it('the click handler re-checks the rule instead of trusting the markup', () => {
-    expect(VIEWS).toMatch(/if \(wf\.active === false \|\| wf\.liveBrowser !== true\)/);
-  });
-
-  it('both switches are real role="switch" buttons with aria-checked', () => {
-    expect(VIEWS).toMatch(/role="switch" aria-checked="/);
-    expect(VIEWS).toMatch(/role="switch"\s*'?\s*\+?/);
-    const sw = CSS.slice(CSS.indexOf('.ws-switch {'));
-    expect(sw.slice(0, 260)).toContain('width: 36px'); // 36x20 per § 3F
-    expect(sw.slice(0, 260)).toContain('height: 20px');
+  it('a workflow that never ran says Never, not a made-up number', () => {
+    expect(VIEWS).toContain("if (!st || !st.lastRunAt) return '<span class=\"ws-muted\">' + t('ws.never') + '</span>';");
+    expect(VIEWS).toContain("(pct == null ? '—' : pct + '%')");
   });
 });
 
@@ -468,11 +456,18 @@ describe('per-workflow ⋮ menu — the entries the sidebar gave up', () => {
   const block = VIEWS.slice(VIEWS.indexOf('var WS_ROW_MENU'), VIEWS.indexOf('var wsState'));
   const ids = [...block.matchAll(/id: '(\w+)'/g)].map((m) => m[1]);
 
-  it('lists the eight locked actions plus Delete, in order', () => {
+  it('lists the real actions, in order (no Live Browser, no editor-duplicate Connections)', () => {
     expect(ids).toEqual([
-      'editor', 'live', 'schedules', 'executions',
-      'connections', 'settings', 'duplicate', 'export', 'delete',
+      'editor', 'settings', 'schedules', 'executions', 'duplicate', 'export', 'delete',
     ]);
+  });
+
+  it('Settings opens the Workflow Settings dialog, not the editor', () => {
+    expect(VIEWS).toMatch(/if \(act === 'settings'\) \{ openWorkflowSettings\(wf/);
+    const fn = VIEWS.slice(VIEWS.indexOf('function openWorkflowSettings'), VIEWS.indexOf('function openInEditorFromWorkspace'));
+    for (const id of ['wfs-name', 'wfs-desc', 'wfs-webhook', 'wfs-profile']) expect(fn).toContain(id);
+    expect(fn).toContain('API.updateWorkflow');
+    for (const k of ['wfs.title', 'wfs.profile', 'wfs.webhook', 'wfs.saved', 'wfs.visibilityNote']) expectKeyInBothDicts(k);
   });
 
   it('every menu icon resolves in the registry', () => {
@@ -492,10 +487,11 @@ describe('per-workflow ⋮ menu — the entries the sidebar gave up', () => {
     }
   });
 
-  it('disables Live Browser in the menu under the same rule as the eye', () => {
-    expect(VIEWS).toMatch(
-      /var dis = m\.id === 'live' && !\(wf\.active !== false && wf\.liveBrowser === true\)/
-    );
+  it('Duplicate copies the design and its profile (the server assigns the new id)', () => {
+    const dup = VIEWS.slice(VIEWS.indexOf("if (act === 'duplicate')"), VIEWS.indexOf("if (act === 'export')"));
+    expect(dup).toContain('API.createWorkflow');
+    expect(dup).toContain('profileId: wf.profileId');
+    expect(dup).not.toContain('id: wf.id');
   });
 
   it('marks Delete as destructive and separates it', () => {
