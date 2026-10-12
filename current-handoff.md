@@ -8,7 +8,7 @@ BACKUP:         lineage is kept in the handoff files; backups are NOT in git (ta
 
 PLAN:           docs/PLAN-node-logic-v2.md (node logic v2 + production roadmap; start with milestone M1).
 
-NEXT ACTION: review feat/profile-infrastructure; then phase 2 (node settings, Success/Error/Timeout outputs, continue-session node via ProfileLeases.grant).
+NEXT ACTION: open the PR (bash scripts/open-pr-s24.sh after setup_github_environment), then follow handoffs/NEXT-SESSION-PROMPT.md section 3.
 
 Layout:
 - current-handoff.md   -> this pointer
