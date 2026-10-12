@@ -66,17 +66,21 @@ export class ProfileCoordinator {
   async bindings(): Promise<ScheduleBinding[]> {
     const out: ScheduleBinding[] = [];
     const reps = await this.queue.getRepeatableJobs(0, -1);
+    // The schedule's data lives on its next delayed job. BullMQ (5.x) links the
+    // two by `repeatJobKey` = the repeatable's `key`; the repeatable entry no
+    // longer carries the jobId we gave it, so our own `__scheduleId` in the
+    // job data is what names the schedule.
     const templates = new Map<string, Job>();
     for (const j of await this.queue.getJobs(['delayed', 'waiting', 'prioritized' as any], 0, 1000)) {
-      const sid = j?.data?.__scheduleId;
-      if (typeof sid === 'string' && !templates.has(sid)) templates.set(sid, j);
+      const k = (j?.opts as { repeatJobKey?: string } | undefined)?.repeatJobKey || (j as unknown as { repeatJobKey?: string })?.repeatJobKey;
+      if (k && !templates.has(k)) templates.set(k, j);
     }
     for (const r of reps) {
-      const scheduleId = r.id || '';
-      if (!scheduleId.startsWith(`${SCHEDULE_PREFIX}:`) || !r.pattern) continue;
-      const userId = scheduleId.split(':')[1] || '';
-      const tpl = templates.get(scheduleId);
-      if (!tpl) continue;
+      if (!r.pattern) continue;
+      const tpl = templates.get(r.key);
+      const scheduleId = String(tpl?.data?.__scheduleId || r.id || '');
+      if (!tpl || !scheduleId.startsWith(`${SCHEDULE_PREFIX}:`)) continue;
+      const userId = String(tpl.data?.userId || scheduleId.split(':')[1] || '');
       const data = tpl.data || {};
       let profileId: string | undefined = data.profileId;
       let steps: unknown = data.steps;
