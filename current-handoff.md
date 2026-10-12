@@ -3,12 +3,12 @@
 Points to the newest handoff. Read that file first; then continue.
 
 LATEST HANDOFF: handoffs/2026-10-12_S24_profile-infrastructure.md
-BRANCH / HEAD:  feat/profile-infrastructure (phase 1: shared profile/browser infrastructure).
+BRANCH / HEAD:  feat/profile-infrastructure (PR #76, phase 1).
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 
 PLAN:           docs/PLAN-node-logic-v2.md (node logic v2 + production roadmap; start with milestone M1).
 
-NEXT ACTION: open the PR (bash scripts/open-pr-s24.sh after setup_github_environment), then follow handoffs/NEXT-SESSION-PROMPT.md section 3.
+NEXT ACTION: PR #76 is open (feat/profile-infrastructure -> main). Check CI, then follow handoffs/NEXT-SESSION-PROMPT.md section 3.
 
 Layout:
 - current-handoff.md   -> this pointer

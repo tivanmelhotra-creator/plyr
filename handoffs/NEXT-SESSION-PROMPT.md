@@ -15,13 +15,13 @@
    `npx vitest run tests/integration --poolOptions.threads.maxThreads=2` و سپس `tests/unit` همین‌طور.
    بعد از هر گام مهم commit و `ProjectBackup` بگیر.
 
-## ۲. کار معوق از جلسهٔ قبل: PR مرحلهٔ اول
+## ۲. PR مرحلهٔ اول — ساخته شد
 
-PR هنوز ساخته **نشده** — اتصال GitHub در sandbox توکن معتبر برنگرداند (`setup_github_environment` → No valid authorization).
-- اول `setup_github_environment` را صدا بزن. اگر موفق بود: `bash scripts/open-pr-s24.sh`
-  (push شاخه + `gh pr create` با بدنهٔ `handoffs/PR-S24-profile-infrastructure.md`).
-- اگر باز هم ناموفق بود، متوقف شو و از کاربر بخواه از تب GitHub دوباره authorize کند؛ بدون آن push/PR نکن.
-- مخزن: `https://github.com/tivanmelhotra-creator/plyr` · base: `main`.
+- **PR #76**: https://github.com/tivanmelhotra-creator/plyr/pull/76 (`feat/profile-infrastructure` → `main`، قابل merge).
+- منبع حقیقت کد = همین شاخه روی GitHub. اگر بکاپ عقب‌تر بود: `setup_github_environment` سپس `git fetch origin && git checkout feat/profile-infrastructure && git pull`.
+- اول وضعیت CI را ببین: `gh pr checks 76`. اگر قرمز بود، علت را از لاگ Actions بخوان و اول آن را درست کن.
+- کارهای بعدی را روی همین شاخه commit کن (همان PR به‌روز می‌شود) — مگر کاربر PR جدا بخواهد.
+- merge فقط با تأیید کاربر.
 
 ## ۳. وضعیت مرحلهٔ اول — چک‌لیست کامل الزامات (پرامپ اصلی)
 
