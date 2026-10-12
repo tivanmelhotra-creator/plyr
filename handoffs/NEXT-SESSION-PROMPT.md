@@ -7,7 +7,7 @@
 ## ۱. نقطهٔ شروع (اول این کارها، به همین ترتیب)
 
 1. بکاپ آخرین وضعیت را دانلود و در `/home/user/webapp` باز کن (node_modules داخل بکاپ نیست؛ اگر نبود `npm ci`):
-   - بکاپ: `<<لینک بکاپ آخر را اینجا بگذار>>`
+   - بکاپ: https://www.genspark.ai/api/files/s/BSxQxRMa (commit `f63b8ab`؛ بعد از آن فقط همین خط و ثبت PR اضافه شده — اگر PR باز است، شاخه را از GitHub pull کن)
    - شاخه: `feat/profile-infrastructure` · آخرین commit بعد از این جلسه: `docs(handoff): …` (درخت باید تمیز باشد).
 2. Redis را راه بینداز (`sudo apt-get install -y redis-server && redis-server --daemonize yes`) — تست‌های integration بدون آن skip می‌شوند.
 3. فایل‌های `current-handoff.md` → `handoffs/2026-10-12_S24_profile-infrastructure.md` → `PROJECT.md` بخش ۶.۱ را بخوان.
