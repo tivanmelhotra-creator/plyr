@@ -178,6 +178,34 @@ describe('/profiles', () => {
     cleanup();
   });
 
+  it('a slow cold start answers 503 retryable in time, keeps going, and the retry joins the same launch', async () => {
+    if (!up) return;
+    process.env.REMOTE_BROWSER_START_BUDGET_MS = '1000';
+    let release: () => void = () => {};
+    setProfileLauncherForTests(async () => {
+      launches++;
+      await new Promise<void>((r) => { release = r; });
+      return new FakeContext() as any;
+    });
+    try {
+      const id = (await request(app).post('/profiles').send({ name: 'Slow' })).body.profile.id;
+      const t0 = Date.now();
+      const first = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(503);
+      expect(Date.now() - t0).toBeLessThan(5000);
+      expect(first.body).toMatchObject({ retryable: true, code: 'starting' });
+      // The hold stays while the browser is being started for it.
+      expect(await redis!.get(HOLD_PREFIX + leaseIdOf(id))).not.toBeNull();
+      release();
+      await new Promise((r) => setTimeout(r, 50));
+      const again = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+      expect(again.body.reused).toBe(true);
+      expect(launches).toBe(1);
+    } finally {
+      delete process.env.REMOTE_BROWSER_START_BUDGET_MS;
+      cleanup();
+    }
+  });
+
   it('rejects bad names and unknown ids', async () => {
     if (!up) return;
     await request(app).post('/profiles').send({ name: '' }).expect(400);

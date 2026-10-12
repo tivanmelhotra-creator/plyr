@@ -33,6 +33,8 @@
 
   var POLL_MS = 6000;
   var HOLD_REFRESH_MS = 5 * 60 * 1000;
+  var OPEN_ATTEMPTS = 8;
+  var OPEN_BACKOFF_MS = 2500;
 
   function headers(json) {
     var key = (window.API && window.API.getKey) ? window.API.getKey() : '';
@@ -73,7 +75,26 @@
     create: function (name, workflowId) { return call('/profiles', 'POST', { name: name, workflowId: workflowId || undefined }); },
     rename: function (id, name, workflowId) { return call('/profiles/' + encodeURIComponent(id), 'PATCH', { name: name, workflowId: workflowId || undefined }); },
     remove: function (id) { return call('/profiles/' + encodeURIComponent(id), 'DELETE'); },
-    open: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/open', 'POST', { workflowId: workflowId || undefined }); },
+    /**
+     * Open, retrying while the server says the cold start is still going
+     * (503 retryable): the start continues server-side and each retry joins
+     * it, so this never starts a second browser.
+     */
+    open: function (id, workflowId) {
+      var attempt = 0;
+      function once() {
+        attempt++;
+        return call('/profiles/' + encodeURIComponent(id) + '/open', 'POST', { workflowId: workflowId || undefined })
+          .catch(function (e) {
+            var b = e && e.body;
+            if (b && b.code === 'starting' && b.retryable && attempt < OPEN_ATTEMPTS) {
+              return new Promise(function (r) { setTimeout(r, OPEN_BACKOFF_MS); }).then(once);
+            }
+            throw e;
+          });
+      }
+      return once();
+    },
     hold: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/hold', 'POST', { workflowId: workflowId || undefined }); },
     release: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/release', 'POST', { workflowId: workflowId || undefined }); },
     close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); }
