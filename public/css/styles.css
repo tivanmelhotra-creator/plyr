@@ -6263,6 +6263,31 @@ body.route-fullbleed .fe-mm-restore {
 /* "Show browser": drawn only while running (the [hidden] attribute does it). */
 .wfm-br-show { flex: none; }
 .wfm-drawer.is-editing .wfm-browser { display: none; }
+/* ---- Browser profiles (js/profile-manager.js) inside the same drawer ------ */
+.wfm-profiles { flex: 0 0 auto; max-height: 38vh; overflow: auto; border-bottom: 1px solid var(--border); }
+.wfm-drawer.is-editing .wfm-profiles { display: none; }
+.pm-panel { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.45rem 0.7rem; font-size: 0.78rem; }
+.pm-head { display: flex; align-items: center; gap: 0.4rem; }
+.pm-title { font-weight: 600; color: var(--text); }
+.pm-form { display: flex; gap: 0.35rem; }
+.pm-form[hidden] { display: none; }
+.pm-input { flex: 1; min-width: 0; padding: 0.25rem 0.45rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.pm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pm-row { display: flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.3rem; border-radius: 6px; }
+.pm-row:hover { background: var(--bg-hover, rgba(127,127,127,.08)); }
+.pm-row.is-blocked .pm-name { color: var(--text-dim); }
+.pm-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-dim); }
+.pm-dot.is-open { background: var(--success, #3fb950); }
+.pm-text { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1rem 0.4rem; }
+.pm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.pm-badge { font-size: 0.68rem; padding: 0 0.35rem; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+.pm-badge.is-free { color: var(--success, #3fb950); border-color: currentColor; }
+.pm-badge.is-reserved { color: var(--warning, #d29922); border-color: currentColor; }
+.pm-badge.is-in_use { color: var(--primary); border-color: currentColor; }
+.pm-badge.is-needs_review { color: var(--danger); border-color: currentColor; }
+.pm-detail { flex-basis: 100%; font-size: 0.7rem; color: var(--text-dim); }
+.pm-hint { color: var(--text-dim); padding: 0.25rem 0.3rem; }
+.pm-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 /* Batch delete only makes sense once something is picked, and it must never
  * sit at the same weight as Select — it destroys, Select delivers. */
 .wfm-delsel { display: none; }

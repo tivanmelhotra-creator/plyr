@@ -77,6 +77,14 @@
    was closed on the operator's own machine while the browser itself stayed up.
    See browserRow(), toggleBrowser() and showBrowser().
 
+   BROWSER PROFILES
+   ----------------
+   Under the switch, the same drawer mounts the ONE profile panel
+   (js/profile-manager.js -> /profiles): pick one or several profiles, create
+   one (its browser is then opened automatically), rename, delete, open /
+   close their browsers, and see why a profile reserved by another workflow is
+   not available. No second profile system and no separate page.
+
    CSP-safe: no inline handlers, no eval, textContent for every name.
    ============================================ */
 (function () {
@@ -283,6 +291,7 @@
     var s = state;
     closeMenu();
     stopBrowserWatch(s);
+    if (s && s.profiles) { try { s.profiles.destroy(); } catch (e) { /* fine */ } }
     if (panel.parentNode) panel.parentNode.removeChild(panel);
     panel = null;
     state = null;
@@ -2170,6 +2179,15 @@
     // ── Local Browser switch: the workflow editor's drawer only. browserRow()
     // returns null on a page that cannot open the viewer, so no dead button.
     var browserEls = (opts && opts.browseOnly) ? browserRow(root) : null;
+    // ── Browser profiles (the ONE profile system, js/profile-manager.js):
+    // list, multi-select, create (then open), rename, delete, open / close /
+    // release, and the access state of each profile. Same drawer only.
+    var profilesHost = null;
+    if (opts && opts.browseOnly && window.ProfileManager) {
+      profilesHost = document.createElement('div');
+      profilesHost.className = 'wfm-profiles';
+      root.appendChild(profilesHost);
+    }
 
     // ── toolbar: the five actions from upload-ui/, icon-only
     var bar = document.createElement('div');
@@ -2393,7 +2411,8 @@
       down: down, del: del,
       editor: editor, edName: edNameEl, edText: edTextEl, edGutter: edGutterEl,
       edSave: edSaveBtn, edStatus: edStatusEl, edMeta: edMetaEl,
-      browser: browserEls
+      browser: browserEls,
+      profilesHost: profilesHost
     };
   }
 
@@ -2470,6 +2489,12 @@
     render();
     void expand('');
     startBrowserWatch();
+    if (els.profilesHost && window.ProfileManager) {
+      state.profiles = window.ProfileManager.mount(els.profilesHost, {
+        workflowId: workflowId,
+        onSay: function (text, isErr) { say(text, isErr); }
+      });
+    }
     // Let the class that starts the slide be painted before it is removed.
     try {
       setTimeout(function () { if (panel === els.root) els.root.classList.remove('is-opening'); }, 0);

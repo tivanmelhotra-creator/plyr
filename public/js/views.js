@@ -2834,10 +2834,19 @@
         '<label class="wfs-field"><span>' + esc(t('wfs.webhook')) + '</span>' +
           '<input id="wfs-webhook" type="url" placeholder="https://…" value="' + esc(wf.webhookUrl || '') + '">' +
           '<small>' + esc(t('wfs.webhookHint')) + '</small></label>' +
+        // The profile is chosen from the ONE profile registry (/profiles via
+        // js/profile-manager.js) by its stable id, so renaming a profile
+        // never breaks this reference. Until the list arrives (or if it cannot
+        // be read) the current id is kept as the only option.
         '<label class="wfs-field"><span>' + esc(t('wfs.profile')) + '</span>' +
-          '<input id="wfs-profile" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="default" value="' +
-            esc(wf.profileId && wf.profileId !== 'default' ? wf.profileId : '') + '">' +
-          '<small>' + esc(t('wfs.profileHint')) + '</small></label>' +
+          '<select id="wfs-profile"><option value="' + esc(wf.profileId || 'default') + '">' +
+            esc(wf.profileId && wf.profileId !== 'default' ? wf.profileId : 'Default') + '</option></select>' +
+          '<small>' + esc(t('wfs.profileChoose')) + ' ' + esc(t('wfs.profileHint')) + '</small></label>' +
+        '<label class="wfs-field"><span>' + esc(t('wfs.afterRun')) + '</span>' +
+          '<select id="wfs-afterrun">' +
+            '<option value="keep"' + (wf.afterRun === 'close' ? '' : ' selected') + '>' + esc(t('wfs.afterRunKeep')) + '</option>' +
+            '<option value="close"' + (wf.afterRun === 'close' ? ' selected' : '') + '>' + esc(t('wfs.afterRunClose')) + '</option>' +
+          '</select><small>' + esc(t('wfs.afterRunHint')) + '</small></label>' +
         '<p class="wfs-note">' + esc(t('wfs.visibilityNote')) + '</p>' +
         '<div class="wfs-actions">' +
           '<button type="button" class="btn btn-ghost btn-sm" id="wfs-cancel">' + esc(t('common.cancel')) + '</button>' +
@@ -2850,6 +2859,21 @@
     dlg.addEventListener('click', function (e) { if (e.target === dlg) close(); });
     dlg.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
     dlg.querySelector('#wfs-name').focus();
+    if (window.ProfileManager) {
+      window.ProfileManager.api.list(wf.id).then(function (d) {
+        var sel = dlg.querySelector('#wfs-profile');
+        if (!sel || !d || !d.profiles) return;
+        var cur = wf.profileId || 'default';
+        sel.innerHTML = '';
+        d.profiles.forEach(function (p) {
+          var o = document.createElement('option');
+          o.value = p.id;
+          o.textContent = p.name + (p.status !== 'free' ? ' \u2014 ' + p.status.replace('_', ' ') : '');
+          if (p.id === cur) o.selected = true;
+          sel.appendChild(o);
+        });
+      }).catch(function () { /* keep the current value as the only option */ });
+    }
     dlg.querySelector('#wfs-form').addEventListener('submit', function (e) {
       e.preventDefault();
       var name = dlg.querySelector('#wfs-name').value.trim();
@@ -2861,7 +2885,8 @@
         description: dlg.querySelector('#wfs-desc').value.trim() || null,
         steps: wf.steps,
         webhookUrl: dlg.querySelector('#wfs-webhook').value.trim() || null,
-        profileId: dlg.querySelector('#wfs-profile').value.trim() || 'default',
+        profileId: String(dlg.querySelector('#wfs-profile').value || '').trim() || 'default',
+        afterRun: dlg.querySelector('#wfs-afterrun').value === 'close' ? 'close' : 'keep',
       })
         .then(function (d) {
           U().toast(t('wfs.saved'), 'success');

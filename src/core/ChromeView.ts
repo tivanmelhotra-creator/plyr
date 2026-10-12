@@ -1080,6 +1080,30 @@ async function startThenConnect(attempt) {
   attempt = attempt || 1;
   const MAX_ATTEMPTS = 6;
 
+  // A PROFILE view (?profile=<id>, opened from the Workflow Files profile
+  // panel): that profile's browser was already started by POST
+  // /profiles/<id>/open on this same desktop. Starting Real Chrome here too
+  // would put a second, unrelated browser on screen, so this view only makes
+  // sure the desktop is up and connects to it.
+  const viewProfile = qs.get('profile');
+  if (viewProfile) {
+    show('Connecting to the browser of this profile\\u2026', true);
+    try {
+      const r0 = await fetch('/browser/desktop/start', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: '{}',
+        credentials: 'same-origin',
+      });
+      if (!r0.ok && attempt < MAX_ATTEMPTS) {
+        setTimeout(function () { void startThenConnect(attempt + 1); }, Math.min(attempt * 2000, 10000));
+        return;
+      }
+    } catch (e) { /* connect() below says what is wrong */ }
+    connect();
+    return;
+  }
+
   show(attempt === 1
     ? 'Starting Chromium\\u2026'
     : 'Still starting Chromium\\u2026 (attempt ' + attempt + ' of ' + MAX_ATTEMPTS + ')', true);
