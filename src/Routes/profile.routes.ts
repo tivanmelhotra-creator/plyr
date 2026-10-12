@@ -31,6 +31,7 @@ import { ProfileRegistryError, DEFAULT_PROFILE_ID } from '../core/ProfileRegistr
 import { explainDenial, type ProfileAccess, type WorkflowRef } from '../core/ProfileAccess';
 import { openProfileBrowser, closeProfileBrowser, ProfileBrowserError } from '../core/ProfileBrowser';
 import { browserSessions, operatorDependent } from '../core/BrowserSessions';
+import { withStartBudget } from '../core/RemoteBrowserStart';
 
 export interface ProfileRoutesDeps {
   connection: IORedis;
@@ -174,9 +175,31 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         return;
       }
       createdHold = !before || before.owner !== owner;
-      const opened = await openProfileBrowser(profileManager, {
-        leaseId, userId, userDataDir: access.registry.dirOf(userId, id), owner,
+      // The same bounded start the Local Browser uses (core/RemoteBrowserStart):
+      // we always answer inside a budget that undercuts gateway timeouts. A cold
+      // start that outlives it KEEPS GOING in the background and the answer is
+      // a retryable 503; the retry joins the same launch (no second browser),
+      // and the hold is kept meanwhile (the browser is being started for it).
+      const profileId = id;
+      let launchError: unknown = null;
+      const started = await withStartBudget(() => openProfileBrowser(profileManager, {
+        leaseId, userId, userDataDir: access.registry.dirOf(userId, profileId), owner,
+      }).catch((e) => { launchError = e; throw e; }), {
+        onLateSettle: (err) => {
+          if (!err) { void access.registry.recordOpenError(userId, profileId, null); return; }
+          void access.registry.recordOpenError(userId, profileId, (err as Error)?.message || 'open failed');
+          if (createdHold) void access.leases.releaseHold(leaseId, { owner }).catch(() => {});
+          browserSessions().detach(leaseId, operatorDependent(owner));
+        },
       });
+      if (started.outcome === 'starting') {
+        res.status(503).json({ success: false, code: 'starting', retryable: true, error: started.error, hint: started.hint });
+        return;
+      }
+      if (started.outcome === 'failed' || !started.value) {
+        throw launchError || new ProfileBrowserError(`Could not start the browser: ${started.error || 'unknown error'}`, 'launch_failed');
+      }
+      const opened = started.value;
       await access.registry.recordOpenError(userId, id, null);
       res.json({
         success: true,
