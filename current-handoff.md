@@ -2,7 +2,7 @@
 
 Points to the newest handoff. Read that file first; then continue.
 
-LATEST HANDOFF: handoffs/2026-10-12_S24_profile-infrastructure.md
+LATEST HANDOFF: handoffs/2026-10-12_S25_profile-phase1-remaining.md (S24 before it)
 BRANCH / HEAD:  feat/profile-infrastructure (PR #76, phase 1).
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 
