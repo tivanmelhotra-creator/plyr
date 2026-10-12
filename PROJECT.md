@@ -356,6 +356,58 @@ Supporting core modules include `BrowserTabs`, `BrowserInput`, `BrowserProfile`,
 `RemoteDownloads`, `RemoteUploads`, `RemoteFileChooser`, `DownloadHeaders`,
 `SessionHandoff`, `SelfHeal`, `GlobalBrowser`.
 
+### 6.1 Browser profiles, sessions, runs and reservations
+
+Four concepts, four modules, never merged:
+
+| Concept | What it is | Module | Stored in |
+| --- | --- | --- | --- |
+| **Profile** | durable identity (user-data-dir, cookies, logins); stable `id` + renamable `name` | `core/ProfileRegistry` | meta file inside the profile dir |
+| **Session** | a live browser on a profile + who depends on it | `core/BrowserSessions` | memory, mirrored to Redis `profile:session:*` |
+| **Run** | one execution of a workflow | BullMQ job | Redis |
+| **Claim** | lease (run), hold (operator), reservation (schedule), grant (explicit) | `core/ProfileLease`, `core/ProfileReservations` | Redis `profile:{lease,hold,resv,grant}:*` |
+
+`core/ProfileAccess` derives the status the user sees (free / reserved / in use /
+needs review) and the refusal sentence; `core/ProfileCoordinator` connects the
+queue to reservations; `core/BrowserLifecycle` decides what happens to a run's
+browser at the end; `core/ProfileBrowser` opens / closes a profile's browser by
+hand. HTTP: `Routes/profile.routes.ts` (`/profiles`). UI: `public/js/profile-manager.js`,
+mounted in the Workflow Files drawer and used by Workflow Settings.
+
+**Admission is one atomic Lua script** (`ADMIT_LUA`): lease, hold, reservations
+and grants are read and the new claim written in one step, so two claimants can
+never both win. Claims carry an **owner** (the workflow id); a claim of the same
+owner is compatible, any other is not, unless the owner wrote an explicit,
+expiring **grant** (`ProfileLeases.grant`, for phase 2's "continue session"
+node — never created implicitly).
+
+**Reservations.** Each scheduled occurrence reserves its profile for
+`[t − PROFILE_RESERVE_BEFORE_MIN, t + PROFILE_RESERVE_AFTER_MIN]` (defaults 10/10,
+Settings → Workflow Runs). States: `planned → fired → settled`, or `missed`. A
+`fired` reservation blocks until its run settles it, so a 10:00 run that lasts
+until 10:20 keeps the profile until 10:20; a `settled` one blocks until
+`max(window end, real end)`. Unknown is never free: the sweep (every minute)
+settles / misses reservations only from queue evidence. Inactive workflows
+reserve nothing; activation / schedule / profile changes re-plan reservations
+and never touch holds or browsers. An operator hold is capped at the start of
+the next foreign reservation.
+
+**Lifecycle.** Closing a browser never releases a claim, and a claim ending never
+closes a browser. A browser with a dependent other than the requester is never
+closed (Close Browser node detaches instead; after-run close and the idle
+collector skip it). Workflow setting `afterRun`: `keep` (default) or `close`
+(after success / cancel, if safe; errors and timeouts keep it for inspection).
+Unused browsers close after `BROWSER_IDLE_CLOSE_MIN` (default 10, 0 = never); a
+run in a Wait node is a dependent, so it is never idle.
+
+**Visibility** is unchanged and still follows `core/RunPolicy` (manual click =
+visible, schedules / triggers / API = hidden); it does not depend on the
+environment or on the `active` flag.
+
+**Recovery at boot**: leases and holds of an earlier incarnation are released,
+its session records are reported and forgotten; reservations are kept and
+resolved by evidence.
+
 ---
 
 ## 7. Inspector / Extension
