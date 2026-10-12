@@ -64,6 +64,8 @@ interface UserRoutesDeps {
   profileManager: ProfileManager;
   /** Optional: lets the Workspace report which profile is busy. */
   profileLeases?: ProfileLeases;
+  /** Reservations follow schedules / activation / profile changes (core/ProfileCoordinator). */
+  profileCoordinator?: { syncReservations: () => Promise<unknown> };
 }
 
 const SCHEDULE_PREFIX = 'sched';
@@ -105,7 +107,17 @@ const waitForJobResult = async (
 
 export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   const router = Router();
-  const { queue, connection, profileManager, profileLeases } = deps;
+  const { queue, connection, profileManager, profileLeases, profileCoordinator } = deps;
+  /**
+   * Re-plan profile reservations after anything that changes which profile a
+   * scheduled occurrence will use (schedule added / removed, workflow
+   * activated / deactivated, profile changed). Best-effort and off the
+   * response path: the periodic sweep converges anyway.
+   */
+  const resyncReservations = (): void => {
+    if (!profileCoordinator) return;
+    void profileCoordinator.syncReservations().catch((e: Error) => console.warn(`[PROFILES] reservation sync failed: ${e.message}`));
+  };
   const workflowService = new WorkflowService(workflowStoreFor(connection));
 
   /**
@@ -514,6 +526,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
       );
 
+      resyncReservations();
       // ── Calculate Next Run ──
       const repeatableJobs = await queue.getRepeatableJobs();
       const thisSchedule = repeatableJobs.find(j => j.id === scheduleId);
@@ -618,6 +631,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       }
 
       const removed = await queue.removeRepeatableByKey(key);
+      if (removed) resyncReservations();
 
       if (!removed) {
         return res.status(500).json({ 
@@ -1012,6 +1026,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         headless: body.headless ?? null,
         webhookUrl,
         ...(body.profileId ? { profileId: profileIdOrThrow(body.profileId) } : {}),
+        ...(body.afterRun ? { afterRun: body.afterRun } : {}),
       });
       await provisionWorkspace(userId, wf.id);
       return res.status(201).json({ success: true, workflow: wf });
@@ -1176,8 +1191,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         // Workflow Settings: which browser profile its runs use (one run per
         // profile at a time, core/ProfileLease). Omitted = unchanged.
         ...(body.profileId !== undefined ? { profileId: profileIdOrThrow(body.profileId) } : {}),
+        ...(body.afterRun ? { afterRun: body.afterRun } : {}),
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+      if (body.profileId !== undefined) resyncReservations();
       return res.json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;
@@ -1472,6 +1489,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         activeSnapshot,
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+      // Activation changes whether its schedules reserve a profile. It does
+      // NOT touch the profile itself, any open browser, or any hold.
+      resyncReservations();
       return res.json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;

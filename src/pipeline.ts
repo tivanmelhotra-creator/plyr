@@ -18,6 +18,7 @@ import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './c
 import { isTriggerAction } from './core/TriggerEngine';
 import { hiddenLaunchOptions, describeVisibility } from './core/RunPolicy';
 import type { ProfileRef } from './core/ProfileLease';
+import { browserSessions, jobDependent } from './core/BrowserSessions';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
   EXT_BROWSER_FLAG,
@@ -699,6 +700,12 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
         profileManager.setVipContext(userId, existing.context, jobId);
         profileManager.registerPage(jobId, context.page);
         profileManager.updateActivity(userId);
+        // The live browser is SHARED state: record this run as depending on it
+        // (core/BrowserSessions), so nothing else may close it under the run.
+        if (!browserSessions().get(key)) {
+          browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
+        }
+        browserSessions().attach(key, jobDependent(jobId));
         log(`[BROWSER] Reusing the browser of profile "${profile?.label || key}" (${describeVisibility(headless)})`);
         return;
       }
@@ -706,8 +713,16 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
       log(`[BROWSER] Error checking existing context: ${err.message}`);
     }
 
+    // Relaunching replaces the browser. Never do that under another dependent
+    // (an operator view of this profile): the run waits for the lease, so
+    // another RUN cannot be on it, but the operator may be watching.
+    const relaunch = browserSessions().canClose(key, jobDependent(jobId));
+    if (!relaunch.ok && relaunch.reason === 'in_use') {
+      throw new BrowserError(`The browser of profile "${profile?.label || key}" is in use (${relaunch.dependents.join(', ')}) and was built with different options or visibility; close it first, then run again.`);
+    }
     try {
       await existing.context.close();
+      browserSessions().closed(key);
       log('[BROWSER] Closed the previous profile browser');
     } catch (err: any) {
       log(`[BROWSER] Error closing unhealthy context: ${err.message}`);
@@ -786,6 +801,16 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
     profileManager.setVipContext(userId, browserContext, jobId);
     profileManager.registerPage(jobId, page);
     profileBuildHash.set(key, wantHash);
+    browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
+    browserSessions().attach(key, jobDependent(jobId));
+    // A browser that dies on its own must not leave a session record behind.
+    browserContext.on('close', () => {
+      if (profileManager.getVipContext(userId)?.context === browserContext) {
+        profileManager.removeVipContext(userId);
+        profileBuildHash.delete(key);
+      }
+      if (!profileManager.getVipContext(userId)) browserSessions().closed(key);
+    });
     context.browserOptionsHash = optPlan.hash;
 
     context.browserContext = browserContext;
@@ -2795,6 +2820,13 @@ async function runPipelineImpl(params: {
             log('[BROWSER] Close requested — detaching from your local browser (it stays open)');
             // On Real Chrome the run's own tabs are its to close; nothing else is.
             if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
+          } else if (context.browserContext && !browserSessions().canClose(context.profile?.id || 'default', jobDependent(jobId)).ok) {
+            // Another dependent (an operator view) uses this browser: a run
+            // that is not its exclusive owner must not close it. Detach only.
+            const d = browserSessions().canClose(context.profile?.id || 'default', jobDependent(jobId));
+            log(`[BROWSER] Close requested, but the browser is in use by ${!d.ok && d.reason === 'in_use' ? d.dependents.join(', ') : 'another user'} - detaching instead of closing`);
+            browserSessions().detach(context.profile?.id || 'default', jobDependent(jobId));
+            context.browserShared = true;
           } else if (context.browserContext) {
             try {
               const pages = context.browserContext.pages();
@@ -2812,6 +2844,8 @@ async function runPipelineImpl(params: {
           } else {
             profileManager.removeVipContext(context.profile?.id || 'default');
             profileBuildHash.delete(context.profile?.id || 'default');
+            // The browser is gone; the run's LEASE is not (released by the worker).
+            browserSessions().closed(context.profile?.id || 'default');
           }
           profileManager.unregisterPage(jobId);
 
@@ -3345,6 +3379,7 @@ async function runPipelineImpl(params: {
 
         if (ownsProfileBrowser && !context.browserShared) {
           profileManager.updateActivity(context.profile?.id || 'default');
+          browserSessions().touch(context.profile?.id || 'default');
         }
 
       } catch (stepError: any) {

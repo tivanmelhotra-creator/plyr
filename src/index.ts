@@ -14,6 +14,12 @@ import { runPipeline } from './pipeline';
 import { buildItemsFromTrigger, buildManualItems } from './core/TriggerEngine';
 import { ProfileManager } from './core/ProfileManager';
 import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
+import { ProfileRegistry } from './core/ProfileRegistry';
+import { ProfileReservations } from './core/ProfileReservations';
+import { BrowserSessions, registerBrowserSessions, jobDependent } from './core/BrowserSessions';
+import { ProfileAccess, registerProfileAccess, explainDenial } from './core/ProfileAccess';
+import { ProfileCoordinator, ownerOfJob, occurrenceOf, reservationWindow } from './core/ProfileCoordinator';
+import { decideAfterRun, afterRunPolicyOf, outcomeOfError, type RunOutcome } from './core/BrowserLifecycle';
 import { runOriginOf, headlessFor, describeVisibility } from './core/RunPolicy';
 import { stepsUseExtensions } from './core/ExtensionStep';
 import { browserModes } from './core/BrowserMode';
@@ -163,6 +169,26 @@ const profileManager = new ProfileManager();
 // the existing hard run ceiling, refreshed by the holder while it runs.
 const profileLeases = new ProfileLeases(connection, Math.max(60, config.MAX_JOB_DURATION_MINUTES * 60));
 registerProfileLeases(profileLeases);
+// The profile infrastructure (see each module's header): identity, scheduled
+// reservations, live browser sessions, and one view over all of them.
+const profileRegistry = new ProfileRegistry(config.PROFILES_DIR);
+const profileReservations = new ProfileReservations(connection);
+const browserSessionRegistry = new BrowserSessions(connection);
+registerBrowserSessions(browserSessionRegistry);
+const profileAccessService = new ProfileAccess(profileRegistry, profileLeases, profileReservations, browserSessionRegistry);
+registerProfileAccess(profileAccessService);
+/** Jobs executing in THIS process right now (reservation sweep evidence). */
+const runningJobs = new Set<string>();
+const profileCoordinator = new ProfileCoordinator(
+  queue, profileLeases, profileReservations, browserSessionRegistry,
+  async (userId, workflowId) => {
+    const wf = await new WorkflowService(workflowStoreFor(connection)).get(userId, workflowId);
+    if (!wf) return null;
+    const d = WorkflowService.executableDesign(wf);
+    return { profileId: d.profileId, name: wf.name, active: wf.active !== false, steps: d.steps };
+  },
+  (userId) => browserModes.modeOf(userId) === 'local',
+);
 
 // Step 16: live event bus (publishes to Redis Pub/Sub + replay buffer).
 const liveBus = new LiveBus(connection);
@@ -322,6 +348,7 @@ app.use('/quota', asyncAuthMiddleware);
 app.use('/me', asyncAuthMiddleware);
 app.use('/workflows', asyncAuthMiddleware);
 app.use('/workspace', asyncAuthMiddleware);
+app.use('/profiles', asyncAuthMiddleware);
 app.use('/browser', asyncAuthMiddleware);
 // The mode switch decides which browser runs someone's automation, and the
 // inspector routes carry element data read off logged-in pages. Neither may be
@@ -500,6 +527,8 @@ const routes = createAllRoutes({
   connection,
   profileManager,
   profileLeases,
+  profileAccess: profileAccessService,
+  profileCoordinator,
   luaScriptsLoaded,
   reloadLuaScripts: initLuaScripts
 });
@@ -509,6 +538,7 @@ app.use('/', routes.user);
 app.use('/', routes.browser);
 app.use('/', routes.mode);
 app.use('/', routes.workflowFiles);
+if (routes.profiles) app.use('/', routes.profiles);
 // Owner-password setup / login (public by design; change-password self-guards).
 app.use('/', createAuthRoutes());
 const settingsRoutes = createSettingsRoutes();
@@ -682,6 +712,15 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       const r = await resolveScheduledWorkflow(svc, userId, job.data.__scheduleWorkflowId);
       if ('skip' in r) {
         console.log(`[JOB:${job.id}] schedule skipped: ${r.skip} (${job.data.__scheduleWorkflowId})`);
+        // The occurrence will not run: its reservation (if any) stops blocking.
+        const occ = occurrenceOf(job);
+        if (occ && typeof job.data.__scheduleId === 'string') {
+          for (const [leaseId, list] of await profileReservations.all().catch(() => new Map())) {
+            if (list.some((x: { scheduleId?: string; occurrence: number }) => x.scheduleId === job.data.__scheduleId && x.occurrence === occ)) {
+              await profileReservations.markMissed(leaseId, job.data.__scheduleId, occ).catch(() => {});
+            }
+          }
+        }
         await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
         return;
       }
@@ -721,21 +760,43 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     profilesDir: config.PROFILES_DIR,
     realChromeDir: config.REAL_CHROME_USER_DATA_DIR,
   });
+  // WHO the run works for: holds and reservations of the same owner (its
+  // workflow) are compatible with it, any other owner's are not.
+  const runOwner = ownerOfJob(job.data, String(job.id));
+  const occurrence = job.data.__scheduled ? occurrenceOf(job) : null;
   let leaseToken: string | null = null;
   if (needsLease(profile)) {
-    const got = await profileLeases.acquire(profile.id, String(job.id));
+    const got = await profileLeases.acquire(profile.id, String(job.id), { owner: runOwner });
     if (!got.ok) {
-      if (!job.data.__waitingFor) {
-        await job.updateData({ ...job.data, __waitingFor: profile.id }).catch(() => {});
-        console.log(`[JOB:${job.id}] waiting: profile "${profile.label}" is in use by job ${got.holder?.jobId ?? '?'}`);
+      // Waiting reason, said once per reason (in use / held / reserved).
+      const why = explainDenial(got.reason, {
+        lease: got.holder ? { jobId: got.holder.jobId } : null,
+        hold: got.hold ? { until: got.hold.expiresAt } : null,
+        reservation: got.reservation || null,
+      }) || 'busy';
+      const waitKey = `${profile.id}|${got.reason}`;
+      if (job.data.__waitingFor !== waitKey) {
+        await job.updateData({ ...job.data, __waitingFor: waitKey }).catch(() => {});
+        console.log(`[JOB:${job.id}] waiting: profile "${profile.label}" - ${why}`);
         void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0,
-          data: { message: `Waiting: browser profile "${profile.label}" is in use by run ${got.holder?.jobId ?? '?'}` } }).catch(() => {});
+          data: { message: `Waiting: browser profile "${profile.label}" - ${why}` } }).catch(() => {});
       }
       await job.moveToDelayed(Date.now() + Math.max(500, config.QUEUE_DELAY_MS), token);
       throw new DelayedError();
     }
     leaseToken = got.token;
+    // A scheduled occurrence that is now running: its reservation is FIRED
+    // (blocking until this run settles it, however long it lasts).
+    if (occurrence && typeof job.data.__scheduleId === 'string') {
+      await profileReservations.markFired(profile.id, {
+        scheduleId: job.data.__scheduleId, owner: runOwner, ownerName: job.data.__scheduleName,
+      }, occurrence, String(job.id), reservationWindow()).catch((e: Error) => {
+        console.warn(`[JOB:${job.id}] could not mark its reservation fired: ${e.message}`);
+      });
+    }
   }
+  runningJobs.add(String(job.id));
+  let runOutcome: RunOutcome = 'error';
   const leaseRefresh = leaseToken
     ? setInterval(() => { void profileLeases.refresh(profile.id, leaseToken!).catch(() => {}); }, 60_000)
     : null;
@@ -902,6 +963,7 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       }
     });
 
+    runOutcome = 'success';
     livePub.emit('job.done', { durationMs: result.durationMs });
     log('Completed');
     connection.incr(STATS_KEY.TOTAL_SUCCESS).catch(() => {});
@@ -937,6 +999,7 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       } catch {}
     }
 
+    runOutcome = outcomeOfError(error.message, cancelled);
     if (cancelled || error.message === 'CANCELLED_BY_USER') {
       livePub.emit('job.error', { reason: 'cancelled', message: error.message });
       log('Cancelled');
@@ -974,6 +1037,7 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
         await entry.context.close().catch(() => {});
       }
       profileManager.removeVipContext(profile.id);
+      browserSessionRegistry.closed(profile.id);
     }
 
     livePub.emit('job.error', { message: sanitizeLogMessage(error.message) });
@@ -1002,7 +1066,48 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     throw err;
 
   } finally {
-    // Release the profile on EVERY exit path (success, failure, cancel). The
+    // 1. The BROWSER (core/BrowserLifecycle): the workflow's "after the run"
+    //    policy, applied only when no one else depends on the browser. This
+    //    is independent of the lease below: closing never releases a claim.
+    const dep = jobDependent(String(job.id));
+    try {
+      const sess = browserSessionRegistry.get(profile.id);
+      const others = sess ? sess.dependents.filter((d) => d !== dep) : [];
+      let policy = afterRunPolicyOf(undefined);
+      const wfId = job.data.__workflowId || job.data.__workspace?.workflowId || job.data.__scheduleWorkflowId;
+      if (typeof wfId === 'string') {
+        const owner = job.data.__workspace?.owner || userId;
+        const wf = await new WorkflowService(workflowStoreFor(connection)).get(String(owner), wfId).catch(() => null);
+        policy = afterRunPolicyOf(wf?.afterRun);
+      }
+      const decision = decideAfterRun({
+        policy, outcome: runOutcome, sessionOpen: !!sess && !!profileManager.getVipContext(profile.id),
+        ownBrowser: profile.kind === 'run' || profile.kind === 'named', otherDependents: others,
+      });
+      browserSessionRegistry.detach(profile.id, dep);
+      if (decision.action === 'close') {
+        const entry = profileManager.getVipContext(profile.id);
+        if (entry && browserSessionRegistry.canClose(profile.id, dep).ok) {
+          await entry.context.close().catch(() => {});
+          profileManager.removeVipContext(profile.id);
+          browserSessionRegistry.closed(profile.id);
+          console.log(`[JOB:${job.id}] closed the browser of profile "${profile.label}" after the run (workflow setting)`);
+        }
+      } else if (decision.why === 'in_use') {
+        console.log(`[JOB:${job.id}] browser of profile "${profile.label}" kept open: still used by ${others.join(', ')}`);
+      }
+    } catch (e) {
+      console.warn(`[JOB:${job.id}] after-run browser policy failed: ${(e as Error).message}`);
+    }
+    // 2. The RESERVATION of a scheduled occurrence: settled at the REAL end
+    //    of the run, so it keeps blocking until max(window end, now).
+    if (leaseToken && occurrence && typeof job.data.__scheduleId === 'string') {
+      await profileReservations.markSettled(profile.id, job.data.__scheduleId, occurrence, String(job.id)).catch((e: Error) => {
+        console.warn(`[JOB:${job.id}] could not settle its reservation: ${e.message}`);
+      });
+    }
+    runningJobs.delete(String(job.id));
+    // 3. The LEASE, on EVERY exit path (success, failure, cancel). The
     // release is compare-and-delete on this run's token, so it can never free
     // a lease another run holds.
     if (leaseRefresh) clearInterval(leaseRefresh);
@@ -1063,11 +1168,35 @@ app.use((_req, res) => {
 
 setInterval(async () => {
   try {
-    await profileManager.runGarbageCollector(config.GC_STALE_THRESHOLD_MINUTES);
+    // Profile browsers are NOT collected by the legacy activity timer any
+    // more: only sessions nobody depends on, after BROWSER_IDLE_CLOSE_MIN
+    // (below). Everything else the collector does is unchanged.
+    await profileManager.runGarbageCollector(config.GC_STALE_THRESHOLD_MINUTES, {
+      mayCloseVip: (key) => browserSessionRegistry.canClose(key, '').ok && !runningJobs.has(profileManager.getVipContext(key)?.jobId || ''),
+      onVipClosed: (key) => browserSessionRegistry.closed(key),
+      idleMs: Math.max(0, config.BROWSER_IDLE_CLOSE_MIN) * 60_000,
+    });
   } catch (e) {
     console.error('[GC] Error:', e);
   }
 }, config.GC_CHECK_INTERVAL_MINUTES * 60 * 1000);
+
+// Reservations follow the schedules and are settled from evidence; unused
+// browsers are closed after the idle timeout. Every minute.
+const profileSweep = setInterval(async () => {
+  try {
+    await profileCoordinator.sweep((id) => runningJobs.has(id), async (sess) => {
+      const entry = profileManager.getVipContext(sess.leaseId);
+      if (entry) await entry.context.close().catch(() => {});
+      profileManager.removeVipContext(sess.leaseId);
+      browserSessionRegistry.closed(sess.leaseId);
+      console.log(`[PROFILES] Closed the idle browser of profile "${sess.leaseId}"`);
+    });
+  } catch (e) {
+    console.warn('[PROFILES] sweep failed:', (e as Error).message);
+  }
+}, 60_000);
+if (typeof profileSweep.unref === 'function') profileSweep.unref();
 
 // ============================================
 // GRACEFUL SHUTDOWN
@@ -1205,8 +1334,14 @@ const startServer = async () => {
   // Leases of an earlier incarnation of this server cannot still be running
   // (their browser died with that process): free them before the worker runs.
   try {
-    const freed = await profileLeases.releaseOrphaned();
-    if (freed.length) console.log(`[PROFILES] Released ${freed.length} lease(s) left by a previous run of the server: ${freed.join(', ')}`);
+    const rec = await profileCoordinator.recoverAtBoot();
+    if (rec.leases.length) console.log(`[PROFILES] Released ${rec.leases.length} lease(s) left by a previous run of the server: ${rec.leases.join(', ')}`);
+    if (rec.holds.length) console.log(`[PROFILES] Released ${rec.holds.length} manual hold(s) of a previous run of the server: ${rec.holds.join(', ')}`);
+    if (rec.sessions.length) console.log(`[PROFILES] ${rec.sessions.length} browser session(s) of a previous run of the server are gone: ${rec.sessions.join(', ')}`);
+    const sync = await profileCoordinator.syncReservations();
+    if (sync.overlaps.length) {
+      for (const o of sync.overlaps) console.warn(`[PROFILES] Schedules overlap on profile "${o.leaseId}": ${o.a.ownerName || o.a.owner} and ${o.b.ownerName || o.b.owner} (the later one waits).`);
+    }
   } catch (e) {
     console.warn(`[PROFILES] Could not check for orphaned profile leases: ${(e as Error).message}`);
   }
@@ -1327,4 +1462,4 @@ const startServer = async () => {
 
 const server = startServer();
 
-export { app, server, queue, connection, profileManager, profileLeases, liveBus };
+export { app, server, queue, connection, profileManager, profileLeases, liveBus, profileAccessService, profileCoordinator };

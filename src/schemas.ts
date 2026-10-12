@@ -107,6 +107,7 @@ export const workflowBodySchema = z.object({
   headless: headlessLoose,
   webhookUrl: z.string().url('webhookUrl must be a valid URL').optional().nullable(),
   profileId: z.string().trim().min(1).max(128).optional().nullable(),
+  afterRun: z.enum(['keep', 'close']).optional().nullable(),
 });
 
 // [Workspace] PATCH /workflows/:userId/:workflowId/state - the Active switch

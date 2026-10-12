@@ -29,6 +29,8 @@ export interface WorkflowInput {
   webhookUrl?: string | null;
   /** Stable default profile; runtime is resolved per execution. */
   profileId?: string | null;
+  /** Browser after a run (core/BrowserLifecycle). Omitted = unchanged. */
+  afterRun?: 'keep' | 'close' | null;
   // Optional on create (defaults below). On UPDATE they are ignored: the
 
   // Workspace switches are owned by setState(), so saving a new design in the
@@ -180,6 +182,7 @@ export class WorkflowService {
       headless: input.headless ?? undefined,
       webhookUrl: input.webhookUrl ?? undefined,
       profileId: input.profileId ?? undefined,
+      ...(input.afterRun ? { afterRun: input.afterRun } : {}),
       version: 1,
 
       createdAt: ts,
@@ -228,6 +231,7 @@ export class WorkflowService {
       headless: input.headless ?? undefined,
       webhookUrl: input.webhookUrl ?? undefined,
       profileId: input.profileId ?? existing.profileId,
+      afterRun: input.afterRun ?? existing.afterRun,
       version: existing.version + 1,
 
       updatedAt: nowIso(),

@@ -93,7 +93,8 @@ const rawNow = (key: string): string | undefined => {
 const BOOT_RAW: Record<string, string | undefined> = {};
 for (const k of ['API_TOKEN', 'PUBLIC_DOMAIN', 'BASE_URL', 'WEBHOOK_SECRET', 'LIVE_SHARE_SECRET',
   'LIVE_SHARE_TTL_SEC', 'CODE_NODE_ENABLED', 'STEP_TIMEOUT_MS', 'DOWNLOAD_TTL_MINUTES',
-  'WORKFLOW_MAX_VERSIONS', 'EXECUTION_RETENTION_DAYS', 'ALLOW_OPEN_AUTH']) BOOT_RAW[k] = process.env[k];
+  'WORKFLOW_MAX_VERSIONS', 'EXECUTION_RETENTION_DAYS', 'ALLOW_OPEN_AUTH',
+  'PROFILE_RESERVE_BEFORE_MIN', 'PROFILE_RESERVE_AFTER_MIN', 'BROWSER_IDLE_CLOSE_MIN']) BOOT_RAW[k] = process.env[k];
 const cur = (key: string): string | undefined =>
   liveRaw(key) === undefined ? cleanEnv(BOOT_RAW[key]) : rawNow(key);
 /**
@@ -656,6 +657,17 @@ export const config = {
   // the periodic GC), so a change in Settings applies without a restart.
   get EXECUTION_RETENTION_DAYS(): number { return pick('EXECUTION_RETENTION_DAYS', () => intNow('EXECUTION_RETENTION_DAYS', 30, 0)); },
   set EXECUTION_RETENTION_DAYS(v: number) { assigned.set('EXECUTION_RETENTION_DAYS', v); },
+  // Profile reservations around scheduled runs (core/ProfileReservations) and
+  // the idle close of unused browsers (core/BrowserSessions). Minutes.
+  get PROFILE_RESERVE_BEFORE_MIN(): number { return pick('PROFILE_RESERVE_BEFORE_MIN', () => intNow('PROFILE_RESERVE_BEFORE_MIN', 10, 0)); },
+  set PROFILE_RESERVE_BEFORE_MIN(v: number) { assigned.set('PROFILE_RESERVE_BEFORE_MIN', v); },
+  get PROFILE_RESERVE_AFTER_MIN(): number { return pick('PROFILE_RESERVE_AFTER_MIN', () => intNow('PROFILE_RESERVE_AFTER_MIN', 10, 0)); },
+  set PROFILE_RESERVE_AFTER_MIN(v: number) { assigned.set('PROFILE_RESERVE_AFTER_MIN', v); },
+  get BROWSER_IDLE_CLOSE_MIN(): number { return pick('BROWSER_IDLE_CLOSE_MIN', () => intNow('BROWSER_IDLE_CLOSE_MIN', 10, 0)); },
+  set BROWSER_IDLE_CLOSE_MIN(v: number) { assigned.set('BROWSER_IDLE_CLOSE_MIN', v); },
+  // How long the operator's manual claim (Workflow Files → Open browser) lasts
+  // before it must be refreshed by the open drawer. Not a panel setting.
+  OPERATOR_HOLD_MINUTES: parseInt(cleanEnv(process.env.OPERATOR_HOLD_MINUTES) || '30', 10),
   EXECUTION_MAX_ROWS: parseInt(cleanEnv(process.env.EXECUTION_MAX_ROWS) || '10000', 10),
 
   // ============================================

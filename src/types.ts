@@ -362,6 +362,12 @@ export interface Workflow {
   webhookUrl?: string | null;
   /** Optional default profile; executions may select other profiles/scopes. */
   profileId?: string;
+  /**
+   * What happens to the run's browser when a run ends (core/BrowserLifecycle):
+   * `keep` (default) or `close` when safe. A runtime setting of the workflow,
+   * not part of its design: read live at the end of every run.
+   */
+  afterRun?: 'keep' | 'close';
   version: number;
   createdAt: string;
   updatedAt: string;
