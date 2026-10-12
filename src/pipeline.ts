@@ -1130,9 +1130,18 @@ async function runPipelineImpl(params: {
     }
   };
 
+  // Nesting depth of the group being executed. 0 = the workflow's own chain.
+  // The live run tab draws the top-level chain BEFORE it runs (core/LiveRunPlan)
+  // and matches each top-level `step.start` to its row by `top` (position among
+  // the enabled top-level steps); nested steps carry `depth` instead.
+  let __groupDepth = -1;
   const executeStepGroup = async (
     stepsToRun: AutomationStep[]
   ): Promise<{ break?: boolean; continue?: boolean; return?: boolean; returnValue?: any } | void> => {
+    __groupDepth++;
+    const __depth = __groupDepth;
+    let __topPos = 0;
+    try {
 
     stepLoop:
     for (let i = 0; i < stepsToRun.length; i++) {
@@ -1144,7 +1153,9 @@ async function runPipelineImpl(params: {
       // Step 16: live event - announce this step starting.
       const __outLenBefore = stepOutputs.length;
       const __startIndex = globalStepNumber + 1;
-      context.onEvent?.('step.start', { index: __startIndex, action: step.action });
+      context.onEvent?.('step.start', __depth === 0
+        ? { index: __startIndex, action: step.action, top: __topPos++ }
+        : { index: __startIndex, action: step.action, depth: __depth });
 
       context.globalLoopCounter++;
 
@@ -3389,6 +3400,9 @@ async function runPipelineImpl(params: {
           }
         }
       }
+    }
+    } finally {
+      __groupDepth--;
     }
   };
 

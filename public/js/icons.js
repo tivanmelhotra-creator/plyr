@@ -32,6 +32,8 @@
    * Keep alphabetical so lookups by eye stay cheap.
    */
   var P = {
+    // Live Run tab mark: a pulse line.
+    activity: ['<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>'],
     'alert-circle': ['<circle cx="12" cy="12" r="9"/>', '<path d="M12 8v5"/>', '<path d="M12 16.5h.01"/>'],
     'alert-triangle': ['<path d="M10.3 4.1a2 2 0 0 1 3.4 0l7 12.1a2 2 0 0 1-1.7 3H5a2 2 0 0 1-1.7-3z"/>', '<path d="M12 9.5v4"/>', '<path d="M12 17h.01"/>'],
     // Back in the Workflow Files breadcrumb: one level up.

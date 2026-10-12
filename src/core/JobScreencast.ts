@@ -33,6 +33,8 @@ export interface ScreencastFrame {
   height: number;
   /** ms since epoch, taken on the server. */
   ts: number;
+  /** The page's address when the frame was taken (for the address bar). */
+  url?: string;
 }
 
 export type ScreencastStatus = 'waiting' | 'live' | 'ended';
@@ -52,6 +54,8 @@ export interface CdpLike {
 /** The slice of Playwright's Page the hub uses. */
 export interface PageLike {
   isClosed(): boolean;
+  /** Playwright's page.url(); optional so fakes need not provide it. */
+  url?(): string;
   context(): { newCDPSession(page: any): Promise<CdpLike> };
 }
 
@@ -230,6 +234,8 @@ export class JobScreencastHub {
           height: Number(md.deviceHeight) || 0,
           ts: t,
         };
+        const addr = pageUrl(page);
+        if (addr) frame.url = addr;
         job.lastFrame = frame;
         for (const l of [...job.listeners]) safe(() => l.frame(frame));
       });
@@ -248,6 +254,25 @@ export class JobScreencastHub {
     } finally {
       job.attaching = false;
     }
+  }
+}
+
+/**
+ * The page address for the live tab's address bar: origin + path only. The
+ * query and hash are dropped because a share link can be forwarded and tokens
+ * travel there. Non-http pages (about:blank, chrome-extension://) are shown
+ * as their scheme + host.
+ */
+export function pageUrl(page: PageLike): string {
+  let raw = '';
+  try { raw = typeof page.url === 'function' ? String(page.url() || '') : ''; } catch { raw = ''; }
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.origin + (u.pathname === '/' ? '' : u.pathname);
+    return u.protocol + (u.host ? '//' + u.host : '');
+  } catch {
+    return '';
   }
 }
 
