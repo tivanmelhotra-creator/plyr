@@ -32,11 +32,31 @@ import { explainDenial, type ProfileAccess, type WorkflowRef } from '../core/Pro
 import { openProfileBrowser, closeProfileBrowser, ProfileBrowserError } from '../core/ProfileBrowser';
 import { browserSessions, operatorDependent } from '../core/BrowserSessions';
 import { withStartBudget } from '../core/RemoteBrowserStart';
+import type { OverlapView, UnresolvedSchedule } from '../core/ProfileCoordinator';
 
 export interface ProfileRoutesDeps {
   connection: IORedis;
   access: ProfileAccess;
   profileManager: ProfileManager;
+  /** Schedule-level facts the profile list shows (overlaps, schedules we cannot plan). Optional. */
+  schedules?: {
+    overlaps(): Promise<OverlapView[]>;
+    unresolvedSchedules(): Promise<UnresolvedSchedule[]>;
+  };
+}
+
+/** Pure: one sentence for an overlap, with workflow names (never ids or paths). */
+export function describeOverlap(o: OverlapView, nameOf: (owner: string) => string | undefined): string {
+  const hhmm = (ms: number): string => new Date(ms).toISOString().slice(11, 16) + ' UTC';
+  const a = o.a.ownerName || nameOf(o.a.owner) || 'another workflow';
+  const b = o.b.ownerName || nameOf(o.b.owner) || 'another workflow';
+  return `Schedules overlap: "${a}" (${hhmm(o.a.start)}–${hhmm(o.a.end)}) and "${b}" (${hhmm(o.b.start)}–${hhmm(o.b.end)}) reserve this profile at the same time; the later run waits until the earlier one releases it.`;
+}
+
+/** Schedules of `userId` (by their `sched:<user>:…` id). An id-less legacy entry counts only in single-user mode. */
+function ownsSchedule(s: UnresolvedSchedule, userId: string): boolean {
+  if (s.scheduleId) return s.scheduleId.split(':')[1] === userId;
+  return config.IS_SINGLE_USER;
 }
 
 const OPERATOR = 'operator';
@@ -90,10 +110,37 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const userId = userOf(req);
       const owner = ownerOf(req.query.workflowId);
       const wfs = await refs(userId);
+      const views = await access.views(userId, owner, wfs);
+      const nameOf = (o: string) => wfs.find((w) => w.id === o)?.name;
+      // Overlapping schedules on one profile, attached to that profile (the
+      // later run waits; the operator should know before it happens).
+      const overlaps: Array<OverlapView & { profileId: string; message: string }> = [];
+      let unknownSchedules: Array<UnresolvedSchedule & { message: string }> = [];
+      if (deps.schedules) {
+        const byLease = new Map(views.map((v) => [leaseIdOf(v.id), v] as const));
+        const all = await deps.schedules.overlaps().catch(() => [] as OverlapView[]);
+        // One entry per pair of schedules (the first overlapping occurrence).
+        const seen = new Set<string>();
+        for (const o of all) {
+          const v = byLease.get(o.leaseId);
+          if (!v) continue;
+          const pair = [o.leaseId, o.a.scheduleId || o.a.owner, o.b.scheduleId || o.b.owner].sort().join('|');
+          if (seen.has(pair)) continue;
+          seen.add(pair);
+          const msg = describeOverlap(o, nameOf);
+          overlaps.push({ ...o, profileId: v.id, message: msg });
+          v.overlaps = [...(v.overlaps || []), { message: msg, a: o.a, b: o.b }];
+        }
+        unknownSchedules = (await deps.schedules.unresolvedSchedules().catch(() => [] as UnresolvedSchedule[]))
+          .filter((s) => ownsSchedule(s, userId))
+          .map((s) => ({ ...s, message: `Schedule "${s.name || s.key}" (${s.cron}): its profile is unknown until its next run is queued, so nothing is reserved for it yet. Re-save the schedule to reserve its profile.` }));
+      }
       res.json({
         success: true,
         owner,
-        profiles: await access.views(userId, owner, wfs),
+        profiles: views,
+        overlaps,
+        unknownSchedules,
         settings: {
           reserveBeforeMin: config.PROFILE_RESERVE_BEFORE_MIN,
           reserveAfterMin: config.PROFILE_RESERVE_AFTER_MIN,

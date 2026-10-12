@@ -39,6 +39,8 @@ export interface ProfileView {
   usedBy: Array<{ workflowId: string; name: string }>;
   problem?: string | null;
   lastOpenError?: { at: string; message: string } | null;
+  /** Schedules of different workflows whose reservations overlap on this profile (set by the route). */
+  overlaps?: Array<{ message: string; a: { owner: string; ownerName?: string; start: number; end: number }; b: { owner: string; ownerName?: string; start: number; end: number } }>;
 }
 
 /** Pure: the status the user sees. Unknown / broken never reads as free. */

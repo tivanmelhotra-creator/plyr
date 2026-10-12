@@ -516,13 +516,18 @@
               '<td class="mono">' + esc(s.cron) + '</td>' +
               '<td>' + esc(fmtTime(s.nextRun)) + '</td>' +
               '<td>' + esc(s.timezone) + '</td>' +
+              // 'unknown': no queued job carries this schedule's data, so its
+              // profile (and reservation) cannot be known. Said, not hidden.
+              '<td>' + (s.reservation === 'unknown'
+                ? '<span class="pm-badge is-needs_review" title="' + esc(s.reservationNote || '') + '">' + esc(t('sched.reservationUnknown')) + '</span>'
+                : '<span class="pm-badge is-free">' + esc(t('sched.reservationPlanned')) + '</span>') + '</td>' +
               '<td><button class="btn btn-ghost btn-sm" data-del="' + esc(s.key) + '">' + t('common.delete') + '</button></td>' +
             '</tr>';
           }).join('');
           body.innerHTML = head +
             '<div class="table-wrap"><table class="data"><thead><tr>' +
             '<th>' + t('sched.name') + '</th><th>' + t('sched.cron') + '</th><th>' + t('sched.next') + '</th>' +
-            '<th>' + t('sched.tz') + '</th><th>' + t('sched.actions') + '</th>' +
+            '<th>' + t('sched.tz') + '</th><th>' + t('sched.reservation') + '</th><th>' + t('sched.actions') + '</th>' +
             '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
           body.querySelectorAll('[data-del]').forEach(function (b) {
@@ -2872,6 +2877,19 @@
           if (p.id === cur) o.selected = true;
           sel.appendChild(o);
         });
+        // Overlapping schedules on the chosen profile: said here too, where
+        // the profile is picked, not only in the drawer.
+        var warn = document.createElement('small');
+        warn.className = 'pm-overlap wfs-overlap';
+        sel.parentNode.appendChild(warn);
+        var paintWarn = function () {
+          var p = d.profiles.filter(function (x) { return x.id === sel.value; })[0];
+          var list = (p && p.overlaps) || [];
+          warn.textContent = list.map(function (ov) { return '\u26a0 ' + window.ProfileManager.overlapText(ov); }).join(' ');
+          warn.hidden = !list.length;
+        };
+        sel.addEventListener('change', paintWarn);
+        paintWarn();
       }).catch(function () { /* keep the current value as the only option */ });
     }
     dlg.querySelector('#wfs-form').addEventListener('submit', function (e) {

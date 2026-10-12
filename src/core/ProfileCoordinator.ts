@@ -13,7 +13,7 @@
 import type { Job, Queue } from 'bullmq';
 import { config } from '../config';
 import { resolveRunProfile, needsLease, type ProfileLeases } from './ProfileLease';
-import type { ProfileReservations, ReservationWindow, ScheduleBinding, QueueProbe, Overlap } from './ProfileReservations';
+import { findOverlaps, type ProfileReservations, type ReservationWindow, type ScheduleBinding, type QueueProbe, type Overlap } from './ProfileReservations';
 import type { BrowserSessions, SessionRecord } from './BrowserSessions';
 import { stepsUseExtensions } from './ExtensionStep';
 
@@ -40,6 +40,67 @@ export function reservationWindow(): ReservationWindow {
   };
 }
 
+/**
+ * A repeatable schedule whose reservations cannot be planned: BullMQ knows the
+ * repeat (cron), but no delayed job carries its data (typical for schedules
+ * created before the profile infrastructure, or a template lost in a crash).
+ * Such a schedule reserves NOTHING until its next job exists, so the UI must
+ * say "unknown" instead of staying silent.
+ */
+export interface UnresolvedSchedule {
+  key: string;
+  /** Our `sched:<user>:<ts>:<name>` id when the repeat key still carries it (legacy keys). */
+  scheduleId: string | null;
+  name: string | null;
+  cron: string;
+  next: number | null;
+  reason: 'no_template';
+}
+
+/** Overlap of two DIFFERENT workflows' reservations on one profile, for the UI. */
+export interface OverlapView {
+  leaseId: string;
+  a: { owner: string; ownerName?: string; scheduleId?: string; start: number; end: number };
+  b: { owner: string; ownerName?: string; scheduleId?: string; start: number; end: number };
+}
+
+export function overlapView(o: Overlap): OverlapView {
+  const side = (r: Overlap['a']) => ({ owner: r.owner, ownerName: r.ownerName, scheduleId: r.scheduleId, start: r.start, end: r.end });
+  return { leaseId: o.leaseId, a: side(o.a), b: side(o.b) };
+}
+
+/** Name segment of `sched:<user>:<ts>:<name>`. */
+export function scheduleNameOf(id: string | null | undefined): string | null {
+  const parts = String(id || '').split(':');
+  return parts[0] === SCHEDULE_PREFIX && parts[3] ? parts.slice(3).join(':') : null;
+}
+
+/**
+ * Which of OUR schedules is each repeatable? BullMQ 5.x no longer returns the
+ * `jobId` we gave a repeatable (`sched:<user>:<ts>:<name>`) from
+ * getRepeatableJobs(); the id survives only in the data of the schedule's next
+ * job, linked by `repeatJobKey` = the repeatable's `key`. Older BullMQ (and
+ * legacy keys) still carry `id`, which is used as the fallback.
+ * Returns key -> schedule id; a repeatable with neither is absent.
+ */
+export async function scheduleIdsByKey(
+  queue: Pick<Queue, 'getJobs'>,
+  reps: Array<{ key: string; id?: string | null }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let jobs: Job[] = [];
+  try { jobs = await queue.getJobs(['delayed', 'waiting', 'prioritized' as any, 'active'], 0, 1000); } catch { jobs = []; }
+  for (const j of jobs || []) {
+    const k = (j?.opts as { repeatJobKey?: string } | undefined)?.repeatJobKey || (j as unknown as { repeatJobKey?: string })?.repeatJobKey;
+    const id = j?.data?.__scheduleId;
+    if (k && typeof id === 'string' && id.startsWith(`${SCHEDULE_PREFIX}:`) && !out.has(k)) out.set(k, id);
+  }
+  for (const r of reps) {
+    if (r.key && !out.has(r.key) && typeof r.id === 'string' && r.id.startsWith(`${SCHEDULE_PREFIX}:`)) out.set(r.key, r.id);
+  }
+  return out;
+}
+
 export type WorkflowLookup = (userId: string, workflowId: string) =>
   Promise<{ profileId?: string; name: string; active: boolean; steps: unknown[] } | null>;
 
@@ -64,14 +125,32 @@ export class ProfileCoordinator {
 
   /** Every repeatable schedule -> the profile its runs will lease. Inactive workflows reserve nothing. */
   async bindings(): Promise<ScheduleBinding[]> {
+    return (await this.scan()).bindings;
+  }
+
+  /**
+   * Schedules that reserve nothing because their data cannot be found
+   * (no delayed template job). Reported as "unknown", never as "free".
+   */
+  async unresolvedSchedules(): Promise<UnresolvedSchedule[]> {
+    return (await this.scan()).unresolved;
+  }
+
+  /** Overlapping reservations of different workflows on one profile, right now. */
+  async overlaps(): Promise<OverlapView[]> {
+    return findOverlaps(await this.reservations.all()).map(overlapView);
+  }
+
+  private async scan(): Promise<{ bindings: ScheduleBinding[]; unresolved: UnresolvedSchedule[] }> {
     const out: ScheduleBinding[] = [];
+    const unresolved: UnresolvedSchedule[] = [];
     const reps = await this.queue.getRepeatableJobs(0, -1);
     // The schedule's data lives on its next delayed job. BullMQ (5.x) links the
     // two by `repeatJobKey` = the repeatable's `key`; the repeatable entry no
     // longer carries the jobId we gave it, so our own `__scheduleId` in the
     // job data is what names the schedule.
     const templates = new Map<string, Job>();
-    for (const j of await this.queue.getJobs(['delayed', 'waiting', 'prioritized' as any], 0, 1000)) {
+    for (const j of await this.queue.getJobs(['delayed', 'waiting', 'prioritized' as any, 'active'], 0, 1000)) {
       const k = (j?.opts as { repeatJobKey?: string } | undefined)?.repeatJobKey || (j as unknown as { repeatJobKey?: string })?.repeatJobKey;
       if (k && !templates.has(k)) templates.set(k, j);
     }
@@ -79,7 +158,14 @@ export class ProfileCoordinator {
       if (!r.pattern) continue;
       const tpl = templates.get(r.key);
       const scheduleId = String(tpl?.data?.__scheduleId || r.id || '');
-      if (!tpl || !scheduleId.startsWith(`${SCHEDULE_PREFIX}:`)) continue;
+      if (!tpl) {
+        // A repeat with no job carrying its data: we cannot know which
+        // profile it will use, so nothing is reserved for it. Say so.
+        const legacyId = r.id && String(r.id).startsWith(`${SCHEDULE_PREFIX}:`) ? String(r.id) : null;
+        unresolved.push({ key: r.key, scheduleId: legacyId, name: scheduleNameOf(legacyId) || r.name || null, cron: r.pattern, next: r.next ?? null, reason: 'no_template' });
+        continue;
+      }
+      if (!scheduleId.startsWith(`${SCHEDULE_PREFIX}:`)) continue;
       const userId = String(tpl.data?.userId || scheduleId.split(':')[1] || '');
       const data = tpl.data || {};
       let profileId: string | undefined = data.profileId;
@@ -94,7 +180,7 @@ export class ProfileCoordinator {
       if (!leaseId) continue;
       out.push({ scheduleId, owner: ownerOfJob(data, tpl.id || ''), ownerName, leaseId, cron: r.pattern, tz: r.tz || null });
     }
-    return out;
+    return { bindings: out, unresolved };
   }
 
   async syncReservations(opts: { now?: number; horizonMs?: number } = {}): Promise<{ created: number; dropped: number; overlaps: Overlap[] }> {

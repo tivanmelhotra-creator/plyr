@@ -18,7 +18,7 @@ const wfSrc = read('public/js/workflow-files.js');
 const i18n = read('public/js/i18n.js');
 const html = read('public/index.html');
 
-interface Opts { openFails?: boolean; blocked?: boolean }
+interface Opts { openFails?: boolean; blocked?: boolean; overlap?: boolean; unknown?: boolean }
 
 function boot(o: Opts = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="stage"></div></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
@@ -31,6 +31,10 @@ function boot(o: Opts = {}) {
       ? { id: 'prf_b', name: 'Busy', builtIn: false, status: 'reserved', available: false, denyReason: 'reserved', explanation: 'Reserved for the scheduled run of "Nightly".', browser: { open: false, dependents: 0 }, usedBy: [] }
       : { id: 'prf_b', name: 'Second', builtIn: false, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] },
   ];
+  if (o.overlap) {
+    profiles[1].overlaps = [{ message: 'x', a: { owner: 'wf_a', ownerName: 'Morning A', start: 0, end: 600000 }, b: { owner: 'wf_b', ownerName: 'Morning B', start: 300000, end: 900000 } }];
+  }
+  const unknownSchedules = o.unknown ? [{ key: 'k1', name: 'legacy', cron: '0 3 * * *', reason: 'no_template' }] : [];
   w.AppUtil = { t: (k: string) => k, toast: () => undefined };
   w.API = { getKey: () => 'K' };
   w.FlowEditor = { getCurrentWorkflow: () => ({ id: 'wf_abc123' }) };
@@ -44,7 +48,7 @@ function boot(o: Opts = {}) {
     let status = 200;
     let answer: any = { success: true, entries: [] };
     if (url === '/browser/real/health') answer = { success: true, running: false };
-    if (url.startsWith('/profiles') && method === 'GET') answer = { success: true, profiles };
+    if (url.startsWith('/profiles') && method === 'GET') answer = { success: true, profiles, unknownSchedules };
     if (url === '/profiles' && method === 'POST') {
       const p = { id: 'prf_new', name: body.name, builtIn: false, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] };
       profiles = profiles.concat([p]);
@@ -139,6 +143,29 @@ describe('the profile panel in the Workflow Files drawer', () => {
     const row = b.stage.querySelector('.pm-row[data-id="prf_b"]') as HTMLElement;
     expect(row.textContent).toContain('Nightly');
     expect(boxOf('prf_b').disabled).toBe(true);
+  });
+
+  it('overlapping schedules are shown on the profile they share, with both workflow names', async () => {
+    await openDrawer({ overlap: true });
+    const w = b.stage.querySelector('.pm-row[data-id="prf_b"] .pm-overlap') as HTMLElement;
+    expect(w).toBeTruthy();
+    expect(w.textContent).toContain('Morning A');
+    expect(w.textContent).toContain('Morning B');
+    expect(w.getAttribute('role')).toBe('note');
+    expect(b.stage.querySelector('.pm-row[data-id="default"] .pm-overlap')).toBeNull();
+  });
+
+  it('a schedule whose profile is unknown is reported, not hidden', async () => {
+    await openDrawer({ unknown: true });
+    const notes = b.stage.querySelector('.pm-notes') as HTMLElement;
+    expect(notes.hidden).toBe(false);
+    expect(notes.textContent).toContain('legacy');
+    expect(notes.textContent).toContain('0 3 * * *');
+  });
+
+  it('without such warnings the notes list stays hidden', async () => {
+    await openDrawer();
+    expect((b.stage.querySelector('.pm-notes') as HTMLElement).hidden).toBe(true);
   });
 });
 

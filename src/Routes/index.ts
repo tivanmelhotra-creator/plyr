@@ -40,7 +40,7 @@ export const createAllRoutes = (deps: RoutesDeps) => {
     // Browser profiles: the one registry every surface uses (list / create /
     // rename / delete / open / close / release). See Routes/profile.routes.ts.
     profiles: deps.profileAccess
-      ? createProfileRoutes({ connection: deps.connection, access: deps.profileAccess, profileManager: deps.profileManager })
+      ? createProfileRoutes({ connection: deps.connection, access: deps.profileAccess, profileManager: deps.profileManager, schedules: deps.profileCoordinator })
       : null,
     // Real Chrome / extensions / cookies / remote desktop. No deps: it talks
     // to process-level singletons (RealChrome, Desktop) rather than to Redis.

@@ -126,6 +126,15 @@
     return parts.join(' \u00b7 ');
   }
 
+  /** One line for an overlap of two workflows' schedules on one profile. */
+  function overlapText(ov) {
+    var a = ov && ov.a, b = ov && ov.b;
+    if (!a || !b) return (ov && ov.message) || '';
+    return t('pm.overlap', 'Schedules overlap') + ': \u201c' + (a.ownerName || t('pm.anotherWorkflow', 'another workflow')) + '\u201d ' +
+      hhmm(a.start) + '\u2013' + hhmm(a.end) + ' \u00b7 \u201c' + (b.ownerName || t('pm.anotherWorkflow', 'another workflow')) + '\u201d ' +
+      hhmm(b.start) + '\u2013' + hhmm(b.end) + '. ' + t('pm.overlapWaits', 'The later run waits for the profile.');
+  }
+
   /**
    * Mount the profile panel into `host`.
    *   opts.workflowId   the workflow the operator works for (hold owner)
@@ -135,7 +144,7 @@
    */
   function mount(host, opts) {
     var o = opts || {};
-    var st = { profiles: [], selected: {}, busy: '', destroyed: false, timer: 0, holdTimer: 0, loaded: false };
+    var st = { profiles: [], unknownSchedules: [], selected: {}, busy: '', destroyed: false, timer: 0, holdTimer: 0, loaded: false };
 
     function say(text, isErr) { if (o.onSay) o.onSay(text, isErr); }
 
@@ -185,6 +194,13 @@
     list.setAttribute('role', 'listbox');
     list.setAttribute('aria-multiselectable', 'true');
     root.appendChild(list);
+
+    // Schedule-level warnings from the server: schedules whose profile cannot
+    // be known (they reserve nothing yet). Overlaps are shown on their row.
+    var notes = document.createElement('ul');
+    notes.className = 'pm-notes';
+    notes.hidden = true;
+    root.appendChild(notes);
 
     var actions = document.createElement('div');
     actions.className = 'pm-actions';
@@ -272,6 +288,13 @@
           d.textContent = det;
           txt.appendChild(d);
         }
+        (p.overlaps || []).forEach(function (ov) {
+          var w = document.createElement('span');
+          w.className = 'pm-overlap';
+          w.setAttribute('role', 'note');
+          w.textContent = '\u26a0 ' + overlapText(ov);
+          txt.appendChild(w);
+        });
         li.appendChild(txt);
         var ren = document.createElement('button');
         ren.type = 'button';
@@ -290,6 +313,19 @@
         list.appendChild(li);
       });
       paintActions();
+    }
+
+    function paintNotes() {
+      notes.innerHTML = '';
+      (st.unknownSchedules || []).forEach(function (u) {
+        var li = document.createElement('li');
+        li.className = 'pm-note is-unknown';
+        li.setAttribute('role', 'note');
+        li.textContent = '\u26a0 ' + t('pm.unknownSchedule', 'Schedule') + ' \u201c' + (u.name || u.key) + '\u201d (' + u.cron + '): ' +
+          t('pm.unknownScheduleText', 'its browser profile is unknown until its next run is queued, so nothing is reserved for it yet. Re-create the schedule to reserve its profile.');
+        notes.appendChild(li);
+      });
+      notes.hidden = !notes.children.length;
     }
 
     function paintActions() {
@@ -315,7 +351,9 @@
       return api.list(o.workflowId).then(function (d) {
         if (st.destroyed) return;
         st.profiles = d.profiles || [];
+        st.unknownSchedules = d.unknownSchedules || [];
         st.loaded = true;
+        paintNotes();
         // A selection that became unavailable is dropped, never kept by stealth.
         Object.keys(st.selected).forEach(function (id) {
           var p = byId(id);
@@ -500,5 +538,5 @@
     };
   }
 
-  window.ProfileManager = { api: api, mount: mount, detailOf: detailOf };
+  window.ProfileManager = { api: api, mount: mount, detailOf: detailOf, overlapText: overlapText };
 })();

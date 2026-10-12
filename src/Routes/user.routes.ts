@@ -37,6 +37,7 @@ import { parseExchange, buildNativeEnvelope, enforceImportedCodeDisabled } from 
 import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
+import { scheduleIdsByKey } from '../core/ProfileCoordinator';
 import type { JobWorkspace } from '../core/WorkflowOutputs';
 
 /**
@@ -65,10 +66,34 @@ interface UserRoutesDeps {
   /** Optional: lets the Workspace report which profile is busy. */
   profileLeases?: ProfileLeases;
   /** Reservations follow schedules / activation / profile changes (core/ProfileCoordinator). */
-  profileCoordinator?: { syncReservations: () => Promise<unknown> };
+  profileCoordinator?: {
+    syncReservations: () => Promise<unknown>;
+    /** Repeats without a job carrying their data: their profile is unknown (nothing reserved). */
+    unresolvedSchedules?: () => Promise<Array<{ key: string }>>;
+  };
 }
 
 const SCHEDULE_PREFIX = 'sched';
+
+/**
+ * The repeatables of the queue with OUR schedule id (`sched:<user>:<ts>:<name>`)
+ * filled in. BullMQ 5.x stopped returning the `jobId` given to a repeatable
+ * from getRepeatableJobs(), so every `job.id?.startsWith('sched:<user>:')`
+ * filter here matched nothing: the Schedules list was empty, deleting a
+ * schedule answered 403 and the schedule limit was never reached. The id is
+ * recovered from the schedule's next job (core/ProfileCoordinator
+ * scheduleIdsByKey). A repeatable whose id cannot be recovered at all (no job
+ * carries its data) is attributed to the single user in single-user mode, so
+ * it stays visible (as "profile unknown") and deletable instead of vanishing.
+ */
+async function repeatablesWithIds(queue: Queue): Promise<Array<Awaited<ReturnType<Queue['getRepeatableJobs']>>[number] & { id?: string | null }>> {
+  const reps = (await queue.getRepeatableJobs()) as Array<Awaited<ReturnType<Queue['getRepeatableJobs']>>[number] & { id?: string | null }>;
+  const ids = await scheduleIdsByKey(queue, reps);
+  return reps.map((r) => {
+    const id = r.id || (r.key ? ids.get(r.key) : undefined) || (config.IS_SINGLE_USER ? `${SCHEDULE_PREFIX}:${SINGLE_USER_ID}:0:unknown` : null);
+    return { ...r, id };
+  });
+}
 
 
 // [F3] Block until a job reaches a terminal state (completed/failed) or the
@@ -471,7 +496,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // ── Check Schedule Limit (From User's Plan) ──
       const maxSchedules = plan.maxSchedules;
       
-      const existingSchedules = await queue.getRepeatableJobs();
+      const existingSchedules = await repeatablesWithIds(queue);
       const userScheduleCount = existingSchedules.filter(
         job => job.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
       ).length;
@@ -528,7 +553,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
 
       resyncReservations();
       // ── Calculate Next Run ──
-      const repeatableJobs = await queue.getRepeatableJobs();
+      const repeatableJobs = await repeatablesWithIds(queue);
       const thisSchedule = repeatableJobs.find(j => j.id === scheduleId);
 
       res.json({
@@ -564,11 +589,20 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const maxSchedules = plan.maxSchedules;
 
       // Get all repeatable jobs
-      const repeatableJobs = await queue.getRepeatableJobs();
+      const repeatableJobs = await repeatablesWithIds(queue);
       
       // Filter jobs belonging to this user
       const userSchedules = repeatableJobs.filter(
         job => job.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
+      );
+
+      // Schedules whose profile cannot be known (no queued job carries their
+      // data, e.g. created before profile reservations existed): they reserve
+      // nothing, and the list says so instead of staying silent.
+      const unknownKeys = new Set(
+        (profileCoordinator?.unresolvedSchedules
+          ? await profileCoordinator.unresolvedSchedules().catch(() => [] as Array<{ key: string }>)
+          : []).map((u) => u.key),
       );
 
       // Parse schedule info from ID
@@ -584,7 +618,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           cron: job.pattern,
           nextRun: job.next ? new Date(job.next).toISOString() : 'pending',
           createdAt: createdAt ? new Date(createdAt).toISOString() : null,
-          timezone: job.tz || 'UTC'
+          timezone: job.tz || 'UTC',
+          // 'unknown' = no reservation can be planned for it (see above).
+          reservation: unknownKeys.has(job.key) ? 'unknown' : 'planned',
+          ...(unknownKeys.has(job.key) ? { reservationNote: 'Its browser profile is unknown until its next run is queued, so nothing is reserved for it. Delete and re-create the schedule to reserve its profile.' } : {}),
         };
       });
 
@@ -612,7 +649,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const userId = sanitizeUserId(req.params.userId);
       const key = decodeURIComponent(req.params.key);
 
-      const repeatableJobs = await queue.getRepeatableJobs();
+      const repeatableJobs = await repeatablesWithIds(queue);
       const schedule = repeatableJobs.find(j => j.key === key);
 
       if (!schedule) {
@@ -1518,7 +1555,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // ── Schedules: repeatable jobs are keyed `sched:<userId>:<ts>:<name>`, and
       // the UI names a workflow's schedules after the workflow, so the name
       // segment is what attributes a schedule to a row.
-      const repeatables = await queue.getRepeatableJobs();
+      const repeatables = await repeatablesWithIds(queue);
       const userSchedules = repeatables.filter(
         (j) => j.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
       );
