@@ -124,7 +124,10 @@ profile panel -> `BrowserSessions` only. Two sources of truth.
 ## Tests (actually run, sandbox: Redis 7, Xvfb+openbox+wmctrl+x11vnc+websockify, Playwright chromium-1194)
 - tsc clean.
 - unit: launch-settings (18 new), profile-manager-ui 12 (1 changed: one viewer; 1 new: launch settings sent),
-  workflow-files-browser-switch 15, browser-options 85 (source check moved to ProfileBuild) — full unit run see S27 summary.
+  workflow-files-browser-switch 15, browser-options 85 (source check moved to ProfileBuild).
+- FULL unit suite (4 chunks, 1 GB RAM): 3953 passed / 0 failed (real-chrome-shelf excluded, see below).
+- FULL integration (real Redis): 427 passed / 9 skipped; api.test 2 failures only with the sandbox's local `.env`
+  (API_KEYS_ENABLED=false for the manual server) — 8/8 pass without it.
 - integration (real Redis): profile-routes 13 (3 new), profile-admission 21, coordinator 4, schedules 7, continuation 4.
 - browser (real Chromium + Xvfb): profile-real-chromium 3/3 (1 new: Chromium name "22", preset+custom flag in the real
   /proc argv, no --headless, independent cookies, close one keeps the other, reopen keeps cookie, Task View names).

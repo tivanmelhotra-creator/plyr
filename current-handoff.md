@@ -2,7 +2,7 @@
 
 Points to the newest handoff. Read that file first; then continue.
 
-LATEST HANDOFF: handoffs/2026-10-13_S26_phase2-nodes.md (S25 = phase 1 completion)
+LATEST HANDOFF: handoffs/2026-10-13_S27_phase1-root-cause.md (phase 1 root-cause fixes; S26 = phase 2 nodes)
 BRANCH / HEAD:  feat/profile-infrastructure (PR #76, phase 1).
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 
