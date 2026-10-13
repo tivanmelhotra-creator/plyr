@@ -300,8 +300,23 @@
       if (isFinite(mt) && mt > 1) step.maxTries = mt;
       var wt = parseInt(ep.waitBetweenTriesMs, 10);
       if (isFinite(wt) && wt >= 0) step.waitBetweenTriesMs = wt;
+      if (ep.retryOn === 'error' || ep.retryOn === 'timeout') step.retryOn = ep.retryOn;
+      if (ep.retryBackoff === 'fixed' || ep.retryBackoff === 'exponential') step.retryBackoff = ep.retryBackoff;
     }
+    // Phase 2: the node's own timeout.
+    var tm = parseInt(ep.timeoutMs, 10);
+    if (isFinite(tm) && tm > 0) step.timeoutMs = tm;
   }
+
+  // Phase 2: a node with Success / Error / Timeout outputs (node.errorPolicy.outputs)
+  // exposes two extra ports. Their chains become nested groups on the step
+  // (errorSteps / timeoutSteps), executed by the runtime like an `if` path.
+  var FAILURE_PORTS = ['error', 'timeout'];
+  function hasFailurePorts(node) {
+    return !!(node && node.errorPolicy && node.errorPolicy.outputs === true) && !BRANCHING_NO_OUTPUTS[node.action];
+  }
+  // Nodes that already ARE control flow keep their own ports only.
+  var BRANCHING_NO_OUTPUTS = { 'if': true, router: true, 'switch': true, 'try': true, loop: true, foreach: true, 'while': true, __start__: true };
 
   // -------- graph -> steps[] (serialize) -------------------------------------
   //
@@ -355,6 +370,7 @@
     } else if (LOOP_LIKE[action]) {
       out.push('body');
     }
+    if (hasFailurePorts(node)) FAILURE_PORTS.forEach(function (p) { out.push(p); });
     return out;
   }
 
@@ -572,9 +588,17 @@
       return { step: tStep, continueId: portTarget(graph, node.id, 'next') };
     }
 
-    // Plain linear action.
+    // Plain linear action (optionally with Error / Timeout outputs).
+    var plain = { action: action, params: params };
+    if (hasFailurePorts(node)) {
+      // Present (even empty) = the node HAS the output: a failure leaves the
+      // group through it instead of failing the run.
+      plain.errorSteps = walkChain(graph, node.id, 'error', ctx, stops);
+      var tsteps = walkChain(graph, node.id, 'timeout', ctx, stops);
+      if (tsteps.length) plain.timeoutSteps = tsteps;
+    }
     return {
-      step: { action: action, params: params },
+      step: plain,
       continueId: portTarget(graph, node.id, 'next'),
     };
   }
@@ -723,13 +747,17 @@
           }
         }
         // Step 27: reconstruct the node's error-handling settings from the step.
-        if (s.continueOnFail === true || s.retryOnFail === true) {
+        if (s.continueOnFail === true || s.retryOnFail === true || Array.isArray(s.errorSteps) || Array.isArray(s.timeoutSteps) || s.timeoutMs) {
           node.errorPolicy = {};
+          if (Array.isArray(s.errorSteps) || Array.isArray(s.timeoutSteps)) node.errorPolicy.outputs = true;
+          if (s.timeoutMs) node.errorPolicy.timeoutMs = s.timeoutMs;
           if (s.continueOnFail === true) node.errorPolicy.continueOnFail = true;
           if (s.retryOnFail === true) {
             node.errorPolicy.retryOnFail = true;
             if (s.maxTries !== undefined) node.errorPolicy.maxTries = s.maxTries;
             if (s.waitBetweenTriesMs !== undefined) node.errorPolicy.waitBetweenTriesMs = s.waitBetweenTriesMs;
+            if (s.retryOn) node.errorPolicy.retryOn = s.retryOn;
+            if (s.retryBackoff) node.errorPolicy.retryBackoff = s.retryBackoff;
           }
         }
         graph.nodes[id] = node;
@@ -770,6 +798,8 @@
           lane(s.catch, 'catch');
           lane(s.finally, 'finally');
         }
+        if (Array.isArray(s.errorSteps)) lane(s.errorSteps, 'error');
+        if (Array.isArray(s.timeoutSteps)) lane(s.timeoutSteps, 'timeout');
         if (branchY - ROW_H > maxY) maxY = branchY - ROW_H;
         // Advance at least one column; skip past any branch subtree.
         curX = Math.max(curX + COL_W, branchRight + COL_W);
@@ -988,6 +1018,10 @@
             if (p.indexOf('case:') === 0) branchPorts.push({ id: p, label: 'port.case' });
           }
         }
+        if (hasFailurePorts(node)) {
+          branchPorts.push({ id: 'error', label: 'port.error' });
+          branchPorts.push({ id: 'timeout', label: 'port.timeout' });
+        }
         var sub = 0;
         for (var b = 0; b < branchPorts.length; b++) {
           var bp = branchPorts[b];
@@ -1024,6 +1058,7 @@
     stepsToGraph: stepsToGraph,
     validateGraph: validateGraph,
     outlineTree: outlineTree,
+    hasFailurePorts: hasFailurePorts,
     // exported for tests / reuse
     coerceParams: coerceParams,
     buildCondition: buildCondition,
