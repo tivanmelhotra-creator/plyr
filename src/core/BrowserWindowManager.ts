@@ -178,6 +178,17 @@ export function parseChromeCmdline(cmdline: string): { userDataDir?: string; pro
 export class BrowserWindowManager {
   private static sessions = new Map<string, BrowserWindowInfo>();
 
+  /**
+   * user-data-dir -> { id, name } of the registry profile that owns it.
+   * Set by index.ts (the owner of the ProfileRegistry). With it a window is
+   * labelled with the profile's REAL name ("22") instead of a label built
+   * from directory names ("prf_aa91b811ffd7 · Default Profile").
+   */
+  private static profileOfDir: ((dir: string) => Promise<{ id: string; name: string } | null>) | null = null;
+  static setProfileResolver(fn: ((dir: string) => Promise<{ id: string; name: string } | null>) | null): void {
+    this.profileOfDir = fn;
+  }
+
   /** Register or update a browser session (used by callers that own one). */
   static register(info: Partial<BrowserWindowInfo> & { id: string }): BrowserWindowInfo {
     const existing = this.sessions.get(info.id);
@@ -287,13 +298,22 @@ export class BrowserWindowManager {
         label = profiles.find((p) => p.dir === dir)?.name || dir;
       }
       if (dir === 'Default') label = DEFAULT_PROFILE_LABEL;
-      if (separateInstance) label = `${path.basename(udd)} · ${label}`;
+      let owner: { id: string; name: string } | null = null;
+      if (this.profileOfDir && udd) owner = await this.profileOfDir(udd).catch(() => null);
+      if (owner) {
+        // One registry profile = one whole user-data-dir: its name IS the label.
+        label = owner.name;
+      } else if (udd && defaultDir && udd === defaultDir) {
+        label = 'Local Browser';
+      } else if (separateInstance) {
+        label = `${path.basename(udd)} · ${label}`;
+      }
 
       out.push({
         id: row.windowId,
         windowId: row.windowId,
         pid: row.pid || undefined,
-        profileId: instancePrefix + dir,
+        profileId: owner ? owner.id : instancePrefix + dir,
         profileName: label,
         title: parsed.page,
         state: props.hidden ? 'minimized' : 'active',

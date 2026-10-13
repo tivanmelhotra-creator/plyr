@@ -31,7 +31,7 @@ export const STORAGE_FILE = 'storage-state.json';
 const MAX_TABS = 50;
 const SAVE_BUDGET_MS = 4000;
 
-export type CloseReason = 'after_run' | 'idle' | 'gc' | 'node' | 'operator' | 'relaunch';
+export type CloseReason = 'after_run' | 'idle' | 'gc' | 'node' | 'operator' | 'relaunch' | 'shutdown';
 
 export interface TabSnapshot { url: string; title: string }
 export interface SessionSnapshot { version: 1; savedAt: string; reason: CloseReason; tabs: TabSnapshot[] }

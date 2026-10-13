@@ -9756,3 +9756,17 @@ tr.is-unset .xv-var-val code { color: var(--xv-faint); font-style: italic; backg
 @media (prefers-reduced-motion: reduce) {
   .xv *, .xv *::before, .xv *::after { animation: none !important; transition: none !important; }
 }
+
+/* Launch settings (profile-manager.js mountLaunchSettings) */
+.pm-launch { margin-top: 8px; border-top: 1px solid var(--border, #e5e7eb); padding-top: 6px; font-size: 12px; }
+.pm-launch-sum { cursor: pointer; font-weight: 600; }
+.pm-launch-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.pm-launch-row { display: flex; flex-direction: column; gap: 2px; }
+.pm-launch-desc, .pm-launch-hint { margin: 0; opacity: .75; }
+.pm-launch-group { border: 1px solid var(--border, #e5e7eb); border-radius: 6px; padding: 4px 8px; margin: 0; }
+.pm-launch-opt { display: flex; align-items: center; gap: 6px; }
+.pm-launch-opt code, .pm-launch-args code { font-size: 11px; opacity: .8; word-break: break-all; }
+.pm-launch-flags { font-family: ui-monospace, monospace; font-size: 12px; width: 100%; box-sizing: border-box; }
+.pm-launch-err { color: #b91c1c; margin: 0; }
+.pm-launch-warn { color: #b45309; margin: 0; }
+.pm-launch-args { margin: 0; }

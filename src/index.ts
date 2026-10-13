@@ -6,6 +6,7 @@ import { Queue, Worker, Job, DelayedError } from 'bullmq';
 import IORedis from 'ioredis';
 import fsExtra from 'fs-extra';
 import path from 'path';
+import { BrowserWindowManager } from './core/BrowserWindowManager';
 import fs from 'fs/promises';
 import { glob } from 'glob';
 
@@ -180,6 +181,14 @@ const browserSessionRegistry = new BrowserSessions(connection);
 registerBrowserSessions(browserSessionRegistry);
 const profileAccessService = new ProfileAccess(profileRegistry, profileLeases, profileReservations, browserSessionRegistry);
 registerProfileAccess(profileAccessService);
+// Task View labels windows by their registry profile (user-data-dir -> name).
+BrowserWindowManager.setProfileResolver(async (dir) => {
+  const want = path.resolve(dir);
+  for (const p of await profileRegistry.list(SINGLE_USER_ID).catch(() => [])) {
+    if (path.resolve(profileRegistry.dirOf(SINGLE_USER_ID, p.id)) === want) return { id: p.id, name: p.name };
+  }
+  return null;
+});
 /** Jobs executing in THIS process right now (reservation sweep evidence). */
 const runningJobs = new Set<string>();
 // Continue Session checks its target workflow through this (same store as the routes).
@@ -1261,6 +1270,12 @@ const shutdown = async (signal: string) => {
     try { closeSharedSqlite(); } catch { /* best-effort */ }
 
     console.log('[SHUTDOWN] Closing all browsers...');
+    // Service restart is one of the close paths too: every profile browser's
+    // tabs + storage are saved into its profile first (bounded, in parallel).
+    await Promise.all(browserSessionRegistry.list().map((r) => {
+      const entry = profileManager.getVipContext(r.leaseId);
+      return entry ? saveBeforeClose(entry.context, sessionDataDir(r.leaseId), 'shutdown').catch(() => null) : null;
+    }));
     await profileManager.shutdownAll();
 
     console.log('[SHUTDOWN] Graceful shutdown completed');
