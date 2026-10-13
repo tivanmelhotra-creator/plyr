@@ -55,6 +55,7 @@ import { SINGLE_USER_ID } from '../middleware/auth';
 import { authorizeLive } from './LiveServer';
 import { chromeViewHtml } from './ChromeView';
 import { desktopCookieHeader, requestHasDesktopSession } from './DesktopSession';
+import { profileViewers } from './ProfileViewers';
 
 /** Where the noVNC client and the websockify socket actually live. */
 function upstreamPort(): number {
@@ -421,5 +422,11 @@ export class DesktopProxy {
     socket.on('error', bin);
     upstream.on('close', bin);
     socket.on('close', bin);
+    // A profile view's socket keeps that profile's browser "in use" by the
+    // operator only while it is connected (core/ProfileViewers).
+    if (/\/websockify$/.test(pathname) && /[?&]profile=/.test(search)) {
+      const gone = profileViewers.connected(search);
+      socket.once('close', gone);
+    }
   }
 }

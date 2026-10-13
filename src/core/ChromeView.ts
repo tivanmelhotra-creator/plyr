@@ -1006,7 +1006,12 @@ function showFix(fixable) {
 // so no second hostname is ever needed (see DesktopProxy). wss when the page
 // itself is https, or the browser blocks the socket as mixed content.
 const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-const wsUrl  = scheme + '://' + location.host + '/desktop/websockify';
+// A profile view tells the server which profile it shows, so closing this tab
+// stops counting as "the operator uses this browser" (core/ProfileViewers).
+const wsViewQuery = qs.get('profile')
+  ? '?profile=' + encodeURIComponent(qs.get('profile')) + (qs.get('workflowId') ? '&workflowId=' + encodeURIComponent(qs.get('workflowId')) : '')
+  : '';
+const wsUrl  = scheme + '://' + location.host + '/desktop/websockify' + wsViewQuery;
 
 let rfb = null;
 
