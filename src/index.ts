@@ -76,6 +76,7 @@ import { setLiveSessionRebuilder } from './Routes/browser.routes';
 import { createAllRoutes } from './Routes';
 import { createSettingsRoutes } from './Routes/settings.routes';
 import { runProfileIdOf } from './core/NodeProfile';
+import { endContinuation, sweepExpiredGrants, registerWorkflowLookup } from './core/SessionContinuation';
 
 // ============================================
 // EXPRESS SETUP
@@ -181,6 +182,8 @@ const profileAccessService = new ProfileAccess(profileRegistry, profileLeases, p
 registerProfileAccess(profileAccessService);
 /** Jobs executing in THIS process right now (reservation sweep evidence). */
 const runningJobs = new Set<string>();
+// Continue Session checks its target workflow through this (same store as the routes).
+registerWorkflowLookup(async (userId, workflowId) => !!(await new WorkflowService(workflowStoreFor(connection)).get(userId, workflowId).catch(() => null)));
 const profileCoordinator = new ProfileCoordinator(
   queue, profileLeases, profileReservations, browserSessionRegistry,
   async (userId, workflowId) => {
@@ -927,6 +930,9 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       headless,
       origin,
       profile,
+      // Phase 2 Continue Session: proof of the lease + the run's owner.
+      leaseToken,
+      owner: runOwner,
       log,
       jobId: job.id!,
       job,
@@ -1113,6 +1119,11 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       });
     }
     runningJobs.delete(String(job.id));
+    // 2b. A continued session (core/SessionContinuation): grants TO this
+    //     run's workflow on this profile are consumed now that it ran.
+    if (leaseToken) {
+      await endContinuation({ leases: profileLeases, sessions: browserSessionRegistry }, profile.id, runOwner).catch(() => 0);
+    }
     // 3. The LEASE, on EVERY exit path (success, failure, cancel). The
     // release is compare-and-delete on this run's token, so it can never free
     // a lease another run holds.
@@ -1192,6 +1203,7 @@ setInterval(async () => {
 // browsers are closed after the idle timeout. Every minute.
 const profileSweep = setInterval(async () => {
   try {
+    await sweepExpiredGrants({ leases: profileLeases, sessions: browserSessionRegistry }).catch(() => 0);
     await profileCoordinator.sweep((id) => runningJobs.has(id), async (sess) => {
       const entry = profileManager.getVipContext(sess.leaseId);
       if (entry) {

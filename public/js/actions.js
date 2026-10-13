@@ -278,6 +278,12 @@
       { k: 'index', label: 'p.index', type: 'number', ph: '(optional) tab index', min: 0 },
     ] },
     { id: 'close-browser', icon: 'power', cat: 'navigation', fields: [] },
+    // Phase 2: hand THIS browser session (same profile, tabs, cookies) to
+    // another workflow, through an explicit, expiring grant (core/SessionContinuation).
+    { id: 'continue-session', icon: 'share-2', cat: 'navigation', fields: [
+      { k: 'workflowId', label: 'p.targetWorkflow', type: 'string', ph: 'wf_…', help: 'help.continueSession' },
+      { k: 'ttlMinutes', label: 'p.ttlMinutes', type: 'number', ph: '15', min: 1 },
+    ] },
     { id: 'handle-dialog', icon: 'message-square', cat: 'navigation', fields: [
       { k: 'action', label: 'p.op', type: 'options', options: ['accept', 'dismiss'] },
       { k: 'promptText', label: 'p.promptText', type: 'string', ph: '(optional) text for prompt' },

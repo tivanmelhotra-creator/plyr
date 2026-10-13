@@ -1268,6 +1268,9 @@
       // Output port labels (branching nodes)
       'port.next': 'Next',
       'p.profile': 'Browser profile',
+      'p.targetWorkflow': 'Continue in workflow',
+      'p.ttlMinutes': 'Valid for (minutes)',
+      'help.continueSession': 'Lets the chosen workflow use THIS browser (same profile, tabs and login) for a limited time, even if this profile is reserved or held by this workflow. The permission ends when that workflow has run on the profile, or when the time is up. The other workflow must use the same browser profile.',
       'help.launchProfile': 'Profile id (Workflow Files → Browser profiles). Empty = the workflow\'s profile. All Launch nodes of a run must use the same profile. Visibility is set with the Headless option below; without it, manual runs are visible and scheduled runs hidden.',
       'port.success': 'Success',
       'port.error': 'Error',
