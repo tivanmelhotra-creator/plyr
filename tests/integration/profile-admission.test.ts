@@ -23,7 +23,13 @@ afterAll(async () => { if (redis) redis.disconnect(); });
 
 const P = 'named:adm_test';
 const KEYS = [`profile:lease:${P}`, HOLD_PREFIX + P, RESV_PREFIX + P, GRANT_PREFIX + P];
-beforeEach(async () => { if (up) await redis!.del(...KEYS); });
+beforeEach(async () => {
+  if (!up) return;
+  await redis!.del(...KEYS);
+  // Holds of OTHER profiles left by earlier suites would show up in the orphan sweep.
+  const stray = await redis!.keys(`${HOLD_PREFIX}*`);
+  if (stray.length) await redis!.del(...stray);
+});
 
 const MIN = 60_000;
 const W = { beforeMs: 10 * MIN, afterMs: 10 * MIN };

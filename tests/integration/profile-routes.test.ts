@@ -234,6 +234,9 @@ describe('/profiles', () => {
     ctx._pages = [];
     const r = await request(app).post(`/profiles/${id}/restore`).send({ workflowId: 'wf_s' }).expect(200);
     expect(r.body.restored).toBe(1);
+    // Leave nothing behind for the next suite (a hold of this instance would read as orphaned there).
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_s' });
+    await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_s' }).expect(200);
     cleanup();
   });
 });
