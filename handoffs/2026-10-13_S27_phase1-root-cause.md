@@ -84,3 +84,58 @@ profile panel -> `BrowserSessions` only. Two sources of truth.
 - `.env` used for the manual server: REAL_CHROME_ENABLED=true, API_KEYS_ENABLED=false, DESKTOP_AUTO_PROVISION=false.
 - GitHub token NOT configured in this session (setup_github_environment failed) -> push to GitHub/PR #76
   needs the user to authorize GitHub. Genspark git backup works.
+
+---
+
+# S27 — IMPLEMENTED (phase 1 only; phase 2 code untouched except the minimal ProfileBuild hook)
+
+## Changes (files)
+- `src/core/SharedBrowsers.ts` (new): RealChrome registers in `BrowserSessions` as session `realchrome`
+  (dependent `operator:local-browser`); `summarize()` for UI (names, counts, no paths/URLs);
+  `closeContextBounded()` (per-page + context deadlines) used by every manual close.
+- `src/core/RealChrome.ts`: opened/closed hooks into the shared registry; `stop()` / `closeBrowser()` bounded
+  (pages closed in parallel, 2 s each) -> Turn off can no longer hang on a dialog-blocked page.
+- `src/Routes/browser.routes.ts`: `POST /browser/real/close` (Turn off) decided by ownership: refused 409 when a run
+  depends on the Local Browser; profile browsers are NOT closed and listed in `otherSessions`; 20 s server cap (504
+  retryable). New `GET /browser/sessions`.
+- `src/core/ChromeView.ts` (viewer): liveness from `/browser/sessions` (root cause 1); ends only after 2 empty polls;
+  never `window.close()`s itself (shows "ended" + Relaunch); profile views / `attach=1` never launch a browser;
+  the tab keeps its set of shown profiles (sessionStorage) and its VNC socket carries `?profiles=a,b`.
+- `src/core/ProfileViewers.ts` + `DesktopProxy.ts`: `viewersOf()` — one socket attaches/detaches every shown profile
+  (30 s grace kept; hold never released by closing the viewer).
+- `src/core/LaunchSettings.ts` (new): presets Standard / Automation / Diagnostics, categorized options, Custom Flags
+  parser (argv, quotes only group, no shell), validation (app-controlled refused, conflicts/duplicates reported,
+  risky need `acknowledgeRisk`), hash.
+- `src/core/ChromiumProfileName.ts` (new): writes registry name into `Local State` info_cache.Default + `Default/Preferences`
+  (merge, atomic, corrupt files untouched) before launch -> Chromium shows "22", not "Your Chromium".
+- `src/core/ProfileBuild.ts` (new) + `src/pipeline.ts` (3 lines): one build record for operator + runs; a run without
+  options reuses an operator's visible browser (before: always "built differently").
+- `src/core/ProfileBrowser.ts`: launcher takes validated args; display name; relaunch with other settings only without
+  other dependents (`in_use_settings` 409 otherwise); bounded close.
+- `src/Routes/profile.routes.ts`: `launch` in `/open` validated BEFORE hold/launch (400 / 409 needs_confirmation);
+  `GET /profiles/launch-options`, `POST /profiles/launch-settings/validate`; response `settingsApplied`, `relaunched`.
+- `src/core/BrowserWindowManager.ts` + `src/index.ts`: Task View labels windows with registry names; Local Browser dir
+  labelled "Local Browser"; shutdown saves every profile browser's tabs (`reason: shutdown`).
+- UI `public/js/profile-manager.js`: ONE named viewer tab (`aria-browser-viewer`) for every open/create/Show browser;
+  Launch settings panel (preset, options, Custom Flags, live validation, risk tick). `public/js/workflow-files.js`:
+  row reads `/browser/sessions` (shows profile browsers count), Show browser = attach only, Turn off always settles
+  (25 s client cap) and says which profile browsers stay open. i18n keys added; CSS.
+
+## Tests (actually run, sandbox: Redis 7, Xvfb+openbox+wmctrl+x11vnc+websockify, Playwright chromium-1194)
+- tsc clean.
+- unit: launch-settings (18 new), profile-manager-ui 12 (1 changed: one viewer; 1 new: launch settings sent),
+  workflow-files-browser-switch 15, browser-options 85 (source check moved to ProfileBuild) — full unit run see S27 summary.
+- integration (real Redis): profile-routes 13 (3 new), profile-admission 21, coordinator 4, schedules 7, continuation 4.
+- browser (real Chromium + Xvfb): profile-real-chromium 3/3 (1 new: Chromium name "22", preset+custom flag in the real
+  /proc argv, no --headless, independent cookies, close one keeps the other, reopen keeps cookie, Task View names).
+- real server e2e: `handoffs/2026-10-13_S27_e2e.txt`; viewer probe before/after: `handoffs/2026-10-13_S27_viewer-probe.txt`
+  (ee94f6b: endedShown=true + /browser/real/health; now: viewer stays connected, polls /browser/sessions).
+
+## NOT done / open
+- Default profile duplication (Local Browser `./profiles/chrome-profile` vs registry `default` `./profiles/<user>/chrome-profile`)
+  is NOT merged: both dirs can hold data; merging needs the user's decision (non-destructive plan: point registry `default`
+  at REAL_CHROME_USER_DATA_DIR only when the per-user dir has no data, otherwise list it as a separate profile).
+- Wait-cap policy for a scheduled run waiting on a busy profile: unchanged (waits until free) — not configurable yet.
+- noVNC picture itself verified only via the probe (VNC canvas created, socket connected); no pixel check.
+- `tests/unit/real-chrome-shelf.test.ts` hangs in this sandbox on ee94f6b too (pre-existing, unrelated).
+- GitHub push / PR #76 update: GitHub token not configured in this sandbox; needs authorization.
