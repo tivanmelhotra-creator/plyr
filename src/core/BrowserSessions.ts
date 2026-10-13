@@ -48,6 +48,15 @@ export interface SessionRecord {
   instance: string;
 }
 
+// Where each live session's profile lives on disk, so an automatic close
+// (idle collector, GC) can save its state first. Kept in memory only: a path
+// is never mirrored to Redis or shown in the UI.
+const dataDirs = new Map<string, string>();
+export function setSessionDataDir(leaseId: string, dir: string | null | undefined): void {
+  if (dir) dataDirs.set(leaseId, dir); else dataDirs.delete(leaseId);
+}
+export function sessionDataDir(leaseId: string): string | null { return dataDirs.get(leaseId) || null; }
+
 export type CloseDecision =
   | { ok: true }
   | { ok: false; reason: 'in_use'; dependents: string[] }

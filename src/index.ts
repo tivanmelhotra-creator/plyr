@@ -16,7 +16,8 @@ import { ProfileManager } from './core/ProfileManager';
 import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
 import { ProfileRegistry } from './core/ProfileRegistry';
 import { ProfileReservations } from './core/ProfileReservations';
-import { BrowserSessions, registerBrowserSessions, jobDependent } from './core/BrowserSessions';
+import { BrowserSessions, registerBrowserSessions, jobDependent, sessionDataDir } from './core/BrowserSessions';
+import { saveBeforeClose } from './core/BrowserStateSnapshot';
 import { ProfileAccess, registerProfileAccess, explainDenial } from './core/ProfileAccess';
 import { ProfileCoordinator, ownerOfJob, occurrenceOf, reservationWindow } from './core/ProfileCoordinator';
 import { decideAfterRun, afterRunPolicyOf, outcomeOfError, type RunOutcome } from './core/BrowserLifecycle';
@@ -1088,6 +1089,9 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       if (decision.action === 'close') {
         const entry = profileManager.getVipContext(profile.id);
         if (entry && browserSessionRegistry.canClose(profile.id, dep).ok) {
+          // Recoverable: tabs + storage are saved into the profile first.
+          const saved = await saveBeforeClose(entry.context, sessionDataDir(profile.id) || profile.userDataDir, 'after_run');
+          if (saved) console.log(`[JOB:${job.id}] saved ${saved.tabs} tab(s) of profile "${profile.label}" for recovery`);
           await entry.context.close().catch(() => {});
           profileManager.removeVipContext(profile.id);
           browserSessionRegistry.closed(profile.id);
@@ -1172,6 +1176,7 @@ setInterval(async () => {
     // more: only sessions nobody depends on, after BROWSER_IDLE_CLOSE_MIN
     // (below). Everything else the collector does is unchanged.
     await profileManager.runGarbageCollector(config.GC_STALE_THRESHOLD_MINUTES, {
+      beforeVipClose: (key, ctx) => saveBeforeClose(ctx, sessionDataDir(key), 'gc').then(() => undefined),
       mayCloseVip: (key) => browserSessionRegistry.canClose(key, '').ok && !runningJobs.has(profileManager.getVipContext(key)?.jobId || ''),
       onVipClosed: (key) => browserSessionRegistry.closed(key),
       idleMs: Math.max(0, config.BROWSER_IDLE_CLOSE_MIN) * 60_000,
@@ -1187,7 +1192,10 @@ const profileSweep = setInterval(async () => {
   try {
     await profileCoordinator.sweep((id) => runningJobs.has(id), async (sess) => {
       const entry = profileManager.getVipContext(sess.leaseId);
-      if (entry) await entry.context.close().catch(() => {});
+      if (entry) {
+        await saveBeforeClose(entry.context, sessionDataDir(sess.leaseId), 'idle');
+        await entry.context.close().catch(() => {});
+      }
       profileManager.removeVipContext(sess.leaseId);
       browserSessionRegistry.closed(sess.leaseId);
       console.log(`[PROFILES] Closed the idle browser of profile "${sess.leaseId}"`);

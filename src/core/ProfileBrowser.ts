@@ -18,7 +18,8 @@ import { chromium } from 'playwright';
 import type { BrowserContext } from 'playwright';
 import { config } from '../config';
 import type { ProfileManager } from './ProfileManager';
-import { browserSessions, operatorDependent } from './BrowserSessions';
+import { browserSessions, operatorDependent, setSessionDataDir, sessionDataDir } from './BrowserSessions';
+import { saveBeforeClose } from './BrowserStateSnapshot';
 import { withUtf8Locale } from './BrowserProfile';
 import { Desktop } from './Desktop';
 
@@ -71,6 +72,7 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
       if (!d.ok && d.reason === 'in_use') {
         throw new ProfileBrowserError('This profile\'s browser is running hidden for a run right now; open it again when the run has finished.', 'in_use_hidden');
       }
+      await saveBeforeClose(existing.context, sessionDataDir(input.leaseId) || input.userDataDir, 'relaunch');
       await existing.context.close().catch(() => {});
       pm.removeVipContext(input.leaseId);
       sessions.closed(input.leaseId);
@@ -93,6 +95,7 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
       if (!ctx.pages().length) await ctx.newPage().catch(() => null);
       pm.setVipContext(input.leaseId, ctx, `operator:${input.owner}`);
       sessions.opened(input.leaseId, { userId: input.userId, visibility: 'visible', createdBy: dep });
+      setSessionDataDir(input.leaseId, input.userDataDir);
       ctx.on('close', () => {
         if (pm.getVipContext(input.leaseId)?.context === ctx) pm.removeVipContext(input.leaseId);
         if (!pm.getVipContext(input.leaseId)) sessions.closed(input.leaseId);
@@ -121,6 +124,8 @@ export async function closeProfileBrowser(pm: ProfileManager, leaseId: string, r
   if (!entry) { sessions.closed(leaseId); return { closed: false, reason: 'not_open' }; }
   const d = sessions.canClose(leaseId, requester);
   if (!d.ok && d.reason === 'in_use') return { closed: false, reason: 'in_use', dependents: d.dependents };
+  // Recoverable: tabs + storage are saved into the profile before it closes.
+  await saveBeforeClose(entry.context, sessionDataDir(leaseId), 'operator');
   await entry.context.close().catch(() => {});
   pm.removeVipContext(leaseId);
   sessions.closed(leaseId);

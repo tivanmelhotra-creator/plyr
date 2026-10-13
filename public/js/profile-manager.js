@@ -97,7 +97,8 @@
     },
     hold: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/hold', 'POST', { workflowId: workflowId || undefined }); },
     release: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/release', 'POST', { workflowId: workflowId || undefined }); },
-    close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); }
+    close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); },
+    restore: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/restore', 'POST', { workflowId: workflowId || undefined }); }
   };
 
   var STATUS_LABEL = {
@@ -119,6 +120,9 @@
     var parts = [];
     if (p.hold && p.hold.mine) parts.push(t('pm.heldByYou', 'Opened by you') + (p.hold.until ? ' \u2192 ' + hhmm(p.hold.until) : ''));
     if (p.browser && p.browser.open) parts.push(t('pm.browserOpen', 'Browser open') + (p.browser.visibility === 'hidden' ? ' (' + t('pm.hidden', 'hidden') + ')' : ''));
+    if (p.lastSession && p.lastSession.tabs) {
+      parts.push(t('pm.savedTabs', 'Saved tabs') + ': ' + p.lastSession.tabs);
+    }
     if (p.nextReservation) {
       parts.push(t('pm.nextReservation', 'Reserved') + ' ' + hhmm(p.nextReservation.start) + '\u2013' + hhmm(p.nextReservation.end) +
         (p.nextReservation.ownerName ? ' (' + p.nextReservation.ownerName + ')' : ''));
@@ -219,6 +223,12 @@
     releaseBtn.textContent = t('pm.release', 'Release');
     releaseBtn.title = t('pm.releaseHint', 'Give the profile back to other workflows. The browser stays open.');
     actions.appendChild(releaseBtn);
+    var restoreBtn = document.createElement('button');
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'btn btn-sm btn-ghost pm-restore';
+    restoreBtn.textContent = t('pm.restoreTabs', 'Restore tabs');
+    restoreBtn.title = t('pm.restoreHint', 'Reopen the tabs that were open when this browser was last closed.');
+    actions.appendChild(restoreBtn);
     root.appendChild(actions);
 
     host.appendChild(root);
@@ -338,6 +348,8 @@
       var anyOpen = ids.some(function (id) { var p = byId(id); return p && p.browser && p.browser.open; });
       var anyMine = ids.some(function (id) { var p = byId(id); return p && p.hold && p.hold.mine; });
       closeBtn.disabled = busy || !anyOpen;
+      var anyRestorable = ids.some(function (id) { var p = byId(id); return p && p.hold && p.hold.mine && p.browser && p.browser.open && p.lastSession && p.lastSession.tabs; });
+      restoreBtn.disabled = busy || !anyRestorable;
       releaseBtn.disabled = busy || !anyMine;
       newBtn.disabled = busy;
     }
@@ -514,6 +526,11 @@
     openBtn.addEventListener('click', function () { void openProfiles(selectedIds()); });
     closeBtn.addEventListener('click', function () {
       void each(function (id) { return api.close(id, o.workflowId); }, selectedIds().filter(function (id) { var p = byId(id); return p && p.browser && p.browser.open; }));
+    });
+    restoreBtn.addEventListener('click', function () {
+      void each(function (id) {
+        return api.restore(id, o.workflowId).then(function (r) { say(t('pm.restored', 'Tabs restored') + ': ' + (r.restored || 0), false); });
+      }, selectedIds().filter(function (id) { var p = byId(id); return p && p.lastSession && p.lastSession.tabs; }));
     });
     releaseBtn.addEventListener('click', function () {
       void each(function (id) { return api.release(id, o.workflowId); }, selectedIds().filter(function (id) { var p = byId(id); return p && p.hold && p.hold.mine; }));

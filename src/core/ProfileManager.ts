@@ -339,6 +339,8 @@ export class ProfileManager {
     /** May this profile's browser be closed now? (core/BrowserSessions: no dependents). */
     mayCloseVip: (key: string) => boolean;
     onVipClosed?: (key: string) => void;
+    /** Save what is needed to recover the browser (core/BrowserStateSnapshot) before it closes. */
+    beforeVipClose?: (key: string, context: BrowserContext) => Promise<void>;
     /** Idle timeout for profile browsers; 0 = never by time. Overrides the threshold. */
     idleMs?: number;
   }): Promise<void> {
@@ -378,6 +380,7 @@ export class ProfileManager {
 
       if (shouldClose) {
         console.log(`[GC] Closing stale VIP browser for user: ${userId}`);
+        if (guard?.beforeVipClose) await guard.beforeVipClose(userId, entry.context).catch(() => {});
         try {
           await entry.context.close();
         } catch {}

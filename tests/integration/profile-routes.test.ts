@@ -38,9 +38,10 @@ let failLaunch = '';
 class FakeContext {
   closed = false;
   private handlers: Array<() => void> = [];
-  private _pages: unknown[] = [{}];
+  _pages: any[] = [{ url: () => 'https://saved.example/inbox', title: async () => 'Inbox' }];
   pages() { if (this.closed) throw new Error('closed'); return this._pages; }
-  async newPage() { return {}; }
+  async newPage() { const p: any = { _u: 'about:blank', url: () => p._u, title: async () => '', goto: async (u: string) => { p._u = u; } }; this._pages.push(p); return p; }
+  async storageState() { return { cookies: [], origins: [] }; }
   on(ev: string, fn: () => void) { if (ev === 'close') this.handlers.push(fn); }
   async close() { this.closed = true; this.handlers.forEach((h) => h()); }
 }
@@ -213,6 +214,26 @@ describe('/profiles', () => {
     await request(app).post('/profiles').send({ name: 'dup' }).expect(409);
     await request(app).patch('/profiles/nope').send({ name: 'x' }).expect(404);
     await request(app).delete('/profiles/default').expect(409);
+    cleanup();
+  });
+
+  it('closing saves the tabs into the profile; after reopening, Restore tabs brings them back', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Snap' })).body.profile.id;
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_s' }).expect(200);
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_s' }).expect(200);
+    const list = await request(app).get('/profiles?workflowId=wf_s').expect(200);
+    const v = list.body.profiles.find((p: any) => p.id === id);
+    expect(v.lastSession).toMatchObject({ tabs: 1, reason: 'operator' });
+    expect(JSON.stringify(list.body)).not.toContain('saved.example'); // URLs are never in the list
+    // Restore needs an open browser of your own.
+    await request(app).post(`/profiles/${id}/restore`).send({ workflowId: 'wf_other' }).expect(409);
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_s' }).expect(200);
+    // The fresh fake browser has the same tab -> nothing duplicated; drop it to see the restore.
+    const ctx: any = pm.getVipContext(leaseIdOf(id))!.context;
+    ctx._pages = [];
+    const r = await request(app).post(`/profiles/${id}/restore`).send({ workflowId: 'wf_s' }).expect(200);
+    expect(r.body.restored).toBe(1);
     cleanup();
   });
 });

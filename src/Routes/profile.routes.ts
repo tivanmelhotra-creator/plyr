@@ -9,6 +9,7 @@
  *   POST   /profiles/:id/hold              { workflowId }      refresh the hold (the open drawer does this)
  *   POST   /profiles/:id/release           { workflowId }      release the hold (does NOT close the browser)
  *   POST   /profiles/:id/close             { workflowId }      close the browser (does NOT release the hold)
+ *   POST   /profiles/:id/restore           { workflowId }      reopen the tabs saved before the last automatic close
  *
  * Opening and creating are separate operations; the UI chains them after a
  * successful create. A failed open keeps the profile (and its hold is given
@@ -33,6 +34,7 @@ import { openProfileBrowser, closeProfileBrowser, ProfileBrowserError } from '..
 import { browserSessions, operatorDependent } from '../core/BrowserSessions';
 import { withStartBudget } from '../core/RemoteBrowserStart';
 import type { OverlapView, UnresolvedSchedule } from '../core/ProfileCoordinator';
+import { readLastSession, restoreTabs } from '../core/BrowserStateSnapshot';
 
 export interface ProfileRoutesDeps {
   connection: IORedis;
@@ -111,6 +113,11 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const owner = ownerOf(req.query.workflowId);
       const wfs = await refs(userId);
       const views = await access.views(userId, owner, wfs);
+      // What can be recovered (count + time only; URLs are never sent here).
+      for (const v of views) {
+        const snap = await readLastSession(access.registry.dirOf(userId, v.id));
+        v.lastSession = snap && snap.tabs.length ? { savedAt: snap.savedAt, tabs: snap.tabs.length, reason: snap.reason } : null;
+      }
       const nameOf = (o: string) => wfs.find((w) => w.id === o)?.name;
       // Overlapping schedules on one profile, attached to that profile (the
       // later run waits; the operator should know before it happens).
@@ -312,6 +319,29 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       }
       // The hold is NOT released here (browser and claim are separate).
       res.json({ success: true, closed: r.closed, holdKept: !!(await access.leases.holdOf(leaseIdOf(id))) });
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Recovery: reopen the tabs that were saved before the browser was last
+   * closed (core/BrowserStateSnapshot). Only into a browser the caller has
+   * opened (their hold + an open session); never opens a browser by itself
+   * and never touches another workflow's claim.
+   */
+  router.post('/profiles/:id/restore', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      const owner = ownerOf(req.body?.workflowId);
+      const leaseId = leaseIdOf(id);
+      const hold = await access.leases.holdOf(leaseId);
+      if (!hold || hold.owner !== owner) { res.status(409).json({ success: false, code: 'no_hold', error: 'Open the profile\'s browser first.' }); return; }
+      const entry = profileManager.getVipContext(leaseId);
+      if (!entry) { res.status(409).json({ success: false, code: 'not_open', error: 'The browser of this profile is not open.' }); return; }
+      const snap = await readLastSession(access.registry.dirOf(userId, id));
+      const opened = await restoreTabs(entry.context as any, snap);
+      res.json({ success: true, restored: opened, savedAt: snap?.savedAt || null });
     } catch (e) { fail(res, e); }
   });
 

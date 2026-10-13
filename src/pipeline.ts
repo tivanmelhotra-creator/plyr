@@ -18,7 +18,8 @@ import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './c
 import { isTriggerAction } from './core/TriggerEngine';
 import { hiddenLaunchOptions, describeVisibility } from './core/RunPolicy';
 import type { ProfileRef } from './core/ProfileLease';
-import { browserSessions, jobDependent } from './core/BrowserSessions';
+import { browserSessions, jobDependent, setSessionDataDir, sessionDataDir } from './core/BrowserSessions';
+import { saveBeforeClose } from './core/BrowserStateSnapshot';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
   EXT_BROWSER_FLAG,
@@ -721,6 +722,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
       throw new BrowserError(`The browser of profile "${profile?.label || key}" is in use (${relaunch.dependents.join(', ')}) and was built with different options or visibility; close it first, then run again.`);
     }
     try {
+      await saveBeforeClose(existing.context, sessionDataDir(key) || profileDir, 'relaunch');
       await existing.context.close();
       browserSessions().closed(key);
       log('[BROWSER] Closed the previous profile browser');
@@ -802,6 +804,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
     profileManager.registerPage(jobId, page);
     profileBuildHash.set(key, wantHash);
     browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
+    setSessionDataDir(key, profileDir);
     browserSessions().attach(key, jobDependent(jobId));
     // A browser that dies on its own must not leave a session record behind.
     browserContext.on('close', () => {
@@ -2828,6 +2831,9 @@ async function runPipelineImpl(params: {
             browserSessions().detach(context.profile?.id || 'default', jobDependent(jobId));
             context.browserShared = true;
           } else if (context.browserContext) {
+            // Recoverable: tabs + storage saved into the profile first (never logged).
+            const saved = await saveBeforeClose(context.browserContext, sessionDataDir(context.profile?.id || 'default') || context.profile?.userDataDir, 'node');
+            if (saved) log(`[BROWSER] Saved ${saved.tabs} tab(s)${saved.storage ? ' and the storage state' : ''} for recovery before closing`);
             try {
               const pages = context.browserContext.pages();
               for (const p of pages) {

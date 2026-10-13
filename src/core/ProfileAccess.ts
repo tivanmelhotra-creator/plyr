@@ -39,6 +39,8 @@ export interface ProfileView {
   usedBy: Array<{ workflowId: string; name: string }>;
   problem?: string | null;
   lastOpenError?: { at: string; message: string } | null;
+  /** Tabs saved before the last automatic close (count only), for "Restore tabs". */
+  lastSession?: { savedAt: string; tabs: number; reason: string } | null;
   /** Schedules of different workflows whose reservations overlap on this profile (set by the route). */
   overlaps?: Array<{ message: string; a: { owner: string; ownerName?: string; start: number; end: number }; b: { owner: string; ownerName?: string; start: number; end: number } }>;
 }
