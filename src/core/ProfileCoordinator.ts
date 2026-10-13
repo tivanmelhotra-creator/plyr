@@ -16,6 +16,7 @@ import { resolveRunProfile, needsLease, type ProfileLeases } from './ProfileLeas
 import { findOverlaps, type ProfileReservations, type ReservationWindow, type ScheduleBinding, type QueueProbe, type Overlap } from './ProfileReservations';
 import type { BrowserSessions, SessionRecord } from './BrowserSessions';
 import { stepsUseExtensions } from './ExtensionStep';
+import { runProfileIdOf } from './NodeProfile';
 
 export const SCHEDULE_PREFIX = 'sched';
 
@@ -117,7 +118,7 @@ export class ProfileCoordinator {
   /** The lease id the runs of a schedule will take, or null (never leased). */
   leaseIdFor(userId: string, profileId: string | undefined, steps: unknown): string | null {
     const ref = resolveRunProfile({
-      userId, profileId: profileId ?? null, usesExtensions: stepsUseExtensions(steps),
+      userId, profileId: runProfileIdOf(steps, profileId ?? null), usesExtensions: stepsUseExtensions(steps),
       localMode: this.localMode(userId), profilesDir: config.PROFILES_DIR, realChromeDir: config.REAL_CHROME_USER_DATA_DIR,
     });
     return needsLease(ref) ? ref.id : null;

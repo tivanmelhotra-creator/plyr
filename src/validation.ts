@@ -1,6 +1,7 @@
 import type { PlanConfig } from './config';
 import { config } from './config';
 import { parseBrowserOptions } from './core/BrowserOptions';
+import { launchProfilesOf } from './core/NodeProfile';
 
 // === REGEX PATTERNS ===
 const SAFE_MODULE_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]{0,49}$/;
@@ -395,5 +396,12 @@ export const validateSteps = (
     return cleanStep;
   };
 
-  return input.map((step, index) => mapStep(step, index));
+  const mapped = input.map((step, index) => mapStep(step, index));
+  // Phase 2: one profile per run. Launch nodes naming DIFFERENT profiles are
+  // refused here, never resolved by guessing (core/NodeProfile).
+  const named = launchProfilesOf(mapped);
+  if (named.length > 1) {
+    throw new Error(`Launch Browser nodes name different profiles (${named.join(', ')}); a run uses one profile. Pick the same profile on every Launch node.`);
+  }
+  return mapped;
 };

@@ -60,6 +60,9 @@
       { k: 'url', label: 'p.url', type: 'string', ph: '(optional) https://example.com', expr: true, help: 'help.launchUrl' },
       { k: 'timeout', label: 'p.timeout', type: 'number', ph: '60000', min: 0 },
       { k: 'waitUntil', label: 'p.waitUntil', type: 'options', options: ['domcontentloaded', 'load', 'networkidle'] },
+      // Phase 2: this node's browser profile (stable id from the profile
+      // registry). Empty = the workflow's profile. One profile per run.
+      { k: 'profileId', label: 'p.profile', type: 'string', ph: '(workflow profile)', help: 'help.launchProfile' },
       // JSON text of the per-run browser options (browser-options.js). Owned by
       // the "Add option" panel (browser-options-ui.js), never a raw input.
       { k: 'browserOptions', label: 'bo.title', type: 'json', internal: true },

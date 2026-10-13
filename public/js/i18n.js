@@ -1267,6 +1267,8 @@
       'p.maxIterations': 'Max iterations',
       // Output port labels (branching nodes)
       'port.next': 'Next',
+      'p.profile': 'Browser profile',
+      'help.launchProfile': 'Profile id (Workflow Files → Browser profiles). Empty = the workflow\'s profile. All Launch nodes of a run must use the same profile. Visibility is set with the Headless option below; without it, manual runs are visible and scheduled runs hidden.',
       'port.success': 'Success',
       'port.error': 'Error',
       'port.timeout': 'Timeout',

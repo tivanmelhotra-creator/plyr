@@ -34,6 +34,7 @@ import { openProfileBrowser, closeProfileBrowser, ProfileBrowserError } from '..
 import { browserSessions, operatorDependent } from '../core/BrowserSessions';
 import { withStartBudget } from '../core/RemoteBrowserStart';
 import { BrowserWindowManager } from '../core/BrowserWindowManager';
+import { runProfileIdOf } from '../core/NodeProfile';
 import type { OverlapView, UnresolvedSchedule } from '../core/ProfileCoordinator';
 import { readLastSession, restoreTabs } from '../core/BrowserStateSnapshot';
 
@@ -93,9 +94,11 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     const all = await workflows.list(userId).catch(() => []);
     return all.map((wf) => {
       const d = WorkflowService.executableDesign(wf);
-      const live = wf.profileId || DEFAULT_PROFILE_ID;
-      // Both the editable and the frozen profile count as references.
-      return { id: wf.id, name: wf.name, profileId: (wf.active && d.profileId) ? d.profileId : live };
+      // A Launch Browser node may name its own profile (core/NodeProfile);
+      // that is the profile the runs take, so it is the reference.
+      const live = runProfileIdOf(wf.steps, wf.profileId) || DEFAULT_PROFILE_ID;
+      const frozen = wf.active ? runProfileIdOf(d.steps, d.profileId) : null;
+      return { id: wf.id, name: wf.name, profileId: frozen || live };
     });
   }
 

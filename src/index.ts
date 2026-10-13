@@ -75,6 +75,7 @@ import { setLiveSessionRebuilder } from './Routes/browser.routes';
 // Routes
 import { createAllRoutes } from './Routes';
 import { createSettingsRoutes } from './Routes/settings.routes';
+import { runProfileIdOf } from './core/NodeProfile';
 
 // ============================================
 // EXPRESS SETUP
@@ -755,7 +756,8 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
   // worker slot, and runs on other, free profiles are not affected.
   const profile: ProfileRef = resolveRunProfile({
     userId,
-    profileId: typeof job.data.profileId === 'string' ? job.data.profileId : null,
+    // A Launch Browser node may name its own profile (core/NodeProfile).
+    profileId: runProfileIdOf(job.data.steps, typeof job.data.profileId === 'string' ? job.data.profileId : null),
     usesExtensions: stepsUseExtensions(job.data.steps),
     localMode: browserModes.modeOf(userId) === 'local',
     profilesDir: config.PROFILES_DIR,
