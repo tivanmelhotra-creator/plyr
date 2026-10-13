@@ -210,6 +210,9 @@ jobs:
           else
             npx playwright install --with-deps chromium
           fi
+          # A real X display for tests/browser/profile-real-chromium.test.ts
+          # (visible profile browsers, window focus per profile).
+          sudo apt-get install -y --no-install-recommends xvfb openbox wmctrl x11-utils
 
       # Proves the browser can actually START before any test blames itself for
       # failing to launch one. tests/browser/real-browser.ts SKIPS honestly when

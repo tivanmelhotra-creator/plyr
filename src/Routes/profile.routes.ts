@@ -33,6 +33,7 @@ import { explainDenial, type ProfileAccess, type WorkflowRef } from '../core/Pro
 import { openProfileBrowser, closeProfileBrowser, ProfileBrowserError } from '../core/ProfileBrowser';
 import { browserSessions, operatorDependent } from '../core/BrowserSessions';
 import { withStartBudget } from '../core/RemoteBrowserStart';
+import { BrowserWindowManager } from '../core/BrowserWindowManager';
 import type { OverlapView, UnresolvedSchedule } from '../core/ProfileCoordinator';
 import { readLastSession, restoreTabs } from '../core/BrowserStateSnapshot';
 
@@ -255,11 +256,18 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       }
       const opened = started.value;
       await access.registry.recordOpenError(userId, id, null);
+      // Several profile browsers share one desktop: raise THIS profile's
+      // window so the view opened next shows it (best-effort, bounded).
+      const focused = await Promise.race([
+        BrowserWindowManager.focusByUserDataDir(access.registry.dirOf(userId, id)).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+      ]);
       res.json({
         success: true,
         profileId: id,
         reused: opened.reused,
         visibility: opened.visibility,
+        focused: !!focused,
         holdUntil: h.expiresAt,
         // The existing remote view, pointed at this profile's window.
         viewPath: `/desktop/chrome?profile=${encodeURIComponent(id)}`,

@@ -385,6 +385,29 @@ export class BrowserWindowManager {
     return session;
   }
 
+  /**
+   * Bring the window of ONE profile to the front: the first managed Chromium
+   * window whose process runs on `userDataDir` (from /proc/<pid>/cmdline;
+   * Chromium's renderer children share the browser's argv, the top-level
+   * window belongs to the browser process). Used by the profile view so that,
+   * with several profile browsers on one desktop, /desktop/chrome?profile=<id>
+   * shows THAT profile. Returns the window, or null (no X tools / not found).
+   */
+  static async focusByUserDataDir(userDataDir: string): Promise<BrowserWindowInfo | null> {
+    const want = path.resolve(userDataDir);
+    const listing = await this.run('wmctrl', ['-l', '-p', '-x']);
+    if (listing === null) return null;
+    for (const row of parseWmctrlList(listing).filter((r) => isBrowserWindowClass(r.wmClass))) {
+      const props = await this.windowProps(row.windowId);
+      if (!props.normal || props.skipTaskbar) continue;
+      const cmd = await this.readCmdline(row.pid);
+      if (!cmd.userDataDir || path.resolve(cmd.userDataDir) !== want) continue;
+      await this.list().catch(() => null);
+      return this.restore(row.windowId).catch(() => null);
+    }
+    return null;
+  }
+
   /** Reset in-memory state (primarily for unit tests). */
   static clear(): void {
     this.sessions.clear();
