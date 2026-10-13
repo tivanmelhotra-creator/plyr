@@ -61,6 +61,8 @@ function boot(o: Opts = {}) {
     calls.push({ url, method, body });
     let answer: any = { success: true, entries: [] };
     if (url === '/browser/real/health') answer = { success: true, enabled: true, running: server.running, responsive: server.running };
+    // The switch reads the ONE session registry (core/SharedBrowsers).
+    if (url === '/browser/sessions') answer = { success: true, localBrowser: { running: server.running }, sessions: server.running ? [{ id: 'realchrome', kind: 'local-browser', name: 'Local Browser', visibility: 'visible' }] : [] };
     if (url === '/browser/real/close' && method === 'POST') { server.running = false; answer = { success: true }; }
     return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(answer)) });
   };
@@ -91,7 +93,8 @@ describe('the Local Browser switch', () => {
     expect(rowEl()!.classList.contains('is-off')).toBe(true);
     expect(label()).toBe('Local Browser \u00b7 Off');
     expect(btn().textContent).toBe('Turn on');
-    expect(b.calls.some((c) => c.method === 'GET' && c.url === '/browser/real/health')).toBe(true);
+    // The ONE session registry is the source (Local Browser + profile browsers).
+    expect(b.calls.some((c) => c.method === 'GET' && c.url === '/browser/sessions')).toBe(true);
     // Nothing is started until it is pressed.
     expect(b.opened).toHaveLength(0);
   });
