@@ -424,7 +424,7 @@ export class DesktopProxy {
     socket.on('close', bin);
     // A profile view's socket keeps that profile's browser "in use" by the
     // operator only while it is connected (core/ProfileViewers).
-    if (/\/websockify$/.test(pathname) && /[?&]profile=/.test(search)) {
+    if (/\/websockify$/.test(pathname) && /[?&]profiles?=/.test(search)) {
       const gone = profileViewers.connected(search);
       socket.once('close', gone);
     }
