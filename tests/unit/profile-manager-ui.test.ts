@@ -2,7 +2,7 @@
  * The profile panel inside the Workflow Files drawer (public/js/profile-manager.js).
  *
  *   - the drawer mounts the ONE profile client (no second system, no new page)
- *   - multi-select + Open opens one viewer tab per profile, pointed at it
+ *   - multi-select + Open uses ONE shared viewer tab (named window) for all profiles
  *   - creating a profile automatically tries to open it; a failed open keeps it
  *   - a profile another workflow holds/reserves shows the reason and cannot be ticked
  */
@@ -24,7 +24,7 @@ function boot(o: Opts = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="stage"></div></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
   const w = dom.window as any;
   const calls: Array<{ url: string; method: string; body: any }> = [];
-  const tabs: Array<{ location: string; closed: boolean; document: any; close: () => void }> = [];
+  const tabs: Array<{ location: string; closed: boolean; document: any; close: () => void; name?: string; history: string[]; focus: () => void }> = [];
   let profiles: any[] = [
     { id: 'default', name: 'Default', builtIn: true, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] },
     o.blocked
@@ -40,7 +40,17 @@ function boot(o: Opts = {}) {
   w.FlowEditor = { getCurrentWorkflow: () => ({ id: 'wf_abc123' }) };
   w.BrowserView = { openRealBrowser: () => Promise.resolve({ success: true }) };
   w.confirm = () => true;
-  w.open = () => { const t = { location: '', closed: false, document: { title: '' }, close() { this.closed = true; } }; tabs.push(t); return t; };
+  // Like a real browser: window.open(url, name) returns the EXISTING tab of
+  // that name (navigating it when a url is given) instead of opening another.
+  w.open = (url?: string, name?: string) => {
+    const named = name && name !== '_blank' ? tabs.find((x) => x.name === name && !x.closed) : undefined;
+    if (named) { if (url) named.location = url; return named; }
+    let loc = url || '';
+    const t: any = { closed: false, document: { title: '' }, name, history: url ? [url] : [], close() { this.closed = true; }, focus() { /* fine */ } };
+    Object.defineProperty(t, 'location', { get: () => loc, set: (v: string) => { loc = String(v); t.history.push(loc); }, enumerable: true });
+    tabs.push(t);
+    return t;
+  };
   w.fetch = (url: string, init: any) => {
     const method = (init && init.method) || 'GET';
     const body = init && init.body ? JSON.parse(init.body) : undefined;
@@ -48,6 +58,8 @@ function boot(o: Opts = {}) {
     let status = 200;
     let answer: any = { success: true, entries: [] };
     if (url === '/browser/real/health') answer = { success: true, running: false };
+    if (url === '/browser/sessions') answer = { success: true, localBrowser: { running: false }, sessions: [] };
+    if (url === '/profiles/launch-options') answer = { success: true, categories: [], options: [], presets: [{ id: 'standard', label: 'Standard', options: [], description: '' }], defaultPreset: 'standard' };
     if (url.startsWith('/profiles') && method === 'GET') answer = { success: true, profiles, unknownSchedules };
     if (url === '/profiles' && method === 'POST') {
       const p = { id: 'prf_new', name: body.name, builtIn: false, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] };
@@ -95,7 +107,7 @@ describe('the profile panel in the Workflow Files drawer', () => {
     expect(b.stage.querySelector('.pm-panel')).toBeNull();
   });
 
-  it('several selected profiles open one viewer tab each, each pointed at its profile', async () => {
+  it('several selected profiles share ONE viewer tab; pressing Open again reuses it', async () => {
     await openDrawer();
     boxOf('default').click();
     boxOf('prf_b').click();
@@ -105,10 +117,33 @@ describe('the profile panel in the Workflow Files drawer', () => {
     const opens = b.calls.filter((c) => /\/open$/.test(c.url));
     expect(opens.map((c) => c.url)).toEqual(['/profiles/default/open', '/profiles/prf_b/open']);
     expect(opens.every((c) => c.body.workflowId === 'wf_abc123')).toBe(true);
-    expect(b.tabs.map((t) => t.location)).toEqual([
+    // Unchanged launch settings are not sent: the browser starts as it always did.
+    expect(opens.every((c) => c.body.launch === undefined)).toBe(true);
+    expect(b.tabs).toHaveLength(1);
+    expect(b.tabs[0]!.name).toBe('aria-browser-viewer');
+    expect(b.tabs[0]!.history).toEqual([
       '/desktop/chrome?profile=default&api_key=K&workflowId=wf_abc123',
       '/desktop/chrome?profile=prf_b&api_key=K&workflowId=wf_abc123',
     ]);
+    // A third profile / a second press: still the same tab.
+    openBtn().click();
+    await b.settle();
+    expect(b.tabs.filter((t) => !t.closed)).toHaveLength(1);
+  });
+
+  it('launch settings chosen in the panel are sent with Open, for every selected profile', async () => {
+    await openDrawer();
+    boxOf('default').click();
+    boxOf('prf_b').click();
+    const flags = b.stage.querySelector('.pm-launch-flags') as HTMLTextAreaElement;
+    expect(flags).toBeTruthy();
+    flags.value = '--lang=fa';
+    flags.dispatchEvent(new b.w.Event('input'));
+    openBtn().click();
+    await b.settle();
+    const opens = b.calls.filter((c) => /\/open$/.test(c.url));
+    expect(opens).toHaveLength(2);
+    for (const c of opens) expect(c.body.launch).toMatchObject({ preset: 'standard', customFlags: '--lang=fa' });
   });
 
   it('creating a profile then opens it automatically', async () => {
