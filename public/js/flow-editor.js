@@ -2627,6 +2627,7 @@
     'switch-tab': 'nk.switchTab',
     'close-tab': 'nk.closeTab',
     'close-browser': 'nk.closeBrowser',
+    'continue-session': 'nk.continueSession',
     'handle-dialog': 'nk.handleDialog',
     // interaction
     click: 'nk.clickElement',

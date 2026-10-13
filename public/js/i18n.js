@@ -1705,6 +1705,7 @@
       'nk.waitElement': 'Wait Element',
       'nk.delay': 'Delay',
       'nk.closeBrowser': 'Close Browser',
+      'nk.continueSession': 'Continue Session',
       'nk.extractData': 'Extract Data',
       'nk.parseJson': 'Parse JSON',
       'nk.router': 'Router',

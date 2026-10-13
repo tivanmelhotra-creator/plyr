@@ -211,6 +211,7 @@
     'switch-tab': 'layers',
     'close-tab': 'square-x',
     'close-browser': 'power',
+    'continue-session': 'link',
     close: 'power',
     'handle-dialog': 'message-square',
     // interaction

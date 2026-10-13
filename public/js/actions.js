@@ -280,7 +280,7 @@
     { id: 'close-browser', icon: 'power', cat: 'navigation', fields: [] },
     // Phase 2: hand THIS browser session (same profile, tabs, cookies) to
     // another workflow, through an explicit, expiring grant (core/SessionContinuation).
-    { id: 'continue-session', icon: 'share-2', cat: 'navigation', fields: [
+    { id: 'continue-session', icon: 'link', cat: 'navigation', fields: [
       { k: 'workflowId', label: 'p.targetWorkflow', type: 'string', ph: 'wf_…', help: 'help.continueSession' },
       { k: 'ttlMinutes', label: 'p.ttlMinutes', type: 'number', ph: '15', min: 1 },
     ] },
