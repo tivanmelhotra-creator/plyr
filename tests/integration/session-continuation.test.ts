@@ -104,7 +104,6 @@ describe('Continue Session', () => {
     await redis!.hset(GRANT_PREFIX + P, `${A}>${B}`, String(Date.now() - 1));
     expect(await sweepExpiredGrants(deps)).toBe(1);
     expect(sessions.get(P)!.dependents).not.toContain(grantDependent(B));
-    await leases.hold(P, A, 120_000, 0).catch(() => null);
   });
 
   it('ttl is clamped', () => {
