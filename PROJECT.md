@@ -404,6 +404,24 @@ run in a Wait node is a dependent, so it is never idle.
 visible, schedules / triggers / API = hidden); it does not depend on the
 environment or on the `active` flag.
 
+**State before closing** (`core/BrowserStateSnapshot`): every close we cause
+(after-run, idle, GC, Close Browser node, operator Close, relaunch) first saves
+the open http(s) tabs and Playwright `storageState` into
+`<profile>/.plyr-state/` (0600, 4 s budget, never logged). `POST
+/profiles/:id/restore` reopens the tabs into the caller's open browser.
+
+**Viewer tabs** (`core/ProfileViewers`): the profile view's VNC socket carries
+`?profile=&workflowId=`; 30 s after the last one closes, the operator dependent
+is detached from the browser. The hold is NOT released by this.
+
+**Window focus**: opening a profile raises that profile's window on the shared
+desktop (`BrowserWindowManager.focusByUserDataDir`, by `--user-data-dir`).
+
+**Schedule warnings**: `GET /profiles` returns `overlaps` (two workflows'
+reservations overlapping on one profile) and `unknownSchedules` (a repeat whose
+data no queued job carries — it reserves nothing). BullMQ 5 repeatables carry no
+`id`; schedule ids are recovered from the next job (`scheduleIdsByKey`).
+
 **Recovery at boot**: leases and holds of an earlier incarnation are released,
 its session records are reported and forgotten; reservations are kept and
 resolved by evidence.

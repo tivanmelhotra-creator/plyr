@@ -1,27 +1,37 @@
-# S25 — phase 1 remaining items (part), branch feat/profile-infrastructure (PR #76)
+# S25 — phase 1 completed (remaining items), branch feat/profile-infrastructure (PR #76)
 
-GitHub was NOT reachable from the sandbox (setup_github_environment: no valid authorization),
-so these commits are LOCAL ONLY (in the backup). First action next session: authorize GitHub, then
-`git push origin feat/profile-infrastructure` (the branch is ahead of origin) and `gh pr checks 76`.
+Pushed to GitHub (PR #76 updated). CI green on the pushed head (run 38380583190 and later).
 
-## Done (NEXT-SESSION-PROMPT §3 items 3 and 6)
-- Item 3 overlap warnings: ProfileCoordinator.overlaps() -> GET /profiles returns `overlaps[]` and
-  `profiles[i].overlaps` (one per schedule pair, workflow names, no ids/paths). Shown in the drawer
-  (.pm-overlap on the row) and in Workflow Settings under the profile select.
-- Item 6 unknown schedules: ProfileCoordinator.unresolvedSchedules() (repeat with no job carrying
-  its data). GET /profiles -> `unknownSchedules[]` (drawer .pm-notes); GET /schedules -> each row has
-  `reservation: planned|unknown` (+ note), Schedules view shows a badge.
-- BUG FOUND + FIXED: BullMQ 5.63 getRepeatableJobs() has no `id`, so every
-  `job.id?.startsWith('sched:<user>:')` in user.routes matched nothing (Schedules list empty, DELETE
-  /schedule 403, schedule limit never hit, workspace scheduleCount 0). Fixed by `repeatablesWithIds()`
-  using scheduleIdsByKey() (id from the next job's data via repeatJobKey).
-- Tests: tests/integration/profile-schedules.test.ts (7, real Redis + BullMQ), profile-manager-ui +3.
-  tsc clean; integration suite 420 passed / 9 skipped; profile/unit subsets green.
+## Done (NEXT-SESSION-PROMPT §3 "remaining items")
+1. PR — already open (#76), updated by every push.
+2. Real browser verification — DONE in the sandbox with Xvfb + openbox + wmctrl and Playwright's
+   chromium-1194: tests/browser/profile-real-chromium.test.ts (2 tests, pass):
+   - two created profiles open as two VISIBLE Chromium windows, one per user-data-dir;
+   - re-opening reuses the same browser (reused=true, no 2nd process);
+   - BrowserWindowManager.focusByUserDataDir raises THAT profile's window (verified via
+     _NET_ACTIVE_WINDOW -> pid -> --user-data-dir); POST /profiles/:id/open now calls it (focused:true|false);
+   - manual run on a named profile = visible window on the display; scheduled (automatic) run on the
+     same profile = hidden (relaunched hidden on the same dir, no window).
+   NOT verified: the noVNC picture itself (x11vnc/websockify not installed here; the view is the
+   existing /desktop/chrome mechanism). Pending CI workflow installs xvfb/openbox/wmctrl (needs the
+   user to activate .github/workflows-pending — the App cannot push workflow files).
+3. Overlap warnings in UI — GET /profiles `overlaps[]` + per profile; drawer row + Workflow Settings.
+4. State saved before closing — core/BrowserStateSnapshot: tabs (http/https) + Playwright
+   storageState into <profile>/.plyr-state/ (0600), before after-run close, idle close, GC close,
+   Close Browser node, operator close and relaunch. Empty/crashed context never overwrites a good
+   snapshot; 4 s budget. Recovery: POST /profiles/:id/restore + "Restore tabs" in the drawer; the list
+   shows only the count (URLs never leave the server, never logged).
+5. Viewer tab closed -> core/ProfileViewers: the profile view tags its VNC socket
+   (?profile=&workflowId=); when the last socket closes and 30 s pass, operator:<owner> is DETACHED from
+   the browser (idle collector may close it later). DECISION TAKEN (user was not available to ask):
+   the HOLD is KEPT until it expires (OPERATOR_HOLD_MINUTES) or Release is pressed — closing a tab must
+   not hand the profile to another workflow silently. Easy to change: release in ProfileViewers' timer.
+6. Legacy schedules without a delayed job -> "unknown" in /profiles (drawer note) and /schedules (badge).
+- BUG FIXED on the way: BullMQ 5 repeatables have no `id` -> Schedules list/delete/limit were blind.
 
-## Still open (do next, in order)
-- §3 item 4: save storageState / tab list before automatic close (afterRun=close, idle) — not done.
-- §3 item 5: detach operator dependent when the desktop WebSocket closes. ASK THE USER first whether
-  the hold should stay (until OPERATOR_HOLD_MINUTES) or be released when the viewer tab closes.
-- §3 item 2: real Chromium verification (Xvfb) + focus the profile's window for ?profile=<id>
-  (BrowserWindowManager.restore by user-data-dir). Not done; sandbox has chromium-1194 but no Xvfb.
-- §4 phase 2 entirely not started.
+## Tests
+tsc clean. Integration 422 passed / 9 skipped. Unit 4093 passed (3 chunks). Browser: profile-real-chromium 2/2.
+New: tests/unit/{browser-state-snapshot,profile-viewers}.test.ts, tests/integration/profile-schedules.test.ts,
+tests/browser/profile-real-chromium.test.ts; profile-routes +1, profile-manager-ui +3.
+
+## Next: phase 2 (NEXT-SESSION-PROMPT §4) — not started.
