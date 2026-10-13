@@ -356,6 +356,23 @@ export class ProfileLeases {
     await this.redis.hdel(GRANT_PREFIX + profileId, `${from}>${to}`);
   }
 
+  /** Every grant TO `to` on a profile (the continuation ended). Returns how many. */
+  async revokeGrantsTo(profileId: string, to: string): Promise<number> {
+    const all = await this.redis.hkeys(GRANT_PREFIX + profileId);
+    const mine = all.filter((f) => f.endsWith(`>${to}`));
+    if (!mine.length) return 0;
+    return this.redis.hdel(GRANT_PREFIX + profileId, ...mine);
+  }
+
+  /** Live (unexpired) grants on a profile: [{ from, to, until }]. */
+  async grants(profileId: string, now = Date.now()): Promise<Array<{ from: string; to: string; until: number }>> {
+    const flat = await this.redis.hgetall(GRANT_PREFIX + profileId);
+    return Object.entries(flat).map(([k, v]) => {
+      const i = k.indexOf('>');
+      return { from: k.slice(0, i), to: k.slice(i + 1), until: Number(v) };
+    }).filter((g) => g.until > now);
+  }
+
   async release(profileId: string, token: string | null | undefined): Promise<boolean> {
     if (!token) return false; // never blindly delete someone else's lease
     const n = await this.redis.eval(RELEASE_LUA, 1, this.key(profileId), token);
@@ -440,6 +457,8 @@ export class ProfileLeases {
 // Real Chrome right now?" without importing index.ts (an import cycle).
 let activeLeases: ProfileLeases | null = null;
 export function registerProfileLeases(l: ProfileLeases): void { activeLeases = l; }
+/** The process-wide leases (null in tests / tools that never registered one). */
+export function profileLeasesRegistry(): ProfileLeases | null { return activeLeases; }
 /** The run currently holding Real Chrome's profile, or null. */
 export async function realChromeLeaseHolder(): Promise<LeaseRecord | null> {
   return activeLeases ? activeLeases.holder('realchrome') : null;
