@@ -422,6 +422,15 @@ reservations overlapping on one profile) and `unknownSchedules` (a repeat whose
 data no queued job carries — it reserves nothing). BullMQ 5 repeatables carry no
 `id`; schedule ids are recovered from the next job (`scheduleIdsByKey`).
 
+**Phase 2 — nodes on this infrastructure.** A Launch Browser node may name
+its profile (`params.profileId`, `core/NodeProfile`; one profile per run, the
+lease/reservations follow it). Every non-control-flow node can have Success /
+Error / Timeout outputs (`errorSteps` / `timeoutSteps`, `core/NodeOutputs`),
+a retry policy (`retryOn`, `retryBackoff`) and a timeout (`timeoutMs`). The
+Continue Session node hands the run's browser to another workflow only through
+`ProfileLeases.grant` + the `grant:<to>` session dependent
+(`core/SessionContinuation`); the grant is consumed when the target ran.
+
 **Recovery at boot**: leases and holds of an earlier incarnation are released,
 its session records are reported and forgotten; reservations are kept and
 resolved by evidence.
