@@ -2233,22 +2233,41 @@ function handleSessionClosed() {
     try { rfb.disconnect(); } catch (e) {}
     rfb = null;
   }
-  try { window.close(); } catch (e) {}
+  // The tab is NOT closed by itself any more: a viewer that vanishes is how
+  // the operator lost track of what happened. It says the browser ended and
+  // offers to reopen; closing the tab is the operator's choice.
   const endedEl = document.getElementById('ended');
   if (endedEl) endedEl.hidden = false;
 }
 
+/**
+ * Is there still a browser for this view to show?
+ *
+ * ROOT CAUSE OF \"the profile viewer closes after 1-2 seconds\": this used to
+ * ask /browser/real/health, which reports ONLY the Local Browser (RealChrome).
+ * A view opened for a profile browser therefore read running:false on its first
+ * tick and closed itself, unless the Local Browser happened to be on as well.
+ *
+ * It now asks the ONE session registry (GET /browser/sessions), which holds the
+ * Local Browser AND every profile browser. The view is ONE window onto the
+ * shared desktop, so it ends only when NO browser is left on that desktop;
+ * closing one profile's window never closes the view of the others.
+ * Two consecutive \"nothing open\" answers are required (a relaunch with other
+ * launch settings briefly has no session), and a failed poll says nothing.
+ */
+let emptyPolls = 0;
 function pollBrowserHealth() {
   if (!browserEverConnected || sessionClosedHandled) return Promise.resolve();
-  return fetch('/browser/real/health?watch=1', {
+  return fetch('/browser/sessions?watch=1', {
     headers: authHeaders(),
     credentials: 'same-origin',
   })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => {
-      if (j && j.success && j.running === false) {
-        handleSessionClosed();
-      }
+      if (!j || !j.success || !Array.isArray(j.sessions)) return;
+      const visible = j.sessions.filter((x) => x && x.visibility !== 'hidden');
+      emptyPolls = visible.length ? 0 : emptyPolls + 1;
+      if (emptyPolls >= 2) handleSessionClosed();
     })
     .catch(() => {});
 }
