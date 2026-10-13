@@ -31,6 +31,9 @@ import { runPipeline } from '../../src/pipeline';
 import { validateSteps } from '../../src/validation';
 import { browserModes } from '../../src/core/BrowserMode';
 import { config } from '../../src/config';
+import { buildLaunchArgs } from '../../src/core/LaunchSettings';
+import { readChromiumProfileName } from '../../src/core/ChromiumProfileName';
+import { summarize, closeContextBounded } from '../../src/core/SharedBrowsers';
 
 await ensureProbed();
 
@@ -62,7 +65,8 @@ afterAll(async () => {
   if (prev.display === undefined) delete process.env.DISPLAY; else process.env.DISPLAY = prev.display;
   wm?.kill(); xvfb?.kill();
   await new Promise((r) => web.close(r));
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // Chromium may still be flushing files of a just-closed profile.
+  try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* tmp dir, best-effort */ }
 });
 
 async function activeUserDataDir(): Promise<string> {
@@ -87,7 +91,7 @@ async function activeUserDataDir(): Promise<string> {
       const dirA = reg.dirOf(userId, a.id); const dirB = reg.dirOf(userId, b.id);
       const ra = await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_aaaaaa' });
       const rb = await openProfileBrowser(pm, { leaseId: leaseIdOf(b.id), userId, userDataDir: dirB, owner: 'wf_aaaaaa' });
-      expect(ra).toEqual({ reused: false, visibility: 'visible' });
+      expect(ra).toMatchObject({ reused: false, visibility: 'visible', settingsApplied: true });
       expect(rb.visibility).toBe('visible');
       await pm.getVipContext(leaseIdOf(a.id))!.context.pages()[0]!.goto(`${url}/a`);
       await pm.getVipContext(leaseIdOf(b.id))!.context.pages()[0]!.goto(`${url}/b`);
@@ -145,5 +149,62 @@ async function activeUserDataDir(): Promise<string> {
       expect(await BrowserWindowManager.focusByUserDataDir(ref.userDataDir!)).toBeNull();
       const entry = pm.getVipContext(ref.id);
       await entry?.context.close().catch(() => {});
+    }, 120_000);
+  
+    it('phase 1: name 22 in Chromium, presets/custom flags in the real argv, independent data, close one keeps the other', async () => {
+      const a = await reg.create(userId, '22');
+      const b = await reg.create(userId, 'Second');
+      const dirA = reg.dirOf(userId, a.id); const dirB = reg.dirOf(userId, b.id);
+      expect(dirA).not.toBe(dirB);
+      const auto = buildLaunchArgs({ preset: 'automation', customFlags: '--lang=fa' });
+      expect(auto.ok).toBe(true);
+      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_bbbbbb', displayName: '22', launch: { args: auto.args, hash: auto.hash, explicit: true } });
+      await openProfileBrowser(pm, { leaseId: leaseIdOf(b.id), userId, userDataDir: dirB, owner: 'wf_bbbbbb', displayName: 'Second' });
+      // The name Chromium itself uses for the profile.
+      expect(await readChromiumProfileName(dirA)).toBe('22');
+      expect(await readChromiumProfileName(dirB)).toBe('Second');
+      // The real process arguments: A has the preset + custom flag, B (Standard) does not; each its own dir.
+      const argvOf = (dir: string): string[] => {
+        for (const pidS of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+          let cmd = '';
+          try { cmd = fs.readFileSync(`/proc/${pidS}/cmdline`, 'utf8'); } catch { continue; }
+          const args = cmd.split('\0');
+          if (args.includes(`--user-data-dir=${dir}`) && !args.some((x) => x.startsWith('--type='))) return args;
+        }
+        return [];
+      };
+      const argA = argvOf(dirA); const argB = argvOf(dirB);
+      expect(argA).toContain('--lang=fa');
+      expect(argA).toContain('--no-first-run');
+      expect(argA.some((x) => x === '--headless' || x.startsWith('--headless='))).toBe(false);
+      expect(argB).not.toContain('--lang=fa');
+      // Independent data: a cookie set in A is not in B; it survives A's close + reopen.
+      const ctxA = pm.getVipContext(leaseIdOf(a.id))!.context;
+      const ctxB = pm.getVipContext(leaseIdOf(b.id))!.context;
+      await ctxA.pages()[0]!.goto(`${url}/a`);
+      await ctxB.pages()[0]!.goto(`${url}/b`);
+      await ctxA.addCookies([{ name: 'who', value: 'A', url, expires: Math.floor(Date.now() / 1000) + 3600 }]);
+      expect((await ctxB.cookies(url)).some((c) => c.name === 'who')).toBe(false);
+      // The shared session view lists both, by registry name.
+      expect(summarize(browserSessions().list(), (id) => ({ [a.id]: '22', [b.id]: 'Second' } as Record<string, string>)[id]).map((x) => x.name).sort()).toEqual(['22', 'Second']);
+      // Task View labels the windows with the registry names.
+      BrowserWindowManager.setProfileResolver(async (d) => (path.resolve(d) === path.resolve(dirA) ? { id: a.id, name: '22' } : path.resolve(d) === path.resolve(dirB) ? { id: b.id, name: 'Second' } : null));
+      await sleep(1000);
+      const names = (await BrowserWindowManager.list()).filter((w) => w.source === 'x11').map((w) => w.profileName);
+      expect(names).toEqual(expect.arrayContaining(['22', 'Second']));
+      BrowserWindowManager.setProfileResolver(null);
+      // Close A: B keeps working.
+      expect((await closeProfileBrowser(pm, leaseIdOf(a.id), operatorDependent('wf_bbbbbb'))).closed).toBe(true);
+      await ctxB.pages()[0]!.goto(`${url}/b2`);
+      expect(ctxB.pages()[0]!.url()).toContain('/b2');
+      // Reopen A: its cookie (persistent data) is still there.
+      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_bbbbbb', displayName: '22' });
+      const ctxA2 = pm.getVipContext(leaseIdOf(a.id))!.context;
+      expect((await ctxA2.cookies(url)).find((c) => c.name === 'who')?.value).toBe('A');
+      for (const id of [a.id, b.id]) {
+        const e = pm.getVipContext(leaseIdOf(id));
+        if (e) await closeContextBounded(e.context);
+        browserSessions().closed(leaseIdOf(id));
+      }
     }, 120_000);
   });
