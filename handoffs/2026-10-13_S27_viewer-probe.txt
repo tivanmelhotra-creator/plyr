@@ -1,2 +1,9 @@
+# baseline ee94f6b (before the fix), same probe:
+open=200
+{"closedBySelf":false,"endedShown":true,"vncCanvas":0,"sessionsPolls":0,"realHealthOrOpenCalls":["http://localhost:3000/browser/real/health?watch=1"]}
+viewer set: null
+BASEDONE
+
+# after the fix:
 {"closedBySelf":false,"endedShown":false,"vncCanvas":1,"sessionsPolls":10,"realHealthOrOpenCalls":[]}
 viewer set: ["prf_daaa48ada0e3"]
