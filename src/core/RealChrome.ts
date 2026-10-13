@@ -57,6 +57,7 @@ import {
   type InstalledExtension,
 } from './ChromeExtensions';
 import { resolveFlags, type ResolveFlagsInput, type ResolvedFlags } from './ChromeFlags';
+import { localBrowserOpened, localBrowserClosed, closeContextBounded } from './SharedBrowsers';
 import { inspectorSourceDir, seedInspectorExtension } from './InspectorExtension';
 import {
   ExtensionPickerError,
@@ -1306,6 +1307,10 @@ export class RealChrome {
 
       this.loaded = extensions;
       this.runningHeadless = headless;
+      // ONE registry of live browsers (core/SharedBrowsers): the Local Browser
+      // is a session like every profile browser, so the viewer, the drawer and
+      // Turn off read the same truth.
+      localBrowserOpened(headless ? 'hidden' : 'visible');
 
       // PAGE-CREATION TRACE. The operator asked for the real source of every
       // page, not a count: «اگر چند about:blank ساخته می‌شوند، من می‌خواهم
@@ -1348,6 +1353,7 @@ export class RealChrome {
       this.chooserService.watch(context);
 
       context.on('close', () => {
+        if (this.context === context || this.context === null) localBrowserClosed();
         this.context = null;
         this.loaded = [];
         this.debugInfo = { version: '', ws: '' };
@@ -1939,11 +1945,10 @@ export class RealChrome {
     // WEDGED browser is abandoned without its 'close' event ever firing — which
     // used to make this line load-bearing rather than merely symmetrical. State
     // that is never held cannot be inherited by the browser that replaces it.
-    if (!ctx) return;
-    await Promise.race([
-      ctx.close().catch(() => { /* already gone */ }),
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+    if (!ctx) { localBrowserClosed(); return; }
+    await closeContextBounded(ctx, { contextMs: timeoutMs });
+    // A wedged context never fires 'close': the session is over either way.
+    localBrowserClosed();
   }
 
   /** Stop and start again — the only way to pick up newly installed extensions. */
@@ -1968,11 +1973,9 @@ export class RealChrome {
    */
   static async closeBrowser(timeoutMs = 10_000): Promise<void> {
     const ctx = this.context;
-    if (ctx) {
-      for (const p of ctx.pages()) {
-        try { await p.close(); } catch { /* ignore */ }
-      }
-    }
+    // Pages are closed in parallel with a deadline each: one page blocked on
+    // a dialog used to keep this await (and the Turn off button) forever.
+    if (ctx) await closeContextBounded(ctx, { closePages: true, pagesOnly: true, pageMs: 2000 });
     await this.stop(timeoutMs);
     await clearTabSessions(config.REAL_CHROME_USER_DATA_DIR).catch(() => {});
   }

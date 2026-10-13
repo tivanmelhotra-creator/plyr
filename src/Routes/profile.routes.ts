@@ -10,6 +10,14 @@
  *   POST   /profiles/:id/release           { workflowId }      release the hold (does NOT close the browser)
  *   POST   /profiles/:id/close             { workflowId }      close the browser (does NOT release the hold)
  *   POST   /profiles/:id/restore           { workflowId }      reopen the tabs saved before the last automatic close
+ *   GET    /profiles/launch-options                            presets, categorized options, rules for Custom Flags
+ *   POST   /profiles/launch-settings/validate { launch }       the final argv + errors/warnings, without launching
+ *
+ * `open` accepts `launch: { preset, options, customFlags, acknowledgeRisk }`
+ * (core/LaunchSettings). Invalid settings are refused BEFORE any claim or
+ * launch (400 with the list), risky ones need `acknowledgeRisk` (409
+ * needs_confirmation). Settings change how the process starts, never the
+ * profile's id or data directory.
  *
  * Opening and creating are separate operations; the UI chains them after a
  * successful create. A failed open keeps the profile (and its hold is given
@@ -37,6 +45,30 @@ import { BrowserWindowManager } from '../core/BrowserWindowManager';
 import { runProfileIdOf } from '../core/NodeProfile';
 import type { OverlapView, UnresolvedSchedule } from '../core/ProfileCoordinator';
 import { readLastSession, restoreTabs } from '../core/BrowserStateSnapshot';
+import { buildLaunchArgs, hasLaunchChoice, launchCatalogue, type LaunchSettingsInput, type ResolvedLaunch } from '../core/LaunchSettings';
+
+/** Pure: the launch-settings part of a request body, or null. */
+export function launchInputOf(body: unknown): LaunchSettingsInput | null {
+  const l = (body as { launch?: unknown } | null)?.launch;
+  if (!l || typeof l !== 'object') return null;
+  const o = l as Record<string, unknown>;
+  const options: Record<string, boolean> = {};
+  if (o.options && typeof o.options === 'object') {
+    for (const [k, v] of Object.entries(o.options as Record<string, unknown>)) if (typeof v === 'boolean') options[k] = v;
+  }
+  return {
+    preset: typeof o.preset === 'string' ? o.preset : undefined,
+    options,
+    customFlags: typeof o.customFlags === 'string' ? o.customFlags.slice(0, 40_000)
+      : Array.isArray(o.customFlags) ? (o.customFlags as unknown[]).slice(0, 100).map((x) => String(x ?? '')) : undefined,
+    acknowledgeRisk: o.acknowledgeRisk === true,
+  };
+}
+
+/** What the client sees of a resolved launch (argv is shown: the user typed it; no paths in it). */
+function launchView(r: ResolvedLaunch) {
+  return { ok: r.ok, preset: r.presetId, options: r.options, custom: r.custom, args: r.args, errors: r.errors, warnings: r.warnings, needsConfirmation: r.needsConfirmation, hash: r.hash };
+}
 
 export interface ProfileRoutesDeps {
   connection: IORedis;
@@ -162,6 +194,15 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     } catch (e) { fail(res, e); }
   });
 
+  router.get('/profiles/launch-options', (_req, res) => {
+    res.json({ success: true, ...launchCatalogue() });
+  });
+
+  router.post('/profiles/launch-settings/validate', (req, res) => {
+    const input = launchInputOf(req.body) || {};
+    res.json({ success: true, launch: launchView(buildLaunchArgs(input)) });
+  });
+
   router.post('/profiles', async (req: AuthenticatedRequest, res) => {
     try {
       const userId = userOf(req);
@@ -209,6 +250,18 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     try {
       id = await idOrFail(userId, req.params.id, res);
       if (!id) return;
+      // Launch settings are checked BEFORE anything is claimed or started: a
+      // refused setting must leave no hold, no session and no half launch.
+      const launchIn = launchInputOf(req.body);
+      const resolved = buildLaunchArgs(launchIn || {});
+      if (resolved.errors.length) {
+        res.status(400).json({ success: false, code: 'invalid_launch_settings', error: `Launch settings refused: ${resolved.errors.map((e) => (e.flag ? `${e.flag} — ` : '') + e.message).join(' ')}`, launch: launchView(resolved) });
+        return;
+      }
+      if (resolved.needsConfirmation) {
+        res.status(409).json({ success: false, code: 'needs_confirmation', error: `Confirm these launch flags first: ${resolved.warnings.map((w) => w.message).join(' ')}`, launch: launchView(resolved) });
+        return;
+      }
       const entry = await access.registry.get(userId, id);
       if (entry?.problem) {
         res.status(409).json({ success: false, error: `Profile needs review: ${entry.problem}`, code: 'needs_review' });
@@ -242,6 +295,8 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       let launchError: unknown = null;
       const started = await withStartBudget(() => openProfileBrowser(profileManager, {
         leaseId, userId, userDataDir: access.registry.dirOf(userId, profileId), owner,
+        displayName: entry?.name,
+        launch: { args: resolved.args, hash: resolved.hash, explicit: hasLaunchChoice(launchIn) },
       }).catch((e) => { launchError = e; throw e; }), {
         onLateSettle: (err) => {
           if (!err) { void access.registry.recordOpenError(userId, profileId, null); return; }
@@ -272,7 +327,13 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         visibility: opened.visibility,
         focused: !!focused,
         holdUntil: h.expiresAt,
-        // The existing remote view, pointed at this profile's window.
+        relaunched: !!opened.relaunched,
+        // Whether the running browser was started with the requested launch
+        // settings (false: an open browser in use was reused as it was).
+        settingsApplied: opened.settingsApplied,
+        launch: launchView(resolved),
+        // The ONE shared viewer (one desktop, every window on it). `profile`
+        // tells the view which window to raise and which session it watches.
         viewPath: `/desktop/chrome?profile=${encodeURIComponent(id)}`,
       });
     } catch (e) {
@@ -283,7 +344,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         browserSessions().detach(leaseIdOf(id), operatorDependent(owner));
       }
       if (e instanceof ProfileBrowserError) {
-        res.status(e.code === 'in_use_hidden' ? 409 : 503).json({ success: false, error: e.message, code: e.code, retryable: e.code === 'launch_failed' });
+        res.status(e.code === 'launch_failed' ? 503 : 409).json({ success: false, error: e.message, code: e.code, retryable: e.code === 'launch_failed' });
         return;
       }
       fail(res, e);

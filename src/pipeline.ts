@@ -47,6 +47,7 @@ import {
   type NodeFileRef,
 } from './core/WorkflowOutputs';
 import { acquireContext } from './core/BrowserAdapter';
+import { buildKey, buildCompatible, getBuild, setBuild, forgetBuild } from './core/ProfileBuild';
 import { Desktop } from './core/Desktop';
 import { withUtf8Locale } from './core/BrowserProfile';
 import {
@@ -651,7 +652,8 @@ export function toCsv(data: any): string {
 // Launch Browser option — or a manual (visible) run arriving after an
 // automatic (hidden) one — would reuse a browser built differently. Keyed by
 // the profile's lease id.
-const profileBuildHash = new Map<string, string>();
+// Shared with the operator's launcher (core/ProfileBuild), so a browser opened
+// by hand is not mistaken for one "built differently" by the next manual run.
 
 /** Tell the user which options could not apply to the browser they are on. */
 function logIgnoredOptions(context: AutomationContext, plan: { ignored: Array<{ id: string; reason: string }> }): void {
@@ -674,7 +676,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
   const profile = context.profile;
   const key = profile?.id || 'default';
   const optPlan = planFor(context.browserOptions, 'vip');
-  const wantHash = `${optPlan.hash}|headless=${headless ? 1 : 0}`;
+  const wantHash = buildKey({ optionsHash: optPlan.hash, headless });
   const profileDir = profile?.userDataDir || path.join(config.PROFILES_DIR, context.userId, 'chrome-profile');
   const userId = key; // ProfileManager's persistent-context map is keyed by profile
 
@@ -686,7 +688,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
 
   if (existing) {
     try {
-      const optionsChanged = (profileBuildHash.get(key) ?? '') !== wantHash;
+      const optionsChanged = !buildCompatible(getBuild(key), wantHash);
       if (optionsChanged) log('[BROWSER] Browser options or visibility changed - relaunching the profile browser');
       if (!optionsChanged && await checkBrowserHealth(existing.context, log)) {
         const pages = existing.context.pages();
@@ -808,7 +810,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
 
     profileManager.setVipContext(userId, browserContext, jobId);
     profileManager.registerPage(jobId, page);
-    profileBuildHash.set(key, wantHash);
+    setBuild(key, wantHash);
     browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
     setSessionDataDir(key, profileDir);
     browserSessions().attach(key, jobDependent(jobId));
@@ -816,7 +818,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
     browserContext.on('close', () => {
       if (profileManager.getVipContext(userId)?.context === browserContext) {
         profileManager.removeVipContext(userId);
-        profileBuildHash.delete(key);
+        forgetBuild(key);
       }
       if (!profileManager.getVipContext(userId)) browserSessions().closed(key);
     });
@@ -2894,7 +2896,7 @@ async function runPipelineImpl(params: {
             // Nothing to un-register with a pool: the browser was never ours.
           } else {
             profileManager.removeVipContext(context.profile?.id || 'default');
-            profileBuildHash.delete(context.profile?.id || 'default');
+            forgetBuild(context.profile?.id || 'default');
             // The browser is gone; the run's LEASE is not (released by the worker).
             browserSessions().closed(context.profile?.id || 'default');
           }

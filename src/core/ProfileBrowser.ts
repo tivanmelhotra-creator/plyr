@@ -4,14 +4,23 @@
  * The SAME persistent context the runs use (ProfileManager's per-profile map,
  * keyed by the lease id), so an operator's browser and a later run on the same
  * profile are one browser, never two processes fighting for one user-data-dir.
- * Opened VISIBLE on the existing X desktop and shown through the existing
- * remote view (/desktop/chrome?profile=<id>): no new viewer, no second
- * mechanism.
+ * Opened VISIBLE on the shared X desktop and shown through the ONE shared
+ * viewer (/desktop/chrome): no second mechanism.
  *
  * Opening is idempotent: concurrent opens of one profile share one launch
  * (`starting`), and an open browser is reused. Every launch / close updates
  * core/BrowserSessions. A visibility mismatch (a hidden automatic run's
  * browser) is NOT silently relaunched under a dependent: the caller is told.
+ *
+ * LAUNCH SETTINGS (core/LaunchSettings) are validated by the caller and given
+ * here as the final argv + its hash. They decide HOW the process starts, never
+ * which data: the user-data-dir is always the profile's own. A running browser
+ * started with different settings is relaunched only when nobody else depends
+ * on it (state saved first); otherwise the caller is told why.
+ *
+ * DISPLAY NAME. Before each launch the profile's registry name is written into
+ * Chromium's own profile data (core/ChromiumProfileName), so the window, the
+ * avatar menu and Task View show "22" instead of "Your Chromium".
  */
 import fs from 'fs';
 import { chromium } from 'playwright';
@@ -22,9 +31,13 @@ import { browserSessions, operatorDependent, setSessionDataDir, sessionDataDir }
 import { saveBeforeClose } from './BrowserStateSnapshot';
 import { withUtf8Locale } from './BrowserProfile';
 import { Desktop } from './Desktop';
+import { buildLaunchArgs } from './LaunchSettings';
+import { buildKey, getBuild, setBuild, forgetBuild } from './ProfileBuild';
+import { applyChromiumProfileName } from './ChromiumProfileName';
+import { closeContextBounded } from './SharedBrowsers';
 
 export class ProfileBrowserError extends Error {
-  constructor(message: string, readonly code: 'in_use_hidden' | 'launch_failed') {
+  constructor(message: string, readonly code: 'in_use_hidden' | 'in_use_settings' | 'launch_failed') {
     super(message);
     this.name = 'ProfileBrowserError';
   }
@@ -32,17 +45,23 @@ export class ProfileBrowserError extends Error {
 
 const starting = new Map<string, Promise<BrowserContext>>();
 
-/** Injectable launcher (tests replace it; production launches Chromium). */
-export type Launcher = (userDataDir: string) => Promise<BrowserContext>;
+/** Injectable launcher (tests replace it; production launches Chromium). `args` = validated launch settings. */
+export type Launcher = (userDataDir: string, args: string[]) => Promise<BrowserContext>;
 
-export const defaultLauncher: Launcher = async (userDataDir) => {
+/** The Standard preset: exactly the arguments this launcher always used. */
+export const STANDARD_LAUNCH = buildLaunchArgs({});
+
+export const defaultLauncher: Launcher = async (userDataDir, args) => {
   await Desktop.ensureDisplay().catch(() => { /* the launch error says what is missing */ });
   return chromium.launchPersistentContext(userDataDir, {
+    // Always visible: a browser opened by hand is opened to be seen. Not
+    // settable by a flag (core/LaunchSettings refuses --headless).
     headless: false,
     viewport: null,
     timeout: config.BROWSER_LAUNCH_TIMEOUT_MS,
     ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--start-maximized'],
+    // An ARRAY handed to execve by Playwright: no shell ever sees it.
+    args,
     ignoreDefaultArgs: ['--enable-automation'],
     env: withUtf8Locale(process.env),
   });
@@ -57,15 +76,39 @@ export function setProfileLauncherForTests(l: Launcher | null): void { launcher 
  */
 export async function openProfileBrowser(pm: ProfileManager, input: {
   leaseId: string; userId: string; userDataDir: string; owner: string;
-}): Promise<{ reused: boolean; visibility: 'visible' | 'hidden' }> {
+  /** Registry display name, written into Chromium's profile data before launch. */
+  displayName?: string;
+  /** Validated launch settings (core/LaunchSettings). Absent = Standard, and an open browser is reused as it is. */
+  launch?: { args: string[]; hash: string; explicit: boolean };
+}): Promise<{ reused: boolean; visibility: 'visible' | 'hidden'; relaunched?: boolean; launchHash: string; settingsApplied: boolean }> {
   const sessions = browserSessions();
   const dep = operatorDependent(input.owner);
+  const launch = input.launch || { args: STANDARD_LAUNCH.args, hash: STANDARD_LAUNCH.hash, explicit: false };
+  const wantKey = buildKey({ headless: false, launchHash: launch.hash });
+  let relaunched = false;
   const existing = pm.getVipContext(input.leaseId);
   if (existing) {
     let alive = true;
     try { existing.context.pages(); } catch { alive = false; }
     const rec = sessions.get(input.leaseId);
-    if (alive && rec && rec.visibility === 'hidden') {
+    const built = getBuild(input.leaseId);
+    // The operator asked for specific launch settings and the running browser
+    // was started otherwise (or by a run, whose build we know): relaunch, but
+    // never under another dependent.
+    const settingsDiffer = alive && rec && rec.visibility !== 'hidden' && launch.explicit
+      && (!built || !built.endsWith(`|launch=${launch.hash}`));
+    if (settingsDiffer) {
+      const d = sessions.canClose(input.leaseId, dep);
+      if (!d.ok && d.reason === 'in_use') {
+        throw new ProfileBrowserError('This profile\'s browser is already open and in use (a run or another view), so it cannot be restarted with other launch settings now. Open it without changing the settings, or close it when it is free.', 'in_use_settings');
+      }
+      await saveBeforeClose(existing.context, sessionDataDir(input.leaseId) || input.userDataDir, 'relaunch');
+      await closeContextBounded(existing.context);
+      pm.removeVipContext(input.leaseId);
+      sessions.closed(input.leaseId);
+      forgetBuild(input.leaseId);
+      relaunched = true;
+    } else if (alive && rec && rec.visibility === 'hidden') {
       // A hidden browser cannot be shown. Relaunch it visible only when nobody
       // else depends on it; otherwise say why.
       const d = sessions.canClose(input.leaseId, dep);
@@ -73,14 +116,17 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
         throw new ProfileBrowserError('This profile\'s browser is running hidden for a run right now; open it again when the run has finished.', 'in_use_hidden');
       }
       await saveBeforeClose(existing.context, sessionDataDir(input.leaseId) || input.userDataDir, 'relaunch');
-      await existing.context.close().catch(() => {});
+      await closeContextBounded(existing.context);
       pm.removeVipContext(input.leaseId);
       sessions.closed(input.leaseId);
+      forgetBuild(input.leaseId);
+      relaunched = true;
     } else if (alive) {
       if (!rec) sessions.opened(input.leaseId, { userId: input.userId, visibility: 'visible', createdBy: dep });
       sessions.attach(input.leaseId, dep);
       pm.updateActivity(input.leaseId);
-      return { reused: true, visibility: rec?.visibility || 'visible' };
+      const b = getBuild(input.leaseId) || '';
+      return { reused: true, visibility: rec?.visibility || 'visible', launchHash: b.split('|launch=')[1] || '', settingsApplied: !launch.explicit || b.endsWith(`|launch=${launch.hash}`) };
     } else {
       pm.removeVipContext(input.leaseId);
       sessions.closed(input.leaseId);
@@ -91,13 +137,18 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
   if (!p) {
     p = (async () => {
       await fs.promises.mkdir(input.userDataDir, { recursive: true });
-      const ctx = await launcher(input.userDataDir);
+      if (input.displayName) {
+        const named = await applyChromiumProfileName(input.userDataDir, input.displayName);
+        if (!named.ok) console.warn(`[PROFILES] Chromium display name not set for ${input.leaseId}: ${named.skipped || 'unknown'}`);
+      }
+      const ctx = await launcher(input.userDataDir, launch.args);
       if (!ctx.pages().length) await ctx.newPage().catch(() => null);
       pm.setVipContext(input.leaseId, ctx, `operator:${input.owner}`);
       sessions.opened(input.leaseId, { userId: input.userId, visibility: 'visible', createdBy: dep });
       setSessionDataDir(input.leaseId, input.userDataDir);
+      setBuild(input.leaseId, wantKey);
       ctx.on('close', () => {
-        if (pm.getVipContext(input.leaseId)?.context === ctx) pm.removeVipContext(input.leaseId);
+        if (pm.getVipContext(input.leaseId)?.context === ctx) { pm.removeVipContext(input.leaseId); forgetBuild(input.leaseId); }
         if (!pm.getVipContext(input.leaseId)) sessions.closed(input.leaseId);
       });
       return ctx;
@@ -110,7 +161,7 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
     throw new ProfileBrowserError(`Could not start the browser: ${(e as Error).message.split('\n')[0]}`, 'launch_failed');
   }
   sessions.attach(input.leaseId, dep);
-  return { reused: false, visibility: 'visible' };
+  return { reused: false, visibility: 'visible', relaunched, launchHash: launch.hash, settingsApplied: true };
 }
 
 /**
@@ -118,7 +169,7 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
  * depends on it (a run, another operator view). NEVER releases the hold.
  */
 export async function closeProfileBrowser(pm: ProfileManager, leaseId: string, requester: string):
-  Promise<{ closed: boolean; reason?: 'in_use' | 'not_open'; dependents?: string[] }> {
+  Promise<{ closed: boolean; reason?: 'in_use' | 'not_open'; dependents?: string[]; timedOut?: boolean }> {
   const sessions = browserSessions();
   const entry = pm.getVipContext(leaseId);
   if (!entry) { sessions.closed(leaseId); return { closed: false, reason: 'not_open' }; }
@@ -126,8 +177,11 @@ export async function closeProfileBrowser(pm: ProfileManager, leaseId: string, r
   if (!d.ok && d.reason === 'in_use') return { closed: false, reason: 'in_use', dependents: d.dependents };
   // Recoverable: tabs + storage are saved into the profile before it closes.
   await saveBeforeClose(entry.context, sessionDataDir(leaseId), 'operator');
-  await entry.context.close().catch(() => {});
+  // Bounded: a context whose close never returns (wedged renderer) is
+  // abandoned rather than holding the request — and the UI — forever.
+  const r = await closeContextBounded(entry.context);
   pm.removeVipContext(leaseId);
   sessions.closed(leaseId);
-  return { closed: true };
+  forgetBuild(leaseId);
+  return { closed: true, ...(r.timedOut ? { timedOut: true } : {}) };
 }
