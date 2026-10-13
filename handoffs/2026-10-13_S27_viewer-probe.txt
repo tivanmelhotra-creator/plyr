@@ -1,0 +1,2 @@
+{"closedBySelf":false,"endedShown":false,"vncCanvas":1,"sessionsPolls":10,"realHealthOrOpenCalls":[]}
+viewer set: ["prf_daaa48ada0e3"]

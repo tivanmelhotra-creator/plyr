@@ -1,0 +1,42 @@
+== B. create '22' with Local Browser OFF
+  local=false sessions=[]
+  create=201
+  id=prf_daaa48ada0e3
+{"success":true,"profileId":"prf_daaa48ada0e3","reused":false,"visibility":"visible","focused":true,"holdUntil":1791925310711,"relaunched":false,"settingsApplied":true,"launch":{"ok":true,"preset":"standard","options":["
+  4 s later:
+  local=false sessions=[22(profile,views=1,runs=0)]
+  window 0x00e00003 pid=2747 dir=local/browser-profiles/prf_daaa48ada0e3
+  chromium display name: 22
+== A/E. 'Shop B' with Automation preset + --lang=fa
+{"success":true,"profileId":"prf_ae9c4a8c8bdb","reused":false,"visibility":"visible","focused":true,"holdUntil":1791925318274,"relaunched":false,"settingsApplie
+  window 0x00e00003 pid=2747 dir=local/browser-profiles/prf_daaa48ada0e3
+  window 0x01a00003 pid=2908 dir=local/browser-profiles/prf_ae9c4a8c8bdb
+  local=false sessions=[22(profile,views=1,runs=0), Shop B(profile,views=1,runs=0)]
+  arg --disable-background-timer-throttling
+  arg --no-first-run
+  arg --no-first-run
+  arg --disable-background-timer-throttling
+  arg --lang=fa
+  arg --user-data-dir=.../profiles/local/browser-profiles/prf_ae9c4a8c8bdb
+  22 has --no-first-run? 1
+== E. invalid flags
+{"success":false,"code":"invalid_launch_settings","error":"Launch settings refused: --user-data-dir=/tmp/x — --user-data-dir is controlled by the application: the profile's data directory is chosen by the profile, not by a flag. --headless — --headless is controlled by the application: visible / hidden is decided by the run 
+== D. Turn on Local Browser, then Turn off with 2 profile browsers open
+  turn-on=200
+  local=true sessions=[Local Browser(local-browser,views=0,runs=0), 22(profile,views=1,runs=0), Shop B(profile,views=1,runs=0)]
+{"success":true,"running":false,"otherSessions":[{"id":"named:prf_daaa48ada0e3","kind":"profile","profileId":"prf_daaa48ada0e3","name":"22","visibility":"visible","runs":0,"views":1,"startedAt":1791923513404},{"id":"named:prf_ae9c4a8c8bdb","kind":"profile","pr
+  turn-off took 889 ms
+  local=false sessions=[22(profile,views=1,runs=0), Shop B(profile,views=1,runs=0)]
+  window 0x00e00003 pid=2747 dir=local/browser-profiles/prf_daaa48ada0e3
+  window 0x01a00003 pid=2908 dir=local/browser-profiles/prf_ae9c4a8c8bdb
+== A6. close 22; Shop B keeps running
+{"success":true,"closed":true,"holdKept":true}
+  local=false sessions=[Shop B(profile,views=1,runs=0)]
+  window 0x01a00003 pid=2908 dir=local/browser-profiles/prf_ae9c4a8c8bdb
+== A7. reopen 22: same dir, saved state kept
+{"success":true,"profileId":"prf_daaa48ada0e3","reused":false,"visibility":"visible","focused":true,
+  storage-state.json
+== F. release != close; close != release
+{"success":true,"released":true}
+  local=false sessions=[22(profile,views=1,runs=0), Shop B(profile,views=0,runs=0)]
+DONE
