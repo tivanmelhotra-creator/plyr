@@ -34,6 +34,8 @@ let sessions: BrowserSessions;
 let pm: ProfileManager;
 let launches = 0;
 let failLaunch = '';
+let lastArgs: string[] = [];
+let lastDir = '';
 
 class FakeContext {
   closed = false;
@@ -60,8 +62,9 @@ beforeEach(async () => {
   }
   dir = mkdtempSync(path.join(tmpdir(), 'plyr-pr-'));
   launches = 0; failLaunch = '';
-  setProfileLauncherForTests(async () => {
+  setProfileLauncherForTests(async (udd: string, args: string[]) => {
     launches++;
+    lastArgs = args; lastDir = udd;
     if (failLaunch) throw new Error(failLaunch);
     return new FakeContext() as any;
   });
@@ -237,6 +240,82 @@ describe('/profiles', () => {
     // Leave nothing behind for the next suite (a hold of this instance would read as orphaned there).
     await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_s' });
     await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_s' }).expect(200);
+    cleanup();
+  });
+
+  it('launch settings: validated before anything is claimed; applied as argv; never change the data dir', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: '22' })).body.profile.id;
+    // App-controlled flag: 400, no hold, no session, no launch.
+    const bad = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { customFlags: '--user-data-dir=/tmp/other' } }).expect(400);
+    expect(bad.body.code).toBe('invalid_launch_settings');
+    expect(bad.body.launch.errors[0].message).toMatch(/controlled by the application/);
+    expect(launches).toBe(0);
+    expect(await redis!.exists(HOLD_PREFIX + leaseIdOf(id))).toBe(0);
+    expect(sessions.get(leaseIdOf(id))).toBeNull();
+    // Risky flag without confirmation: 409, nothing started.
+    const risky = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { customFlags: '--disable-web-security' } }).expect(409);
+    expect(risky.body.code).toBe('needs_confirmation');
+    expect(launches).toBe(0);
+    // Valid: preset + option + custom flag reach the launcher; the dir is the profile's own.
+    const ok = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'automation', options: { 'auto-devtools': true }, customFlags: '--lang=fa' } }).expect(200);
+    expect(ok.body.settingsApplied).toBe(true);
+    expect(lastArgs).toContain('--no-first-run');
+    expect(lastArgs).toContain('--auto-open-devtools-for-tabs');
+    expect(lastArgs[lastArgs.length - 1]).toBe('--lang=fa');
+    expect(lastDir.endsWith(path.join('browser-profiles', id))).toBe(true);
+    // The Chromium display name was written into the profile's own data.
+    const { readChromiumProfileName } = await import('../../src/core/ChromiumProfileName');
+    expect(await readChromiumProfileName(lastDir)).toBe('22');
+    // Same settings again: reused, no second process.
+    const again = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'automation', options: { 'auto-devtools': true }, customFlags: '--lang=fa' } }).expect(200);
+    expect(again.body.reused).toBe(true);
+    expect(launches).toBe(1);
+    // Other settings while only this operator depends on it: relaunched with them (same dir).
+    const other = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'standard' } }).expect(200);
+    expect(other.body.relaunched).toBe(true);
+    expect(launches).toBe(2);
+    expect(lastArgs).not.toContain('--no-first-run');
+    expect(lastDir.endsWith(path.join('browser-profiles', id))).toBe(true);
+    // Other settings while a RUN depends on it: refused with the reason, browser untouched.
+    sessions.attach(leaseIdOf(id), jobDependent('77'));
+    const busy = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'diagnostics' } }).expect(409);
+    expect(busy.body.code).toBe('in_use_settings');
+    expect(launches).toBe(2);
+    // Plain open (no settings) while the run depends on it: reused as it is.
+    const plain = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l' }).expect(200);
+    expect(plain.body.reused).toBe(true);
+    sessions.detach(leaseIdOf(id), jobDependent('77'));
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_l' }).expect(200);
+    await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_l' }).expect(200);
+    cleanup();
+  });
+
+  it('launch options catalogue and validation endpoint', async () => {
+    if (!up) return;
+    const cat = await request(app).get('/profiles/launch-options').expect(200);
+    expect(cat.body.presets.map((p: any) => p.id)).toEqual(['standard', 'automation', 'diagnostics']);
+    expect(cat.body.appControlled.some((x: any) => x.flag === '--user-data-dir')).toBe(true);
+    const v = await request(app).post('/profiles/launch-settings/validate').send({ launch: { customFlags: '--lang=fa\n--headless' } }).expect(200);
+    expect(v.body.launch.ok).toBe(false);
+    expect(v.body.launch.custom).toEqual(['--lang=fa']);
+    cleanup();
+  });
+
+  it('a failed launch keeps the profile and its error, and the retry works (no hold left behind)', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Retry me' })).body.profile.id;
+    failLaunch = 'Missing X server';
+    const r = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_r' });
+    expect(r.status).toBe(503);
+    expect(r.body.retryable).toBe(true);
+    expect(await redis!.exists(HOLD_PREFIX + leaseIdOf(id))).toBe(0);
+    const list = await request(app).get('/profiles?workflowId=wf_r').expect(200);
+    expect(list.body.profiles.find((p: any) => p.id === id).lastOpenError.message).toMatch(/Missing X server/);
+    failLaunch = '';
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_r' }).expect(200);
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_r' }).expect(200);
+    await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_r' }).expect(200);
     cleanup();
   });
 });
