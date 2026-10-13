@@ -59,6 +59,9 @@ import {
   summarizeItems,
   type WorkflowItem
 } from './core/WorkflowItems';
+import { continueSession, workflowExistsRegistered } from './core/SessionContinuation';
+import { profileLeasesRegistry } from './core/ProfileLease';
+import { isValidWorkflowId } from './utils/redis-keys';
 
 // برای Node.js < 18، این را uncomment کنید:
 // import fetch from 'node-fetch';
@@ -925,6 +928,9 @@ async function runPipelineImpl(params: {
   userPlan: PlanConfig;
   /** The browser profile this run holds the lease for (core/ProfileLease). */
   profile?: ProfileRef;
+  /** Phase 2: this run's lease token and owner (Continue Session node). */
+  leaseToken?: string | null;
+  owner?: string;
   onEvent?: (type: string, data?: Record<string, unknown>) => void;
   /** Who started the run (core/RunPolicy). Informational here: `headless` already follows it. */
   origin?: 'manual' | 'automatic';
@@ -983,6 +989,8 @@ async function runPipelineImpl(params: {
     variables: new Map<string, any>(),
     globalLoopCounter: 0,
     profile,
+    leaseToken: params.leaseToken ?? null,
+    owner: params.owner,
     onEvent,
     // Step 21: start every workflow with a single empty item, like n8n,
     // so the first node always has exactly one input item to act on.
@@ -2816,6 +2824,32 @@ async function runPipelineImpl(params: {
 
           globalStepNumber++;
           stepOutputs.push(createStepOutput(globalStepNumber, 'parse-json', true, parsed, stepStartTime));
+          continue stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // 37c. CONTINUE SESSION (phase 2) — hand THIS browser session to
+        // another workflow through the explicit, expiring grant path only
+        // (core/SessionContinuation). No implicit transfer: the owner comes
+        // from the worker, the proof is the run's own lease token.
+        // ════════════════════════════════════════════════════════════════
+        if (step.action === 'continue-session' || step.action === 'continue_session') {
+          const leases = profileLeasesRegistry();
+          if (!leases) throw new Error('Continue Session is not available here (no profile leases).');
+          const ttlMin = finalParams.ttlMinutes;
+          const r = await continueSession({
+            leases, sessions: browserSessions(), workflowExists: workflowExistsRegistered, isValidWorkflowId,
+          }, {
+            userId, leaseId: context.leaseToken ? (context.profile?.id || null) : null, leaseToken: context.leaseToken ?? null,
+            jobId, fromOwner: context.owner || `job:${jobId}`, toWorkflowId: finalParams.workflowId,
+            ttlMs: ttlMin !== undefined && ttlMin !== '' ? Number(ttlMin) * 60_000 : undefined,
+          });
+          if (!r.ok) throw new Error(`Continue Session: ${r.message}`);
+          log(`[SESSION] This browser session may be continued by workflow ${r.to} until ${new Date(r.until).toISOString()}`);
+          globalStepNumber++;
+          const out = { continuedBy: r.to, until: new Date(r.until).toISOString() };
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, out, log);
+          stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, out, stepStartTime));
           continue stepLoop;
         }
 

@@ -170,6 +170,10 @@ export interface AutomationContext {
   globalLoopCounter: number;
   /** The browser profile this run holds the lease for (core/ProfileLease). */
   profile?: ProfileRef;
+  /** Phase 2: proof that this run holds the profile's lease (Continue Session). */
+  leaseToken?: string | null;
+  /** Phase 2: who the run works for (its workflow id), decided by the worker. */
+  owner?: string;
   // Step 21 (item-based data model): the uniform item stream flowing
   // between steps (n8n-style). Starts as a single empty item.
   items: WorkflowItem[];
