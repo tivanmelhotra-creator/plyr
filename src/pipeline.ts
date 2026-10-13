@@ -11,9 +11,12 @@ import { ConditionEngine } from './core/ConditionEngine';
 import {
   normalizeErrorPolicy,
   shouldRetry,
-  retryDelayMs,
   isStopAndError,
+  failureKindOf,
+  retriesKind,
+  backoffDelayMs,
 } from './core/ErrorPolicy';
+import { failureItem, outputBranchFor } from './core/NodeOutputs';
 import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './core/CodeNode';
 import { isTriggerAction } from './core/TriggerEngine';
 import { hiddenLaunchOptions, describeVisibility } from './core/RunPolicy';
@@ -1138,6 +1141,8 @@ async function runPipelineImpl(params: {
         for (const c of Object.values(st.cases ?? {})) walk(c);
         walk(st.catch);
         walk(st.finally);
+        walk(st.errorSteps);
+        walk(st.timeoutSteps);
       }
     };
     walk(steps);
@@ -1217,6 +1222,12 @@ async function runPipelineImpl(params: {
 
       // ── Step 27: per-step error policy (retry / continue-on-fail) ──
       const __policy = normalizeErrorPolicy(step);
+      // Phase 2: this node's own timeout bounds every Playwright wait and
+      // navigation of THIS step (restored to Playwright's 30 s default after).
+      const __applyTimeout = (ms: number): void => {
+        try { context.browserContext?.setDefaultTimeout(ms); context.browserContext?.setDefaultNavigationTimeout(ms); } catch { /* no browser yet */ }
+      };
+      if (__policy.timeoutMs > 0) __applyTimeout(__policy.timeoutMs);
       const __sgBefore = globalStepNumber;
       const __soBefore = stepOutputs.length;
       let __attempt = 0;
@@ -3366,7 +3377,8 @@ async function runPipelineImpl(params: {
         const result = await withStepTimeout(
           loadedModule.run(context, finalParams),
           globalStepNumber + 1,
-          step.action
+          step.action,
+          __policy.timeoutMs > 0 ? __policy.timeoutMs : config.STEP_TIMEOUT_MS
         );
 
         globalStepNumber++;
@@ -3392,13 +3404,15 @@ async function runPipelineImpl(params: {
         // Step 27: never retry/swallow fatal control-flow errors.
         const __fatal = stepError instanceof WorkflowFailError
           || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|Safety Stop)/.test(String(stepError && stepError.message));
+        const __kind = failureKindOf(stepError);
         // Retry-on-fail: roll back this attempt's bookkeeping and try again.
-        if (!__fatal && __policy.retryOnFail && shouldRetry(__attempt, __policy.maxTries)) {
+        // Phase 2: only the failure kinds the node retries (retryOn), with its backoff.
+        if (!__fatal && __policy.retryOnFail && retriesKind(__policy, __kind) && shouldRetry(__attempt, __policy.maxTries)) {
           globalStepNumber = __sgBefore;
           stepOutputs.length = __soBefore;
-          const __delay = retryDelayMs(__attempt, __policy.waitBetweenTriesMs);
-          log(`[RETRY] Step '${step.action}' failed (attempt ${__attempt}/${__policy.maxTries}): ${stepError.message}. Retrying in ${__delay}ms...`);
-          context.onEvent?.('step.retry', { index: globalStepNumber + 1, action: step.action, attempt: __attempt, maxTries: __policy.maxTries, error: String(stepError.message || stepError) });
+          const __delay = backoffDelayMs(__attempt, __policy.waitBetweenTriesMs, __policy.backoff);
+          log(`[RETRY] Step '${step.action}' failed (${__kind}, attempt ${__attempt}/${__policy.maxTries}): ${stepError.message}. Retrying in ${__delay}ms...`);
+          context.onEvent?.('step.retry', { index: globalStepNumber + 1, action: step.action, attempt: __attempt, maxTries: __policy.maxTries, kind: __kind, error: String(stepError.message || stepError) });
           await new Promise(r => setTimeout(r, __delay));
           continue; // retry the step body (while loop)
         }
@@ -3412,8 +3426,25 @@ async function runPipelineImpl(params: {
           stepStartTime,
           stepError.message
         ));
-        context.onEvent?.('step.error', { index: globalStepNumber, action: step.action, error: String(stepError.message || stepError) });
+        context.onEvent?.('step.error', { index: globalStepNumber, action: step.action, error: String(stepError.message || stepError), kind: __kind });
         __errored = true; // step.error already closed this step; the finally must not add a step.done
+        // Phase 2: the node's ERROR / TIMEOUT output. The failure becomes the
+        // branch's item ({ error, kind, node, attempts }); the branch runs and
+        // the group is LEFT (the success chain after this node does not run),
+        // exactly like a taken `if` path. Fatal control flow never routes.
+        const __branch = __fatal ? null : outputBranchFor(step, __kind);
+        if (__branch) {
+          log(`[OUTPUT] Step '${step.action}' failed (${__kind}) - continuing on its ${__branch.port} output`);
+          context.onEvent?.('step.path', { index: globalStepNumber, action: step.action, path: __branch.port, name: __branch.port });
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, failureItem(step, stepError, __kind, __attempt).json, log);
+          context.items = [failureItem(step, stepError, __kind, __attempt)];
+          if (__policy.timeoutMs > 0) __applyTimeout(30_000);
+          if (__branch.steps.length) {
+            const bres = await executeStepGroup(__branch.steps);
+            if (bres) return bres;
+          }
+          break stepLoop;
+        }
         // Continue-on-fail: swallow the (non-fatal) error and carry on.
         if (!__fatal && __policy.continueOnFail) {
           log(`[CONTINUE-ON-FAIL] Step '${step.action}' failed but continueOnFail is set; continuing.`);
@@ -3427,6 +3458,7 @@ async function runPipelineImpl(params: {
       break; // attempt succeeded — leave the retry loop
       } // end Step 27 retry while-loop
       } finally {
+        if (__policy.timeoutMs > 0) __applyTimeout(30_000);
         // Step 16: live event - announce step completion (best-effort).
         // A step that failed already got `step.error` (also under continueOnFail);
         // don't double-report it.

@@ -22,7 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 
-const NESTED = ['then', 'else', 'steps', 'catch', 'finally', 'fallback'] as const;
+const NESTED = ['then', 'else', 'steps', 'catch', 'finally', 'fallback', 'errorSteps', 'timeoutSteps'] as const;
 
 /** The design as it RUNS: disabled nodes removed, recursively. */
 export function runnableSteps(steps: unknown): unknown[] {

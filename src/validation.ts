@@ -51,6 +51,9 @@ export interface StepInput {
   catch?: StepInput[];
   finally?: StepInput[];
   cases?: Record<string, StepInput[]>;
+  /** Phase 2: the node's Error / Timeout outputs (see AutomationStep). */
+  errorSteps?: StepInput[];
+  timeoutSteps?: StepInput[];
   [key: string]: any;
 }
 
@@ -271,6 +274,11 @@ export const validateSteps = (
         retryOnFail: _c2,
         maxTries: _c3,
         waitBetweenTriesMs: _c4,
+        retryOn: _c5,
+        retryBackoff: _c6,
+        timeoutMs: _c7,
+        errorSteps: _c8,
+        timeoutSteps: _c9,
         ...rest
       } = step;
 
@@ -315,6 +323,12 @@ export const validateSteps = (
     if (typeof step.waitBetweenTriesMs === 'number' && Number.isFinite(step.waitBetweenTriesMs)) {
       cleanStep.waitBetweenTriesMs = step.waitBetweenTriesMs;
     }
+
+    // Phase 2: retry policy + per-node timeout. Enumerations are checked here,
+    // numbers are clamped by normalizeErrorPolicy().
+    if (step.retryOn === 'any' || step.retryOn === 'error' || step.retryOn === 'timeout') cleanStep.retryOn = step.retryOn;
+    if (step.retryBackoff === 'fixed' || step.retryBackoff === 'linear' || step.retryBackoff === 'exponential') cleanStep.retryBackoff = step.retryBackoff;
+    if (typeof step.timeoutMs === 'number' && Number.isFinite(step.timeoutMs) && step.timeoutMs > 0) cleanStep.timeoutMs = step.timeoutMs;
 
     if (step.cases && typeof step.cases === 'object') {
       cleanStep.cases = {};
@@ -368,6 +382,14 @@ export const validateSteps = (
 
     if (Array.isArray(step.finally)) {
       cleanStep.finally = step.finally.map((s: any, i: number) => mapStep(s, i));
+    }
+
+    // Phase 2: a node's Error / Timeout outputs — same recursive validation.
+    if (Array.isArray(step.errorSteps)) {
+      cleanStep.errorSteps = step.errorSteps.map((s: any, i: number) => mapStep(s, i));
+    }
+    if (Array.isArray(step.timeoutSteps)) {
+      cleanStep.timeoutSteps = step.timeoutSteps.map((s: any, i: number) => mapStep(s, i));
     }
 
     return cleanStep;

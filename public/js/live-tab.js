@@ -28,7 +28,7 @@
   // ---- should we open a tab at all? ---------------------------------------
 
   var LAUNCH_ACTIONS = { 'launch': 1, 'launch-browser': 1, 'launch_browser': 1 };
-  var CHILD_KEYS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback'];
+  var CHILD_KEYS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback', 'errorSteps', 'timeoutSteps'];
 
   function walk(steps, visit) {
     if (!Array.isArray(steps)) return false;

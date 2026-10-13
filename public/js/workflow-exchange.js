@@ -28,7 +28,7 @@
 
   var FORMAT = 'plyr-workflow';
   var VERSION = 1;
-  var CHILD_LISTS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback'];
+  var CHILD_LISTS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback', 'errorSteps', 'timeoutSteps'];
 
   function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
   function clone(v) { return JSON.parse(JSON.stringify(v)); }

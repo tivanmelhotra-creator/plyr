@@ -110,6 +110,23 @@ export interface AutomationStep {
   maxTries?: number;
   /** Base wait between retry attempts, in milliseconds. */
   waitBetweenTriesMs?: number;
+
+  // ── Phase 2: per-node outputs, retry and timeout ──
+  /** Which failures Retry On Fail retries (default any). */
+  retryOn?: 'any' | 'error' | 'timeout';
+  /** How the wait grows between tries (default linear). */
+  retryBackoff?: 'fixed' | 'linear' | 'exponential';
+  /** This node's own timeout in ms (browser waits / navigation of this step). */
+  timeoutMs?: number;
+  /**
+   * The node's ERROR output: run when the step failed (after its retries).
+   * Present = the node has Success / Error / Timeout outputs: success goes on
+   * down the chain, a failure runs this branch with the error as its item and
+   * then leaves the group (the success chain does not run), like an `if` path.
+   */
+  errorSteps?: AutomationStep[];
+  /** The node's TIMEOUT output; a timeout without it goes to `errorSteps`. */
+  timeoutSteps?: AutomationStep[];
 }
 
 // ============================================

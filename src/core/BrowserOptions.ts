@@ -185,7 +185,7 @@ export function effectiveHeadless(options: Record<string, unknown> | undefined, 
 }
 
 const LAUNCH_ACTIONS = new Set(['launch', 'launch-browser', 'launch_browser']);
-const CHILD_KEYS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback'] as const;
+const CHILD_KEYS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback', 'errorSteps', 'timeoutSteps'] as const;
 
 /** Depth-first walk of a step tree (every branch kind the runtime has). */
 function walk(steps: any[] | undefined, visit: (s: any) => boolean | void): boolean {
