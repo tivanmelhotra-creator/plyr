@@ -156,3 +156,31 @@ describe('buildErrorTriggerData', () => {
     expect(data.execution.mode).toBe('manual');
   });
 });
+
+describe('phase 2: retry policy and per-node timeout', async () => {
+  const m = await import('../../src/core/ErrorPolicy');
+  it('failureKindOf: Playwright TimeoutError and timeout messages are timeouts', () => {
+    const te = new Error('x'); te.name = 'TimeoutError';
+    expect(m.failureKindOf(te)).toBe('timeout');
+    expect(m.failureKindOf(new Error('Timeout 30000ms exceeded.'))).toBe('timeout');
+    expect(m.failureKindOf(new Error('Timeout at step 3 (click) after 100ms'))).toBe('timeout');
+    expect(m.failureKindOf(new Error('Element not found'))).toBe('error');
+    expect(m.failureKindOf(null)).toBe('error');
+  });
+  it('normalize: retryOn / backoff / timeoutMs defaults and clamps', () => {
+    const d = m.normalizeErrorPolicy({ action: 'x' } as never);
+    expect(d).toMatchObject({ retryOn: 'any', backoff: 'linear', timeoutMs: 0 });
+    const p = m.normalizeErrorPolicy({ action: 'x', retryOn: 'timeout', retryBackoff: 'exponential', timeoutMs: 99_999_999 } as never);
+    expect(p).toMatchObject({ retryOn: 'timeout', backoff: 'exponential', timeoutMs: m.MAX_NODE_TIMEOUT_MS });
+    expect(m.normalizeErrorPolicy({ action: 'x', retryOn: 'nope', timeoutMs: -5 } as never)).toMatchObject({ retryOn: 'any', timeoutMs: 0 });
+  });
+  it('retriesKind and backoff delays', () => {
+    expect(m.retriesKind({ retryOn: 'any' }, 'error')).toBe(true);
+    expect(m.retriesKind({ retryOn: 'timeout' }, 'error')).toBe(false);
+    expect(m.retriesKind({ retryOn: 'error' }, 'timeout')).toBe(false);
+    expect([1, 2, 3].map((a) => m.backoffDelayMs(a, 100, 'fixed'))).toEqual([100, 100, 100]);
+    expect([1, 2, 3].map((a) => m.backoffDelayMs(a, 100, 'linear'))).toEqual([100, 200, 300]);
+    expect([1, 2, 3, 4].map((a) => m.backoffDelayMs(a, 100, 'exponential'))).toEqual([100, 200, 400, 800]);
+    expect(m.backoffDelayMs(30, 100_000, 'exponential')).toBe(m.MAX_RETRY_WAIT_MS);
+  });
+});
