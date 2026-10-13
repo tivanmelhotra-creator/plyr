@@ -32,6 +32,36 @@
   }
 
   var POLL_MS = 6000;
+
+  // ── THE ONE SHARED VIEWER ────────────────────────────────────────────────
+  // Every browser (Local Browser and every profile) is a window on ONE remote
+  // desktop, so ONE tab shows them all. It is a NAMED window: window.open()
+  // with the same name returns the existing tab instead of opening a new one,
+  // so opening 1, 2 or 3 profiles, pressing Open again, or Show browser all
+  // land in the same tab. Shared with workflow-files.js (Local Browser).
+  var VIEWER_NAME = 'aria-browser-viewer';
+
+  /** Claim the viewer tab inside the click (popup blockers). Returns it or null. */
+  function claimViewer() {
+    try { return window.open('', VIEWER_NAME); } catch (e) { return null; }
+  }
+
+  /** Point the viewer at `href` (relative). Navigates only when needed. */
+  function showInViewer(tab, href) {
+    var t = tab || claimViewer();
+    if (!t) { try { window.open(href, VIEWER_NAME); } catch (e) { /* blocked */ } return; }
+    try {
+      var cur = '';
+      try { cur = t.location.pathname + t.location.search; } catch (e) { cur = ''; }
+      if (cur !== href) t.location = href;
+      if (t.focus) t.focus();
+    } catch (e) { /* cross-origin / closed */ }
+  }
+
+  /** Did claimViewer() just create an empty tab (vs. return the running viewer)? */
+  function isBlankTab(tab) {
+    try { return !!tab && (!tab.location || tab.location.href === 'about:blank'); } catch (e) { return false; }
+  }
   var HOLD_REFRESH_MS = 5 * 60 * 1000;
   var OPEN_ATTEMPTS = 8;
   var OPEN_BACKOFF_MS = 2500;
@@ -80,11 +110,11 @@
      * (503 retryable): the start continues server-side and each retry joins
      * it, so this never starts a second browser.
      */
-    open: function (id, workflowId) {
+    open: function (id, workflowId, launch) {
       var attempt = 0;
       function once() {
         attempt++;
-        return call('/profiles/' + encodeURIComponent(id) + '/open', 'POST', { workflowId: workflowId || undefined })
+        return call('/profiles/' + encodeURIComponent(id) + '/open', 'POST', { workflowId: workflowId || undefined, launch: launch || undefined })
           .catch(function (e) {
             var b = e && e.body;
             if (b && b.code === 'starting' && b.retryable && attempt < OPEN_ATTEMPTS) {
@@ -98,6 +128,8 @@
     hold: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/hold', 'POST', { workflowId: workflowId || undefined }); },
     release: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/release', 'POST', { workflowId: workflowId || undefined }); },
     close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); },
+    launchOptions: function () { return call('/profiles/launch-options'); },
+    validateLaunch: function (launch) { return call('/profiles/launch-settings/validate', 'POST', { launch: launch || {} }); },
     restore: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/restore', 'POST', { workflowId: workflowId || undefined }); }
   };
 
@@ -137,6 +169,210 @@
     return t('pm.overlap', 'Schedules overlap') + ': \u201c' + (a.ownerName || t('pm.anotherWorkflow', 'another workflow')) + '\u201d ' +
       hhmm(a.start) + '\u2013' + hhmm(a.end) + ' \u00b7 \u201c' + (b.ownerName || t('pm.anotherWorkflow', 'another workflow')) + '\u201d ' +
       hhmm(b.start) + '\u2013' + hhmm(b.end) + '. ' + t('pm.overlapWaits', 'The later run waits for the profile.');
+  }
+
+  /**
+   * The Launch settings panel (collapsed by default): Preset, categorized
+   * options, Custom Flags, and a live check against the server's validator
+   * (POST /profiles/launch-settings/validate) showing the final arguments,
+   * errors (app-controlled / conflicting / malformed) and warnings (risky,
+   * need a tick). value() returns null while nothing was changed, so the
+   * default Open keeps the browser exactly as it always started.
+   */
+  function mountLaunchSettings(parent, opts) {
+    var oo = opts || {};
+    var cat = null;
+    var touched = false;
+    var state = { preset: 'standard', options: {}, customFlags: '', acknowledgeRisk: false };
+    var det = document.createElement('details');
+    det.className = 'pm-launch';
+    var sum = document.createElement('summary');
+    sum.className = 'pm-launch-sum';
+    sum.textContent = t('pm.launchSettings', 'Launch settings');
+    det.appendChild(sum);
+    var body = document.createElement('div');
+    body.className = 'pm-launch-body';
+    det.appendChild(body);
+    parent.appendChild(det);
+
+    var presetRow = document.createElement('label');
+    presetRow.className = 'pm-launch-row';
+    var presetLbl = document.createElement('span');
+    presetLbl.textContent = t('pm.preset', 'Preset');
+    presetRow.appendChild(presetLbl);
+    var presetSel = document.createElement('select');
+    presetSel.className = 'pm-launch-preset';
+    presetRow.appendChild(presetSel);
+    body.appendChild(presetRow);
+    var presetDesc = document.createElement('p');
+    presetDesc.className = 'pm-launch-desc';
+    body.appendChild(presetDesc);
+
+    var optsBox = document.createElement('div');
+    optsBox.className = 'pm-launch-options';
+    body.appendChild(optsBox);
+
+    var customLbl = document.createElement('label');
+    customLbl.className = 'pm-launch-row pm-launch-custom';
+    var customT = document.createElement('span');
+    customT.textContent = t('pm.customFlags', 'Custom Flags');
+    customLbl.appendChild(customT);
+    var custom = document.createElement('textarea');
+    custom.className = 'pm-launch-flags';
+    custom.rows = 3;
+    custom.spellcheck = false;
+    custom.placeholder = '--lang=fa\n--window-size=1280,800';
+    custom.setAttribute('aria-label', t('pm.customFlags', 'Custom Flags'));
+    customLbl.appendChild(custom);
+    body.appendChild(customLbl);
+    var customHint = document.createElement('small');
+    customHint.className = 'pm-launch-hint';
+    customHint.textContent = t('pm.customFlagsHint', 'One flag per line, as --name or --name=value. Quotes only group a value with spaces. Flags the application controls (data directory, debugging, headless, extensions) are refused.');
+    body.appendChild(customHint);
+
+    var ackLbl = document.createElement('label');
+    ackLbl.className = 'pm-launch-ack';
+    ackLbl.hidden = true;
+    var ack = document.createElement('input');
+    ack.type = 'checkbox';
+    ack.className = 'pm-launch-ack-box';
+    ackLbl.appendChild(ack);
+    var ackT = document.createElement('span');
+    ackT.textContent = t('pm.ackRisk', 'I understand the risks of the flags marked with a warning.');
+    ackLbl.appendChild(ackT);
+    body.appendChild(ackLbl);
+
+    var result = document.createElement('div');
+    result.className = 'pm-launch-result';
+    result.setAttribute('aria-live', 'polite');
+    body.appendChild(result);
+
+    function paintOptions() {
+      optsBox.innerHTML = '';
+      if (!cat) return;
+      var preset = null;
+      for (var i = 0; i < cat.presets.length; i++) if (cat.presets[i].id === state.preset) preset = cat.presets[i];
+      presetDesc.textContent = preset ? preset.description : '';
+      var on = {};
+      (preset ? preset.options : []).forEach(function (id) { on[id] = true; });
+      Object.keys(state.options).forEach(function (id) { on[id] = state.options[id]; });
+      cat.categories.forEach(function (c) {
+        var group = cat.options.filter(function (x) { return x.category === c.id; });
+        if (!group.length) return;
+        var fs = document.createElement('fieldset');
+        fs.className = 'pm-launch-group';
+        var lg = document.createElement('legend');
+        lg.textContent = c.label;
+        fs.appendChild(lg);
+        group.forEach(function (op) {
+          var l = document.createElement('label');
+          l.className = 'pm-launch-opt';
+          l.title = op.description + ' (' + op.arg + ')';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!on[op.id];
+          cb.setAttribute('data-option', op.id);
+          cb.addEventListener('change', function () {
+            touched = true;
+            state.options[op.id] = cb.checked;
+            check();
+          });
+          l.appendChild(cb);
+          var sp = document.createElement('span');
+          sp.textContent = op.label;
+          l.appendChild(sp);
+          var code = document.createElement('code');
+          code.textContent = op.arg;
+          l.appendChild(code);
+          fs.appendChild(l);
+        });
+        optsBox.appendChild(fs);
+      });
+    }
+
+    function showResult(r) {
+      result.innerHTML = '';
+      if (!r) return;
+      var argsP = document.createElement('p');
+      argsP.className = 'pm-launch-args';
+      var b = document.createElement('b');
+      b.textContent = t('pm.launchArgs', 'Chromium will start with') + ': ';
+      argsP.appendChild(b);
+      var c = document.createElement('code');
+      c.textContent = (r.args || []).join(' ');
+      argsP.appendChild(c);
+      result.appendChild(argsP);
+      (r.errors || []).forEach(function (e) {
+        var p = document.createElement('p');
+        p.className = 'pm-launch-err';
+        p.setAttribute('role', 'alert');
+        p.textContent = '\u2716 ' + (e.flag ? e.flag + ' \u2014 ' : '') + e.message;
+        result.appendChild(p);
+      });
+      (r.warnings || []).forEach(function (w) {
+        var p = document.createElement('p');
+        p.className = 'pm-launch-warn';
+        p.textContent = '\u26a0 ' + (w.flag ? w.flag + ' \u2014 ' : '') + w.message;
+        result.appendChild(p);
+      });
+      ackLbl.hidden = !(r.warnings && r.warnings.length);
+    }
+
+    var timer = 0;
+    var seq = 0;
+    function check() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        var my = ++seq;
+        api.validateLaunch(current()).then(function (d) { if (my === seq) showResult(d.launch); }).catch(function () { /* shown on Open */ });
+      }, 250);
+    }
+
+    function current() {
+      return { preset: state.preset, options: state.options, customFlags: custom.value, acknowledgeRisk: !!ack.checked };
+    }
+
+    presetSel.addEventListener('change', function () {
+      touched = true;
+      state.preset = presetSel.value;
+      state.options = {};
+      paintOptions();
+      check();
+    });
+    custom.addEventListener('input', function () { touched = true; check(); });
+    ack.addEventListener('change', function () { touched = true; check(); });
+    det.addEventListener('toggle', function () { if (det.open && cat) check(); });
+
+    api.launchOptions().then(function (d) {
+      cat = d;
+      presetSel.innerHTML = '';
+      d.presets.forEach(function (p) {
+        var op = document.createElement('option');
+        op.value = p.id;
+        op.textContent = p.label;
+        if (p.id === d.defaultPreset) op.selected = true;
+        presetSel.appendChild(op);
+      });
+      state.preset = d.defaultPreset;
+      paintOptions();
+    }).catch(function () {
+      if (oo.onSay) oo.onSay(t('pm.launchLoadFailed', 'Launch settings could not be loaded; the standard settings are used.'), true);
+    });
+
+    return {
+      el: det,
+      /** null = unchanged (Standard, an open browser is reused as it is). */
+      value: function () { return touched ? current() : null; },
+      showResult: function (r) { det.open = true; showResult(r); },
+      set: function (v) {
+        touched = true;
+        state.preset = (v && v.preset) || state.preset;
+        state.options = (v && v.options) || {};
+        custom.value = (v && v.customFlags) || '';
+        ack.checked = !!(v && v.acknowledgeRisk);
+        if (cat) { presetSel.value = state.preset; paintOptions(); }
+      }
+    };
   }
 
   /**
@@ -230,6 +466,10 @@
     restoreBtn.title = t('pm.restoreHint', 'Reopen the tabs that were open when this browser was last closed.');
     actions.appendChild(restoreBtn);
     root.appendChild(actions);
+
+    // Launch settings (preset, options, Custom Flags) for the next Open /
+    // the open after New profile. One choice for every selected profile.
+    var launchUi = (o.launchSettings === false) ? null : mountLaunchSettings(root, { onSay: say });
 
     host.appendChild(root);
 
@@ -386,34 +626,51 @@
      * click, and navigated once the server answers; a refused one is closed
      * again and the reason is shown.
      */
-    function openProfiles(ids) {
+    function viewHref(r) {
+      return r.viewPath + (r.viewPath.indexOf('?') >= 0 ? '&' : '?') + 'api_key=' +
+        encodeURIComponent((window.API && window.API.getKey) ? (window.API.getKey() || '') : '') +
+        (o.workflowId ? '&workflowId=' + encodeURIComponent(o.workflowId) : '');
+    }
+
+    /**
+     * Open the browsers of `ids` with the chosen launch settings. ONE viewer
+     * tab for all of them (claimed HERE, in the click); each successful open
+     * points it at that profile (the view raises its window). A refused or
+     * failed profile is reported; the viewer is left alone if nothing opened
+     * and it was a fresh blank tab, closed again.
+     */
+    function openProfiles(ids, launchOverride) {
       if (!ids.length || st.busy) return Promise.resolve([]);
       st.busy = 'open';
       paintActions();
-      var tabs = ids.map(function () { try { return window.open('', '_blank'); } catch (e) { return null; } });
-      tabs.forEach(function (tab) {
-        try { if (tab && tab.document) tab.document.title = t('pm.opening', 'Opening\u2026'); } catch (e) { /* cross-origin */ }
-      });
+      var launch = launchOverride !== undefined ? launchOverride : (launchUi ? launchUi.value() : null);
+      var tab = claimViewer();
+      var fresh = isBlankTab(tab);
+      if (fresh) { try { tab.document.title = t('pm.opening', 'Opening\u2026'); } catch (e) { /* fine */ } }
       var results = [];
-      return ids.reduce(function (chain, id, i) {
+      var lastHref = '';
+      return ids.reduce(function (chain, id) {
         return chain.then(function () {
-          return api.open(id, o.workflowId).then(function (r) {
-            var href = r.viewPath + (r.viewPath.indexOf('?') >= 0 ? '&' : '?') + 'api_key=' +
-              encodeURIComponent((window.API && window.API.getKey) ? (window.API.getKey() || '') : '') +
-              (o.workflowId ? '&workflowId=' + encodeURIComponent(o.workflowId) : '');
-            if (o.openView) o.openView(href, tabs[i]);
-            else if (tabs[i]) tabs[i].location = href;
-            else window.open(href, '_blank', 'noopener');
+          return api.open(id, o.workflowId, launch).then(function (r) {
+            lastHref = viewHref(r);
+            // The shared viewer follows the latest opened profile (its window
+            // is raised server-side); the others stay on the same desktop.
+            if (o.openView) o.openView(lastHref, tab); else showInViewer(tab, lastHref);
+            if (r.settingsApplied === false) say((byId(id) ? byId(id).name + ': ' : '') + t('pm.settingsNotApplied', 'The browser was already open and in use, so it kept its current launch settings.'), false);
             results.push({ id: id, ok: true });
           }, function (e) {
-            try { if (tabs[i]) tabs[i].close(); } catch (x) { /* fine */ }
             var p = byId(id);
-            say((p ? p.name + ': ' : '') + (e.message || t('pm.openFailed', 'Could not open the browser.')), true);
-            results.push({ id: id, ok: false, error: e.message, code: e.body && e.body.code });
+            var b = e.body || {};
+            var msg = e.message || t('pm.openFailed', 'Could not open the browser.');
+            if (b.code === 'needs_confirmation') msg = t('pm.confirmFlags', 'Confirm the risky launch flags in Launch settings first.') + ' ' + msg;
+            say((p ? p.name + ': ' : '') + msg, true);
+            if (launchUi && b.launch) launchUi.showResult(b.launch);
+            results.push({ id: id, ok: false, error: e.message, code: b.code });
           });
         });
       }, Promise.resolve()).then(function () {
         st.busy = '';
+        if (!results.some(function (r) { return r.ok; }) && fresh) { try { tab.close(); } catch (x) { /* fine */ } }
         if (results.some(function (r) { return r.ok; })) startHoldRefresh();
         return refresh().then(function () { return results; });
       });
@@ -422,10 +679,11 @@
     function createProfile(name) {
       st.busy = 'create';
       paintActions();
-      // Pre-open the viewer tab NOW (inside the submit gesture): the open that
+      // Claim the shared viewer NOW (inside the submit gesture): the open that
       // follows a successful create would be blocked as a popup otherwise.
-      var tab = null;
-      try { tab = window.open('', '_blank'); } catch (e) { tab = null; }
+      var tab = claimViewer();
+      var fresh = isBlankTab(tab);
+      var launch = launchUi ? launchUi.value() : null;
       return api.create(name, o.workflowId).then(function (d) {
         st.busy = '';
         hideForm();
@@ -438,17 +696,17 @@
           // Create succeeded: now the same open as Select + Open.
           st.busy = 'open';
           paintActions();
-          return api.open(p.id, o.workflowId).then(function (r) {
-            var href = r.viewPath + '&api_key=' + encodeURIComponent((window.API && window.API.getKey) ? (window.API.getKey() || '') : '') +
-              (o.workflowId ? '&workflowId=' + encodeURIComponent(o.workflowId) : '');
-            if (o.openView) o.openView(href, tab);
-            else if (tab) tab.location = href;
+          return api.open(p.id, o.workflowId, launch).then(function (r) {
+            var href = viewHref(r);
+            if (o.openView) o.openView(href, tab); else showInViewer(tab, href);
             st.busy = '';
             startHoldRefresh();
             say(t('pm.createdOpened', 'Profile created and its browser opened.'), false);
             return refresh();
           }, function (e) {
-            try { if (tab) tab.close(); } catch (x) { /* fine */ }
+            // Only a blank tab this click created is closed; a viewer already
+            // showing other browsers is never taken away.
+            if (fresh) { try { tab.close(); } catch (x) { /* fine */ } }
             st.busy = '';
             // The profile is KEPT; Open can be pressed again.
             say(t('pm.createdNotOpened', 'Profile created, but its browser did not open') + ': ' + (e.message || '') + ' ' + t('pm.tryOpenAgain', 'Press Open browser to try again.'), true);
@@ -456,7 +714,7 @@
           });
         });
       }, function (e) {
-        try { if (tab) tab.close(); } catch (x) { /* fine */ }
+        if (fresh) { try { tab.close(); } catch (x) { /* fine */ } }
         st.busy = '';
         paintActions();
         say(e.message || t('pm.createFailed', 'Could not create the profile.'), true);
@@ -555,5 +813,8 @@
     };
   }
 
-  window.ProfileManager = { api: api, mount: mount, detailOf: detailOf, overlapText: overlapText };
+  window.ProfileManager = {
+    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText,
+    mountLaunchSettings: mountLaunchSettings, viewer: { name: VIEWER_NAME, claim: claimViewer, show: showInViewer, isBlank: isBlankTab }
+  };
 })();
