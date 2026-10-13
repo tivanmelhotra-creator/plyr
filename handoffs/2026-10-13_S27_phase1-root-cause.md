@@ -125,7 +125,7 @@ profile panel -> `BrowserSessions` only. Two sources of truth.
 - tsc clean.
 - unit: launch-settings (18 new), profile-manager-ui 12 (1 changed: one viewer; 1 new: launch settings sent),
   workflow-files-browser-switch 15, browser-options 85 (source check moved to ProfileBuild).
-- FULL unit suite (4 chunks, 1 GB RAM): 3953 passed / 0 failed (real-chrome-shelf excluded, see below).
+- FULL unit suite (4 chunks, 1 GB RAM): 3953 passed / 0 failed + real-chrome-shelf 177/177 after the fixture fix.
 - FULL integration (real Redis): 427 passed / 9 skipped; api.test 2 failures only with the sandbox's local `.env`
   (API_KEYS_ENABLED=false for the manual server) — 8/8 pass without it.
 - integration (real Redis): profile-routes 13 (3 new), profile-admission 21, coordinator 4, schedules 7, continuation 4.
@@ -140,5 +140,7 @@ profile panel -> `BrowserSessions` only. Two sources of truth.
   at REAL_CHROME_USER_DATA_DIR only when the per-user dir has no data, otherwise list it as a separate profile).
 - Wait-cap policy for a scheduled run waiting on a busy profile: unchanged (waits until free) — not configurable yet.
 - noVNC picture itself verified only via the probe (VNC canvas created, socket connected); no pixel check.
-- `tests/unit/real-chrome-shelf.test.ts` hangs in this sandbox on ee94f6b too (pre-existing, unrelated).
+- `tests/unit/real-chrome-shelf.test.ts`: CORRECTION — not pre-existing. Its fake server had no `/browser/sessions`
+  answer, so the viewer's new liveness poll fell into the fake's upload branch and counted as a 2nd concurrent upload
+  (CI: `expected 2 to be 1`). Fixed in the fixture; 177/177 pass. (Locally it only looked like a hang: slow 1 GB box.)
 - GitHub push / PR #76 update: GitHub token not configured in this sandbox; needs authorization.

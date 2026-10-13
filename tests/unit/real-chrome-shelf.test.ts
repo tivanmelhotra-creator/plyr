@@ -677,6 +677,12 @@ async function runView(
         body: { success: true, enabled: true, running: true, responsive: true },
       }));
     }
+    // The viewer's liveness poll reads the ONE session registry (core/SharedBrowsers).
+    if (url.indexOf('/browser/sessions') >= 0) {
+      return Promise.resolve(reply({
+        body: { success: true, localBrowser: { running: true }, sessions: [{ id: 'realchrome', kind: 'local-browser', profileId: null, name: 'Local Browser', visibility: 'visible', runs: 0, views: 0, startedAt: 1 }] },
+      }));
+    }
     // The Workflow Files workspace: list, use, and the mutations. Modelled just
     // far enough that the view's requests can be read back; the storage rules
     // themselves are the routes' tests' business.
