@@ -2,7 +2,7 @@
 
 Points to the newest handoff. Read that file first; then continue.
 
-LATEST HANDOFF: handoffs/2026-10-14_S30_phase1-report.md (phase 1 complete per owner brief, section-14 report; S28/S29 earlier)
+LATEST HANDOFF: handoffs/NEXT-SESSION-S31.md (START HERE: done/open per brief + how to continue) -> then handoffs/2026-10-14_S30_phase1-report.md (section-14 report)
 BRANCH / HEAD:  feat/profile-infrastructure (PR #76, phase 1).
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 TRANSCRIPT:     after a sandbox reset, the owner's full chat transcript (incl. the phase-1 brief, sections 0-14) is in the

@@ -55,7 +55,7 @@ Tools: `tools/default-folders-report.mjs`. Full list: `git diff --name-status ma
 CI configuration not changed; the browser tests are not enabled in CI.
 
 ## 5. Test matrix (Linux = tested in the sandbox; Windows = NOT tested for every item)
-Totals: unit + integration **4616 passed, 9 skipped, 0 failed**; real Chromium **18 passed**, plus 1 pre-existing failure (see 6). Raw output: `handoffs/2026-10-14_S30_browser-tests.txt`.
+Totals: unit + integration **4616 passed, 9 skipped, 0 failed**; real Chromium **18 passed** (S30 end, after the Windows-lockfile change: profile-real-chromium 9, turn-off-and-show 3, orphan-browsers 4, local-browser-profile-selection 2), plus the 1 pre-existing failure `pipeline-browser-options` (see 6). Raw output: `handoffs/2026-10-14_S30_browser-tests.txt`.
 
 | Section 11 item | Test | Linux | Windows |
 |---|---|---|---|

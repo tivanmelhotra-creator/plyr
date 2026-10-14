@@ -30,7 +30,8 @@ import { execFile } from 'child_process';
 export interface ProcInfo { pid: number; ppid: number; args: string[] }
 export interface Orphan { pid: number; userDataDir: string }
 
-const SINGLETON_FILES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+// Linux/macOS: Singleton*; Windows: `lockfile` (Chromium's ProcessSingleton on Windows).
+const SINGLETON_FILES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile'];
 
 function userDataDirOf(args: string[]): string | null {
   for (let i = 0; i < args.length; i++) {

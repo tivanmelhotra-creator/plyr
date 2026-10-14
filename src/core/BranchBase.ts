@@ -76,7 +76,7 @@ export function checkBasePathShape(raw: string, platform: Platform = process.pla
 export async function validateBaseDir(raw: string, platform: Platform = process.platform): Promise<BaseCheck> {
   const r = checkBasePathShape(raw, platform);
   if (!r.ok) return r;
-  for (const f of ['SingletonLock', 'SingletonSocket', 'Local State']) {
+  for (const f of ['SingletonLock', 'SingletonSocket', 'lockfile', 'Local State']) {
     if (await fs.lstat(path.join(r.path, f)).then(() => true, () => false)) {
       r.errors.push('This folder is itself a Chromium data folder (a browser uses or used it); choose an empty or new folder.');
       r.ok = false;

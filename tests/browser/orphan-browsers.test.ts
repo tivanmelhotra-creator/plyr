@@ -54,6 +54,14 @@ describe('orphan rules (pure)', () => {
     ];
     expect(findOrphans(procs, ['/a'], 99)).toEqual([{ pid: 10, userDataDir: path.resolve('/a/branch-001') }]);
   });
+  it('a Windows root (lockfile) is found and unlocked when no browser holds it', async () => {
+    const root = path.join(tmp, 'win-root'); fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'lockfile'), '');
+    expect(await lockedRootsUnder(tmp)).toContain(root);
+    const r = await reapOrphans([tmp], { roots: [root], list: async () => [] });
+    expect(r.unlocked).toEqual([root]);
+    expect(fs.existsSync(path.join(root, 'lockfile'))).toBe(false);
+  });
   it('a listing failure kills nothing and unlocks nothing', async () => {
     const r = await reapOrphans([area], { list: async () => { throw new Error('no ps'); } });
     expect(r).toMatchObject({ killed: [], unlocked: [] });

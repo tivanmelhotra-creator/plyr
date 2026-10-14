@@ -67,7 +67,7 @@ export interface ExternalInspection {
   root: string;
   /** Chromium profile folders found (Default, Profile 1, ...), with Chromium's display name. */
   profiles: Array<{ folder: string; chromiumName: string | null }>;
-  /** A browser seems to use it right now (SingletonLock present). */
+  /** A browser seems to use it right now (SingletonLock / Windows lockfile present). */
   inUse: boolean;
   /** It looks like a personal browser's default data folder. */
   personal: boolean;
@@ -406,7 +406,8 @@ export class BranchRegistry {
       out.profiles.push({ folder: n, chromiumName: typeof cache[n]?.name === 'string' ? cache[n]!.name! : null });
     }
     if (!ls && !out.profiles.length) out.errors.push('This is not a Chromium data folder (no "Local State" and no profile folders).');
-    out.inUse = await fs.lstat(path.join(root, 'SingletonLock')).then(() => true, () => false);
+    // Linux/macOS: SingletonLock (a symlink); Windows: lockfile.
+    for (const f of ['SingletonLock', 'lockfile']) if (await fs.lstat(path.join(root, f)).then(() => true, () => false)) out.inUse = true;
     if (out.inUse) out.errors.push('A browser is using this folder right now. Close it first.');
     out.personal = /[\\/](User Data|\.config[\\/](chromium|google-chrome[^\\/]*|BraveSoftware[^\\/]*))$/i.test(root);
     if (out.personal) out.warnings.push('This looks like the data folder of your PERSONAL browser. Aria would open and change it (cookies, logins, history). Use a copy instead.');

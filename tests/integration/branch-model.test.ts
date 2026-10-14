@@ -318,6 +318,11 @@ describe('branch model', () => {
     symlinkSync('host-123', path.join(busy, 'SingletonLock'));
     const b = (await request(app).post('/profiles/branches/external/inspect').send({ root: busy })).body.inspection;
     expect(b.inUse).toBe(true);
+    // Windows names it `lockfile`.
+    const busyWin = path.join(dir, 'busy-win'); mkdirSync(path.join(busyWin, 'Default'), { recursive: true });
+    writeFileSync(path.join(busyWin, 'Local State'), '{}'); writeFileSync(path.join(busyWin, 'Default', 'Preferences'), '{}');
+    writeFileSync(path.join(busyWin, 'lockfile'), '');
+    expect((await request(app).post('/profiles/branches/external/inspect').send({ root: busyWin })).body.inspection.inUse).toBe(true);
     expect(b.errors.join(' ')).toMatch(/using this folder right now/);
     const personal = path.join(dir, 'home', '.config', 'chromium'); mkdirSync(path.join(personal, 'Default'), { recursive: true });
     writeFileSync(path.join(personal, 'Local State'), '{}'); writeFileSync(path.join(personal, 'Default', 'Preferences'), '{}');
