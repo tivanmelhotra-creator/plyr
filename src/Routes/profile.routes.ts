@@ -317,9 +317,13 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       for (const w of scan.inactiveWorkflows) {
         const wf = await workflows.get(userId, w.workflowId).catch(() => null);
         if (!wf || wf.active) continue;
-        if (wf.profileId && ids.has(wf.profileId)) {
-          await workflows.update(userId, wf.id, { name: wf.name, description: wf.description ?? null, steps: wf.steps, headless: wf.headless ?? null, webhookUrl: wf.webhookUrl ?? null, profileId: null })
-            .then(() => cleared.push(wf.id)).catch(() => {});
+        const pid = wf.profileId || DEFAULT_PROFILE_ID;
+        if (ids.has(pid)) {
+          const name = scan.profiles.find((x) => x.profileId === pid)?.name ?? null;
+          await workflows.update(userId, wf.id, {
+            name: wf.name, description: wf.description ?? null, steps: wf.steps, headless: wf.headless ?? null, webhookUrl: wf.webhookUrl ?? null,
+            profileId: null, profileMissing: { profileId: pid, profileName: name, at: new Date().toISOString() },
+          }).then(() => cleared.push(wf.id)).catch(() => {});
         }
       }
       res.json({ success: true, deleted: branchId, removedProfiles, clearedWorkflows: cleared, profileMissing: scan.inactiveWorkflows.map((w) => w.workflowId) });
@@ -365,7 +369,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         branchLabel: req.body?.branchLabel,
       });
       const view = await access.view(userId, p.id, ownerOf(req.body?.workflowId), await refs(userId));
-      res.status(201).json({ success: true, profile: view });
+      res.status(201).json({ success: true, profile: { ...view, branchId: p.branchId, branchLabel: p.branchLabel, folder: p.folder } });
     } catch (e) { fail(res, e); }
   });
 

@@ -800,6 +800,21 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
   // The profile must still exist BEFORE anything is launched (section 9): a
   // folder removed outside Aria fails this run cleanly, is reported, and is
   // NEVER silently recreated as an empty folder.
+  // A saved workflow whose profile was deleted with its branch: refuse instead
+  // of silently running on the Default profile.
+  const ownWfId = typeof (job.data.__workflowId || job.data.__scheduleWorkflowId) === 'string' ? String(job.data.__workflowId || job.data.__scheduleWorkflowId) : null;
+  if (ownWfId && profile.profileId === 'default' && !job.data.profileId) {
+    const owner = job.data.__workspace?.owner || userId;
+    const wfRec = await new WorkflowService(workflowStoreFor(connection)).get(String(owner), ownWfId).catch(() => null);
+    if (wfRec?.profileMissing && !wfRec.profileId) {
+      const msg = `The browser profile of workflow "${wfRec.name}" ("${wfRec.profileMissing.profileName || wfRec.profileMissing.profileId}") was deleted with its branch. Assign a profile first.`;
+      await profileFailures.record(userId, { reason: 'profile_missing', detail: 'record_missing', stage: 'run', workflowId: ownWfId, workflowName: wfRec.name,
+        profileId: wfRec.profileMissing.profileId, profileName: wfRec.profileMissing.profileName ?? null, jobId: String(job.id), message: msg });
+      void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message: msg } }).catch(() => {});
+      await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
+      throw new Error(`PROFILE_MISSING: ${msg}`);
+    }
+  }
   if (profile.profileId && (profile.kind === 'named' || profile.kind === 'run')) {
     await profileRegistry.warm(userId).catch(() => {});
     const chk = await profileRegistry.check(userId, profile.profileId).catch(() => null);

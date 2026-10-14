@@ -389,6 +389,8 @@ export interface Workflow {
    * not part of its design: read live at the end of every run.
    */
   afterRun?: 'keep' | 'close';
+  /** The profile this workflow used was deleted with its branch (state "profile missing"). */
+  profileMissing?: { profileId: string; profileName?: string | null; at: string } | null;
   version: number;
   createdAt: string;
   updatedAt: string;

@@ -158,11 +158,17 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
    * and those that cannot be used (record / branch / folder). Section 9:
    * activation and schedule saving are refused while any is broken.
    */
-  async function brokenProfilesOf(userId: string, steps: unknown, profileId: string | null | undefined, wf?: { id: string; name: string }, stage: 'activation' | 'schedule' = 'activation') {
+  async function brokenProfilesOf(userId: string, steps: unknown, profileId: string | null | undefined,
+    wf?: { id: string; name: string; profileMissing?: { profileId: string; profileName?: string | null } | null }, stage: 'activation' | 'schedule' = 'activation') {
     const access = profileAccess();
     if (!access) return [];
     const ids = [...new Set([...(launchProfilesOf(steps)), runProfileIdOf(steps, profileId) || 'default'])];
     const problems = await profileProblems(access.registry, userId, ids);
+    // Its profile was deleted with its branch: never fall back to Default silently.
+    if (wf?.profileMissing && !profileId && !launchProfilesOf(steps).length) {
+      problems.push({ profileId: wf.profileMissing.profileId, profileName: wf.profileMissing.profileName ?? null, reason: 'profile_missing', detail: 'record_missing',
+        message: `Profile "${wf.profileMissing.profileName || wf.profileMissing.profileId}": it was deleted with its branch` });
+    }
     for (const p of problems) {
       await profileFailureReports().record(userId, {
         reason: p.reason, detail: p.detail, stage, workflowId: wf?.id ?? null, workflowName: wf?.name ?? null,
@@ -514,7 +520,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         scheduleSteps = design.steps;
         scheduleProfileId = design.profileId;
         // Section 9: a schedule for a workflow with a missing profile is refused.
-        const broken = await brokenProfilesOf(userId, design.steps, design.profileId, { id: bound.id, name: bound.name }, 'schedule');
+        const broken = await brokenProfilesOf(userId, design.steps, design.profileId, { id: bound.id, name: bound.name, profileMissing: bound.profileMissing }, 'schedule');
         if (broken.length) {
           return res.status(422).json({
             success: false, code: 'profile_missing',
@@ -1558,7 +1564,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         if (issues.length) return refuse(issues.map(formatActivationIssue));
         // Every referenced browser profile must exist with its branch and
         // folder on disk; otherwise name each one and refuse.
-        const broken = await brokenProfilesOf(userId, current.steps, current.profileId, { id: current.id, name: current.name }, 'activation');
+        const broken = await brokenProfilesOf(userId, current.steps, current.profileId, { id: current.id, name: current.name, profileMissing: current.profileMissing }, 'activation');
         if (broken.length) {
           return res.status(422).json({
             success: false, code: 'profile_missing',
