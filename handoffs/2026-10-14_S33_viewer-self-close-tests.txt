@@ -1,0 +1,34 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /home/user/webapp
+
+stdout | tests/browser/viewer-self-close.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > a. one profile closed from outside: the viewer tab (opened by script) closes itself within ~5 s
+[a] viewer closed itself 2857 ms after the window was closed from outside
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > b. two profiles, one closed from outside: viewer stays, the other remains, no dialog
+[b] after closing "Pair A" from outside: viewer open=true, set=["prf_8a0cd6a70153"], B pid=4860
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > c. one failed probe, a false /browser/real/health and ONE false zero answer do NOT close the viewer
+[c] probes: real, 500, network-error, zero, malformed, real, real, real … (10 total); viewer open=true
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > d. viewer opened by hand (not by a script): last browser closed -> empty page, no dialog
+[d] manual viewer after the last browser closed: {"text":"","visibleButtons":0,"visibleElements":0,"title":""} closed=false
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > rendered DOM: no "Turn on", "Turn off", "Chromium Session Closed", "Close Tab", "Relaunch" in the viewer or the Browser Profiles panel
+[dom] viewer 2073 chars, panel 3387 chars: none of ["Turn on","Turn off","Chromium Session Closed","Close Tab","Relaunch"]
+
+ ✓ tests/browser/viewer-self-close.test.ts (5 tests) 41380ms
+   ✓ viewer self-close with real Chromium > a. one profile closed from outside: the viewer tab (opened by script) closes itself within ~5 s 8185ms
+   ✓ viewer self-close with real Chromium > b. two profiles, one closed from outside: viewer stays, the other remains, no dialog 12354ms
+   ✓ viewer self-close with real Chromium > c. one failed probe, a false /browser/real/health and ONE false zero answer do NOT close the viewer 12802ms
+   ✓ viewer self-close with real Chromium > d. viewer opened by hand (not by a script): last browser closed -> empty page, no dialog 4518ms
+   ✓ viewer self-close with real Chromium > rendered DOM: no "Turn on", "Turn off", "Chromium Session Closed", "Close Tab", "Relaunch" in the viewer or the Browser Profiles panel 1329ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  23:29:26
+   Duration  45.83s (transform 1.60s, setup 26ms, collect 2.97s, tests 41.38s, environment 0ms, prepare 153ms)
+

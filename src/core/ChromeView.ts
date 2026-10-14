@@ -1072,8 +1072,8 @@ async function startThenConnect(attempt) {
   const viewProfile = qs.get('profile');
   // ATTACH (Show browser / a profile view): put the shared desktop back on
   // screen WITHOUT starting or restarting any browser; only the display and
-  // VNC stack are ensured. Turn on is the only path that starts the Local
-  // Browser from this page.
+  // VNC stack are ensured. Only the path below (no profile, no attach)
+  // starts the RealChrome browser from this page.
   const attachOnly = qs.get('attach') === '1' || viewProfiles.length > 0;
   if (viewProfile || attachOnly) {
     show('Connecting to the browser of this profile\\u2026', true);
