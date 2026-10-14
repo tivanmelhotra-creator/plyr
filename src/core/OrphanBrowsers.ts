@@ -43,22 +43,31 @@ function userDataDirOf(args: string[]): string | null {
 }
 
 const isChromiumBrowser = (args: string[]) =>
-  !!args.length && /chrom(e|ium)|headless_shell|msedge/i.test(path.basename(args[0]!)) && !args.some((a) => a.startsWith('--type='));
+  !!args.length && /chrom(e|ium)|headless_shell|msedge/i.test(path.win32.basename(args[0]!)) && !args.some((a) => a.startsWith('--type='));
 const isNode = (args: string[]) => !!args.length && /(^|[\\/])node(\.exe)?$/i.test(args[0]!);
 
-const inside = (dir: string, area: string) => {
+const resolveFor = (p: string, platform = process.platform) =>
+  platform === 'win32' ? path.win32.resolve(p) : path.resolve(p);
+
+const inside = (dir: string, area: string, platform = process.platform) => {
+  if (platform === 'win32') {
+    const d = path.win32.resolve(dir).toLowerCase();
+    const a = path.win32.resolve(area).toLowerCase();
+    const sep = path.win32.sep;
+    return d === a || d.startsWith(a.endsWith(sep) ? a : a + sep);
+  }
   const d = path.resolve(dir); const a = path.resolve(area);
   return d === a || d.startsWith(a.endsWith(path.sep) ? a : a + path.sep);
 };
 
 /** Pure: which processes of `procs` are orphaned Aria browsers. */
-export function findOrphans(procs: ProcInfo[], areas: string[], selfPid: number): Orphan[] {
+export function findOrphans(procs: ProcInfo[], areas: string[], selfPid: number, platform = process.platform): Orphan[] {
   const byPid = new Map(procs.map((p) => [p.pid, p] as const));
   const out: Orphan[] = [];
   for (const p of procs) {
     if (!isChromiumBrowser(p.args)) continue;
     const udd = userDataDirOf(p.args);
-    if (!udd || !areas.some((a) => a && inside(udd, a))) continue;
+    if (!udd || !areas.some((a) => a && inside(udd, a, platform))) continue;
     let owned = false;
     const seen = new Set<number>();
     for (let cur = byPid.get(p.ppid); cur && !seen.has(cur.pid); cur = byPid.get(cur.ppid)) {
@@ -66,7 +75,7 @@ export function findOrphans(procs: ProcInfo[], areas: string[], selfPid: number)
       if (cur.pid === selfPid || isNode(cur.args)) { owned = true; break; }
     }
     if (p.ppid === selfPid) owned = true;
-    if (!owned) out.push({ pid: p.pid, userDataDir: path.resolve(udd) });
+    if (!owned) out.push({ pid: p.pid, userDataDir: resolveFor(udd, platform) });
   }
   return out;
 }
@@ -85,18 +94,23 @@ async function listLinux(): Promise<ProcInfo[]> {
   return out;
 }
 
+/** Pure: parse PowerShell `Get-CimInstance Win32_Process | ... | ConvertTo-Json` stdout into ProcInfo[]. */
+export function parseWindowsCimProcesses(stdout: string): ProcInfo[] {
+  const rows = ([] as any[]).concat(JSON.parse(stdout || '[]'));
+  return rows.filter((r) => r && r.CommandLine).map((r) => ({
+    pid: Number(r.ProcessId), ppid: Number(r.ParentProcessId),
+    // Good enough for our checks: exe path + switches (quoted paths kept whole).
+    args: (String(r.CommandLine).match(/(?:"[^"]*"|[^\s"])+/g) || []).map((s) => s.replace(/"/g, '')),
+  }));
+}
+
 function listWindows(): Promise<ProcInfo[]> {
   const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress';
   return new Promise((resolve, reject) => {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 64 * 1024 * 1024, timeout: 20_000, windowsHide: true }, (err, stdout) => {
       if (err) return reject(err);
       try {
-        const rows = ([] as any[]).concat(JSON.parse(stdout || '[]'));
-        resolve(rows.filter((r) => r && r.CommandLine).map((r) => ({
-          pid: Number(r.ProcessId), ppid: Number(r.ParentProcessId),
-          // Good enough for our checks: exe path + switches (quoted paths kept whole).
-          args: (String(r.CommandLine).match(/"[^"]*"|\S+/g) || []).map((s) => s.replace(/^"|"$/g, '')),
-        })));
+        resolve(parseWindowsCimProcesses(stdout));
       } catch (e) { reject(e); }
     });
   });

@@ -126,6 +126,10 @@ export const branchIdOf = (n: number): string => `branch-${String(n).padStart(3,
 export const profileFolderOf = (n: number): string => `profile-${String(n).padStart(3, '0')}`;
 export const isBranchId = (v: unknown): v is string => typeof v === 'string' && /^branch-\d{3,}$/.test(v);
 export function newProfileId(): string { return `prf_${randomBytes(6).toString('hex')}`; }
+export function isPersonalBrowserFolder(rawRoot: string): boolean {
+  const cleaned = String(rawRoot || "").trim().replace(/[\\/]+$/, "");
+  return /[\\/](User Data([\\/](Default|Profile \d+))?|\.config[\\/](chromium|google-chrome[^\\/]*|BraveSoftware[^\\/]*))$/i.test(cleaned);
+}
 
 /** Legacy profile root (the rule runs always used before branches). */
 export function legacyProfileDir(profilesDir: string, userId: string, id: string): string {
@@ -409,7 +413,7 @@ export class BranchRegistry {
     // Linux/macOS: SingletonLock (a symlink); Windows: lockfile.
     for (const f of ['SingletonLock', 'lockfile']) if (await fs.lstat(path.join(root, f)).then(() => true, () => false)) out.inUse = true;
     if (out.inUse) out.errors.push('A browser is using this folder right now. Close it first.');
-    out.personal = /[\\/](User Data|\.config[\\/](chromium|google-chrome[^\\/]*|BraveSoftware[^\\/]*))$/i.test(root);
+    out.personal = isPersonalBrowserFolder(root);
     if (out.personal) out.warnings.push('This looks like the data folder of your PERSONAL browser. Aria would open and change it (cookies, logins, history). Use a copy instead.');
     out.warnings.push('Aria will open this folder with its own browser and may change its data. Aria will NEVER delete it: deleting the branch only removes it from Aria.');
     return out;
