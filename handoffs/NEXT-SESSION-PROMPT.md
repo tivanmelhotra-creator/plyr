@@ -1,3 +1,5 @@
+Superseded by handoffs/NEXT-SESSION-S31.md. Do not use this file for the current state.
+
 # پرامپ شروع جلسهٔ بعد — Aria Automate (Plyr)
 
 > این متن را کامل به‌عنوان اولین پیام جلسهٔ جدید بفرست. (بکاپ و لینک‌ها در بخش ۱ هستند.)

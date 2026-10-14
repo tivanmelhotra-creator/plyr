@@ -23,7 +23,7 @@ Tested in a Linux sandbox only (Debian 13, Node 22, Redis 7, Xvfb + openbox, Pla
 | One root = one process | Chromium ProcessSingleton | Real test: a 2nd launch on one root fails with `ProcessSingleton`. Therefore branch = root, one running profile per branch |
 | Turn Off hang | Pages closed one by one without a deadline | S27 bounded close; S30 real test: Turn Off answers < 25 s with 2 profile browsers open |
 | One display tab per profile | `window.open('', '_blank')` per id | S27: one named viewer tab (`aria-browser-viewer`); UI test |
-| Two "Default" folders | Local Browser `./profiles/chrome-profile` vs registry `./profiles/<user>/chrome-profile` | NOT merged (section 12). `tools/default-folders-report.mjs` reports them (metadata only). Both folders are absent in this sandbox; the owner must run it on Windows |
+| Two "Default" folders | Local Browser `./profiles/chrome-profile` vs registry `./profiles/<user>/chrome-profile` | Deferred by the owner and out of scope for PR #76 (containers holding them were deleted by the owner). `tools/default-folders-report.mjs` kept unchanged |
 | Fixed, unvalidated flags | Hard-coded arrays | S27 `core/LaunchSettings` (presets, custom flags as argv, app-owned switches refused) |
 | No project extension in new profiles | ProfileBrowser kept Playwright's `--disable-extensions` and passed no `--load-extension` | S29 fix; real test: the extension's service worker runs in a new profile |
 | Local Browser does not recognize Browser Profiles | Two sources of truth (RealChrome not in BrowserSessions) | S27 one session registry; real test: `/browser/sessions` lists "Local Browser", "Shop A", "Shop B"; the Local Browser row counts profile browsers |
@@ -43,7 +43,7 @@ Tested in a Linux sandbox only (Debian 13, Node 22, Redis 7, Xvfb + openbox, Pla
 - **Default base directory:**
   Windows `%LOCALAPPDATA%\AriaBrowser\branches`: per-user, writable without admin, not roaming, not moved by OneDrive Known-Folder-Move, a different subtree from `…\Google\Chrome\User Data`.
   Linux `$XDG_DATA_HOME/aria-browser/branches` (default `~/.local/share/aria-browser/branches`): the XDG place for app data, not `~/.config/chromium`.
-  Linux default created as a normal user (uid 1000): OK. Windows not verified.
+  Linux default created as a normal user (uid 1000): OK (fallback when `XDG_DATA_HOME` is unset or not an absolute path: `path.posix.join(home, '.local', 'share', 'aria-browser', 'branches')`). Windows manual checks pending (owner-run, non-blocking); Windows path shapes and CIM parsing tested via simulated inputs on Linux. (`$root` is resolved: no such setting exists; the base directory is `BRANCH_BASE_DIR`.)
 - **Migration:** existing roots are adopted where they are (legacy branches, `legacy: true`). Their folder is the one Chromium already used (`last_used` / `Default`, pinned once). Nothing is moved, copied or deleted. Folders from outside Aria are added only after an explicit warning and a separate confirmation (`external: true`). Deleting such a branch only forgets it; its data is kept.
 - **Crash leftovers (section 7):** a Chromium process on an Aria root with no live Node ancestor is stopped (SIGTERM, then SIGKILL). A lock is removed only when no live browser holds that root. Never touched: browsers of this server, of another server, and any browser outside Aria's folders. Windows listing (PowerShell CIM) is not tested; if listing fails, nothing is killed.
 
@@ -55,7 +55,7 @@ Tools: `tools/default-folders-report.mjs`. Full list: `git diff --name-status ma
 CI configuration not changed; the browser tests are not enabled in CI.
 
 ## 5. Test matrix (Linux = tested in the sandbox; Windows = NOT tested for every item)
-Totals: unit + integration **4616 passed, 9 skipped, 0 failed**; real Chromium **18 passed** (S30 end, after the Windows-lockfile change: profile-real-chromium 9, turn-off-and-show 3, orphan-browsers 4, local-browser-profile-selection 2), plus the 1 pre-existing failure `pipeline-browser-options` (see 6). Raw output: `handoffs/2026-10-14_S30_browser-tests.txt`.
+Totals: unit + integration **4628 passed, 9 skipped, 0 failed** (unit 4179 passed; integration 449 passed, 9 skipped); real Chromium **20 passed** (profile-real-chromium 9, turn-off-and-show 3, orphan-browsers 4, local-browser-profile-selection 2, pipeline-browser-options 2). Raw output: `handoffs/2026-10-14_S30_browser-tests.txt`.
 
 | Section 11 item | Test | Linux | Windows |
 |---|---|---|---|
@@ -91,9 +91,9 @@ TypeError: Cannot read properties of undefined (reading 'evaluate')
 Cause (not fixed; outside this brief): the test looks up `pm.getVipContext('bo-user')` (the user id), but `ensureProfileBrowser` keys contexts by PROFILE (`profile?.id || 'default'`, main `src/pipeline.ts:667-671`). Same result on this branch.
 
 ## 7. Remaining risks and blockers
-- **Windows not tested at all.** At risk: path handling (`\`, drive letters), the process listing for crash cleanup (PowerShell), the default base directory creation, and Chromium lock files.
-- GitHub reconnect needed to push the S30 commits to PR #76.
-- The two Default folders are not merged (by instruction). Until the owner decides, the registry's "Default" and the Local Browser remain two separate roots.
+- **Windows manual checks pending (owner-run, non-blocking).** Windows-specific code (`BranchBase`, `OrphanBrowsers` CIM output parsing, `lockfile` vs `SingletonLock`, `inspectExternal`) is tested with simulated Windows inputs on Linux; the 12 manual steps in section 8 remain for the owner on Windows and do not block the merge.
+- The two Default folders are deferred by the owner and out of scope for PR #76 (the containers that held them were deleted by the owner).
+- `$root` is resolved (no such setting in the app; the base directory setting is `BRANCH_BASE_DIR`).
 - The noVNC picture in the viewer was checked by probe only, not pixel by pixel.
 - An external (outside Aria) branch whose profile is opened by Aria will have its Chromium data changed by use. The user is warned before adding it; nothing is ever deleted.
 - The per-profile color uses Chromium's `browser.theme.user_color`. Chromium versions without it ignore it; the icon still differs.

@@ -1,3 +1,5 @@
+Historical. Superseded for phase 1 by handoffs/NEXT-SESSION-S31.md
+
 # S24 — shared profile / browser infrastructure (phase 1), branch feat/profile-infrastructure
 
 ## What exists now

@@ -17,9 +17,9 @@ Companion files:
 ---
 
 ## 0. Ground rules the owner set (do not break them)
-1. **Do NOT merge PR #76.** The owner merges, only after the whole brief is complete **and verified on Windows**.
+1. **Do NOT merge PR #76.** The owner merges; Windows manual checks are pending (owner-run) and do not block the merge.
 2. Push only after the owner confirms GitHub access. (Confirmed in S30; pushed, see §1.)
-3. Do not merge the two "Default" folders; report them only (§4, item D).
+3. The two "Default" folders are deferred and out of scope for PR #76 (the owner deleted the containers that held them).
 4. No second launcher, no CI changes, the browser tests stay out of CI, no unrelated UI layout changes.
 5. Small, reviewable commits. **The sandbox resets often**: commit and `ProjectBackup` after every step,
    and give the owner the backup link. Restore = download the latest backup, untar into `/home/user`, `npm ci` if node_modules is missing.
@@ -74,13 +74,10 @@ Legend: ✅ done + tested on Linux · 🟡 done, but not verified where the brie
 ### §0 Current state
 - ✅ Git verified; the 3 re-created S28 files were checked. The one difference (pin file / `last_used` fallback) was corrected:
   registry profiles use the registry folder only.
-- ✅ `pipeline-browser-options` on main was run; the exact output is saved. **Not fixed, on purpose** (outside the brief).
-  Cause: the test reads `pm.getVipContext('bo-user')`, but contexts are keyed by profile id (`'default'`). It is a one-line test fix if the owner asks for it.
+- ✅ `pipeline-browser-options` fixed in S31 (context read by profile id `'default'`, and `ProfileBuild.buildCompatible` relaunches when run-specific options are cleared).
 
 ### §1 Root causes: all addressed (evidence in the S30 report, section 2)
-- 🟡 **"Two Default folders"**: NOT merged (instruction). `tools/default-folders-report.mjs` prints name, size, last-used time, and cookies/login yes/no,
-  from file metadata only. Both folders are absent in the sandbox. **OPEN: the owner runs it on Windows and decides.**
-  Safe options for the decision: (a) keep both, as two branches; (b) point the registry's Default at the Local Browser root only if the per-user one has no data. Never move or delete data.
+- ✅ **"Two Default folders"**: deferred by the owner and out of scope for PR #76 (the owner deleted the containers that held them). `tools/default-folders-report.mjs` is kept unchanged.
 - ✅ The rest: explicit `--profile-directory`, `last_used` ignored, one process per root, Turn Off bounded, one viewer tab, flags validated,
   extension in new profiles, one session registry, no stale Task View cards, close ownership, per-profile icon + color, Chromium display name.
 
@@ -90,7 +87,7 @@ Legend: ✅ done + tested on Linux · 🟡 done, but not verified where the brie
 - ✅ Per-OS default, validation (absolute; not a drive root; not "User Data"; not OneDrive/Dropbox; not a Chromium data folder; writable), moves nothing.
 - ✅ Reservation margins before/after (default 10/10) are global settings.
 - 🟡 "Verify the defaults by creating them as a normal user on Windows **and** Linux": Linux verified (uid 1000). **Windows OPEN** (Windows manual step 2).
-- ✅ "Remove `$root` from global settings": **there is no `$root` setting in the app** (searched TS/JS/HTML; the name exists only in the shell scripts `scripts/plyr.sh` and `setup-wizard.sh`, where it is the repo root, not a profile root). Nothing to remove. **Ask the owner** if they meant something else (e.g. `REAL_CHROME_USER_DATA_DIR` / `PROFILES_DIR` in `.env`).
+- ✅ "Remove `$root` from global settings": **resolved** — there is no `$root` setting in the app; the base directory setting is `BRANCH_BASE_DIR`.
 
 ### §4 Creating a branch / profile: ✅
 - UI: Browser Profiles panel → New profile → branch selector ("New branch", existing branches, "Add an existing folder (outside Aria)…") → name → Create → it opens in the shared viewer.
@@ -139,16 +136,10 @@ Phase 2 reference: `handoffs/2026-10-13_S26_phase2-nodes.md`. Do not start it be
 ### §14 Report: `handoffs/2026-10-14_S30_phase1-report.md`.
 
 ## 5. What is OPEN, in priority order (do these next)
-1. **Windows verification by the owner** (blocking the merge). The owner runs the 12 steps in the S30 report, section 8, and sends back:
-   (a) `chrome://version` Profile Path + command line for one profile; (b) the output of `node tools/default-folders-report.mjs`;
-   (c) the server log of the first start (cleanup lines); (d) any step that did not give the expected result.
-   **Agent's job:** fix what fails. Most likely areas: Windows paths in `BranchBase` / `BranchRegistry.inspectExternal` (the personal-folder regex),
-   `OrphanBrowsers.listWindows` (PowerShell output parsing, PID tree). Windows lock files: Chromium uses `lockfile` there
-   (not `SingletonLock`). This is handled since S30 (OrphanBrowsers, inspectExternal, BranchBase) and tested with a
-   simulated file on Linux, **not on Windows**.
-2. **Decide the two Default folders** with the owner, after their report (§4, §1). Implement only a non-destructive option.
-3. **Ask the owner about `$root`** (§4, §3): confirm that nothing is meant, or which setting.
-4. Optional, if the owner wants it: fix the `pipeline-browser-options` test (one line: read the context by profile id).
+1. **Windows manual verification by the owner (non-blocking, owner-run).** The 12 manual steps in the S30 report, section 8, stay pending for the owner to run on Windows later and do **not** block merging PR #76. Windows-specific code (`BranchBase`, `OrphanBrowsers` CIM parsing, `lockfile` vs `SingletonLock`, `inspectExternal` personal-folder check) is tested with simulated Windows inputs on Linux.
+2. **Two Default folders**: deferred by the owner and out of scope for PR #76 (the owner deleted the containers that held them). `tools/default-folders-report.mjs` stays unchanged.
+3. **`$root`**: resolved (no such setting exists in the app; the base directory setting is `BRANCH_BASE_DIR`).
+4. **`pipeline-browser-options`**: fixed and passing (2/2).
 5. Optional: a pixel check of the noVNC viewer after Show Browser (screenshot of the canvas), Linux only.
 6. Then the owner reviews and merges PR #76 themselves. Phase 2 (nodes) starts only after that.
 

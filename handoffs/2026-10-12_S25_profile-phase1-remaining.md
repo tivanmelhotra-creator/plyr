@@ -1,3 +1,5 @@
+Historical. Superseded for phase 1 by handoffs/NEXT-SESSION-S31.md
+
 # S25 — phase 1 completed (remaining items), branch feat/profile-infrastructure (PR #76)
 
 Pushed to GitHub (PR #76 updated). CI green on the pushed head (run 38380583190 and later).

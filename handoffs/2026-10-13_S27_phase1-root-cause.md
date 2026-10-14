@@ -1,3 +1,5 @@
+Historical. Superseded for phase 1 by handoffs/NEXT-SESSION-S31.md
+
 # S27 — phase 1 root-cause analysis (shared browser infrastructure), branch feat/profile-infrastructure (PR #76)
 
 Scope: PHASE 1 ONLY (profiles, sessions, viewer, Local Browser <-> Browser Profiles, launch settings).

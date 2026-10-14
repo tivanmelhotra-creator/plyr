@@ -11,7 +11,7 @@ TRANSCRIPT:     after a sandbox reset, the owner's full chat transcript (incl. t
 
 PLAN:           docs/PLAN-node-logic-v2.md (node logic v2 + production roadmap; start with milestone M1).
 
-NEXT ACTION: follow handoffs/NEXT-SESSION-S31.md section 5 (owner verifies on Windows first). PR #76 pushed, NOT merged.
+NEXT ACTION: see handoffs/NEXT-SESSION-S31.md (Windows manual checks are owner-run and non-blocking). PR #76 pushed, NOT merged.
 
 Layout:
 - current-handoff.md   -> this pointer

@@ -362,7 +362,7 @@ Four concepts, four modules, never merged:
 
 | Concept | What it is | Module | Stored in |
 | --- | --- | --- | --- |
-| **Profile** | durable identity (user-data-dir, cookies, logins); stable `id` + renamable `name` | `core/ProfileRegistry` | meta file inside the profile dir |
+| **Branch / Profile** | a **branch** (`branch-NNN`, ids never reused) is one Chromium `--user-data-dir` root under `BRANCH_BASE_DIR`; a **profile** (`prf_<hex>`) is a `profile-NNN` folder inside it selected only with `--profile-directory` (one running profile per branch; different branches run in parallel) | `core/BranchRegistry`, `core/ProfileRegistry` (facade), `core/BranchBase`, `core/ChromiumProfileLocation` | `<PROFILES_DIR>/<user>/branches.json` |
 | **Session** | a live browser on a profile + who depends on it | `core/BrowserSessions` | memory, mirrored to Redis `profile:session:*` |
 | **Run** | one execution of a workflow | BullMQ job | Redis |
 | **Claim** | lease (run), hold (operator), reservation (schedule), grant (explicit) | `core/ProfileLease`, `core/ProfileReservations` | Redis `profile:{lease,hold,resv,grant}:*` |
@@ -395,8 +395,8 @@ the next foreign reservation.
 **Lifecycle.** Closing a browser never releases a claim, and a claim ending never
 closes a browser. A browser with a dependent other than the requester is never
 closed (Close Browser node detaches instead; after-run close and the idle
-collector skip it). Workflow setting `afterRun`: `keep` (default) or `close`
-(after success / cancel, if safe; errors and timeouts keep it for inspection).
+collector skip it). Workflow setting `afterRun`: `close` (default) or `keep`
+(honoured after success / cancel, if safe; errors and timeouts save state first and then close the browser).
 Unused browsers close after `BROWSER_IDLE_CLOSE_MIN` (default 10, 0 = never); a
 run in a Wait node is a dependent, so it is never idle.
 

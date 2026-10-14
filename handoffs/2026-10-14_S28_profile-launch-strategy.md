@@ -1,3 +1,5 @@
+Historical. Superseded for phase 1 by handoffs/NEXT-SESSION-S31.md
+
 # S28 — Browser Profiles: preferred Chromium launch strategy (branch feat/profile-infrastructure, PR #76)
 
 Scope: align how Browser Profiles select their Chromium data with the Local Browser. Phase 1 only.

@@ -1,3 +1,5 @@
+Historical. Superseded for phase 1 by handoffs/NEXT-SESSION-S31.md
+
 ## Phase 1 — shared browser-profile infrastructure
 
 Builds the shared layer for browser profiles, browser sessions, scheduled reservations and the browser lifecycle. Node logic is NOT changed here; that is phase 2.
