@@ -269,4 +269,62 @@ describe('branch model', () => {
     }
     cleanup();
   });
+
+  it('an existing folder from OUTSIDE Aria: inspect changes nothing, adding needs a separate exact confirmation, open uses its own folder, delete forgets it but keeps the data', async () => {
+    if (!up) return;
+    const ext = path.join(dir, 'my-old-chrome');
+    const { mkdirSync, readdirSync } = await import('node:fs');
+    mkdirSync(path.join(ext, 'Profile 3'), { recursive: true });
+    writeFileSync(path.join(ext, 'Profile 3', 'Preferences'), '{}');
+    writeFileSync(path.join(ext, 'Profile 3', 'Cookies'), 'x');
+    writeFileSync(path.join(ext, 'Local State'), JSON.stringify({ profile: { last_used: 'Profile 3', info_cache: { 'Profile 3': { name: 'Shop' } } } }));
+    const before = readdirSync(ext).sort();
+    const ins = await request(app).post('/profiles/branches/external/inspect').send({ root: ext }).expect(200);
+    expect(ins.body.inspection).toMatchObject({ root: ext, profiles: [{ folder: 'Profile 3', chromiumName: 'Shop' }], inUse: false, errors: [] });
+    expect(ins.body.inspection.warnings.join(' ')).toMatch(/NEVER delete/);
+    expect(readdirSync(ext).sort()).toEqual(before); // nothing written
+    expect((await registry.branches(USER)).some((b) => b.root === ext)).toBe(false);
+    // No confirmation, or a different folder confirmed: refused, nothing registered.
+    expect((await request(app).post('/profiles/branches/external').send({ root: ext }).expect(428)).body.code).toBe('needs_confirmation');
+    await request(app).post('/profiles/branches/external').send({ root: ext, confirm: path.join(dir, 'other') }).expect(428);
+    expect((await registry.branches(USER)).some((b) => b.root === ext)).toBe(false);
+    const add = await request(app).post('/profiles/branches/external').send({ root: ext, confirm: ext }).expect(201);
+    expect(add.body.branch.external).toBe(true);
+    expect(add.body.profiles).toEqual([expect.objectContaining({ name: 'Shop', folder: 'Profile 3' })]);
+    // Adding it twice is refused.
+    expect((await request(app).post('/profiles/branches/external').send({ root: ext, confirm: ext }).expect(400)).body.code).toBe('not_addable');
+    // Open: its own root + its existing folder, never "Default", never a new folder.
+    const pid = add.body.profiles[0].id;
+    await request(app).post(`/profiles/${pid}/open`).send({ workflowId: 'wf_ext' }).expect(200);
+    expect(launches.at(-1)!.root).toBe(ext);
+    expect(folderArg(launches.at(-1)!.args)).toEqual(['--profile-directory=Profile 3']);
+    await request(app).post(`/profiles/${pid}/close`).send({ workflowId: 'wf_ext' }).expect(200);
+    await request(app).post(`/profiles/${pid}/release`).send({ workflowId: 'wf_ext' });
+    // Delete: forgotten by Aria, data on disk kept.
+    const del = await request(app).delete(`/profiles/branches/${add.body.branch.id}`).expect(200);
+    expect(del.body.keptFolder).toBe(ext);
+    expect(existsSync(path.join(ext, 'Profile 3', 'Cookies'))).toBe(true);
+    expect((await registry.branches(USER)).some((b) => b.root === ext)).toBe(false);
+    cleanup();
+  });
+
+  it('outside-Aria checks: not a Chromium folder, in use, personal browser folder', async () => {
+    if (!up) return;
+    const { mkdirSync, symlinkSync } = await import('node:fs');
+    const empty = path.join(dir, 'empty'); mkdirSync(empty);
+    expect((await request(app).post('/profiles/branches/external/inspect').send({ root: empty })).body.inspection.errors.join(' ')).toMatch(/not a Chromium data folder/);
+    const busy = path.join(dir, 'busy'); mkdirSync(path.join(busy, 'Default'), { recursive: true });
+    writeFileSync(path.join(busy, 'Local State'), '{}'); writeFileSync(path.join(busy, 'Default', 'Preferences'), '{}');
+    symlinkSync('host-123', path.join(busy, 'SingletonLock'));
+    const b = (await request(app).post('/profiles/branches/external/inspect').send({ root: busy })).body.inspection;
+    expect(b.inUse).toBe(true);
+    expect(b.errors.join(' ')).toMatch(/using this folder right now/);
+    const personal = path.join(dir, 'home', '.config', 'chromium'); mkdirSync(path.join(personal, 'Default'), { recursive: true });
+    writeFileSync(path.join(personal, 'Local State'), '{}'); writeFileSync(path.join(personal, 'Default', 'Preferences'), '{}');
+    const pr = (await request(app).post('/profiles/branches/external/inspect').send({ root: personal })).body.inspection;
+    expect(pr.personal).toBe(true);
+    expect(pr.warnings.join(' ')).toMatch(/PERSONAL browser/);
+    expect((await request(app).post('/profiles/branches/external/inspect').send({ root: 'relative/x' })).body.inspection.errors.join(' ')).toMatch(/absolute/);
+    cleanup();
+  });
 });

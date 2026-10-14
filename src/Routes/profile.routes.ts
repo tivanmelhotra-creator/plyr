@@ -27,6 +27,7 @@
  * or `operator` when none is given. Runs of that same workflow are compatible
  * with it; every other workflow is refused with the reason.
  */
+import path from 'path';
 import { Router, type Response } from 'express';
 import type IORedis from 'ioredis';
 import { config } from '../config';
@@ -261,7 +262,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         success: true,
         baseDir: config.BRANCH_BASE_DIR,
         branches: list.filter((b) => b.kind !== 'local-browser').map((b) => ({
-          id: b.id, label: b.label, legacy: !!b.legacy, builtIn: !!b.builtIn,
+          id: b.id, label: b.label, legacy: !!b.legacy, builtIn: !!b.builtIn, external: !!b.external,
           running: !!browserSessions().get(b.leaseKey),
           runningProfileId: runningProfileOf(b.leaseKey),
           profiles: profiles.filter((p) => p.branchId === b.id).map((p) => ({ id: p.id, name: p.name, folder: p.folder })),
@@ -275,6 +276,35 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const userId = userOf(req);
       const b = await access.registry.createBranch(userId, req.body?.label);
       res.status(201).json({ success: true, branch: { id: b.id, label: b.label } });
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Add an EXISTING folder from outside Aria (section 4). Two steps, never one:
+   *   1. POST /profiles/branches/external/inspect { root } -> read-only report
+   *      (profile folders, in use, personal-browser warning). Nothing changes.
+   *   2. POST /profiles/branches/external { root, confirm: <same root> } ->
+   *      registered. Without the separate, exact confirmation: 428, nothing done.
+   * The folder is never moved, copied or deleted (deleting the branch forgets it).
+   */
+  router.post('/profiles/branches/external/inspect', async (req: AuthenticatedRequest, res) => {
+    try {
+      res.json({ success: true, inspection: await access.registry.inspectExternal(userOf(req), req.body?.root) });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.post('/profiles/branches/external', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const ins = await access.registry.inspectExternal(userId, req.body?.root);
+      if (ins.errors.length) { res.status(400).json({ success: false, code: 'not_addable', error: ins.errors.join(' '), inspection: ins }); return; }
+      const confirm = typeof req.body?.confirm === 'string' && req.body.confirm.trim() ? path.resolve(req.body.confirm.trim()) : '';
+      if (confirm !== ins.root) {
+        res.status(428).json({ success: false, code: 'needs_confirmation', error: 'Adding a folder from outside Aria needs a separate confirmation of that exact folder.', inspection: ins });
+        return;
+      }
+      const r = await access.registry.addExternalBranch(userId, ins.root, req.body?.label);
+      res.status(201).json({ success: true, branch: { id: r.branch.id, label: r.branch.label, external: true }, profiles: r.profiles.map((p) => ({ id: p.id, name: p.name, folder: p.folder })), warnings: ins.warnings });
     } catch (e) { fail(res, e); }
   });
 
@@ -311,7 +341,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         return;
       }
       const ids = new Set(scan.profiles.map((p) => p.profileId));
-      const { removedProfiles } = await access.registry.removeBranch(userId, branchId);
+      const { removedProfiles, keptFolder } = await access.registry.removeBranch(userId, branchId);
       // Inactive workflows: clear the reference (state "profile missing").
       const cleared: string[] = [];
       for (const w of scan.inactiveWorkflows) {
@@ -326,7 +356,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
           }).then(() => cleared.push(wf.id)).catch(() => {});
         }
       }
-      res.json({ success: true, deleted: branchId, removedProfiles, clearedWorkflows: cleared, profileMissing: scan.inactiveWorkflows.map((w) => w.workflowId) });
+      res.json({ success: true, deleted: branchId, removedProfiles, ...(keptFolder ? { keptFolder } : {}), clearedWorkflows: cleared, profileMissing: scan.inactiveWorkflows.map((w) => w.workflowId) });
     } catch (e) { fail(res, e); }
   });
 

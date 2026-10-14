@@ -54,6 +54,27 @@ export interface BranchRecord {
   builtIn?: boolean;
   kind?: 'local-browser' | 'profiles';
   nextProfile: number;
+  /**
+   * Added from OUTSIDE Aria (an existing Chromium data folder the user chose,
+   * after a warning and a separate confirmation). Aria never deletes such a
+   * folder: deleting the branch only forgets it.
+   */
+  external?: boolean;
+}
+
+/** What Aria found in an existing folder before the user confirms adding it. Read-only. */
+export interface ExternalInspection {
+  root: string;
+  /** Chromium profile folders found (Default, Profile 1, ...), with Chromium's display name. */
+  profiles: Array<{ folder: string; chromiumName: string | null }>;
+  /** A browser seems to use it right now (SingletonLock present). */
+  inUse: boolean;
+  /** It looks like a personal browser's default data folder. */
+  personal: boolean;
+  /** Already registered (as a branch root or inside one). */
+  alreadyRegistered: string | null;
+  warnings: string[];
+  errors: string[];
 }
 
 export interface ProfileRecord {
@@ -358,6 +379,65 @@ export class BranchRegistry {
     });
   }
 
+  /**
+   * Read-only look at an existing folder (section 4): nothing is opened,
+   * changed or written. The caller shows the warnings and asks for a SEPARATE
+   * confirmation before `addExternalBranch`.
+   */
+  async inspectExternal(userId: string, rawRoot: unknown): Promise<ExternalInspection> {
+    const root = typeof rawRoot === 'string' && rawRoot.trim() ? path.resolve(rawRoot.trim()) : '';
+    const out: ExternalInspection = { root, profiles: [], inUse: false, personal: false, alreadyRegistered: null, warnings: [], errors: [] };
+    if (!root || !path.isAbsolute(String(rawRoot).trim())) { out.errors.push('Use the full (absolute) path of an existing folder.'); return out; }
+    if (!(await isDir(root))) { out.errors.push('The folder does not exist.'); return out; }
+    const f = await this.serial(userId, () => this.load(userId));
+    const reg = f.branches.find((b) => {
+      const r = path.resolve(b.root);
+      return r === root || root.startsWith(r + path.sep) || r.startsWith(root + path.sep);
+    });
+    if (reg) { out.alreadyRegistered = reg.id; out.errors.push(`This folder is already used by ${reg.id} ("${reg.label}").`); }
+    let ls: any = null;
+    try { ls = JSON.parse(await fs.readFile(path.join(root, 'Local State'), 'utf8')); } catch { ls = null; }
+    const cache = (ls?.profile?.info_cache || {}) as Record<string, { name?: string }>;
+    let names: string[] = [];
+    try { names = (await fs.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch { names = []; }
+    for (const n of names.sort()) {
+      if (!isValidProfileDirectory(n)) continue;
+      if (!(await exists(path.join(root, n, 'Preferences')))) continue;
+      out.profiles.push({ folder: n, chromiumName: typeof cache[n]?.name === 'string' ? cache[n]!.name! : null });
+    }
+    if (!ls && !out.profiles.length) out.errors.push('This is not a Chromium data folder (no "Local State" and no profile folders).');
+    out.inUse = await fs.lstat(path.join(root, 'SingletonLock')).then(() => true, () => false);
+    if (out.inUse) out.errors.push('A browser is using this folder right now. Close it first.');
+    out.personal = /[\\/](User Data|\.config[\\/](chromium|google-chrome[^\\/]*|BraveSoftware[^\\/]*))$/i.test(root);
+    if (out.personal) out.warnings.push('This looks like the data folder of your PERSONAL browser. Aria would open and change it (cookies, logins, history). Use a copy instead.');
+    out.warnings.push('Aria will open this folder with its own browser and may change its data. Aria will NEVER delete it: deleting the branch only removes it from Aria.');
+    return out;
+  }
+
+  /** Register an existing folder as an external branch. Nothing is moved, copied or deleted. */
+  async addExternalBranch(userId: string, rawRoot: unknown, rawLabel?: unknown): Promise<{ branch: BranchRecord; profiles: ProfileEntry[] }> {
+    const ins = await this.inspectExternal(userId, rawRoot);
+    if (ins.errors.length) throw new ProfileRegistryError(ins.errors.join(' '), 'io');
+    const label = rawLabel === undefined || rawLabel === null || rawLabel === '' ? path.basename(ins.root) : normalizeName(rawLabel, 'Branch name');
+    return this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const id = await this.allocBranch(f);
+      const now = new Date().toISOString();
+      const b: BranchRecord = { id, label, root: ins.root, leaseKey: `branch:${userId}/${id}`, createdAt: now, updatedAt: now, nextProfile: 1, kind: 'profiles', external: true };
+      f.branches.push(b);
+      const folders = ins.profiles.length ? ins.profiles : [{ folder: 'Default', chromiumName: null }];
+      const added: ProfileRecord[] = [];
+      for (const p of folders) {
+        let pid = newProfileId();
+        while (f.profiles.some((x) => x.id === pid)) pid = newProfileId();
+        const rec: ProfileRecord = { id: pid, branchId: id, folder: p.folder, name: p.chromiumName || p.folder, createdAt: now, updatedAt: now };
+        f.profiles.push(rec); added.push(rec);
+      }
+      await this.save(userId, f);
+      return { branch: { ...b }, profiles: added.map((r) => this.entryOf(f, r)) };
+    });
+  }
+
   /** Only the display name changes; id, branch, folder and references stay. */
   async rename(userId: string, id: string, rawName: unknown): Promise<ProfileEntry> {
     const name = normalizeName(rawName);
@@ -399,18 +479,19 @@ export class BranchRegistry {
   }
 
   /** Delete a whole branch (folder + profile records). Safety is the CALLER's (core/BranchDeletion). */
-  async removeBranch(userId: string, branchId: string): Promise<{ removedProfiles: string[] }> {
+  async removeBranch(userId: string, branchId: string): Promise<{ removedProfiles: string[]; keptFolder?: string }> {
     return this.serial(userId, async () => {
       const f = await this.load(userId);
       const b = f.branches.find((x) => x.id === branchId);
       if (!b) throw new ProfileRegistryError('Branch not found', 'branch_not_found');
       if (b.builtIn) throw new ProfileRegistryError('This branch is built in and cannot be deleted.', 'builtin');
       const removed = f.profiles.filter((p) => p.branchId === b.id).map((p) => p.id);
-      await fs.rm(b.root, { recursive: true, force: true });
+      // A folder added from outside Aria is the user's: forget it, never delete it.
+      if (!b.external) await fs.rm(b.root, { recursive: true, force: true });
       f.branches = f.branches.filter((x) => x.id !== b.id);
       f.profiles = f.profiles.filter((p) => p.branchId !== b.id);
       await this.save(userId, f); // nextBranch is untouched: the id is never reused
-      return { removedProfiles: removed };
+      return { removedProfiles: removed, ...(b.external ? { keptFolder: b.root } : {}) };
     });
   }
 
