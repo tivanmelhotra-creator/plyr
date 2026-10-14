@@ -1,0 +1,293 @@
+{
+ "360": {
+  "panel": {
+   "drawer": [
+    0,
+    360
+   ],
+   "overflowX": [],
+   "removedPresent": [],
+   "forbiddenText": false
+  },
+  "controls": {
+   "Open": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     12,
+     227,
+     119,
+     34
+    ]
+   },
+   "Close": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     137,
+     227,
+     119,
+     34
+    ]
+   },
+   "Release": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     261,
+     227,
+     78,
+     34
+    ]
+   },
+   "Rename": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     263,
+     106,
+     81,
+     34
+    ]
+   },
+   "Restore tabs": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     12,
+     267,
+     109,
+     34
+    ]
+   },
+   "Launch settings": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     12,
+     321,
+     337,
+     19
+    ]
+   },
+   "New profile": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     246,
+     51,
+     103,
+     34
+    ]
+   }
+  }
+ },
+ "900": {
+  "panel": {
+   "drawer": [
+    532,
+    368
+   ],
+   "overflowX": [],
+   "removedPresent": [],
+   "forbiddenText": false
+  },
+  "controls": {
+   "Open": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     544,
+     227,
+     119,
+     34
+    ]
+   },
+   "Close": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     669,
+     227,
+     119,
+     34
+    ]
+   },
+   "Release": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     793,
+     227,
+     78,
+     34
+    ]
+   },
+   "Rename": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     803,
+     106,
+     81,
+     34
+    ]
+   },
+   "Restore tabs": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     544,
+     267,
+     109,
+     34
+    ]
+   },
+   "Launch settings": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     544,
+     321,
+     345,
+     19
+    ]
+   },
+   "New profile": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     786,
+     51,
+     103,
+     34
+    ]
+   }
+  }
+ },
+ "1440": {
+  "panel": {
+   "drawer": [
+    1072,
+    368
+   ],
+   "overflowX": [],
+   "removedPresent": [],
+   "forbiddenText": false
+  },
+  "controls": {
+   "Open": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1084,
+     227,
+     119,
+     34
+    ]
+   },
+   "Close": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1209,
+     227,
+     119,
+     34
+    ]
+   },
+   "Release": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1333,
+     227,
+     78,
+     34
+    ]
+   },
+   "Rename": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1343,
+     106,
+     81,
+     34
+    ]
+   },
+   "Restore tabs": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1084,
+     267,
+     109,
+     34
+    ]
+   },
+   "Launch settings": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1084,
+     321,
+     345,
+     19
+    ]
+   },
+   "New profile": {
+    "visible": true,
+    "insideDrawer": true,
+    "reachable": true,
+    "enabled": true,
+    "box": [
+     1326,
+     51,
+     103,
+     34
+    ]
+   }
+  }
+ }
+}
