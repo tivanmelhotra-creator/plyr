@@ -81,6 +81,10 @@ export function setProfileLauncherForTests(l: Launcher | null): void { launcher 
  */
 export async function openProfileBrowser(pm: ProfileManager, input: {
   leaseId: string; userId: string; userDataDir: string; owner: string;
+  /** Chromium --profile-directory inside the branch root (core/BranchRegistry). */
+  profileDirectory?: string;
+  /** Registry profile id: recorded as the RUNNING profile of the branch. */
+  profileId?: string;
   /** Registry display name, written into Chromium's profile data before launch. */
   displayName?: string;
   /** Validated launch settings (core/LaunchSettings). Absent = Standard, and an open browser is reused as it is. */
@@ -142,7 +146,7 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
   if (!p) {
     p = (async () => {
       await fs.promises.mkdir(input.userDataDir, { recursive: true });
-      const loc = await resolveChromiumProfile(input.userDataDir);
+      const loc = await resolveChromiumProfile(input.userDataDir, input.profileDirectory);
       if (input.displayName) {
         const named = await applyChromiumProfileName(loc.userDataRoot, input.displayName, loc.profileDirectory);
         if (!named.ok) console.warn(`[PROFILES] Chromium display name not set for ${input.leaseId}: ${named.skipped || 'unknown'}`);

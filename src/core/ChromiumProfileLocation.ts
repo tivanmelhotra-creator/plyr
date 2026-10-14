@@ -56,7 +56,7 @@ export const DEFAULT_PROFILE_DIRECTORY = 'Default';
 /** Switches this layer owns. A caller's argv must never carry its own copy. */
 const OWNED_SWITCHES = ['--user-data-dir', '--profile-directory'];
 
-export type ProfileDirectorySource = 'pinned' | 'adopted-last-used' | 'adopted-default' | 'unreadable-pin';
+export type ProfileDirectorySource = 'registry' | 'pinned' | 'adopted-last-used' | 'adopted-default' | 'unreadable-pin';
 
 export interface ChromiumProfileLocation {
   /** Chromium's --user-data-dir (absolute). */
@@ -105,8 +105,14 @@ export function pinnedDirectoryOf(data: unknown): string | null {
  * Call it only while no browser runs on the root: the callers do so right
  * before launching, under the profile's lease or launch lock.
  */
-export async function resolveChromiumProfile(root: string): Promise<ChromiumProfileLocation> {
+export async function resolveChromiumProfile(root: string, explicitFolder?: string | null): Promise<ChromiumProfileLocation> {
   const userDataRoot = path.resolve(root);
+  // Branch model (core/BranchRegistry): the registry names the folder. It is
+  // used as is; Local State and the pin file are not consulted or written.
+  if (explicitFolder) {
+    if (!isValidProfileDirectory(explicitFolder)) throw new Error(`invalid profile folder "${String(explicitFolder).slice(0, 80)}"`);
+    return at(userDataRoot, explicitFolder, 'registry');
+  }
   await fs.mkdir(userDataRoot, { recursive: true });
   const pinFile = path.join(userDataRoot, PIN_FILE);
   const pin = await readJson(pinFile);

@@ -746,7 +746,7 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
   log(`[BROWSER] Launching profile "${profile?.label || key}" — ${describeVisibility(headless)} browser`);
   // Resolved only on a launch: pinning may write into the root, which is safe
   // only while no browser runs on it (core/ChromiumProfileLocation).
-  const profileLoc = await resolveChromiumProfile(profileDir);
+  const profileLoc = await resolveChromiumProfile(profileDir, profile?.profileDirectory);
   log(`[BROWSER] Profile data: ${profileLoc.profileDirectory} (${profileLoc.source}) in ${profileLoc.userDataRoot}`);
 
   // A VISIBLE browser (a manual run) needs an X display. On a server there

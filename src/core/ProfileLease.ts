@@ -33,6 +33,7 @@
 import { randomUUID } from 'crypto';
 import path from 'path';
 import type IORedis from 'ioredis';
+import { indexedProfile } from './ProfileIndex';
 
 /** One process incarnation; leases from any other incarnation are orphans. */
 export const INSTANCE_ID = randomUUID();
@@ -44,6 +45,10 @@ export const GRANT_PREFIX = 'profile:grant:';
 
 /** The lease id of a registry profile id ('default' stays 'default'). */
 export function leaseIdOf(profileId: string): string {
+  // Profiles share their BRANCH's lock (one Chromium process per branch,
+  // core/BranchRegistry). Legacy branches keep the key they always had.
+  const e = indexedProfile(profileId);
+  if (e) return e.leaseKey;
   return profileId === 'default' ? 'default' : `named:${profileId}`;
 }
 
@@ -51,6 +56,10 @@ export function leaseIdOf(profileId: string): string {
 export interface ProfileRef {
   /** Stable id, used as the lock name. */
   id: string;
+  /** Registry profile id (absent for Real Chrome / local / ephemeral). */
+  profileId?: string;
+  /** Chromium --profile-directory inside `userDataDir` (absent = pinned by the root). */
+  profileDirectory?: string;
   /** Human label for logs / the Workspace. */
   label: string;
   /** The Chromium user-data-dir, when the run owns one (not for Real Chrome). */
@@ -140,12 +149,19 @@ export function resolveRunProfile(input: {
   if (input.usesExtensions) {
     return { id: 'realchrome', label: 'Real Chrome (extensions)', userDataDir: input.realChromeDir, kind: 'realchrome' };
   }
-  const named = sanitizeProfileId(input.profileId);
-  if (named && named !== 'default') {
+  const named = sanitizeProfileId(input.profileId) || 'default';
+  // A profile known to the branch registry: its branch root + folder, locked
+  // per branch.
+  const e = indexedProfile(named);
+  if (e) {
+    return { id: e.leaseKey, label: e.name, userDataDir: e.root, profileDirectory: e.folder, profileId: named, kind: named === 'default' ? 'run' : 'named' };
+  }
+  if (named !== 'default') {
     return {
       id: `named:${named}`,
       label: named,
       userDataDir: path.join(input.profilesDir, input.userId, 'browser-profiles', named),
+      profileId: named,
       kind: 'named',
     };
   }
@@ -153,6 +169,7 @@ export function resolveRunProfile(input: {
     id: 'default',
     label: 'Default',
     userDataDir: path.join(input.profilesDir, input.userId, 'chrome-profile'),
+    profileId: 'default',
     kind: 'run',
   };
 }
