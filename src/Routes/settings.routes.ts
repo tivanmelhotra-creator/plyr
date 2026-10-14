@@ -15,6 +15,7 @@ import { Router, type Response } from 'express';
 import { config } from '../config';
 import type { AuthenticatedRequest } from '../middleware/auth';
 import { saveSetting, sourceOf, envValueOf, settingsFilePath, liveRaw } from '../core/PersistedSettings';
+import { validateBaseDir } from '../core/BranchBase';
 import {
   CATALOG, specOf, validateValue, generateSecret,
   type SettingSpec, type ValidateCtx,
@@ -161,7 +162,16 @@ export function createSettingsRoutes(): { publicRouter: Router; router: Router }
       // Older clients / .env files say `server` (or `prod`): that is production.
       const input = key === 'APP_ENV' && typeof raw === 'string' ? normProfile(raw.trim()) : raw;
       const r = validateValue(spec, input, ctx);
-      if ('error' in r) errors[key] = r; else accepted.set(key, r.value);
+      if ('error' in r) { errors[key] = r; continue; }
+      // The branch base is checked against the DISK (exists or can be created,
+      // writable, not a Chromium data folder). Empty = the OS default.
+      if (key === 'BRANCH_BASE_DIR' && r.value) {
+        const check = await validateBaseDir(r.value);
+        if (!check.ok) { errors[key] = { error: check.errors.join(' '), errorFa: 'این پوشه قابل استفاده نیست: ' + check.errors.join(' ') }; continue; }
+        accepted.set(key, check.path);
+        continue;
+      }
+      accepted.set(key, r.value);
     }
     if (Object.keys(errors).length) {
       res.status(400).json({ success: false, error: 'Some values are not valid', errors });

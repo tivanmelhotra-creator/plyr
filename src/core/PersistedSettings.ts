@@ -90,6 +90,7 @@ export const PERSISTABLE_KEYS: readonly string[] = Object.freeze([
   'PROFILE_RESERVE_BEFORE_MIN',
   'PROFILE_RESERVE_AFTER_MIN',
   'BROWSER_IDLE_CLOSE_MIN',
+  'BRANCH_BASE_DIR',
 ]);
 
 /**

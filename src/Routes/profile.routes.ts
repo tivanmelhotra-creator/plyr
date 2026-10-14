@@ -46,6 +46,13 @@ import { runProfileIdOf } from '../core/NodeProfile';
 import type { OverlapView, UnresolvedSchedule } from '../core/ProfileCoordinator';
 import { readLastSession, restoreTabs } from '../core/BrowserStateSnapshot';
 import { buildLaunchArgs, hasLaunchChoice, launchCatalogue, type LaunchSettingsInput, type ResolvedLaunch } from '../core/LaunchSettings';
+import { launchProfilesOf } from '../core/NodeProfile';
+import { scanBranch, type WorkflowUse } from '../core/BranchPolicy';
+import { profileFailureReports } from '../core/ProfileFailureReports';
+import { runningProfileOf } from '../core/BrowserSessions';
+import { blockingUntil } from '../core/ProfileReservations';
+import { defaultBaseDir, validateBaseDir } from '../core/BranchBase';
+import { saveSetting } from '../core/PersistedSettings';
 
 /** Pure: the launch-settings part of a request body, or null. */
 export function launchInputOf(body: unknown): LaunchSettingsInput | null {
@@ -78,6 +85,8 @@ export interface ProfileRoutesDeps {
   schedules?: {
     overlaps(): Promise<OverlapView[]>;
     unresolvedSchedules(): Promise<UnresolvedSchedule[]>;
+    /** Workflow ids that have at least one schedule (a scheduled workflow is always active). */
+    scheduledWorkflowIds?(): Promise<Set<string>>;
   };
 }
 
@@ -108,7 +117,7 @@ function ownerOf(raw: unknown): string {
 
 function fail(res: Response, e: unknown): void {
   if (e instanceof ProfileRegistryError) {
-    const status = e.code === 'not_found' ? 404 : e.code === 'duplicate_name' ? 409 : e.code === 'io' ? 500 : 400;
+    const status = e.code === 'not_found' || e.code === 'branch_not_found' ? 404 : e.code === 'duplicate_name' || e.code === 'builtin' ? 409 : e.code === 'io' ? 500 : 400;
     res.status(status).json({ success: false, error: e.message, code: e.code });
     return;
   }
@@ -194,6 +203,151 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     } catch (e) { fail(res, e); }
   });
 
+  /** Every workflow with its state and every profile its runs may use (branch deletion scan). */
+  async function uses(userId: string): Promise<WorkflowUse[]> {
+    const all = await workflows.list(userId).catch(() => []);
+    const scheduled = (await deps.schedules?.scheduledWorkflowIds?.().catch(() => new Set<string>())) || new Set<string>();
+    const running = new Set<string>();
+    for (const r of browserSessions().list()) {
+      for (const d of r.dependents) if (d.startsWith('job:')) running.add(d);
+    }
+    const leaseOwners = new Set<string>();
+    for (const r of browserSessions().list()) {
+      const lease = await access.leases.holder(r.leaseId).catch(() => null);
+      if (lease?.owner) leaseOwners.add(lease.owner);
+    }
+    return all.map((wf) => {
+      const d = WorkflowService.executableDesign(wf);
+      const ids = new Set<string>();
+      for (const src of [{ steps: wf.steps, pid: wf.profileId }, ...(wf.active ? [{ steps: d.steps, pid: d.profileId }] : [])]) {
+        ids.add(src.pid || DEFAULT_PROFILE_ID);
+        for (const x of launchProfilesOf(src.steps)) ids.add(x);
+      }
+      return {
+        workflowId: wf.id, name: wf.name, active: !!wf.active,
+        scheduled: scheduled.has(wf.id), running: leaseOwners.has(wf.id),
+        profileIds: [...ids],
+      };
+    });
+  }
+
+  /** The full dependency scan of one branch (section 8). Re-run at the end of the hold. */
+  async function branchScan(userId: string, branchId: string) {
+    const b = await access.registry.branch(userId, branchId);
+    if (!b) return null;
+    const profiles = await access.registry.profilesOf(userId, branchId);
+    const lease = await access.leases.holder(b.leaseKey).catch(() => null);
+    const hold = await access.leases.holdOf(b.leaseKey).catch(() => null);
+    const session = browserSessions().get(b.leaseKey);
+    const now = Date.now();
+    const resv = await access.reservations.list(b.leaseKey).catch(() => []);
+    const reserved = resv.some((r) => r.state !== 'missed' && r.start <= now && now < blockingUntil(r));
+    const scan = scanBranch({
+      branchId: b.id, label: b.label, builtIn: !!b.builtIn, profiles,
+      workflows: await uses(userId),
+      branchRunning: !!(lease || session || profileManager.getVipContext(b.leaseKey)),
+      runningProfileId: runningProfileOf(b.leaseKey),
+      branchReserved: reserved,
+    });
+    return { ...scan, held: !!hold };
+  }
+
+  router.get('/profiles/branches', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const list = await access.registry.branches(userId);
+      const profiles = await access.registry.list(userId, { includeLocalBrowser: true });
+      res.json({
+        success: true,
+        baseDir: config.BRANCH_BASE_DIR,
+        branches: list.filter((b) => b.kind !== 'local-browser').map((b) => ({
+          id: b.id, label: b.label, legacy: !!b.legacy, builtIn: !!b.builtIn,
+          running: !!browserSessions().get(b.leaseKey),
+          runningProfileId: runningProfileOf(b.leaseKey),
+          profiles: profiles.filter((p) => p.branchId === b.id).map((p) => ({ id: p.id, name: p.name, folder: p.folder })),
+        })),
+      });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.post('/profiles/branches', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const b = await access.registry.createBranch(userId, req.body?.label);
+      res.status(201).json({ success: true, branch: { id: b.id, label: b.label } });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.patch('/profiles/branches/:branchId', async (req: AuthenticatedRequest, res) => {
+    try {
+      const b = await access.registry.renameBranch(userOf(req), String(req.params.branchId), req.body?.label);
+      res.json({ success: true, branch: { id: b.id, label: b.label } });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.get('/profiles/branches/:branchId/deletion-scan', async (req: AuthenticatedRequest, res) => {
+    try {
+      const scan = await branchScan(userOf(req), String(req.params.branchId));
+      if (!scan) { res.status(404).json({ success: false, error: 'Branch not found', code: 'branch_not_found' }); return; }
+      res.json({ success: true, scan });
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Delete a branch. The client calls this ONLY at the end of a 3-second
+   * press-and-hold; the scan is run AGAIN here, so anything that started
+   * during the hold cancels the deletion (409 with the fresh scan).
+   * Inactive workflows keep their definition; their reference is cleared.
+   */
+  router.delete('/profiles/branches/:branchId', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const branchId = String(req.params.branchId);
+      const scan = await branchScan(userId, branchId);
+      if (!scan) { res.status(404).json({ success: false, error: 'Branch not found', code: 'branch_not_found' }); return; }
+      if (scan.builtIn) { res.status(409).json({ success: false, code: 'builtin', error: 'This branch is built in and cannot be deleted.', scan }); return; }
+      if (!scan.deletable || scan.held) {
+        res.status(409).json({ success: false, code: 'blocked', error: 'The branch cannot be deleted now: it is in use or referenced by an active or scheduled workflow.', scan });
+        return;
+      }
+      const ids = new Set(scan.profiles.map((p) => p.profileId));
+      const { removedProfiles } = await access.registry.removeBranch(userId, branchId);
+      // Inactive workflows: clear the reference (state "profile missing").
+      const cleared: string[] = [];
+      for (const w of scan.inactiveWorkflows) {
+        const wf = await workflows.get(userId, w.workflowId).catch(() => null);
+        if (!wf || wf.active) continue;
+        if (wf.profileId && ids.has(wf.profileId)) {
+          await workflows.update(userId, wf.id, { name: wf.name, description: wf.description ?? null, steps: wf.steps, headless: wf.headless ?? null, webhookUrl: wf.webhookUrl ?? null, profileId: null })
+            .then(() => cleared.push(wf.id)).catch(() => {});
+        }
+      }
+      res.json({ success: true, deleted: branchId, removedProfiles, clearedWorkflows: cleared, profileMissing: scan.inactiveWorkflows.map((w) => w.workflowId) });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Failure reports (profile_missing / profile_broken), newest first. */
+  router.get('/profiles/reports', async (req: AuthenticatedRequest, res) => {
+    try {
+      res.json({ success: true, reports: await profileFailureReports().list(userOf(req)) });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** The base directory for NEW branches (one per OS). Changing it moves nothing. */
+  router.get('/profiles/base-dir', (_req, res) => {
+    res.json({ success: true, baseDir: config.BRANCH_BASE_DIR, default: defaultBaseDir(), platform: process.platform });
+  });
+
+  router.put('/profiles/base-dir', async (req: AuthenticatedRequest, res) => {
+    try {
+      const raw = typeof req.body?.baseDir === 'string' ? req.body.baseDir : '';
+      const check = await validateBaseDir(raw);
+      if (!check.ok) { res.status(400).json({ success: false, code: 'invalid_base_dir', error: check.errors.join(' '), check }); return; }
+      saveSetting('BRANCH_BASE_DIR', check.path);
+      res.json({ success: true, baseDir: config.BRANCH_BASE_DIR, warnings: check.warnings, note: 'Existing branches stay where they are; only new branches are created here.' });
+    } catch (e) { fail(res, e); }
+  });
+
   router.get('/profiles/launch-options', (_req, res) => {
     res.json({ success: true, ...launchCatalogue() });
   });
@@ -206,7 +360,10 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
   router.post('/profiles', async (req: AuthenticatedRequest, res) => {
     try {
       const userId = userOf(req);
-      const p = await access.registry.create(userId, req.body?.name);
+      const p = await access.registry.create(userId, req.body?.name, {
+        branchId: typeof req.body?.branchId === 'string' ? req.body.branchId : null,
+        branchLabel: req.body?.branchLabel,
+      });
       const view = await access.view(userId, p.id, ownerOf(req.body?.workflowId), await refs(userId));
       res.status(201).json({ success: true, profile: view });
     } catch (e) { fail(res, e); }

@@ -152,6 +152,13 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
   },
 
   {
+    key: 'BRANCH_BASE_DIR', group: 'runs', type: 'text', apply: 'live', dflt: '',
+    fa: 'پوشهٔ پایهٔ شاخه‌های مرورگر', en: 'Browser branches folder',
+    hintFa: 'شاخه‌های جدید (branch-001، branch-002، …) اینجا ساخته می‌شوند. تغییرش چیزی را جابه‌جا نمی‌کند؛ شاخه‌های موجود سر جایشان می‌مانند. خالی = پیش‌فرض این سیستم‌عامل.',
+    hintEn: 'New branches (branch-001, branch-002, …) are created here. Changing it moves nothing; existing branches stay where they are. Empty = this OS default.',
+  },
+
+  {
     key: 'DOWNLOAD_TTL_MINUTES', group: 'storage', type: 'choice', apply: 'live', dflt: '30',
     fa: 'نگهداری فایل‌های دانلودی موقت', en: 'Keep temporary downloads',
     hintFa: 'فایل‌های پوشهٔ downloads خودِ هر workflow پاک نمی‌شوند.', hintEn: 'Files in a workflow\'s own downloads folder are never swept.',
