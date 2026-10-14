@@ -58,3 +58,40 @@ export function outcomeOfError(message: string, cancelled: boolean): RunOutcome 
   if (/timed? ?out|timeout|Safety Stop/i.test(message)) return 'timeout';
   return 'error';
 }
+
+/**
+ * Apply the after-run decision to a live session (the worker's `finally`).
+ * Kept here, not inline in the worker, so the same code is tested against a
+ * real browser. The state needed for diagnosis is saved BEFORE closing.
+ * Never releases a lease / hold / reservation.
+ */
+export async function applyAfterRun(i: {
+  sessionId: string;
+  dependent: string;
+  policy: AfterRunPolicy;
+  outcome: RunOutcome;
+  ownBrowser: boolean;
+  sessions: { get(id: string): { dependents: string[] } | null; detach(id: string, dep: string): void; canClose(id: string, dep: string): { ok: boolean }; closed(id: string): void };
+  manager: { getVipContext(id: string): { context: { close(): Promise<void> } } | undefined; removeVipContext(id: string): void };
+  save: (ctx: unknown) => Promise<unknown>;
+  log?: (m: string) => void;
+}): Promise<AfterRunDecision & { closed: boolean }> {
+  const sess = i.sessions.get(i.sessionId);
+  const others = sess ? sess.dependents.filter((d) => d !== i.dependent) : [];
+  const decision = decideAfterRun({
+    policy: i.policy, outcome: i.outcome, sessionOpen: !!sess && !!i.manager.getVipContext(i.sessionId),
+    ownBrowser: i.ownBrowser, otherDependents: others,
+  });
+  i.sessions.detach(i.sessionId, i.dependent);
+  if (decision.action !== 'close') {
+    if (decision.why === 'in_use') i.log?.(`browser kept open: still used by ${others.join(', ')}`);
+    return { ...decision, closed: false };
+  }
+  const entry = i.manager.getVipContext(i.sessionId);
+  if (!entry || !i.sessions.canClose(i.sessionId, i.dependent).ok) return { ...decision, closed: false };
+  await i.save(entry.context);
+  await entry.context.close().catch(() => {});
+  i.manager.removeVipContext(i.sessionId);
+  i.sessions.closed(i.sessionId);
+  return { ...decision, closed: true };
+}

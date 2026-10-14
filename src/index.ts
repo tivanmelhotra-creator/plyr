@@ -16,6 +16,7 @@ import { ProfileManager } from './core/ProfileManager';
 import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
 import { ProfileFailureReports, registerProfileFailureReports } from './core/ProfileFailureReports';
 import { preRunProfileCheck } from './core/BranchPolicy';
+import { applyAfterRun } from './core/BrowserLifecycle';
 import { reapOrphans, lockedRootsUnder } from './core/OrphanBrowsers';
 import { indexedProfile } from './core/ProfileIndex';
 import { runningProfileOf } from './core/BrowserSessions';
@@ -25,7 +26,7 @@ import { BrowserSessions, registerBrowserSessions, jobDependent, sessionDataDir 
 import { saveBeforeClose } from './core/BrowserStateSnapshot';
 import { ProfileAccess, registerProfileAccess, explainDenial } from './core/ProfileAccess';
 import { ProfileCoordinator, ownerOfJob, occurrenceOf, reservationWindow } from './core/ProfileCoordinator';
-import { decideAfterRun, afterRunPolicyOf, outcomeOfError, type RunOutcome } from './core/BrowserLifecycle';
+import { afterRunPolicyOf, outcomeOfError, type RunOutcome } from './core/BrowserLifecycle';
 import { runOriginOf, headlessFor, describeVisibility } from './core/RunPolicy';
 import { stepsUseExtensions } from './core/ExtensionStep';
 import { browserModes } from './core/BrowserMode';
@@ -1143,8 +1144,6 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     //    is independent of the lease below: closing never releases a claim.
     const dep = jobDependent(String(job.id));
     try {
-      const sess = browserSessionRegistry.get(profile.id);
-      const others = sess ? sess.dependents.filter((d) => d !== dep) : [];
       let policy = afterRunPolicyOf(undefined);
       const wfId = job.data.__workflowId || job.data.__workspace?.workflowId || job.data.__scheduleWorkflowId;
       if (typeof wfId === 'string') {
@@ -1152,25 +1151,18 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
         const wf = await new WorkflowService(workflowStoreFor(connection)).get(String(owner), wfId).catch(() => null);
         policy = afterRunPolicyOf(wf?.afterRun);
       }
-      const decision = decideAfterRun({
-        policy, outcome: runOutcome, sessionOpen: !!sess && !!profileManager.getVipContext(profile.id),
-        ownBrowser: profile.kind === 'run' || profile.kind === 'named', otherDependents: others,
-      });
-      browserSessionRegistry.detach(profile.id, dep);
-      if (decision.action === 'close') {
-        const entry = profileManager.getVipContext(profile.id);
-        if (entry && browserSessionRegistry.canClose(profile.id, dep).ok) {
+      const r = await applyAfterRun({
+        sessionId: profile.id, dependent: dep, policy, outcome: runOutcome,
+        ownBrowser: profile.kind === 'run' || profile.kind === 'named',
+        sessions: browserSessionRegistry, manager: profileManager,
+        save: async (ctx) => {
           // Recoverable: tabs + storage are saved into the profile first.
-          const saved = await saveBeforeClose(entry.context, sessionDataDir(profile.id) || profile.userDataDir, 'after_run');
+          const saved = await saveBeforeClose(ctx as never, sessionDataDir(profile.id) || profile.userDataDir, 'after_run');
           if (saved) console.log(`[JOB:${job.id}] saved ${saved.tabs} tab(s) of profile "${profile.label}" for recovery`);
-          await entry.context.close().catch(() => {});
-          profileManager.removeVipContext(profile.id);
-          browserSessionRegistry.closed(profile.id);
-          console.log(`[JOB:${job.id}] closed the browser of profile "${profile.label}" after the run (workflow setting)`);
-        }
-      } else if (decision.why === 'in_use') {
-        console.log(`[JOB:${job.id}] browser of profile "${profile.label}" kept open: still used by ${others.join(', ')}`);
-      }
+        },
+        log: (m) => console.log(`[JOB:${job.id}] ${m} (profile "${profile.label}")`),
+      });
+      if (r.closed) console.log(`[JOB:${job.id}] closed the browser of profile "${profile.label}" after the run (${runOutcome}, setting ${policy})`);
     } catch (e) {
       console.warn(`[JOB:${job.id}] after-run browser policy failed: ${(e as Error).message}`);
     }
