@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { ProfileRegistry, ProfileRegistryError, profileDirFor, META_FILE } from '../../src/core/ProfileRegistry';
+import { ProfileRegistry, ProfileRegistryError, profileDirFor } from '../../src/core/ProfileRegistry';
 import { BrowserSessions, decideClose, isIdle, jobDependent, operatorDependent } from '../../src/core/BrowserSessions';
 import { decideAfterRun, outcomeOfError, afterRunPolicyOf } from '../../src/core/BrowserLifecycle';
 import { deriveStatus, explainDenial } from '../../src/core/ProfileAccess';
@@ -34,13 +34,17 @@ describe('ProfileRegistry', () => {
     expect(all[0]!.builtIn).toBe(true);
   });
 
-  it('create gives a stable prf_ id, never starts anything, and refuses duplicate names', async () => {
+  it('create gives a stable prf_ id in a new branch-NNN with folder profile-NNN; names are not keys', async () => {
     const R = new ProfileRegistry(dir);
     const p = await R.create('local', '  Shop   Account ');
     expect(p.id).toMatch(/^prf_[0-9a-f]{12}$/);
     expect(p.name).toBe('Shop Account');
-    expect(existsSync(path.join(R.dirOf('local', p.id), META_FILE))).toBe(true);
-    await expect(R.create('local', 'shop account')).rejects.toMatchObject({ code: 'duplicate_name' });
+    expect(p.branchId).toMatch(/^branch-\d{3}$/);
+    expect(p.folder).toBe('profile-001');
+    expect(existsSync(path.join(R.dirOf('local', p.id), 'profile-001'))).toBe(true);
+    // Display names are not unique keys (owner's model).
+    const twin = await R.create('local', 'shop account');
+    expect(twin.id).not.toBe(p.id);
     await expect(R.create('local', '')).rejects.toBeInstanceOf(ProfileRegistryError);
   });
 
@@ -73,16 +77,15 @@ describe('ProfileRegistry', () => {
     expect(ref.userDataDir).toBe(R.dirOf('local', 'shop'));
   });
 
-  it('unreadable metadata is listed as a problem and never overwritten', async () => {
+  it('an unreadable registry file is never overwritten; operations refuse with io', async () => {
     const R = new ProfileRegistry(dir);
-    const p = await R.create('local', 'X');
-    const meta = path.join(R.dirOf('local', p.id), META_FILE);
-    writeFileSync(meta, '{broken');
-    const got = await R.get('local', p.id);
-    expect(got!.problem).toMatch(/unreadable/);
-    await R.ensure('local', p.id);
-    expect(readFileSync(meta, 'utf8')).toBe('{broken');
-    await expect(R.rename('local', p.id, 'Y')).rejects.toMatchObject({ code: 'io' });
+    await R.create('local', 'X');
+    const file = path.join(dir, 'local', 'branches.json');
+    writeFileSync(file, '{broken');
+    const R2 = new ProfileRegistry(dir);
+    await expect(R2.list('local')).rejects.toMatchObject({ code: 'io' });
+    await expect(R2.create('local', 'Y')).rejects.toMatchObject({ code: 'io' });
+    expect(readFileSync(file, 'utf8')).toBe('{broken');
   });
 
   it('a failed open is remembered for the user and cleared by a successful one', async () => {
@@ -94,10 +97,11 @@ describe('ProfileRegistry', () => {
     expect((await R.get('local', p.id))!.lastOpenError).toBeNull();
   });
 
-  it('concurrent creates with the same name: one wins (writes are serialised)', async () => {
+  it('concurrent creates are serialised: distinct ids, branches and folders, ids never reused', async () => {
     const R = new ProfileRegistry(dir);
-    const res = await Promise.allSettled(Array.from({ length: 8 }, () => R.create('local', 'Same')));
-    expect(res.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const res = await Promise.all(Array.from({ length: 6 }, (_, i) => R.create('local', `P${i}`)));
+    expect(new Set(res.map((r) => r.id)).size).toBe(6);
+    expect(new Set(res.map((r) => r.branchId)).size).toBe(6);
   });
 
   it('refuses ids that are not plain path segments', async () => {

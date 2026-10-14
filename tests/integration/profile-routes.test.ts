@@ -213,8 +213,9 @@ describe('/profiles', () => {
   it('rejects bad names and unknown ids', async () => {
     if (!up) return;
     await request(app).post('/profiles').send({ name: '' }).expect(400);
+    // Display names are not keys (owner's model): duplicates are allowed.
     await request(app).post('/profiles').send({ name: 'Dup' }).expect(201);
-    await request(app).post('/profiles').send({ name: 'dup' }).expect(409);
+    await request(app).post('/profiles').send({ name: 'dup' }).expect(201);
     await request(app).patch('/profiles/nope').send({ name: 'x' }).expect(404);
     await request(app).delete('/profiles/default').expect(409);
     cleanup();
@@ -265,13 +266,14 @@ describe('/profiles', () => {
     // The custom flag is the last USER argument; the app-owned data selection
     // (core/ChromiumProfileLocation) follows it and occurs exactly once.
     expect(lastArgs[lastArgs.length - 2]).toBe('--lang=fa');
-    expect(lastArgs[lastArgs.length - 1]).toBe('--profile-directory=Default');
+    expect(lastArgs[lastArgs.length - 1]).toBe('--profile-directory=profile-001');
     expect(lastArgs.filter((a) => a.startsWith('--profile-directory')).length).toBe(1);
     expect(lastArgs.some((a) => a.startsWith('--user-data-dir'))).toBe(false);
-    expect(lastDir.endsWith(path.join('browser-profiles', id))).toBe(true);
-    // The Chromium display name was written into the profile's own data.
+    // A new profile lives in a new branch: --user-data-dir = <base>/branch-NNN.
+    expect(path.basename(lastDir)).toMatch(/^branch-\d{3}$/);
+    // The Chromium display name was written for THIS profile's folder.
     const { readChromiumProfileName } = await import('../../src/core/ChromiumProfileName');
-    expect(await readChromiumProfileName(lastDir)).toBe('22');
+    expect(await readChromiumProfileName(lastDir, 'profile-001')).toBe('22');
     // Same settings again: reused, no second process.
     const again = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'automation', options: { 'auto-devtools': true }, customFlags: '--lang=fa' } }).expect(200);
     expect(again.body.reused).toBe(true);
@@ -281,7 +283,7 @@ describe('/profiles', () => {
     expect(other.body.relaunched).toBe(true);
     expect(launches).toBe(2);
     expect(lastArgs).not.toContain('--no-first-run');
-    expect(lastDir.endsWith(path.join('browser-profiles', id))).toBe(true);
+    expect(path.basename(lastDir)).toMatch(/^branch-\d{3}$/);
     // Other settings while a RUN depends on it: refused with the reason, browser untouched.
     sessions.attach(leaseIdOf(id), jobDependent('77'));
     const busy = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'diagnostics' } }).expect(409);

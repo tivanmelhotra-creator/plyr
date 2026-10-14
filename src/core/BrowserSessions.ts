@@ -57,6 +57,15 @@ export function setSessionDataDir(leaseId: string, dir: string | null | undefine
 }
 export function sessionDataDir(leaseId: string): string | null { return dataDirs.get(leaseId) || null; }
 
+// WHICH profile of the branch the live browser runs (core/BranchRegistry: one
+// Chromium process per branch root, so one running profile per branch).
+// In memory, like the data dir: decided by whoever launched the browser.
+const runningProfiles = new Map<string, string>();
+export function setRunningProfile(leaseId: string, profileId: string | null | undefined): void {
+  if (profileId) runningProfiles.set(leaseId, profileId); else runningProfiles.delete(leaseId);
+}
+export function runningProfileOf(leaseId: string): string | null { return runningProfiles.get(leaseId) || null; }
+
 export type CloseDecision =
   | { ok: true }
   | { ok: false; reason: 'in_use'; dependents: string[] }
@@ -118,6 +127,7 @@ export class BrowserSessions {
   /** The browser is gone (closed, crashed). Dependents are forgotten with it. */
   closed(leaseId: string): void {
     this.map.delete(leaseId);
+    runningProfiles.delete(leaseId);
     this.mirror(null, leaseId);
   }
 

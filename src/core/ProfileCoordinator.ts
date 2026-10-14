@@ -13,7 +13,7 @@
 import type { Job, Queue } from 'bullmq';
 import { config } from '../config';
 import { resolveRunProfile, needsLease, type ProfileLeases } from './ProfileLease';
-import { findOverlaps, type ProfileReservations, type ReservationWindow, type ScheduleBinding, type QueueProbe, type Overlap } from './ProfileReservations';
+import { findOverlaps, occurrences, windowOf, type ProfileReservations, type ReservationWindow, type ScheduleBinding, type QueueProbe, type Overlap } from './ProfileReservations';
 import type { BrowserSessions, SessionRecord } from './BrowserSessions';
 import { stepsUseExtensions } from './ExtensionStep';
 import { runProfileIdOf } from './NodeProfile';
@@ -182,6 +182,29 @@ export class ProfileCoordinator {
       out.push({ scheduleId, owner: ownerOfJob(data, tpl.id || ''), ownerName, leaseId, cron: r.pattern, tz: r.tz || null });
     }
     return { bindings: out, unresolved };
+  }
+
+  /**
+   * The reservation windows a cron WOULD create on `leaseId` within the
+   * horizon, and the windows every OTHER schedule already reserves there.
+   * Used before a schedule is saved, so a conflict is seen BEFORE run time.
+   */
+  async projectedConflicts(input: { owner: string; leaseId: string; cron: string; tz?: string | null; horizonMs?: number; now?: number }):
+    Promise<Array<{ mine: { start: number; end: number }; other: { owner: string; ownerName?: string; start: number; end: number } }>> {
+    const now = input.now ?? Date.now();
+    const horizon = input.horizonMs ?? 24 * 3600_000;
+    const w = reservationWindow();
+    const mine = occurrences(input.cron, now, now + horizon, { tz: input.tz || null, max: 200 }).map((t) => windowOf(t, w));
+    const others: Array<{ owner: string; ownerName?: string; start: number; end: number }> = [];
+    for (const b of await this.bindings()) {
+      if (b.leaseId !== input.leaseId || b.owner === input.owner) continue;
+      for (const t of occurrences(b.cron, now - w.afterMs, now + horizon, { tz: b.tz || null, max: 200 })) {
+        others.push({ owner: b.owner, ownerName: b.ownerName, ...windowOf(t, w) });
+      }
+    }
+    const out: Array<{ mine: { start: number; end: number }; other: { owner: string; ownerName?: string; start: number; end: number } }> = [];
+    for (const a of mine) for (const o of others) if (a.start < o.end && o.start < a.end) out.push({ mine: a, other: o });
+    return out;
   }
 
   async syncReservations(opts: { now?: number; horizonMs?: number } = {}): Promise<{ created: number; dropped: number; overlaps: Overlap[] }> {

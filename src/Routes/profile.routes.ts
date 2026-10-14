@@ -151,7 +151,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const views = await access.views(userId, owner, wfs);
       // What can be recovered (count + time only; URLs are never sent here).
       for (const v of views) {
-        const snap = await readLastSession(access.registry.dirOf(userId, v.id));
+        const snap = await readLastSession(access.registry.profilePathOf(userId, v.id));
         v.lastSession = snap && snap.tabs.length ? { savedAt: snap.savedAt, tabs: snap.tabs.length, reason: snap.reason } : null;
       }
       const nameOf = (o: string) => wfs.find((w) => w.id === o)?.name;
@@ -295,6 +295,8 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       let launchError: unknown = null;
       const started = await withStartBudget(() => openProfileBrowser(profileManager, {
         leaseId, userId, userDataDir: access.registry.dirOf(userId, profileId), owner,
+        // Branch model: root = the branch, folder = this profile (--profile-directory).
+        profileDirectory: entry?.folder, profileId,
         displayName: entry?.name,
         launch: { args: resolved.args, hash: resolved.hash, explicit: hasLaunchChoice(launchIn) },
       }).catch((e) => { launchError = e; throw e; }), {
@@ -339,9 +341,22 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     } catch (e) {
       if (id) {
         const msg = (e as Error)?.message || 'open failed';
-        await access.registry.recordOpenError(userId, id, msg).catch(() => {});
+        const busy = e instanceof ProfileBrowserError && e.code === 'branch_busy';
+        if (!busy) await access.registry.recordOpenError(userId, id, msg).catch(() => {});
         if (createdHold) await access.leases.releaseHold(leaseIdOf(id), { owner }).catch(() => {});
         browserSessions().detach(leaseIdOf(id), operatorDependent(owner));
+      }
+      if (e instanceof ProfileBrowserError && e.code === 'branch_busy') {
+        // One running profile per branch: name the running one, offer to show it.
+        const running = e.runningProfileId ? await access.registry.get(userId, e.runningProfileId).catch(() => null) : null;
+        const name = running?.name || 'another profile';
+        res.status(409).json({
+          success: false, code: 'branch_busy',
+          error: `"${name}" is already running in this branch. Only one profile of a branch can run at a time. Close it first, or bring it to the front.`,
+          runningProfile: running ? { id: running.id, name: running.name } : null,
+          viewPath: running ? `/desktop/chrome?profile=${encodeURIComponent(running.id)}` : null,
+        });
+        return;
       }
       if (e instanceof ProfileBrowserError) {
         res.status(e.code === 'launch_failed' ? 503 : 409).json({ success: false, error: e.message, code: e.code, retryable: e.code === 'launch_failed' });
@@ -411,7 +426,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       if (!hold || hold.owner !== owner) { res.status(409).json({ success: false, code: 'no_hold', error: 'Open the profile\'s browser first.' }); return; }
       const entry = profileManager.getVipContext(leaseId);
       if (!entry) { res.status(409).json({ success: false, code: 'not_open', error: 'The browser of this profile is not open.' }); return; }
-      const snap = await readLastSession(access.registry.dirOf(userId, id));
+      const snap = await readLastSession(access.registry.profilePathOf(userId, id));
       const opened = await restoreTabs(entry.context as any, snap);
       res.json({ success: true, restored: opened, savedAt: snap?.savedAt || null });
     } catch (e) { fail(res, e); }

@@ -109,17 +109,19 @@ describe('the four identities stay separate', () => {
     const reg = new ProfileRegistry(root);
     const p = await reg.create('u1', 'Shop');
     const dir = reg.dirOf('u1', p.id);
-    const loc = await resolveChromiumProfile(dir);
+    const loc = await resolveChromiumProfile(dir, p.folder);
     await applyChromiumProfileName(loc.userDataRoot, p.name, loc.profileDirectory);
     expect(p.id).toMatch(/^prf_[0-9a-f]{12}$/);            // Aria id
-    expect(leaseIdOf(p.id)).toBe(`named:${p.id}`);         // lock name derived from the id
+    expect(leaseIdOf(p.id)).toBe(`branch:u1/${p.branchId}`); // lock = the BRANCH (one process per root)
     expect(loc.userDataRoot).toBe(path.resolve(dir));      // Chromium root
-    expect(loc.profileDirectory).toBe(DEFAULT_PROFILE_DIRECTORY); // Chromium profile directory
+    expect(p.branchId).toMatch(/^branch-\d{3}$/);         // branch id
+    expect(loc.profileDirectory).toBe('profile-001');        // Chromium folder (never Default for a new one)
+    expect(DEFAULT_PROFILE_DIRECTORY).toBe('Default');
     expect(await readChromiumProfileName(dir, loc.profileDirectory)).toBe('Shop'); // displayed name
     const renamed = await reg.rename('u1', p.id, '22');
     expect(renamed.id).toBe(p.id);
     expect(reg.dirOf('u1', p.id)).toBe(dir);
-    expect((await resolveChromiumProfile(dir)).profileDirectory).toBe('Default');
+    expect((await reg.get('u1', p.id))!.folder).toBe('profile-001');
   });
 
   it('the display name is written for the PINNED directory, not a hard-coded Default', async () => {

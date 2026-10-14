@@ -22,7 +22,7 @@ import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './c
 import { isTriggerAction } from './core/TriggerEngine';
 import { hiddenLaunchOptions, describeVisibility } from './core/RunPolicy';
 import type { ProfileRef } from './core/ProfileLease';
-import { browserSessions, jobDependent, setSessionDataDir, sessionDataDir } from './core/BrowserSessions';
+import { browserSessions, jobDependent, setSessionDataDir, sessionDataDir, setRunningProfile, runningProfileOf } from './core/BrowserSessions';
 import { saveBeforeClose } from './core/BrowserStateSnapshot';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
@@ -689,7 +689,16 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
 
   if (existing) {
     try {
-      const optionsChanged = !buildCompatible(getBuild(key), wantHash);
+      // The branch's browser runs ANOTHER profile of the branch: it cannot be
+      // reused (it would be that profile's data) and is not ours to close.
+      const runningOther = profile?.profileId && runningProfileOf(key) && runningProfileOf(key) !== profile.profileId;
+      if (runningOther) {
+        const rel = browserSessions().canClose(key, jobDependent(jobId));
+        if (!rel.ok && rel.reason === 'in_use') {
+          throw new BrowserError(`Another profile of this branch is running (${rel.dependents.join(', ')}); only one profile of a branch can run at a time.`);
+        }
+      }
+      const optionsChanged = !!runningOther || !buildCompatible(getBuild(key), wantHash);
       if (optionsChanged) log('[BROWSER] Browser options or visibility changed - relaunching the profile browser');
       if (!optionsChanged && await checkBrowserHealth(existing.context, log)) {
         const pages = existing.context.pages();
@@ -819,7 +828,8 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
     profileManager.registerPage(jobId, page);
     setBuild(key, wantHash);
     browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
-    setSessionDataDir(key, profileDir);
+    setSessionDataDir(key, profileLoc.profilePath);
+    setRunningProfile(key, profile?.profileId || null);
     browserSessions().attach(key, jobDependent(jobId));
     // A browser that dies on its own must not leave a session record behind.
     browserContext.on('close', () => {

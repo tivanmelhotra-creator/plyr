@@ -361,6 +361,7 @@ export class BranchRegistry {
   /** Only the display name changes; id, branch, folder and references stay. */
   async rename(userId: string, id: string, rawName: unknown): Promise<ProfileEntry> {
     const name = normalizeName(rawName);
+    if (!sanitizeProfileId(id)) throw new ProfileRegistryError('Invalid profile id', 'invalid_id');
     return this.serial(userId, async () => {
       const f = await this.load(userId);
       const p = f.profiles.find((x) => x.id === id);
@@ -415,6 +416,7 @@ export class BranchRegistry {
 
   /** A single profile is deleted by deleting its branch, and only when it is alone in it. */
   async remove(userId: string, id: string): Promise<void> {
+    if (!sanitizeProfileId(id)) throw new ProfileRegistryError('Invalid profile id', 'invalid_id');
     const e = await this.get(userId, id);
     if (!e) throw new ProfileRegistryError('Profile not found', 'not_found');
     if (e.builtIn) throw new ProfileRegistryError('The default profile cannot be deleted', 'builtin');

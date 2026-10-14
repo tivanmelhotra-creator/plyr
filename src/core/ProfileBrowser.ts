@@ -31,7 +31,7 @@ import { chromium } from 'playwright';
 import type { BrowserContext } from 'playwright';
 import { config } from '../config';
 import type { ProfileManager } from './ProfileManager';
-import { browserSessions, operatorDependent, setSessionDataDir, sessionDataDir } from './BrowserSessions';
+import { browserSessions, operatorDependent, setSessionDataDir, sessionDataDir, setRunningProfile, runningProfileOf } from './BrowserSessions';
 import { saveBeforeClose } from './BrowserStateSnapshot';
 import { withUtf8Locale } from './BrowserProfile';
 import { Desktop } from './Desktop';
@@ -42,7 +42,9 @@ import { resolveChromiumProfile, withProfileSelection, verifyProfileSelected } f
 import { closeContextBounded } from './SharedBrowsers';
 
 export class ProfileBrowserError extends Error {
-  constructor(message: string, readonly code: 'in_use_hidden' | 'in_use_settings' | 'launch_failed') {
+  constructor(message: string, readonly code: 'in_use_hidden' | 'in_use_settings' | 'launch_failed' | 'branch_busy',
+    /** For branch_busy: the profile of the branch that is running now. */
+    readonly runningProfileId?: string) {
     super(message);
     this.name = 'ProfileBrowserError';
   }
@@ -99,6 +101,13 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
   if (existing) {
     let alive = true;
     try { existing.context.pages(); } catch { alive = false; }
+    // ONE running profile per branch. Another profile of the same branch is
+    // running: never launch a second Chromium on the root, never switch the
+    // running one under its users. The caller names it and offers to show it.
+    const running = runningProfileOf(input.leaseId);
+    if (alive && input.profileId && running && running !== input.profileId) {
+      throw new ProfileBrowserError('Another profile of this branch is running.', 'branch_busy', running);
+    }
     const rec = sessions.get(input.leaseId);
     const built = getBuild(input.leaseId);
     // The operator asked for specific launch settings and the running browser
@@ -156,7 +165,9 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
       if (!ctx.pages().length) await ctx.newPage().catch(() => null);
       pm.setVipContext(input.leaseId, ctx, `operator:${input.owner}`);
       sessions.opened(input.leaseId, { userId: input.userId, visibility: 'visible', createdBy: dep });
-      setSessionDataDir(input.leaseId, input.userDataDir);
+      // Per-profile state (tab snapshots) lives in the profile's OWN folder.
+      setSessionDataDir(input.leaseId, loc.profilePath);
+      setRunningProfile(input.leaseId, input.profileId || null);
       setBuild(input.leaseId, wantKey);
       ctx.on('close', () => {
         if (pm.getVipContext(input.leaseId)?.context === ctx) { pm.removeVipContext(input.leaseId); forgetBuild(input.leaseId); }
