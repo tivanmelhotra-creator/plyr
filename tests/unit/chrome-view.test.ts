@@ -275,13 +275,27 @@ describe('the workflow files drawer in ChromeView', () => {
     expect(html).toContain('FILE_REQUEST');
   });
 
-  it('includes session ended overlay with Close Tab and Relaunch controls', () => {
+  it('has NO "Chromium Session Closed" dialog (owner: removed); the viewer ends itself only from /browser/sessions', () => {
     const html = chromeViewHtml();
-    expect(idsIn(html)).toContain('ended');
-    expect(startsHidden(html, 'ended')).toBe(true);
-    expect(idsIn(html)).toContain('btnendedclose');
-    expect(idsIn(html)).toContain('btnendedreopen');
+    for (const id of ['ended', 'btnendedclose', 'btnendedreopen']) expect(idsIn(html)).not.toContain(id);
+    const text = visibleText(html);
+    expect(text).not.toContain('chromium session closed');
+    expect(text).not.toContain('close tab');
+    expect(text).not.toContain('relaunch');
+    expect(html).not.toMatch(/\.endedcard|#ended\b|\.btnreopen/);
     expect(idsIn(html)).toContain('dclosebrowser');
-    expect(html).toContain('pollBrowserHealth');
+    // The ONE end rule: /browser/sessions, two zero answers >= 2 s apart.
+    const fn = /function pollBrowserHealth\(\)[\s\S]*?\n}\n/.exec(html)![0];
+    expect(fn).toContain("'/browser/sessions?watch=1'");
+    expect(fn).not.toContain('/browser/real/health');
+    expect(html).toContain('const VIEWER_END_CONFIRM_MS = 2000;');
+    expect(fn).toMatch(/zeroAnswers >= 2 && now - firstZeroAt >= VIEWER_END_CONFIRM_MS/);
+    expect(fn).toMatch(/\.catch\(\(\) => \{ reset\(\); \}\)/);
+    // window.close() only for a tab a script opened; otherwise an empty page.
+    const end = /function endViewer\(\)[\s\S]*?\n}\n/.exec(html)![0];
+    expect(end).toMatch(/openedByScript = !!window\.opener/);
+    expect(end).toMatch(/if \(openedByScript\) \{\s*try \{ window\.close\(\); \}/);
+    expect(end).toContain("classList.add('viewer-gone')");
+    expect(html).toContain('body.viewer-gone > * { display: none !important; }');
   });
 });
