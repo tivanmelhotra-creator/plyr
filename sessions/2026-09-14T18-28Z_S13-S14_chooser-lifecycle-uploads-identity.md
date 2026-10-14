@@ -925,7 +925,7 @@ Ihr Guthaben ist negativ. Diese Ausführung wurde gestoppt. Bitte aufladen, um f
 
 **بکاپ پروژه:**
 
-https://www.genspark.ai/api/files/s/HaeBJ3l8
+(backup link removed)
 
 مأموریت را کامل کن.
 
@@ -980,7 +980,7 @@ HaeBJ3l8 → /home/user/backups
 - Directory: /home/user/backups
 - Path: /home/user/backups/webapp_backup_it33huw6.tar.gz
 - Size: 14.94 MB
-- Source: https://www.genspark.ai/api/files/s/HaeBJ3l8
+- Source: (backup link removed)
 
 ---
 
@@ -2258,7 +2258,7 @@ Ihr Guthaben ist negativ. Diese Ausführung wurde gestoppt. Bitte aufladen, um f
 
 Erstellen Sie eine komprimierte Sicherung Ihres Projektquellcodes zur Aufbewahrung oder Migration. Hinweis: Nur Quelldateien sind enthalten – Git-Daten, node_modules und Build-Artefakte sind ausgeschlossen.
 
-https://www.genspark.ai/api/files/s/YNwHDINY
+(backup link removed)
 
 ---
 

@@ -122,7 +122,7 @@ BpvqsjcH → /tmp/backup9
 - Directory: /tmp/backup9
 - Path: /tmp/backup9/webapp_backup_isteb32b.tar.gz
 - Size: 15.22 MB
-- Source: https://www.genspark.ai/api/files/s/BpvqsjcH
+- Source: (backup link removed)
 
 ---
 
@@ -1654,7 +1654,7 @@ Ihr Guthaben ist negativ. Diese Ausführung wurde gestoppt. Bitte aufladen, um f
 ## MESSAGE 63 — USER
 
 بکاپ از آخرین وضعیت پروژه:
-https://www.genspark.ai/api/files/s/zQ9nUMQv
+(backup link removed)
 
 ---
 

@@ -145,7 +145,7 @@ K6JRkn0g → /home/user/backups
 - Directory: /home/user/backups
 - Path: /home/user/backups/webapp_backup_icleiyd1.tar.gz
 - Size: 15.06 MB
-- Source: https://www.genspark.ai/api/files/s/K6JRkn0g
+- Source: (backup link removed)
 
 ---
 
@@ -1083,7 +1083,7 @@ Exit Code: unknown
 
 **بکاپ پروژه:**
 
-https://www.genspark.ai/api/files/s/tWpjBJtb
+(backup link removed)
 
 مأموریت را کامل کن.
 
@@ -1138,7 +1138,7 @@ tWpjBJtb → /home/user/backups
 - Directory: /home/user/backups
 - Path: /home/user/backups/webapp_backup_iz4r9rwy.tar.gz
 - Size: 15.06 MB
-- Source: https://www.genspark.ai/api/files/s/tWpjBJtb
+- Source: (backup link removed)
 
 ---
 
@@ -2301,7 +2301,7 @@ Your credit balance is negative. This run was stopped. Please top up to continue
 
 بکاپ:
 
-https://www.genspark.ai/api/files/s/E7T6RZh5
+(backup link removed)
 
 ---
 

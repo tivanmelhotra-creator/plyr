@@ -9,7 +9,7 @@ PROJECT STATE: branch genspark_ai_developer @ 4eaf1e5 (ONE squashed commit on to
                PUSHED (-f). PR #32 OPEN: https://github.com/tivanmelhotra-creator/plyr/pull/32
                (+ this continuity commit on top; see git log.)
 CURRENT BACKUP: backup20 — taken at S18b end (link in the chat message that closes S18b; tree == HEAD incl. .git)
-PREVIOUS BACKUP: https://www.genspark.ai/api/files/s/GLYekxDZ  (backup19, S18a mid: == b0a331a, PR #32 pre-squash,
+PREVIOUS BACKUP: (backup link removed)  (backup19, S18a mid: == b0a331a, PR #32 pre-squash,
                  3 commits; verified byte-identical to HEAD for ChromeView.ts / real-chrome-shelf.test.ts / browser-view.js)
 
 OBJECTIVE:

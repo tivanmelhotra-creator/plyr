@@ -6,9 +6,9 @@ PROJECT STATE: branch genspark_ai_developer @ fa83215 (+ this continuity commit)
                PUSHED. PR #33 still OPEN (https://github.com/tivanmelhotra-creator/plyr/pull/33) — the branch now carries
                ef2265c (intent model) + 7e713ed (editor) + fa83215 (tests). NO new PR was created (user instruction).
 
-CURRENT BACKUP: backup23 https://www.genspark.ai/api/files/s/Br1GNZsp (S20 end)
-PREVIOUS BACKUP: backup22 https://www.genspark.ai/api/files/s/RGUKEb3O (S20 mid — already contained ALL S20 test work, only uncommitted)
-                 backup21b https://www.genspark.ai/api/files/s/2VDZBjIA == backup21 https://www.genspark.ai/api/files/s/wdBOCFOo == 7e713ed exactly
+CURRENT BACKUP: backup23 (backup link removed) (S20 end)
+PREVIOUS BACKUP: backup22 (backup link removed) (S20 mid — already contained ALL S20 test work, only uncommitted)
+                 backup21b (backup link removed) == backup21 (backup link removed) == 7e713ed exactly
 
 OBJECTIVE (S20): make 7e713ed trustworthy and testable — fix the 15 failing tests honestly, write E1–E12 + Issue-1 latency
 regression, verify REAL WorkflowStorage persistence, typecheck/build, keep scope to Issue 1/2, bring runtime up for the

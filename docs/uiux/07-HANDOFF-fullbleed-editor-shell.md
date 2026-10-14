@@ -68,7 +68,7 @@ graph):
 
 | | before | after |
 |---|---|---|
-| screenshot | <https://www.genspark.ai/api/files/s/t1p3KGzf> | <https://www.genspark.ai/api/files/s/tREcCKPN> |
+| screenshot | (backup link removed) | (backup link removed) |
 | app sidebar (240px, "Automation Back…") | visible | **gone** |
 | "Visual Editor" page header | visible | **gone** |
 | editor top bar | started at y≈65 inside a rounded card | **starts at y=0, edge to edge** |
