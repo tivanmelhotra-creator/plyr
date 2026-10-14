@@ -681,7 +681,21 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
   const profileDir = profile?.userDataDir || path.join(config.PROFILES_DIR, context.userId, 'chrome-profile');
   const userId = key; // ProfileManager's persistent-context map is keyed by profile
 
-  await fs.promises.mkdir(profileDir, { recursive: true });
+  // A registry profile (explicit folder): its branch root and folder must
+  // already exist. The worker checks this before the lease; this is the last
+  // line of defence. Never recreate a folder removed outside Aria.
+  if (profile?.profileDirectory) {
+    const st = await fs.promises.stat(path.join(profileDir, profile.profileDirectory)).catch(() => null);
+    const rootOk = await fs.promises.stat(profileDir).then((x) => x.isDirectory(), () => false);
+    // A legacy built-in root never started has no folder yet (Chromium creates
+    // it): allowed only when the root has never held a browser.
+    const neverStarted = rootOk && !(await fs.promises.readdir(profileDir).catch(() => [] as string[])).includes('Local State');
+    if (!rootOk || ((!st || !st.isDirectory()) && !neverStarted)) {
+      throw new BrowserError(`PROFILE_BROKEN: the folder of browser profile "${profile.label}" is missing on disk; it was not recreated.`);
+    }
+  } else {
+    await fs.promises.mkdir(profileDir, { recursive: true });
+  }
 
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 

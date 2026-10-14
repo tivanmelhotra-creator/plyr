@@ -15,6 +15,9 @@ import { runPipeline } from './pipeline';
 import { buildItemsFromTrigger, buildManualItems } from './core/TriggerEngine';
 import { ProfileManager } from './core/ProfileManager';
 import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
+import { ProfileFailureReports, registerProfileFailureReports, reasonOf } from './core/ProfileFailureReports';
+import { indexedProfile } from './core/ProfileIndex';
+import { runningProfileOf } from './core/BrowserSessions';
 import { ProfileRegistry } from './core/ProfileRegistry';
 import { ProfileReservations } from './core/ProfileReservations';
 import { BrowserSessions, registerBrowserSessions, jobDependent, sessionDataDir } from './core/BrowserSessions';
@@ -175,19 +178,34 @@ const profileLeases = new ProfileLeases(connection, Math.max(60, config.MAX_JOB_
 registerProfileLeases(profileLeases);
 // The profile infrastructure (see each module's header): identity, scheduled
 // reservations, live browser sessions, and one view over all of them.
-const profileRegistry = new ProfileRegistry(config.PROFILES_DIR);
+// Branches (one Chromium user-data root each) and their profiles
+// (core/BranchRegistry). New branches go under the base directory
+// (Settings, core/BranchBase); the Local Browser root is a built-in branch.
+const profileRegistry = new ProfileRegistry(config.PROFILES_DIR, {
+  baseDir: () => config.BRANCH_BASE_DIR,
+  localBrowserRoot: () => config.REAL_CHROME_USER_DATA_DIR,
+});
+// Load the registry (and the profile -> branch lock index) before any run
+// resolves its profile. Adopts pre-branch roots IN PLACE; moves nothing.
+void profileRegistry.warm(SINGLE_USER_ID).catch((e) => console.warn(`[PROFILES] registry not loaded: ${(e as Error).message}`));
+const profileFailures = new ProfileFailureReports(connection);
+registerProfileFailureReports(profileFailures);
 const profileReservations = new ProfileReservations(connection);
 const browserSessionRegistry = new BrowserSessions(connection);
 registerBrowserSessions(browserSessionRegistry);
 const profileAccessService = new ProfileAccess(profileRegistry, profileLeases, profileReservations, browserSessionRegistry);
 registerProfileAccess(profileAccessService);
 // Task View labels windows by their registry profile (user-data-dir -> name).
+// One branch = one root; the window belongs to the profile RUNNING on it.
 BrowserWindowManager.setProfileResolver(async (dir) => {
   const want = path.resolve(dir);
-  for (const p of await profileRegistry.list(SINGLE_USER_ID).catch(() => [])) {
-    if (path.resolve(profileRegistry.dirOf(SINGLE_USER_ID, p.id)) === want) return { id: p.id, name: p.name };
-  }
-  return null;
+  const list = await profileRegistry.list(SINGLE_USER_ID, { includeLocalBrowser: true }).catch(() => []);
+  const inRoot = list.filter((p) => path.resolve(profileRegistry.dirOf(SINGLE_USER_ID, p.id)) === want);
+  if (!inRoot.length) return null;
+  const key = indexedProfile(inRoot[0]!.id)?.leaseKey;
+  const runningId = key ? runningProfileOf(key) : null;
+  const p = inRoot.find((x) => x.id === runningId) || (inRoot.length === 1 ? inRoot[0]! : null);
+  return p ? { id: p.id, name: p.name } : null;
 });
 /** Jobs executing in THIS process right now (reservation sweep evidence). */
 const runningJobs = new Set<string>();
@@ -778,6 +796,27 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
   // WHO the run works for: holds and reservations of the same owner (its
   // workflow) are compatible with it, any other owner's are not.
   const runOwner = ownerOfJob(job.data, String(job.id));
+
+  // The profile must still exist BEFORE anything is launched (section 9): a
+  // folder removed outside Aria fails this run cleanly, is reported, and is
+  // NEVER silently recreated as an empty folder.
+  if (profile.profileId && (profile.kind === 'named' || profile.kind === 'run')) {
+    await profileRegistry.warm(userId).catch(() => {});
+    const chk = await profileRegistry.check(userId, profile.profileId).catch(() => null);
+    const knownProfile = !!indexedProfile(profile.profileId);
+    if (chk && !chk.ok && (knownProfile || chk.reason !== 'record_missing' || profile.profileId !== 'default')) {
+      const wfIdForReport = typeof (job.data.__workflowId || job.data.__scheduleWorkflowId) === 'string' ? String(job.data.__workflowId || job.data.__scheduleWorkflowId) : null;
+      const msg = `Browser profile "${profile.label}" cannot be used: ${chk.detail}. Assign another profile to the workflow.`;
+      await profileFailures.record(userId, {
+        reason: reasonOf(chk.reason), detail: chk.reason, stage: 'run',
+        workflowId: wfIdForReport, workflowName: job.data.__scheduleName || null,
+        profileId: profile.profileId, profileName: profile.label, jobId: String(job.id), message: msg,
+      });
+      void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message: msg } }).catch(() => {});
+      await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
+      throw new Error(`PROFILE_BROKEN: ${msg}`);
+    }
+  }
   const occurrence = job.data.__scheduled ? occurrenceOf(job) : null;
   let leaseToken: string | null = null;
   if (needsLease(profile)) {
