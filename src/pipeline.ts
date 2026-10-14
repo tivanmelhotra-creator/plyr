@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { URL } from 'url';
 import { chromium } from 'playwright-extra';
+import { resolveChromiumProfile, withProfileSelection } from './core/ChromiumProfileLocation';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import { config, PlanConfig } from './config';
 import type { AutomationContext, JobResult, StepOutput, CancelChecker, AutomationStep, ConditionPath } from './types';
@@ -743,6 +744,10 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
   log(`[BROWSER] Launching profile "${profile?.label || key}" — ${describeVisibility(headless)} browser`);
+  // Resolved only on a launch: pinning may write into the root, which is safe
+  // only while no browser runs on it (core/ChromiumProfileLocation).
+  const profileLoc = await resolveChromiumProfile(profileDir);
+  log(`[BROWSER] Profile data: ${profileLoc.profileDirectory} (${profileLoc.source}) in ${profileLoc.userDataRoot}`);
 
   // A VISIBLE browser (a manual run) needs an X display. On a server there
   // is none until we start one, and without it Playwright dies with the opaque
@@ -784,7 +789,9 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
       ...(optPlan.launch.proxy ? { proxy: optPlan.launch.proxy } : {}),
       ...optPlan.context,
       headless,
-      args: [...baseArgs, ...extraArgs],
+      // Same data selection as the Local Browser and Browser Profiles: the
+      // profile's root + its pinned --profile-directory (core/ChromiumProfileLocation).
+      args: withProfileSelection([...baseArgs, ...extraArgs], profileLoc),
       // A UTF-8 locale, or a downloaded file whose name is not pure ASCII
       // loses that name AND its extension to the literal string `download`.
       // See withUtf8Locale in core/BrowserProfile for the measurement.

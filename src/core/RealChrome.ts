@@ -58,6 +58,13 @@ import {
 } from './ChromeExtensions';
 import { resolveFlags, type ResolveFlagsInput, type ResolvedFlags } from './ChromeFlags';
 import { localBrowserOpened, localBrowserClosed, closeContextBounded } from './SharedBrowsers';
+import {
+  DEFAULT_PROFILE_DIRECTORY,
+  resolveChromiumProfile,
+  withProfileSelection,
+  verifyProfileSelected,
+  type ChromiumProfileLocation,
+} from './ChromiumProfileLocation';
 import { inspectorSourceDir, seedInspectorExtension } from './InspectorExtension';
 import {
   ExtensionPickerError,
@@ -547,8 +554,8 @@ export async function sweepRestoredAlertPages(context: BrowserContext): Promise<
  *
  * Returns a short description of what it did, for the log and for tests.
  */
-export async function enableSessionRestore(userDataDir: string): Promise<string> {
-  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+export async function enableSessionRestore(userDataDir: string, profileDirectory = DEFAULT_PROFILE_DIRECTORY): Promise<string> {
+  const prefsPath = path.join(userDataDir, profileDirectory, 'Preferences');
   // 5 = "continue where you left off". 1 is the new-tab page and 4 is a fixed
   // URL list; both would silently discard the session we are trying to keep.
   const CONTINUE_WHERE_YOU_LEFT_OFF = 5;
@@ -613,8 +620,8 @@ export async function enableSessionRestore(userDataDir: string): Promise<string>
  *
  * Returns a short description of what it did, for the log and for tests.
  */
-export async function enableExtensionInstalls(userDataDir: string): Promise<string> {
-  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+export async function enableExtensionInstalls(userDataDir: string, profileDirectory = DEFAULT_PROFILE_DIRECTORY): Promise<string> {
+  const prefsPath = path.join(userDataDir, profileDirectory, 'Preferences');
   try {
     let prefs: { extensions?: Record<string, unknown> } = {};
     try {
@@ -651,8 +658,8 @@ export async function enableExtensionInstalls(userDataDir: string): Promise<stri
  * having only the Title and Close button. Setting `browser.custom_chrome_frame`
  * to false prevents Chromium from drawing its own CSD Minimize/Maximize buttons.
  */
-export async function ensureSystemTitlebar(userDataDir: string): Promise<string> {
-  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+export async function ensureSystemTitlebar(userDataDir: string, profileDirectory = DEFAULT_PROFILE_DIRECTORY): Promise<string> {
+  const prefsPath = path.join(userDataDir, profileDirectory, 'Preferences');
   try {
     await fs.mkdir(path.dirname(prefsPath), { recursive: true });
     let prefs: { browser?: Record<string, unknown> } = {};
@@ -1037,6 +1044,14 @@ export class RealChrome {
   private static launchedWith: ResolvedFlags | null = null;
 
   /**
+   * Root + pinned --profile-directory of the last launch
+   * (core/ChromiumProfileLocation). Null before the first launch; readers fall
+   * back to `Default`, which is what an un-adopted root uses.
+   */
+  private static location: ChromiumProfileLocation | null = null;
+  static profileLocation(): ChromiumProfileLocation | null { return this.location; }
+
+  /**
    * Visibility of the NEXT launch, chosen by a workflow run (core/RunPolicy):
    * null = the operator's default (REAL_CHROME_HEADLESS, headed) for the
    * viewer/Inspector. `runningHeadless` is what the live browser was started with.
@@ -1137,20 +1152,27 @@ export class RealChrome {
     const extensionsDir = config.REAL_CHROME_EXTENSIONS_DIR;
     await fs.mkdir(userDataDir, { recursive: true });
     await fs.mkdir(extensionsDir, { recursive: true });
-    await clearCrashedExitState(userDataDir);
+    // WHICH data inside the root (core/ChromiumProfileLocation): the pinned
+    // --profile-directory. An existing root keeps the directory it already
+    // used (adopted once, never moved), and every pref fix below touches THAT
+    // directory — not a hard-coded `Default` Chromium may not be using.
+    const loc = await resolveChromiumProfile(userDataDir);
+    RealChrome.location = loc;
+    const profileDirectory = loc.profileDirectory;
+    await clearCrashedExitState(userDataDir, profileDirectory);
     // The second half of the "Installation is not enabled" fix. The first half
     // is NOT emitting --disable-extensions-except (see extensionLaunchArgs); this
     // clears the same condition's other source, the profile's own
     // `extensions.disabled` pref, which a profile launched under the old flag can
     // have persisted. Both, or the user sees the identical error and cannot tell
     // that anything was fixed.
-    const installsSaid = await enableExtensionInstalls(userDataDir);
+    const installsSaid = await enableExtensionInstalls(userDataDir, profileDirectory);
     // Both of these, or neither: MEASURED, the pref alone and the flag alone
     // each restore ZERO tabs. See enableSessionRestore for the table.
     const restoreTabs = config.REAL_CHROME_RESTORE_TABS === true;
-    const restoreSaid = restoreTabs ? await enableSessionRestore(userDataDir) : 'disabled';
+    const restoreSaid = restoreTabs ? await enableSessionRestore(userDataDir, profileDirectory) : 'disabled';
     // Remove client-side Minimize and Maximize controls: delegate window frame to Openbox (LC layout)
-    const titlebarSaid = await ensureSystemTitlebar(userDataDir);
+    const titlebarSaid = await ensureSystemTitlebar(userDataDir, profileDirectory);
 
     // The Element Inspector this repository SHIPS, made present before the
     // extension list is read.
@@ -1243,11 +1265,11 @@ export class RealChrome {
     });
     this.launchedWith = chosen;
 
-    const args = [
+    const args = withProfileSelection([
       ...chosen.args,
       ...windowArgs(screen),
       ...extensionLaunchArgs(extensions),
-    ];
+    ], loc);
 
     const debugPort = await resolveDebugPort(config.REAL_CHROME_DEBUG_PORT);
     RealChrome.activeDebugPort = debugPort;
@@ -1307,6 +1329,7 @@ export class RealChrome {
 
       this.loaded = extensions;
       this.runningHeadless = headless;
+      const selected = await verifyProfileSelected(loc);
       // ONE registry of live browsers (core/SharedBrowsers): the Local Browser
       // is a session like every profile browser, so the viewer, the drawer and
       // Turn off read the same truth.
@@ -1373,7 +1396,7 @@ export class RealChrome {
         if (!this.isRestarting && !this.isRecycling) {
           // When the window is closed by the user, clear the saved tabs session cache
           // so next launch starts with a fresh tab instead of restoring closed tabs.
-          void clearTabSessions(userDataDir).catch(() => {});
+          void clearTabSessions(userDataDir, profileDirectory).catch(() => {});
         }
       });
 
@@ -1413,7 +1436,8 @@ export class RealChrome {
 
       console.log(
         `[RealChrome] ✓ persistent Chrome up — ${extensions.length} extension(s), ` +
-        `profile=${userDataDir}, tab-restore=${restoreSaid}, installs=${installsSaid}` +
+        `profile=${userDataDir}, profile-directory=${profileDirectory} (${loc.source}${selected ? '' : ', NOT CREATED'}), `
+        + `tab-restore=${restoreSaid}, installs=${installsSaid}` +
         (swept > 0 ? `, swept=${swept} stale alert page(s)` : '') +
         (config.REAL_CHROME_DEBUG_PORT > 0
           ? `, devtools=${config.REAL_CHROME_DEBUG_BIND}:${config.REAL_CHROME_DEBUG_PORT}`
@@ -1656,7 +1680,7 @@ export class RealChrome {
   }>> {
     if (!this.isRunning()) return [];
     const sideloaded = new Set(this.loadedExtensions().map((e) => e.runtimeId));
-    const list = await listProfileExtensions(config.REAL_CHROME_USER_DATA_DIR, sideloaded)
+    const list = await listProfileExtensions(config.REAL_CHROME_USER_DATA_DIR, sideloaded, this.location?.profileDirectory)
       .catch(() => []);
     return list.map((e) => {
       const base = `chrome-extension://${e.id}/`;
@@ -1977,7 +2001,7 @@ export class RealChrome {
     // a dialog used to keep this await (and the Turn off button) forever.
     if (ctx) await closeContextBounded(ctx, { closePages: true, pagesOnly: true, pageMs: 2000 });
     await this.stop(timeoutMs);
-    await clearTabSessions(config.REAL_CHROME_USER_DATA_DIR).catch(() => {});
+    await clearTabSessions(config.REAL_CHROME_USER_DATA_DIR, this.location?.profileDirectory).catch(() => {});
   }
 }
 
@@ -1988,8 +2012,8 @@ export class RealChrome {
  * starts fresh with a single default tab instead of restoring previously closed
  * tabs. All cookies, logins, storage, and preferences are untouched.
  */
-export async function clearTabSessions(userDataDir: string): Promise<void> {
-  const sessionsDir = path.join(userDataDir, 'Default', 'Sessions');
+export async function clearTabSessions(userDataDir: string, profileDirectory = DEFAULT_PROFILE_DIRECTORY): Promise<void> {
+  const sessionsDir = path.join(userDataDir, profileDirectory, 'Sessions');
   try {
     const entries = await fs.readdir(sessionsDir).catch(() => []);
     for (const entry of entries) {
@@ -2033,8 +2057,8 @@ export async function clearTabSessions(userDataDir: string): Promise<void> {
  * deliberately ignored: a missing or unparseable Preferences file means a fresh
  * profile, which has no crash to clear, and must never block the launch.
  */
-export async function clearCrashedExitState(userDataDir: string): Promise<void> {
-  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+export async function clearCrashedExitState(userDataDir: string, profileDirectory = DEFAULT_PROFILE_DIRECTORY): Promise<void> {
+  const prefsPath = path.join(userDataDir, profileDirectory, 'Preferences');
   try {
     const raw = await fs.readFile(prefsPath, 'utf8');
     const prefs = JSON.parse(raw) as { profile?: Record<string, unknown> };

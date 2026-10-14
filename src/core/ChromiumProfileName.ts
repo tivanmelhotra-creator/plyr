@@ -2,13 +2,14 @@
  * ChromiumProfileName — make Chromium's OWN name for a profile match the name
  * chosen in Browser Profiles (instead of the generic "Your Chromium").
  *
- * Each registry profile owns a whole user-data-dir and uses Chromium's single
- * inner profile `Default` inside it (never `--profile-directory`; see
- * core/LaunchSettings APP_CONTROLLED). Chromium keeps the display name of an
- * inner profile in two places, and reads them at startup:
+ * Each registry profile owns a user-data root and ONE pinned profile directory
+ * inside it (core/ChromiumProfileLocation, selected with `--profile-directory`;
+ * `Default` unless an existing root was adopted with another one). Chromium
+ * keeps the display name of a profile directory in two places, and reads them
+ * at startup:
  *
- *   <dir>/Local State          profile.info_cache.Default.{name, is_using_default_name}
- *   <dir>/Default/Preferences  profile.{name, using_default_name}
+ *   <root>/Local State                profile.info_cache.<dir>.{name, is_using_default_name}
+ *   <root>/<dir>/Preferences          profile.{name, using_default_name}
  *
  * Rules (the files belong to Chromium):
  *   - written ONLY while no browser runs on the directory (the caller launches
@@ -39,12 +40,12 @@ async function writeJson(file: string, data: Json): Promise<void> {
   await fs.rename(tmp, file);
 }
 
-/** Pure: Local State with the name of inner profile `Default` set. */
-export function withLocalStateName(state: Json | null, name: string): Json {
+/** Pure: Local State with the name of profile directory `dir` (default `Default`) set. */
+export function withLocalStateName(state: Json | null, name: string, dir = 'Default'): Json {
   const s: Json = state ? { ...state } : {};
   const profile: Json = { ...(s.profile || {}) };
   const cache: Json = { ...(profile.info_cache || {}) };
-  cache.Default = { ...(cache.Default || {}), name, is_using_default_name: false };
+  cache[dir] = { ...(cache[dir] || {}), name, is_using_default_name: false };
   profile.info_cache = cache;
   s.profile = profile;
   return s;
@@ -57,10 +58,10 @@ export function withPreferencesName(prefs: Json | null, name: string): Json {
   return p;
 }
 
-/** The name Chromium currently has for inner profile `Default`, or null. */
-export async function readChromiumProfileName(userDataDir: string): Promise<string | null> {
+/** The name Chromium currently has for profile directory `dir`, or null. */
+export async function readChromiumProfileName(userDataDir: string, dir = 'Default'): Promise<string | null> {
   const ls = await readJson(path.join(userDataDir, 'Local State'));
-  const n = ls.data?.profile?.info_cache?.Default?.name;
+  const n = ls.data?.profile?.info_cache?.[dir]?.name;
   return typeof n === 'string' ? n : null;
 }
 
@@ -68,19 +69,19 @@ export async function readChromiumProfileName(userDataDir: string): Promise<stri
  * Set the Chromium display name of the profile in `userDataDir`.
  * Returns what happened, never throws.
  */
-export async function applyChromiumProfileName(userDataDir: string, name: string):
+export async function applyChromiumProfileName(userDataDir: string, name: string, dir = 'Default'):
   Promise<{ ok: boolean; changed: boolean; skipped?: string }> {
   try {
     const lsFile = path.join(userDataDir, 'Local State');
-    const prFile = path.join(userDataDir, 'Default', 'Preferences');
+    const prFile = path.join(userDataDir, dir, 'Preferences');
     const [ls, pr] = await Promise.all([readJson(lsFile), readJson(prFile)]);
     if (ls.corrupt || pr.corrupt) return { ok: false, changed: false, skipped: 'Chromium profile files are unreadable; left untouched' };
-    const lsName = ls.data?.profile?.info_cache?.Default?.name;
+    const lsName = ls.data?.profile?.info_cache?.[dir]?.name;
     const prName = pr.data?.profile?.name;
-    const lsDefault = ls.data?.profile?.info_cache?.Default?.is_using_default_name;
+    const lsDefault = ls.data?.profile?.info_cache?.[dir]?.is_using_default_name;
     const prDefault = pr.data?.profile?.using_default_name;
     if (lsName === name && prName === name && lsDefault === false && prDefault === false) return { ok: true, changed: false };
-    await writeJson(lsFile, withLocalStateName(ls.data, name));
+    await writeJson(lsFile, withLocalStateName(ls.data, name, dir));
     await writeJson(prFile, withPreferencesName(pr.data, name));
     return { ok: true, changed: true };
   } catch (e) {

@@ -34,6 +34,8 @@ import { config } from '../../src/config';
 import { buildLaunchArgs } from '../../src/core/LaunchSettings';
 import { readChromiumProfileName } from '../../src/core/ChromiumProfileName';
 import { summarize, closeContextBounded } from '../../src/core/SharedBrowsers';
+import { resolveChromiumProfile, PIN_FILE } from '../../src/core/ChromiumProfileLocation';
+import { chromium } from 'playwright';
 
 await ensureProbed();
 
@@ -142,6 +144,12 @@ async function activeUserDataDir(): Promise<string> {
       await sleep(800);
       // The visible run put a real window of THIS profile on the display.
       expect(await BrowserWindowManager.focusByUserDataDir(ref.userDataDir!)).toBeTruthy();
+      // The run's browser selected the profile's root + pinned directory (same rule as Local Browser / Browser Profiles).
+      const runCtx = pm.getVipContext(ref.id)!.context;
+      const vp = await runCtx.newPage(); await vp.goto('chrome://version');
+      expect((await vp.locator('#profile_path').innerText()).trim()).toBe(path.join(ref.userDataDir!, 'Default'));
+      await vp.close();
+      expect(manual).toMatch(/Profile data: Default \((adopted-default|pinned)\)/);
       const auto = await runOnce('automatic', 'job-auto');
       // Visibility differs -> the browser is relaunched hidden on the same profile directory.
       expect(auto).toMatch(/hidden browser/);
@@ -207,4 +215,92 @@ async function activeUserDataDir(): Promise<string> {
         browserSessions().closed(leaseIdOf(id));
       }
     }, 120_000);
+    /** What chrome://version says this context really opened. */
+    const profilePathOf = async (ctx: import('playwright').BrowserContext): Promise<string> => {
+      const pg = await ctx.newPage();
+      try { await pg.goto('chrome://version'); return (await pg.locator('#profile_path').innerText()).trim(); } finally { await pg.close().catch(() => {}); }
+    };
+    /** The real browser process' argv for a root (not a renderer/GPU child). */
+    const argvOfRoot = (dir: string): string[] => {
+      for (const pidS of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+        let cmd = '';
+        try { cmd = fs.readFileSync(`/proc/${pidS}/cmdline`, 'utf8'); } catch { continue; }
+        const args = cmd.split('\0');
+        if (args.includes(`--user-data-dir=${dir}`) && !args.some((x) => x.startsWith('--type='))) return args;
+      }
+      return [];
+    };
+
+    it('selection: root + pinned --profile-directory; chrome://version Profile Path is the intended one; data persists; two at once', async () => {
+      const a = await reg.create(userId, 'Sel A');
+      const b = await reg.create(userId, 'Sel B');
+      const dirA = reg.dirOf(userId, a.id); const dirB = reg.dirOf(userId, b.id);
+      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_cccccc', displayName: 'Sel A' });
+      await openProfileBrowser(pm, { leaseId: leaseIdOf(b.id), userId, userDataDir: dirB, owner: 'wf_cccccc', displayName: 'Sel B' });
+      const ctxA = pm.getVipContext(leaseIdOf(a.id))!.context;
+      const ctxB = pm.getVipContext(leaseIdOf(b.id))!.context;
+      // Actual Profile Path, from Chromium itself.
+      expect(await profilePathOf(ctxA)).toBe(path.join(dirA, 'Default'));
+      expect(await profilePathOf(ctxB)).toBe(path.join(dirB, 'Default'));
+      // Real argv: own root, exactly one --profile-directory, two separate processes at the same time.
+      const argA = argvOfRoot(dirA); const argB = argvOfRoot(dirB);
+      expect(argA.filter((x) => x.startsWith('--profile-directory=')).length).toBe(1);
+      expect(argA).toContain('--profile-directory=Default');
+      expect(argB).toContain('--profile-directory=Default');
+      expect(JSON.parse(fs.readFileSync(path.join(dirA, PIN_FILE), 'utf8')).profileDirectory).toBe('Default');
+      // Independent data, persisted across close + reopen.
+      await ctxA.addCookies([{ name: 'sel', value: 'A', url, expires: Math.floor(Date.now() / 1000) + 3600 }]);
+      expect((await ctxB.cookies(url)).some((c) => c.name === 'sel')).toBe(false);
+      expect((await closeProfileBrowser(pm, leaseIdOf(a.id), operatorDependent('wf_cccccc'))).closed).toBe(true);
+      // Chromium's own last_used is changed behind our back (e.g. its profile menu): the pin still wins.
+      fs.mkdirSync(path.join(dirA, 'Profile 7'), { recursive: true });
+      const lsFile = path.join(dirA, 'Local State');
+      const ls = JSON.parse(fs.readFileSync(lsFile, 'utf8')); ls.profile.last_used = 'Profile 7'; fs.writeFileSync(lsFile, JSON.stringify(ls));
+      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_cccccc', displayName: 'Sel A' });
+      const ctxA2 = pm.getVipContext(leaseIdOf(a.id))!.context;
+      expect(await profilePathOf(ctxA2)).toBe(path.join(dirA, 'Default'));
+      expect((await ctxA2.cookies(url)).find((c) => c.name === 'sel')?.value).toBe('A');
+      for (const id of [a.id, b.id]) {
+        const e = pm.getVipContext(leaseIdOf(id));
+        if (e) await closeContextBounded(e.context);
+        browserSessions().closed(leaseIdOf(id));
+      }
+    }, 120_000);
+
+    it('an existing root that used another profile directory is adopted as it is: same data, nothing moved', async () => {
+      // A pre-existing user-data root (as an older Local Browser / profile could have left it):
+      // its data lives in "Profile 1" and Chromium's last_used points there.
+      const legacy = path.join(tmp, 'legacy-root');
+      const seed = await chromium.launchPersistentContext(legacy, { headless: false, args: ['--no-sandbox', '--profile-directory=Profile 1'], env: { ...process.env, DISPLAY } });
+      await seed.addCookies([{ name: 'legacy', value: 'kept', url, expires: Math.floor(Date.now() / 1000) + 3600 }]);
+      await seed.close();
+      expect(fs.existsSync(path.join(legacy, PIN_FILE))).toBe(false);
+      const before = fs.readdirSync(legacy).sort();
+      const loc = await resolveChromiumProfile(legacy);
+      expect(loc).toMatchObject({ profileDirectory: 'Profile 1', source: 'adopted-last-used' });
+      await openProfileBrowser(pm, { leaseId: 'named:legacy-root', userId, userDataDir: legacy, owner: 'wf_dddddd' });
+      const ctx = pm.getVipContext('named:legacy-root')!.context;
+      expect(await profilePathOf(ctx)).toBe(path.join(legacy, 'Profile 1'));
+      expect((await ctx.cookies(url)).find((c) => c.name === 'legacy')?.value).toBe('kept');
+      // Nothing deleted or relocated: every entry that was there is still there.
+      for (const n of before) expect(fs.existsSync(path.join(legacy, n))).toBe(true);
+      await closeContextBounded(ctx);
+      browserSessions().closed('named:legacy-root');
+    }, 120_000);
+
+    it('why one root per profile: Chromium allows ONE process per root, a 2nd profile on it cannot be launched separately', async () => {
+      const shared = path.join(tmp, 'shared-root');
+      const env = { ...process.env, DISPLAY };
+      const first = await chromium.launchPersistentContext(shared, { headless: false, args: ['--no-sandbox', '--profile-directory=Profile A'], env });
+      let err = '';
+      try {
+        const second = await chromium.launchPersistentContext(shared, { headless: false, timeout: 20_000, args: ['--no-sandbox', '--profile-directory=Profile B'], env });
+        await second.close();
+      } catch (e) { err = (e as Error).message; }
+      expect(err).toMatch(/ProcessSingleton|already in use/i);
+      // The first browser is unaffected and still usable.
+      const pg = await first.newPage();
+      expect(pg.url()).toBe('about:blank');
+      await first.close();
+    }, 90_000);
   });

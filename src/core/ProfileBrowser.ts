@@ -21,6 +21,10 @@
  * DISPLAY NAME. Before each launch the profile's registry name is written into
  * Chromium's own profile data (core/ChromiumProfileName), so the window, the
  * avatar menu and Task View show "22" instead of "Your Chromium".
+ *
+ * DATA SELECTION. Same rule as the Local Browser (core/ChromiumProfileLocation):
+ * the profile's user-data root plus its pinned `--profile-directory`, so the
+ * data Chromium opens never depends on Chromium's own `last_used`.
  */
 import fs from 'fs';
 import { chromium } from 'playwright';
@@ -34,6 +38,7 @@ import { Desktop } from './Desktop';
 import { buildLaunchArgs } from './LaunchSettings';
 import { buildKey, getBuild, setBuild, forgetBuild } from './ProfileBuild';
 import { applyChromiumProfileName } from './ChromiumProfileName';
+import { resolveChromiumProfile, withProfileSelection, verifyProfileSelected } from './ChromiumProfileLocation';
 import { closeContextBounded } from './SharedBrowsers';
 
 export class ProfileBrowserError extends Error {
@@ -137,11 +142,13 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
   if (!p) {
     p = (async () => {
       await fs.promises.mkdir(input.userDataDir, { recursive: true });
+      const loc = await resolveChromiumProfile(input.userDataDir);
       if (input.displayName) {
-        const named = await applyChromiumProfileName(input.userDataDir, input.displayName);
+        const named = await applyChromiumProfileName(loc.userDataRoot, input.displayName, loc.profileDirectory);
         if (!named.ok) console.warn(`[PROFILES] Chromium display name not set for ${input.leaseId}: ${named.skipped || 'unknown'}`);
       }
-      const ctx = await launcher(input.userDataDir, launch.args);
+      const ctx = await launcher(loc.userDataRoot, withProfileSelection(launch.args, loc));
+      if (!(await verifyProfileSelected(loc))) console.warn(`[PROFILES] ${input.leaseId}: expected Chromium profile path ${loc.profilePath} was not created`);
       if (!ctx.pages().length) await ctx.newPage().catch(() => null);
       pm.setVipContext(input.leaseId, ctx, `operator:${input.owner}`);
       sessions.opened(input.leaseId, { userId: input.userId, visibility: 'visible', createdBy: dep });

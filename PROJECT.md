@@ -431,6 +431,25 @@ Continue Session node hands the run's browser to another workflow only through
 `ProfileLeases.grant` + the `grant:<to>` session dependent
 (`core/SessionContinuation`); the grant is consumed when the target ran.
 
+**Chromium data selection** (`core/ChromiumProfileLocation`, used by all three
+launchers: Local Browser `core/RealChrome`, Browser Profiles `core/ProfileBrowser`,
+runs `pipeline.ensureProfileBrowser`). Four identities stay separate: Aria profile
+id (registry) → user-data root (`ProfileRegistry.dirOf`, or
+`REAL_CHROME_USER_DATA_DIR` for the Local Browser) → **pinned
+`--profile-directory`** (`<root>/.plyr-chromium-profile.json`) → display name
+(`core/ChromiumProfileName`, written for the pinned directory). Every launch
+passes `--profile-directory`, because without it Chromium opens `Local State`
+`last_used`, and that can point at other data. An existing root is
+adopted with the directory it already used (`last_used` if it exists, otherwise
+`Default`). Nothing is moved. Custom Flags cannot set either switch. **One root per
+profile** is required, not a style choice: Chromium allows one process per root
+(measured: a 2nd launch fails with ProcessSingleton, and a plain 2nd invocation is
+forwarded into the first process and is invisible to Playwright). Simultaneous,
+separately leased, separately visible profile browsers therefore need separate
+roots. Tests: `tests/unit/chromium-profile-location.test.ts`,
+`tests/browser/{profile-real-chromium,local-browser-profile-selection}.test.ts`
+(`chrome://version` Profile Path).
+
 **Recovery at boot**: leases and holds of an earlier incarnation are released,
 its session records are reported and forgotten; reservations are kept and
 resolved by evidence.

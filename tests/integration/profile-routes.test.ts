@@ -262,7 +262,12 @@ describe('/profiles', () => {
     expect(ok.body.settingsApplied).toBe(true);
     expect(lastArgs).toContain('--no-first-run');
     expect(lastArgs).toContain('--auto-open-devtools-for-tabs');
-    expect(lastArgs[lastArgs.length - 1]).toBe('--lang=fa');
+    // The custom flag is the last USER argument; the app-owned data selection
+    // (core/ChromiumProfileLocation) follows it and occurs exactly once.
+    expect(lastArgs[lastArgs.length - 2]).toBe('--lang=fa');
+    expect(lastArgs[lastArgs.length - 1]).toBe('--profile-directory=Default');
+    expect(lastArgs.filter((a) => a.startsWith('--profile-directory')).length).toBe(1);
+    expect(lastArgs.some((a) => a.startsWith('--user-data-dir'))).toBe(false);
     expect(lastDir.endsWith(path.join('browser-profiles', id))).toBe(true);
     // The Chromium display name was written into the profile's own data.
     const { readChromiumProfileName } = await import('../../src/core/ChromiumProfileName');

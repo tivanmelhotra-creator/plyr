@@ -102,7 +102,7 @@ export const REQUIRED_ARGS: readonly string[] = [
 /** Switches owned by the application. A custom flag with one of these names is refused. */
 export const APP_CONTROLLED: Readonly<Record<string, string>> = {
   'user-data-dir': 'the profile\'s data directory is chosen by the profile, not by a flag',
-  'profile-directory': 'each profile owns its whole data directory; switching the inner profile would mix identities',
+  'profile-directory': 'the profile directory is pinned per profile by the application (core/ChromiumProfileLocation); another one would open different data',
   'remote-debugging-port': 'the debugging connection is managed by the application',
   'remote-debugging-pipe': 'the debugging connection is managed by the application',
   'remote-debugging-address': 'the debugging connection is managed by the application',

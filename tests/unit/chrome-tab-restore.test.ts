@@ -268,7 +268,9 @@ describe('the launch arguments', () => {
     // AND load-bearing for a different defect (the "Restore pages?" bubble is
     // focused and eats clicks aimed at the page). Removing it would reintroduce
     // that without helping this.
-    expect(await launchSource()).toContain('await clearCrashedExitState(userDataDir)');
+    // Called on the profile directory the launch actually selects
+    // (core/ChromiumProfileLocation), not a hard-coded Default.
+    expect(await launchSource()).toContain('await clearCrashedExitState(userDataDir, profileDirectory)');
   });
 
   it('is on by default, because losing the tabs was the reported bug', () => {
