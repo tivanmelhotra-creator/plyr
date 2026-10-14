@@ -29,6 +29,8 @@ export interface ProfileView {
   /** The branch (Chromium root) this profile lives in (core/BranchRegistry). */
   branchId?: string;
   branchLabel?: string;
+  /** The profile's color in Chromium and in the panel (core/ChromiumProfileName.profileLookOf). */
+  color?: string | null;
   /** Another profile of the SAME branch is running now: this one cannot open until it stops. */
   branchBusyWith?: { id: string; name: string } | null;
   status: ProfileStatus;

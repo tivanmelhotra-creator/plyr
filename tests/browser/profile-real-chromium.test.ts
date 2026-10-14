@@ -334,6 +334,28 @@ async function activeUserDataDir(): Promise<string> {
       } finally { (config as any).REAL_CHROME_EXTENSIONS_DIR = prevExt; }
     }, 120_000);
 
+    it('each profile of a branch gets its OWN icon and color in Chromium (before: all identical), kept by Chromium across a launch', async () => {
+      const { profileLookOf } = await import('../../src/core/ChromiumProfileName');
+      const a = await reg.create(userId, 'Look A');
+      const b = await reg.create(userId, 'Look B', { branchId: a.branchId });
+      const root = reg.dirOf(userId, a.id);
+      for (const p of [a, b]) {
+        await openProfileBrowser(pm, openInput(p, 'wf_gggggg'));
+        await sleep(800);
+        expect((await closeProfileBrowser(pm, leaseIdOf(p.id), operatorDependent('wf_gggggg'))).closed).toBe(true);
+      }
+      // After Chromium itself ran and rewrote its files:
+      const ls = JSON.parse(fs.readFileSync(path.join(root, 'Local State'), 'utf8')).profile.info_cache;
+      const la = profileLookOf(a.folder); const lb = profileLookOf(b.folder);
+      expect(la.color).not.toBe(lb.color);
+      expect(ls[a.folder].avatar_icon).toBe(`chrome://theme/IDR_PROFILE_AVATAR_${la.avatarIndex}`);
+      expect(ls[b.folder].avatar_icon).toBe(`chrome://theme/IDR_PROFILE_AVATAR_${lb.avatarIndex}`);
+      expect(ls[a.folder].avatar_icon).not.toBe(ls[b.folder].avatar_icon);
+      expect(ls[a.folder].name).toBe('Look A');
+      const prA = JSON.parse(fs.readFileSync(path.join(root, a.folder, 'Preferences'), 'utf8'));
+      expect(prA.browser.theme.user_color).toBe(la.argb);
+    }, 120_000);
+
     it('an existing root that used another profile directory is adopted as it is: same data, nothing moved', async () => {
       // A pre-existing user-data root (as an older Local Browser / profile could have left it):
       // its data lives in "Profile 1" and Chromium's last_used points there.
