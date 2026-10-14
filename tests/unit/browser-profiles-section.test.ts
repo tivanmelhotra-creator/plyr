@@ -8,11 +8,9 @@
  * Profiles. Covered here:
  *   - the former switch row is gone; no UI text names it;
  *   - the section is titled "Browser Profiles" and its list "Branches";
- *   - Turn on with NOTHING selected opens the default profile, through the
- *     same /profiles/:id/open as Open (no /browser/real/open);
- *   - Turn on with a selection opens exactly the selected profiles;
- *   - Turn off calls POST /profiles/turn-off and shows, on screen, what closed
- *     and which profile stayed open for which workflow;
+ *   - NO Turn on / Turn off in the UI (owner, S33): profiles open by name
+ *     through their own Open; nothing opens the default profile by itself;
+ *     POST /profiles/turn-off stays on the server (integration tests);
  *   - the routes the switch used still exist on the server (they are used by
  *     other callers): nothing was removed there.
  */
@@ -78,54 +76,48 @@ describe('one Browser Profiles section', () => {
     expect(b.calls.some((c) => c.url === '/browser/real/health')).toBe(false);
   });
 
-  it('is titled "Browser Profiles", the list is labelled "Branches", Turn on / Turn off present', async () => {
+  it('is titled "Browser Profiles", the list is labelled "Branches"; NO Turn on / Turn off in the DOM', async () => {
     await open();
     expect(q('.pm-title').textContent).toBe('Browser Profiles');
     expect(q('.pm-list-label').textContent).toBe('Branches');
-    expect(q('.pm-turn-on').textContent).toBe('Turn on');
-    expect(q('.pm-turn-off').textContent).toBe('Turn off');
-    // A branch header shows the branch itself, without a "Branch:" prefix.
     expect(q('.pm-branch-label').textContent).toBe('Default (branch-001)');
+    // Owner: profiles open by name through their own Open; no bulk controls.
+    expect(q('.pm-turn-on')).toBeNull();
+    expect(q('.pm-turn-off')).toBeNull();
+    expect(q('.pm-power')).toBeNull();
+    expect(q('.pm-off-result')).toBeNull();
+    expect(b.stage.textContent).not.toMatch(/Turn on|Turn off|Turned off|Still open:/);
+    // The per-profile controls remain.
+    for (const sel of ['.pm-open', '.pm-close', '.pm-release', '.pm-restore', '.pm-ren', '.pm-launch']) expect(q(sel)).not.toBeNull();
   });
 
-  it('Turn on with nothing selected opens the DEFAULT profile through the Open path', async () => {
+  it('nothing in the panel opens the default profile by itself, and nothing calls /profiles/turn-off', async () => {
     await open();
-    q('.pm-turn-on').click();
+    for (const btn of Array.from(b.stage.querySelectorAll('.pm-panel button')) as HTMLButtonElement[]) {
+      if (btn.classList.contains('pm-hold') || btn.classList.contains('pm-branch-del')) continue;
+      if (!btn.disabled) btn.click();
+    }
     await b.settle();
-    expect(opens()).toEqual(['/profiles/default/open']);
-    expect(b.calls.some((c) => c.url === 'openRealBrowser' || c.url === '/browser/real/open')).toBe(false);
+    expect(opens()).toEqual([]); // Open needs a selection; nothing opens "default" on its own
+    expect(b.calls.some((c) => c.url === '/profiles/turn-off')).toBe(false);
   });
 
-  it('Turn on with a selection opens exactly the selected profiles', async () => {
+  it('Open opens exactly the selected profile, by name', async () => {
     await open();
     const box = b.stage.querySelector('.pm-row[data-id="prf_a"] .pm-check') as HTMLInputElement;
     box.checked = true;
     box.dispatchEvent(new b.w.Event('change'));
-    expect(q('.pm-turn-on').textContent).toBe('Turn on (1)');
-    q('.pm-turn-on').click();
+    q('.pm-open').click();
     await b.settle();
     expect(opens()).toEqual(['/profiles/prf_a/open']);
-  });
-
-  it('Turn off asks the server and shows what closed and which profile a workflow keeps open', async () => {
-    await open();
-    q('.pm-turn-off').click();
-    await b.settle();
-    expect(b.calls.some((c) => c.method === 'POST' && c.url === '/profiles/turn-off')).toBe(true);
-    expect(b.calls.some((c) => c.url === '/browser/real/close' || c.url === '/browser/close')).toBe(false);
-    const res = q('.pm-off-result');
-    expect(res.hidden).toBe(false);
-    expect(res.querySelector('.is-closed')!.textContent).toContain('Shop');
-    const kept = res.querySelector('.is-kept')!.textContent!;
-    expect(kept).toContain('Default');
-    expect(kept).toContain('Nightly import');
   });
 });
 
 describe('wiring', () => {
-  it('every new key exists; the removed switch keys are gone', () => {
-    for (const k of ['pm.title', 'pm.branches', 'pm.turnOn', 'pm.turnOff', 'pm.offKept', 'pm.offUsedBy', 'pm.offClosed']) expect(i18n).toContain(`'${k}'`);
+  it('section keys exist; the removed switch and Turn on/off keys are gone', () => {
+    for (const k of ['pm.title', 'pm.branches']) expect(i18n).toContain(`'${k}'`);
     expect(i18n).not.toMatch(/'wfm\.browser[A-Za-z]*'/);
+    expect(i18n).not.toMatch(/'pm\.(turn[A-Za-z]*|off[A-Z][A-Za-z]*)'/);
     expect(i18n).toContain("'pm.title': 'Browser Profiles'");
   });
 
@@ -133,7 +125,7 @@ describe('wiring', () => {
     expect(css).toMatch(/\.pm-branch-select \{[^}]*color-scheme: dark/);
     expect(css).toMatch(/\.pm-form \{[^}]*display: grid/);
     expect(css).not.toMatch(/\.wfm-browser\b/);
-    expect(css).toMatch(/\.pm-power \{/);
+    expect(css).not.toMatch(/\.pm-power\b|\.pm-off-result\b|\.pm-off-line\b/);
   });
 
   it('the server routes the removed switch used are still there (other callers use them)', () => {

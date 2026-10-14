@@ -68,10 +68,8 @@
    BROWSER PROFILES
    ----------------
    In the workflow editor's drawer (browseOnly) the ONE browser section is
-   mounted (js/profile-manager.js -> /profiles): Turn on (the selected
-   profiles, or the default profile) / Turn off (every browser opened here
-   that no workflow uses; the others are named with their workflow), the
-   Branches list, pick one or several profiles, create one (its browser is
+   mounted (js/profile-manager.js -> /profiles): the Branches list, pick
+   one or several profiles, create one (its browser is
    then opened automatically), rename, delete, open / close their browsers,
    and see why a profile reserved by another workflow is not available.
    There is no separate browser switch any more: it was merged into this
@@ -1951,7 +1949,7 @@
     root.appendChild(head);
 
     // ── Browser Profiles (the ONE browser section, js/profile-manager.js):
-    // Turn on / Turn off, Branches, multi-select, create (then open), rename,
+    // Branches, multi-select, create (then open), rename,
     // delete, open / close / release, and the access state of each profile.
     // The workflow editor's drawer only. (The former separate browser switch
     // above it was merged into this section.)
