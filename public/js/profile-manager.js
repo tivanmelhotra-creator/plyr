@@ -130,8 +130,75 @@
     close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); },
     launchOptions: function () { return call('/profiles/launch-options'); },
     validateLaunch: function (launch) { return call('/profiles/launch-settings/validate', 'POST', { launch: launch || {} }); },
-    restore: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/restore', 'POST', { workflowId: workflowId || undefined }); }
+    restore: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/restore', 'POST', { workflowId: workflowId || undefined }); },
+    branches: function () { return call('/profiles/branches'); },
+    createIn: function (name, branchId, workflowId) { return call('/profiles', 'POST', { name: name, branchId: branchId || 'new', workflowId: workflowId || undefined }); },
+    renameBranch: function (id, label) { return call('/profiles/branches/' + encodeURIComponent(id), 'PATCH', { label: label }); },
+    deletionScan: function (id) { return call('/profiles/branches/' + encodeURIComponent(id) + '/deletion-scan'); },
+    deleteBranch: function (id) { return call('/profiles/branches/' + encodeURIComponent(id), 'DELETE'); }
   };
+
+  /** How long the Delete branch button must be held (owner's rule: 3 s). */
+  var DELETE_HOLD_MS = 3000;
+
+  /**
+   * Press-and-hold button: `onDone` runs only after `ms` of continuous
+   * pointer OR Enter/Space hold. Releasing earlier cancels and resets the
+   * progress. Returns { el, reset }.
+   */
+  function holdButton(label, ms, onDone) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-sm btn-danger pm-hold';
+    var bar = document.createElement('span');
+    bar.className = 'pm-hold-bar';
+    bar.setAttribute('aria-hidden', 'true');
+    var txt = document.createElement('span');
+    txt.className = 'pm-hold-text';
+    txt.textContent = label;
+    b.appendChild(bar);
+    b.appendChild(txt);
+    b.setAttribute('aria-describedby', '');
+    var started = 0, raf = 0, timer = 0, done = false;
+    function frame() {
+      if (!started) return;
+      var p = Math.min(1, (Date.now() - started) / ms);
+      bar.style.width = (p * 100).toFixed(1) + '%';
+      b.setAttribute('data-progress', String(Math.round(p * 100)));
+      raf = (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(frame);
+    }
+    function start() {
+      if (started || done || b.disabled) return;
+      started = Date.now();
+      frame();
+      timer = setTimeout(function () { finish(); }, ms);
+    }
+    function reset() {
+      started = 0;
+      if (timer) clearTimeout(timer);
+      timer = 0;
+      bar.style.width = '0%';
+      b.setAttribute('data-progress', '0');
+    }
+    function cancelHold() { if (!done) reset(); }
+    function finish() {
+      if (!started) return;
+      done = true;
+      bar.style.width = '100%';
+      started = 0; timer = 0;
+      Promise.resolve(onDone()).then(function () { done = false; reset(); }, function () { done = false; reset(); });
+    }
+    b.addEventListener('pointerdown', function (e) { if (e.button === undefined || e.button === 0) start(); });
+    b.addEventListener('mousedown', function (e) { if (!window.PointerEvent && (e.button === 0)) start(); });
+    ['pointerup', 'pointerleave', 'pointercancel', 'mouseup', 'mouseleave', 'blur'].forEach(function (ev) { b.addEventListener(ev, cancelHold); });
+    b.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); if (!e.repeat) start(); }
+    });
+    b.addEventListener('keyup', function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') cancelHold(); });
+    // A click alone never deletes.
+    b.addEventListener('click', function (e) { e.preventDefault(); });
+    return { el: b, reset: reset, _start: start, _cancel: cancelHold };
+  }
 
   var STATUS_LABEL = {
     free: ['pm.free', 'Free'],
@@ -384,7 +451,7 @@
    */
   function mount(host, opts) {
     var o = opts || {};
-    var st = { profiles: [], unknownSchedules: [], selected: {}, busy: '', destroyed: false, timer: 0, holdTimer: 0, loaded: false };
+    var st = { profiles: [], branches: [], unknownSchedules: [], selected: {}, busy: '', destroyed: false, timer: 0, holdTimer: 0, loaded: false };
 
     function say(text, isErr) { if (o.onSay) o.onSay(text, isErr); }
 
@@ -418,6 +485,16 @@
     input.setAttribute('aria-label', t('pm.namePrompt', 'Profile name'));
     input.placeholder = t('pm.namePrompt', 'Profile name');
     form.appendChild(input);
+    // Where the new profile goes: an existing branch Aria created, or a new
+    // branch (the system creates branch-NNN; no path is typed).
+    var branchSel = document.createElement('select');
+    branchSel.className = 'pm-branch-select';
+    branchSel.setAttribute('aria-label', t('pm.branchChoose', 'Branch'));
+    form.appendChild(branchSel);
+    var branchHint = document.createElement('small');
+    branchHint.className = 'pm-branch-hint';
+    branchHint.textContent = t('pm.branchHint', 'A branch is one browser data folder. Only one profile of a branch can run at a time; profiles in different branches can run together.');
+    form.appendChild(branchHint);
     var ok = document.createElement('button');
     ok.type = 'submit';
     ok.className = 'btn btn-sm btn-primary pm-form-ok';
@@ -475,9 +552,26 @@
 
     var formMode = null; // { kind: 'create' } | { kind: 'rename', id }
 
+    function paintBranchSelect() {
+      branchSel.innerHTML = '';
+      var nw = document.createElement('option');
+      nw.value = 'new';
+      nw.textContent = t('pm.newBranch', 'New branch');
+      branchSel.appendChild(nw);
+      (st.branches || []).forEach(function (b) {
+        if (b.builtIn) return; // built-in roots (Default, Local Browser) do not take new profiles
+        var op = document.createElement('option');
+        op.value = b.id;
+        op.textContent = (b.label && b.label !== b.id ? b.label + ' (' + b.id + ')' : b.id) + ' \u2014 ' + (b.profiles || []).length + ' ' + t('pm.profilesCount', 'profile(s)');
+        branchSel.appendChild(op);
+      });
+    }
+
     function showForm(mode, initial) {
       formMode = mode;
       form.hidden = false;
+      branchSel.hidden = branchHint.hidden = mode.kind !== 'create';
+      if (mode.kind === 'create') paintBranchSelect();
       input.value = initial || '';
       ok.textContent = mode.kind === 'create' ? t('pm.create', 'Create') : t('pm.rename', 'Rename');
       try { input.focus(); input.select(); } catch (e) { /* jsdom */ }
@@ -496,9 +590,31 @@
         li0.textContent = t('pm.loading', 'Loading profiles\u2026');
         list.appendChild(li0);
       }
+      var lastBranch = null;
       st.profiles.forEach(function (p) {
+        if (p.branchId && p.branchId !== lastBranch) {
+          lastBranch = p.branchId;
+          var bh = document.createElement('li');
+          bh.className = 'pm-branch-head';
+          bh.setAttribute('role', 'presentation');
+          bh.setAttribute('data-branch', p.branchId);
+          var bl = document.createElement('span');
+          bl.className = 'pm-branch-label';
+          bl.textContent = t('pm.branch', 'Branch') + ': ' + (p.branchLabel && p.branchLabel !== p.branchId ? p.branchLabel + ' (' + p.branchId + ')' : p.branchId);
+          bh.appendChild(bl);
+          var binfo = (st.branches || []).filter(function (b) { return b.id === p.branchId; })[0];
+          if (binfo && !binfo.builtIn) {
+            var bdel = document.createElement('button');
+            bdel.type = 'button';
+            bdel.className = 'btn btn-sm btn-ghost pm-branch-del';
+            bdel.textContent = t('pm.deleteBranch', 'Delete branch');
+            bdel.addEventListener('click', function () { void startDeleteBranch(binfo); });
+            bh.appendChild(bdel);
+          }
+          list.appendChild(bh);
+        }
         var li = document.createElement('li');
-        li.className = 'pm-row is-' + p.status + (p.available ? '' : ' is-blocked');
+        li.className = 'pm-row is-' + p.status + (p.available ? '' : ' is-blocked') + (p.branchBusyWith ? ' is-branch-busy' : '');
         li.setAttribute('role', 'option');
         li.setAttribute('data-id', p.id);
         li.setAttribute('aria-selected', st.selected[p.id] ? 'true' : 'false');
@@ -531,7 +647,9 @@
         var lbl = STATUS_LABEL[p.status] || STATUS_LABEL.needs_review;
         badge.textContent = t(lbl[0], lbl[1]);
         txt.appendChild(badge);
-        var det = detailOf(p);
+        var det = p.branchBusyWith
+          ? t('pm.branchBusy', 'Waits: another profile of this branch is running') + ' (\u201c' + p.branchBusyWith.name + '\u201d).'
+          : detailOf(p);
         if (det) {
           var d = document.createElement('span');
           d.className = 'pm-detail';
@@ -552,14 +670,7 @@
         ren.textContent = t('pm.rename', 'Rename');
         ren.addEventListener('click', function () { showForm({ kind: 'rename', id: p.id }, p.name); });
         li.appendChild(ren);
-        if (!p.builtIn) {
-          var del = document.createElement('button');
-          del.type = 'button';
-          del.className = 'btn btn-sm btn-ghost pm-del';
-          del.textContent = t('pm.delete', 'Delete');
-          del.addEventListener('click', function () { void removeProfile(p); });
-          li.appendChild(del);
-        }
+        // Deleting is per BRANCH (owner's model): see the branch header.
         list.appendChild(li);
       });
       paintActions();
@@ -600,7 +711,9 @@
     }
 
     function refresh() {
-      return api.list(o.workflowId).then(function (d) {
+      var branchesP = api.branches().then(function (b) { st.branches = b.branches || []; }, function () { /* list still works */ });
+      return Promise.all([api.list(o.workflowId), branchesP]).then(function (all) {
+        var d = all[0];
         if (st.destroyed) return;
         st.profiles = d.profiles || [];
         st.unknownSchedules = d.unknownSchedules || [];
@@ -663,6 +776,14 @@
             var b = e.body || {};
             var msg = e.message || t('pm.openFailed', 'Could not open the browser.');
             if (b.code === 'needs_confirmation') msg = t('pm.confirmFlags', 'Confirm the risky launch flags in Launch settings first.') + ' ' + msg;
+            if (b.code === 'branch_busy' && b.viewPath) {
+              // Bring the running profile of the branch to the front instead.
+              var showHref = viewHref({ viewPath: b.viewPath });
+              if (o.openView) o.openView(showHref, tab); else showInViewer(tab, showHref);
+              results.push({ id: id, ok: false, shownInstead: b.runningProfile ? b.runningProfile.id : null, code: b.code });
+              say((p ? p.name + ': ' : '') + msg, true);
+              return;
+            }
             say((p ? p.name + ': ' : '') + msg, true);
             if (launchUi && b.launch) launchUi.showResult(b.launch);
             results.push({ id: id, ok: false, error: e.message, code: b.code });
@@ -684,7 +805,8 @@
       var tab = claimViewer();
       var fresh = isBlankTab(tab);
       var launch = launchUi ? launchUi.value() : null;
-      return api.create(name, o.workflowId).then(function (d) {
+      var branchId = branchSel.value || 'new';
+      return api.createIn(name, branchId, o.workflowId).then(function (d) {
         st.busy = '';
         hideForm();
         var p = d.profile;
@@ -754,6 +876,96 @@
       });
     }
 
+    /** Section 8: dependency scan -> blocking alert, or a warning with a 3-second hold. */
+    var dlg = document.createElement('div');
+    dlg.className = 'pm-dialog';
+    dlg.hidden = true;
+    dlg.setAttribute('role', 'alertdialog');
+    dlg.setAttribute('aria-modal', 'true');
+    root.appendChild(dlg);
+
+    function closeDialog() { dlg.hidden = true; dlg.innerHTML = ''; }
+
+    function line(parent, text, cls) {
+      var el = document.createElement('p');
+      if (cls) el.className = cls;
+      el.textContent = text;
+      parent.appendChild(el);
+      return el;
+    }
+
+    function showBlocked(scan) {
+      dlg.innerHTML = '';
+      dlg.hidden = false;
+      line(dlg, t('pm.delBlockedTitle', 'This branch cannot be deleted yet') + ': ' + scan.label, 'pm-dialog-title');
+      (scan.runningProfiles || []).forEach(function (r) {
+        line(dlg, '\u25b6 \u201c' + r.name + '\u201d ' + t('pm.delRunning', 'is running. Stop it first.'), 'pm-dialog-row is-running');
+      });
+      (scan.blockingWorkflows || []).forEach(function (w) {
+        var row = line(dlg, '\u26a0 ' + t('pm.delUsedBy', 'Workflow') + ' \u201c' + w.name + '\u201d (' + t('pm.wfState.' + w.state, w.state) + ') ' +
+          t('pm.delUses', 'uses profile') + ' \u201c' + w.profileName + '\u201d.' +
+          (w.state === 'running' ? ' ' + t('pm.delStopFirst', 'It is running: stop it first; a new profile applies to its next run only.') : ''), 'pm-dialog-row');
+        var re = document.createElement('button');
+        re.type = 'button';
+        re.className = 'btn btn-sm btn-ghost pm-reassign';
+        re.textContent = t('pm.reassign', 'Reassign profile');
+        re.addEventListener('click', function () {
+          closeDialog();
+          if (o.onReassign) o.onReassign(w.workflowId, w.profileId);
+          else say(t('pm.reassignHow', 'Open the workflow\u2019s Settings and choose a profile from another branch.') + ' (' + w.name + ')', false);
+        });
+        row.appendChild(re);
+      });
+      var c = document.createElement('button');
+      c.type = 'button';
+      c.className = 'btn btn-sm btn-subtle';
+      c.textContent = t('wfm.close', 'Close');
+      c.addEventListener('click', closeDialog);
+      dlg.appendChild(c);
+    }
+
+    function showConfirm(scan, branch) {
+      dlg.innerHTML = '';
+      dlg.hidden = false;
+      line(dlg, t('pm.delTitle', 'Delete branch') + ' \u201c' + scan.label + '\u201d?', 'pm-dialog-title');
+      line(dlg, (scan.profiles || []).length + ' ' + t('pm.delProfiles', 'profile(s) will be deleted') + ': ' +
+        (scan.profiles || []).map(function (p) { return p.name; }).join(', '), 'pm-dialog-row');
+      if ((scan.inactiveWorkflows || []).length) {
+        line(dlg, t('pm.delInactive', 'Inactive workflows that will lose their profile (state: profile missing)') + ': ' +
+          scan.inactiveWorkflows.map(function (w) { return w.name; }).join(', '), 'pm-dialog-row');
+      }
+      line(dlg, t('pm.delPermanent', 'All data in this branch (cookies, logins, browser data) is deleted permanently. There is no recycle bin.'), 'pm-dialog-warn');
+      line(dlg, t('pm.delHoldHint', 'Press and hold the button (or hold Enter / Space) for 3 seconds.'), 'pm-dialog-hint');
+      var hb = holdButton(t('pm.delHold', 'Hold to delete'), DELETE_HOLD_MS, function () {
+        // At the end of the hold the server scans AGAIN: anything that started
+        // during the hold cancels the deletion and shows the blocking alert.
+        return api.deleteBranch(branch.id).then(function (r) {
+          closeDialog();
+          say(t('pm.branchDeleted', 'Branch deleted.') + (r.profileMissing && r.profileMissing.length ? ' ' + t('pm.delMissingNow', 'Workflows now missing a profile') + ': ' + r.profileMissing.length : ''), false);
+          return refresh();
+        }, function (e) {
+          var b = e.body || {};
+          if (b.scan) showBlocked(b.scan); else say(e.message || t('pm.deleteFailed', 'Could not delete the branch.'), true);
+        });
+      });
+      dlg.appendChild(hb.el);
+      var c = document.createElement('button');
+      c.type = 'button';
+      c.className = 'btn btn-sm btn-subtle';
+      c.textContent = t('wfm.cancel', 'Cancel');
+      c.addEventListener('click', closeDialog);
+      dlg.appendChild(c);
+      try { hb.el.focus(); } catch (x) { /* jsdom */ }
+      st.holdButton = hb;
+    }
+
+    function startDeleteBranch(branch) {
+      return api.deletionScan(branch.id).then(function (d) {
+        var scan = d.scan;
+        if (!scan.deletable) showBlocked(scan); else showConfirm(scan, branch);
+      }, function (e) { say(e.message || t('pm.deleteFailed', 'Could not delete the branch.'), true); });
+    }
+
     function each(fn, ids) {
       st.busy = 'act';
       paintActions();
@@ -804,6 +1016,7 @@
       refresh: refresh,
       openProfiles: openProfiles,
       createProfile: createProfile,
+      startDeleteBranch: startDeleteBranch,
       destroy: function () {
         st.destroyed = true;
         if (st.timer) clearInterval(st.timer);
@@ -814,7 +1027,7 @@
   }
 
   window.ProfileManager = {
-    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText,
+    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText, holdButton: holdButton, DELETE_HOLD_MS: DELETE_HOLD_MS,
     mountLaunchSettings: mountLaunchSettings, viewer: { name: VIEWER_NAME, claim: claimViewer, show: showInViewer, isBlank: isBlankTab }
   };
 })();

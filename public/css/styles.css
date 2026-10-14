@@ -9770,3 +9770,19 @@ tr.is-unset .xv-var-val code { color: var(--xv-faint); font-style: italic; backg
 .pm-launch-err { color: #b91c1c; margin: 0; }
 .pm-launch-warn { color: #b45309; margin: 0; }
 .pm-launch-args { margin: 0; }
+
+/* Branch model (core/BranchRegistry): branch headers, delete dialog, 3-second hold. */
+.pm-branch-head { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 12px; font-weight: 600; opacity: .85; border-top: 1px solid var(--border, #e5e7eb); }
+.pm-branch-head:first-child { border-top: 0; }
+.pm-branch-label { flex: 1; }
+.pm-branch-select { margin-left: 6px; }
+.pm-branch-hint { display: block; width: 100%; font-size: 11px; opacity: .75; margin: 4px 0; }
+.pm-row.is-branch-busy { opacity: .7; }
+.pm-dialog { margin-top: 8px; padding: 10px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; background: var(--surface, #fff); }
+.pm-dialog-title { font-weight: 600; margin: 0 0 6px; }
+.pm-dialog-row { margin: 4px 0; font-size: 12px; }
+.pm-dialog-warn { margin: 6px 0; font-size: 12px; color: #b91c1c; font-weight: 600; }
+.pm-dialog-hint { margin: 4px 0 8px; font-size: 11px; opacity: .75; }
+.pm-hold { position: relative; overflow: hidden; margin-right: 6px; }
+.pm-hold-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255,255,255,.35); pointer-events: none; }
+.pm-hold-text { position: relative; }

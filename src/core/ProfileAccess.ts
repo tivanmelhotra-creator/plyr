@@ -15,7 +15,7 @@ import {
   leaseIdOf, type DenyReason, type HoldRecord, type LeaseRecord, type ProfileLeases, type ReservationLike,
 } from './ProfileLease';
 import { blockingUntil, type ProfileReservations, type Reservation } from './ProfileReservations';
-import type { BrowserSessions, SessionRecord } from './BrowserSessions';
+import { runningProfileOf, type BrowserSessions, type SessionRecord } from './BrowserSessions';
 
 export type ProfileStatus = 'free' | 'reserved' | 'in_use' | 'needs_review';
 
@@ -25,6 +25,11 @@ export interface ProfileView {
   id: string;
   name: string;
   builtIn: boolean;
+  /** The branch (Chromium root) this profile lives in (core/BranchRegistry). */
+  branchId?: string;
+  branchLabel?: string;
+  /** Another profile of the SAME branch is running now: this one cannot open until it stops. */
+  branchBusyWith?: { id: string; name: string } | null;
   status: ProfileStatus;
   /** Can the requesting owner claim it right now? */
   available: boolean;
@@ -100,11 +105,12 @@ export class ProfileAccess {
 
   /** Views of every profile for `owner`; adopts profiles referenced by workflows. */
   async views(userId: string, owner: string, workflows: WorkflowRef[]): Promise<ProfileView[]> {
-    for (const wf of workflows) {
-      if (wf.profileId && wf.profileId !== DEFAULT_PROFILE_ID) await this.registry.ensure(userId, wf.profileId).catch(() => null);
-    }
+    // Branch model: the registry adopts every pre-branch root ONCE, in place.
+    // A workflow reference to an id that is not there is NOT silently created
+    // (it is reported as missing by the activation check instead).
+    const all = await this.registry.list(userId);
     const out: ProfileView[] = [];
-    for (const p of await this.registry.list(userId)) out.push(await this.viewOf(p, owner, workflows));
+    for (const p of all) out.push(await this.viewOf(p, owner, workflows, all));
     return out;
   }
 
@@ -113,7 +119,7 @@ export class ProfileAccess {
     return p ? this.viewOf(p, owner, workflows) : null;
   }
 
-  private async viewOf(p: ProfileEntry, owner: string, workflows: WorkflowRef[]): Promise<ProfileView> {
+  private async viewOf(p: ProfileEntry, owner: string, workflows: WorkflowRef[], all: ProfileEntry[] = []): Promise<ProfileView> {
     const names = new Map(workflows.map((w) => [w.id, w.name] as const));
     const nameOf = (o?: string | null): string | undefined => (o ? names.get(o) : undefined);
     const leaseId = leaseIdOf(p.id);
@@ -126,10 +132,15 @@ export class ProfileAccess {
     const next = resv.filter((r) => r.state === 'planned' && r.start > now)[0] || null;
     const denyReason = adm.ok ? null : adm.reason;
     const named = (r: ReservationLike | null | undefined) => (r ? { ...r, ownerName: r.ownerName || nameOf(r.owner) } : null);
+    const runningId = session ? runningProfileOf(leaseId) : null;
+    const busyWith = runningId && runningId !== p.id ? (all.find((x) => x.id === runningId) || { id: runningId, name: runningId }) : null;
     return {
       id: p.id,
       name: p.name,
       builtIn: p.builtIn,
+      branchId: p.branchId,
+      branchLabel: p.branchLabel,
+      branchBusyWith: busyWith ? { id: busyWith.id, name: busyWith.name } : null,
       status: deriveStatus({ problem: p.problem, lastOpenError: p.lastOpenError, lease, hold, activeReservation: active, session }),
       available: adm.ok && !p.problem,
       denyReason: p.problem ? null : denyReason,
@@ -147,7 +158,7 @@ export class ProfileAccess {
         blockingUntil: Number.isFinite(blockingUntil(active)) ? blockingUntil(active) : null,
       } : null,
       nextReservation: next ? { owner: next.owner, ownerName: next.ownerName || nameOf(next.owner), start: next.start, end: next.end } : null,
-      browser: session
+      browser: session && !busyWith
         ? { open: true, visibility: session.visibility, dependents: session.dependents.length, startedAt: session.startedAt, lastActivity: session.lastActivity }
         : { open: false, dependents: 0 },
       usedBy: workflows.filter((w) => (w.profileId || DEFAULT_PROFILE_ID) === p.id).map((w) => ({ workflowId: w.id, name: w.name })),
