@@ -6246,32 +6246,26 @@ body.route-fullbleed .fe-mm-restore {
 }
 .wfm-ed-status.dirty { color: var(--primary); }
 .wfm-ed-status.err { color: var(--danger); }
-/* ---- the Local Browser switch: the workflow editor's drawer only -----------
- * One row under the drawer's head: a dot (grey = off, green = running, orange
- * while a press is in flight), the state in words, and ONE button. The notepad
- * takes the whole drawer while a file is open, so the row steps aside then. */
-.wfm-browser {
-  display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;
-  padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border);
-  font-size: 0.78rem; color: var(--text);
-}
-.wfm-br-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-dim); }
-.wfm-browser.is-on .wfm-br-dot { background: var(--success, #3fb950); }
-.wfm-browser.is-busy .wfm-br-dot { background: var(--primary); }
-.wfm-br-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wfm-br-btn { flex: none; }
-/* "Show browser": drawn only while running (the [hidden] attribute does it). */
-.wfm-br-show { flex: none; }
-.wfm-drawer.is-editing .wfm-browser { display: none; }
 /* ---- Browser profiles (js/profile-manager.js) inside the same drawer ------ */
 .wfm-profiles { flex: 0 0 auto; max-height: 38vh; overflow: auto; border-bottom: 1px solid var(--border); }
 .wfm-drawer.is-editing .wfm-profiles { display: none; }
 .pm-panel { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.45rem 0.7rem; font-size: 0.78rem; }
 .pm-head { display: flex; align-items: center; gap: 0.4rem; }
 .pm-title { font-weight: 600; color: var(--text); }
-.pm-form { display: flex; gap: 0.35rem; }
+/* New profile / Rename form. Before: one flex ROW for name, branch menu, hint,
+ * Create and Cancel; in the 23rem drawer the name field shrank to 16px, the
+ * hint became a 48px column and Create was pushed past the drawer's edge.
+ * Now a grid: name, branch, hint each take the full width, buttons last. */
+.pm-form {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0.4rem;
+  align-items: center; padding: 0.5rem; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg-elev);
+}
+.pm-form > .pm-input, .pm-form > .pm-branch-select, .pm-form > .pm-branch-hint { grid-column: 1 / -1; }
+.pm-form > .pm-form-ok { grid-column: 2; }
+.pm-form > .pm-form-cancel { grid-column: 3; }
 .pm-form[hidden] { display: none; }
-.pm-input { flex: 1; min-width: 0; padding: 0.25rem 0.45rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.pm-input { width: 100%; box-sizing: border-box; min-width: 0; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 .pm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .pm-row { display: flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.3rem; border-radius: 6px; }
 .pm-row:hover { background: var(--bg-hover, rgba(127,127,127,.08)); }
@@ -6293,6 +6287,16 @@ body.route-fullbleed .fe-mm-restore {
 .pm-notes[hidden] { display: none; }
 .pm-note { font-size: 0.72rem; color: var(--warning, #d29922); padding: 0.2rem 0.3rem; border-radius: 6px; background: rgba(210,153,34,.08); }
 .pm-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+/* Turn on / Turn off: the section's main controls, one row under its title. */
+.pm-power { display: flex; gap: 0.4rem; }
+.pm-power > .btn { flex: 1 1 0; justify-content: center; }
+.pm-open-count { font-size: 0.68rem; color: var(--success); }
+.pm-off-result { list-style: none; margin: 0; padding: 0.35rem 0.5rem; display: flex; flex-direction: column; gap: 2px; border-radius: 6px; background: var(--bg-elev); font-size: 0.72rem; }
+.pm-off-result[hidden] { display: none; }
+.pm-off-line.is-closed { color: var(--text-dim); }
+.pm-off-line.is-kept { color: var(--warn); }
+.pm-off-line.is-failed { color: var(--danger); }
+.pm-list-label { font-size: 0.68rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim); margin-top: 0.15rem; }
 /* Batch delete only makes sense once something is picked, and it must never
  * sit at the same weight as Select — it destroys, Select delivers. */
 .wfm-delsel { display: none; }
@@ -9776,10 +9780,20 @@ tr.is-unset .xv-var-val code { color: var(--xv-faint); font-style: italic; backg
 .pm-branch-head { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 12px; font-weight: 600; opacity: .85; border-top: 1px solid var(--border, #e5e7eb); }
 .pm-branch-head:first-child { border-top: 0; }
 .pm-branch-label { flex: 1; }
-.pm-branch-select { margin-left: 6px; }
-.pm-branch-hint { display: block; width: 100%; font-size: 11px; opacity: .75; margin: 4px 0; }
+/* The branch menu: dark like the rest of the drawer (it was the browser's
+ * default white control). color-scheme makes the open list dark too. */
+.pm-branch-select {
+  width: 100%; box-sizing: border-box; min-width: 0; padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); font: inherit; color-scheme: dark;
+}
+[data-theme="light"] .pm-branch-select { color-scheme: light; }
+.pm-branch-select option { background: var(--bg-elev); color: var(--text); }
+.pm-branch-select:focus-visible, .pm-input:focus-visible { outline: 2px solid var(--primary); outline-offset: 0; border-color: transparent; }
+.pm-branch-hint { display: block; font-size: 0.7rem; line-height: 1.35; color: var(--text-dim); margin: 0; }
+.pm-form[hidden], .pm-branch-hint[hidden], .pm-branch-select[hidden] { display: none; }
 .pm-row.is-branch-busy { opacity: .7; }
-.pm-dialog { margin-top: 8px; padding: 10px; border: 1px solid var(--border, #e5e7eb); border-radius: 8px; background: var(--surface, #fff); }
+.pm-dialog { margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); color: var(--text); }
 .pm-dialog-title { font-weight: 600; margin: 0 0 6px; }
 .pm-dialog-row { margin: 4px 0; font-size: 12px; }
 .pm-dialog-warn { margin: 6px 0; font-size: 12px; color: #b91c1c; font-weight: 600; }

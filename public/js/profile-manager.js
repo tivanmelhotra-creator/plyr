@@ -4,7 +4,8 @@
    Every surface that shows or picks a profile uses this module and the one
    server API behind it (src/Routes/profile.routes.ts):
 
-     - the Workflow Files drawer (mount(): list, multi-select, create, rename,
+     - the Workflow Files drawer (mount(): the ONE "Browser Profiles" section:
+       Turn on / Turn off, list of Branches, multi-select, create, rename,
        delete, open / close / release, status of browser and access);
      - Workflow Settings (list(): the profile choice).
 
@@ -32,13 +33,15 @@
   }
 
   var POLL_MS = 6000;
+  /** The default profile (core/BranchRegistry DEFAULT_PROFILE_ID): what Turn on opens when nothing is selected. */
+  var DEFAULT_ID = 'default';
 
   // ── THE ONE SHARED VIEWER ────────────────────────────────────────────────
-  // Every browser (Local Browser and every profile) is a window on ONE remote
+  // Every browser (every profile) is a window on ONE remote
   // desktop, so ONE tab shows them all. It is a NAMED window: window.open()
   // with the same name returns the existing tab instead of opening a new one,
   // so opening 1, 2 or 3 profiles, pressing Open again, or Show browser all
-  // land in the same tab. Shared with workflow-files.js (Local Browser).
+  // land in the same tab.
   var VIEWER_NAME = 'aria-browser-viewer';
 
   /** Claim the viewer tab inside the click (popup blockers). Returns it or null. */
@@ -130,6 +133,8 @@
     close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); },
     launchOptions: function () { return call('/profiles/launch-options'); },
     validateLaunch: function (launch) { return call('/profiles/launch-settings/validate', 'POST', { launch: launch || {} }); },
+    /** Close every browser Browser Profiles opened, except those a workflow uses (server decides). */
+    turnOff: function () { return call('/profiles/turn-off', 'POST', {}); },
     restore: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/restore', 'POST', { workflowId: workflowId || undefined }); },
     branches: function () { return call('/profiles/branches'); },
     createIn: function (name, branchId, workflowId) { return call('/profiles', 'POST', { name: name, branchId: branchId || 'new', workflowId: workflowId || undefined }); },
@@ -459,14 +464,18 @@
 
     var root = document.createElement('section');
     root.className = 'pm-panel';
-    root.setAttribute('aria-label', t('pm.title', 'Browser profiles'));
+    root.setAttribute('aria-label', t('pm.title', 'Browser Profiles'));
 
     var head = document.createElement('div');
     head.className = 'pm-head';
     var title = document.createElement('span');
     title.className = 'pm-title';
-    title.textContent = t('pm.title', 'Browser profiles');
+    title.textContent = t('pm.title', 'Browser Profiles');
     head.appendChild(title);
+    // How many browsers this panel's profiles have open right now.
+    var openCount = document.createElement('span');
+    openCount.className = 'pm-open-count';
+    head.appendChild(openCount);
     var grow = document.createElement('span');
     grow.className = 'wfm-grow';
     head.appendChild(grow);
@@ -476,6 +485,29 @@
     newBtn.textContent = t('pm.new', 'New profile');
     head.appendChild(newBtn);
     root.appendChild(head);
+
+    // Turn on / Turn off (the former separate browser switch, merged here).
+    //   Turn on : opens the selected profiles; with nothing selected, the
+    //             default profile. Same path as Open (openProfiles).
+    //   Turn off: POST /profiles/turn-off. The server closes every browser
+    //             this panel opened that no workflow uses; the ones a workflow
+    //             uses stay open and are listed below with the workflow.
+    var power = document.createElement('div');
+    power.className = 'pm-power';
+    var onBtn = document.createElement('button');
+    onBtn.type = 'button';
+    onBtn.className = 'btn btn-sm btn-primary pm-turn-on';
+    power.appendChild(onBtn);
+    var offBtn = document.createElement('button');
+    offBtn.type = 'button';
+    offBtn.className = 'btn btn-sm btn-ghost pm-turn-off';
+    power.appendChild(offBtn);
+    root.appendChild(power);
+    var offResult = document.createElement('ul');
+    offResult.className = 'pm-off-result';
+    offResult.setAttribute('aria-live', 'polite');
+    offResult.hidden = true;
+    root.appendChild(offResult);
 
     var form = document.createElement('form');
     form.className = 'pm-form';
@@ -508,6 +540,10 @@
     form.appendChild(cancel);
     root.appendChild(form);
 
+    var listLabel = document.createElement('div');
+    listLabel.className = 'pm-list-label';
+    listLabel.textContent = t('pm.branches', 'Branches');
+    root.appendChild(listLabel);
     var list = document.createElement('ul');
     list.className = 'pm-list';
     list.setAttribute('role', 'listbox');
@@ -582,6 +618,8 @@
       input.value = initial || '';
       ok.textContent = mode.kind === 'create' ? t('pm.create', 'Create') : t('pm.rename', 'Rename');
       try { input.focus(); input.select(); } catch (e) { /* jsdom */ }
+      // The panel scrolls inside the drawer: bring the name field into view.
+      try { if (form.scrollIntoView) form.scrollIntoView({ block: 'nearest' }); } catch (e) { /* jsdom */ }
     }
     function hideForm() { formMode = null; form.hidden = true; input.value = ''; }
 
@@ -607,7 +645,8 @@
           bh.setAttribute('data-branch', p.branchId);
           var bl = document.createElement('span');
           bl.className = 'pm-branch-label';
-          bl.textContent = t('pm.branch', 'Branch') + ': ' + (p.branchLabel && p.branchLabel !== p.branchId ? p.branchLabel + ' (' + p.branchId + ')' : p.branchId);
+          // Under the "Branches" label: the branch's own name, no prefix.
+          bl.textContent = p.branchLabel && p.branchLabel !== p.branchId ? p.branchLabel + ' (' + p.branchId + ')' : p.branchId;
           bh.appendChild(bl);
           var binfo = (st.branches || []).filter(function (b) { return b.id === p.branchId; })[0];
           if (binfo && !binfo.builtIn) {
@@ -712,6 +751,17 @@
       restoreBtn.disabled = busy || !anyRestorable;
       releaseBtn.disabled = busy || !anyMine;
       newBtn.disabled = busy;
+      var nOpen = st.profiles.filter(function (p) { return p.browser && p.browser.open; }).length;
+      openCount.textContent = nOpen ? nOpen + ' ' + t('pm.openNow', 'open') : '';
+      onBtn.disabled = busy || (!ids.length && !byId(DEFAULT_ID));
+      onBtn.textContent = st.busy === 'open' ? t('pm.opening', 'Opening\u2026')
+        : ids.length ? t('pm.turnOn', 'Turn on') + ' (' + ids.length + ')'
+        : t('pm.turnOn', 'Turn on');
+      onBtn.title = ids.length ? t('pm.turnOnSel', 'Open the selected profiles')
+        : t('pm.turnOnDefault', 'Nothing selected: opens the default profile');
+      offBtn.disabled = busy || !nOpen;
+      offBtn.textContent = st.busy === 'off' ? t('pm.turningOff', 'Turning off\u2026') : t('pm.turnOff', 'Turn off');
+      offBtn.title = t('pm.turnOffHint', 'Close every browser opened here. A browser a workflow uses stays open.');
     }
 
     function byId(id) {
@@ -803,6 +853,55 @@
         if (!results.some(function (r) { return r.ok; }) && fresh) { try { tab.close(); } catch (x) { /* fine */ } }
         if (results.some(function (r) { return r.ok; })) startHoldRefresh();
         return refresh().then(function () { return results; });
+      });
+    }
+
+    /** Turn on: the selected profiles, or the default profile when nothing is selected. Same path as Open. */
+    function turnOn() {
+      var ids = selectedIds();
+      if (!ids.length) ids = byId(DEFAULT_ID) ? [DEFAULT_ID] : [];
+      return openProfiles(ids);
+    }
+
+    /** One line of the Turn off result. */
+    function offLine(text, cls) {
+      var li = document.createElement('li');
+      li.className = 'pm-off-line ' + cls;
+      li.textContent = text;
+      offResult.appendChild(li);
+    }
+
+    /**
+     * Turn off: the server closes what nobody else uses and says what stayed
+     * open and why. The result stays on screen (not only a toast) so the
+     * workflow that keeps a browser open can be read.
+     */
+    function turnOff() {
+      if (st.busy) return Promise.resolve(null);
+      st.busy = 'off';
+      paintActions();
+      var deadline = new Promise(function (res, rej) {
+        setTimeout(function () { rej(new Error(t('pm.turnOffSlow', 'Turning off is taking too long; showing the current state.'))); }, 30000);
+      });
+      return Promise.race([api.turnOff(), deadline]).then(function (r) {
+        st.busy = '';
+        offResult.innerHTML = '';
+        (r.closed || []).forEach(function (x) { offLine('\u2713 ' + t('pm.offClosed', 'Closed') + ': \u201c' + x.name + '\u201d', 'is-closed'); });
+        (r.keptOpen || []).forEach(function (x) {
+          var w = (x.workflows || []).map(function (y) { return '\u201c' + y.name + '\u201d'; }).join(', ');
+          offLine('\u25cf ' + t('pm.offKept', 'Still open') + ': \u201c' + x.name + '\u201d \u2014 ' + t('pm.offUsedBy', 'used by workflow') + ' ' + w, 'is-kept');
+        });
+        (r.failed || []).forEach(function (x) { offLine('\u2716 ' + t('pm.offFailed', 'Could not close') + ': \u201c' + x.name + '\u201d (' + x.error + ')', 'is-failed'); });
+        if (!offResult.children.length) offLine(t('pm.offNothing', 'No browser was open.'), 'is-none');
+        offResult.hidden = false;
+        say(t('pm.offDone', 'Turned off') + ': ' + (r.closed || []).length + ' ' + t('pm.offClosedN', 'closed') +
+          ((r.keptOpen || []).length ? ', ' + r.keptOpen.length + ' ' + t('pm.offKeptN', 'still open (used by a workflow)') : ''), !!(r.failed || []).length);
+        return refresh().then(function () { return r; });
+      }, function (e) {
+        st.busy = '';
+        paintActions();
+        say(e.message || t('pm.offError', 'Could not turn off.'), true);
+        return refresh().then(function () { return null; });
       });
     }
 
@@ -1053,6 +1152,8 @@
       else void renameProfile(formMode.id, name);
     });
     openBtn.addEventListener('click', function () { void openProfiles(selectedIds()); });
+    onBtn.addEventListener('click', function () { void turnOn(); });
+    offBtn.addEventListener('click', function () { void turnOff(); });
     closeBtn.addEventListener('click', function () {
       void each(function (id) { return api.close(id, o.workflowId); }, selectedIds().filter(function (id) { var p = byId(id); return p && p.browser && p.browser.open; }));
     });
@@ -1074,6 +1175,8 @@
       el: root,
       refresh: refresh,
       openProfiles: openProfiles,
+      turnOn: turnOn,
+      turnOff: turnOff,
       createProfile: createProfile,
       startDeleteBranch: startDeleteBranch,
       destroy: function () {

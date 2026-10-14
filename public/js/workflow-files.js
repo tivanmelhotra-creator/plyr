@@ -65,25 +65,18 @@
    is answered), and the row menu's Edit opens it instead. Binary files never
    reach it.
 
-   A LOCAL BROWSER SWITCH
-   ----------------------
-   In the workflow editor's drawer (browseOnly) one button shows whether the
-   Local Browser is up and turns it on or off: off by default, "Turn on" starts
-   it and shows it in a new tab (the same remote view the element picker opens,
-   but without the picker's "Connect this browser to a field?" alert), "Turn
-   off" closes it. The state is read from GET /browser/real/health, never
-   remembered. While it is running a second button, "Show browser", sits next
-   to "Turn off": it opens the remote view in a new tab again, for when the tab
-   was closed on the operator's own machine while the browser itself stayed up.
-   See browserRow(), toggleBrowser() and showBrowser().
-
    BROWSER PROFILES
    ----------------
-   Under the switch, the same drawer mounts the ONE profile panel
-   (js/profile-manager.js -> /profiles): pick one or several profiles, create
-   one (its browser is then opened automatically), rename, delete, open /
-   close their browsers, and see why a profile reserved by another workflow is
-   not available. No second profile system and no separate page.
+   In the workflow editor's drawer (browseOnly) the ONE browser section is
+   mounted (js/profile-manager.js -> /profiles): Turn on (the selected
+   profiles, or the default profile) / Turn off (every browser opened here
+   that no workflow uses; the others are named with their workflow), the
+   Branches list, pick one or several profiles, create one (its browser is
+   then opened automatically), rename, delete, open / close their browsers,
+   and see why a profile reserved by another workflow is not available.
+   There is no separate browser switch any more: it was merged into this
+   section. The server routes it used (/browser/real/*, /browser/close,
+   /browser/sessions) are unchanged; other callers still use them.
 
    CSP-safe: no inline handlers, no eval, textContent for every name.
    ============================================ */
@@ -290,7 +283,6 @@
     if (!panel) return;
     var s = state;
     closeMenu();
-    stopBrowserWatch(s);
     if (s && s.profiles) { try { s.profiles.destroy(); } catch (e) { /* fine */ } }
     if (panel.parentNode) panel.parentNode.removeChild(panel);
     panel = null;
@@ -1634,247 +1626,6 @@
       });
   }
 
-  // ── The Local Browser switch (the workflow editor's drawer only) ────────
-  //
-  // ONE button in the drawer that says whether the Local Browser is up, and
-  // turns it on or off. Default is OFF: nothing is started until it is pressed.
-  //
-  //   off -> [Turn on]   starts the Local Browser and shows it in a NEW tab, the
-  //                      same remote view the element picker opens, but WITHOUT
-  //                      the picker's "Connect this browser to a field?" alert:
-  //                      that alert belongs to a pending field request, and this
-  //                      path never makes one (it calls openRealBrowser(), not
-  //                      requestPick()).
-  //   on  -> [Show browser] [Turn off]
-  //                      [Turn off] closes the browser (POST /browser/real/close,
-  //                      the same close the picker uses).
-  //                      [Show browser] brings the remote view back in a NEW tab
-  //                      WITHOUT touching the browser: the operator may have
-  //                      closed only the tab that displayed it (on their own
-  //                      machine) while the Local Browser stayed up, and Turn off
-  //                      would be the wrong way to get it back. It goes through
-  //                      the same openRealBrowser(), which reuses the running
-  //                      Chrome and only opens a viewer; if the browser died in
-  //                      the meantime it simply starts it, and the next health
-  //                      read says so. Only drawn while the server says running.
-  //
-  // The state is READ from the server (GET /browser/real/health -> `running`),
-  // never remembered here, so a browser started or stopped elsewhere is shown as
-  // it is. It is read on open, after every press, and every few seconds while
-  // the drawer is up. Turning off uses /browser/real/close and NOT /browser/stop:
-  // Stop also switches self-healing off, and a later "Turn on" would then be
-  // refused.
-  //
-  // Only offered where the page can open the viewer (BrowserView, from
-  // browser-view.js): a switch that cannot do its job is worse than none.
-
-  var BROWSER_POLL_MS = 6000;
-
-  function canOpenBrowser() {
-    return !!(window.BrowserView && typeof window.BrowserView.openRealBrowser === 'function');
-  }
-
-  /** The switch's row, appended to the drawer; null when the page cannot open the viewer. */
-  function browserRow(into) {
-    if (!canOpenBrowser()) return null;
-    var el = document.createElement('div');
-    el.className = 'wfm-browser is-off';
-    var dot = document.createElement('span');
-    dot.className = 'wfm-br-dot';
-    dot.setAttribute('aria-hidden', 'true');
-    el.appendChild(dot);
-    var label = document.createElement('span');
-    label.className = 'wfm-br-label';
-    el.appendChild(label);
-    var grow = document.createElement('span');
-    grow.className = 'wfm-grow';
-    el.appendChild(grow);
-    // "Show browser": only while the browser is running (paintBrowser decides),
-    // and a DIFFERENT class from the on/off button so the two can never be
-    // mistaken for each other.
-    var show = document.createElement('button');
-    show.type = 'button';
-    show.className = 'btn btn-sm btn-ghost wfm-br-show';
-    show.hidden = true;
-    show.addEventListener('click', function (ev) {
-      ev.stopPropagation();
-      // Synchronously: showBrowser() calls window.open() inside this click.
-      void showBrowser();
-    });
-    el.appendChild(show);
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn-sm wfm-br-btn';
-    btn.addEventListener('click', function (ev) {
-      ev.stopPropagation();
-      void toggleBrowser();
-    });
-    el.appendChild(btn);
-    into.appendChild(el);
-    return { el: el, label: label, show: show, btn: btn };
-  }
-
-  /** Draw the row from state.browser = { running, busy: '' | 'start' | 'stop' }. */
-  function paintBrowser() {
-    if (!state || !state.browser || !state.els.browser) return;
-    var b = state.browser;
-    var ui = state.els.browser;
-    ui.el.classList.toggle('is-on', b.running);
-    ui.el.classList.toggle('is-off', !b.running);
-    ui.el.classList.toggle('is-busy', !!b.busy);
-    ui.label.textContent = t('wfm.browserLabel', 'Local Browser') + ' \u00b7 ' +
-      (b.running ? t('wfm.browserOn', 'Running') : t('wfm.browserOff', 'Off')) +
-      (b.others ? ' \u00b7 ' + t('wfm.browserProfilesOpen', 'profile browsers open') + ': ' + b.others : '');
-    // "Show browser" exists while ANY visible browser is on the shared desktop
-    // (Local Browser or a profile browser): it only attaches the viewer.
-    ui.show.hidden = !(b.running || b.others);
-    ui.show.disabled = !!b.busy || !!b.showing;
-    ui.show.textContent = b.showing
-      ? t('wfm.browserShowing', 'Opening\u2026')
-      : t('wfm.browserShow', 'Show browser');
-    ui.btn.disabled = !!b.busy || !!b.showing;
-    ui.btn.classList.toggle('btn-primary', !b.running);
-    ui.btn.classList.toggle('btn-ghost', b.running);
-    ui.btn.textContent = b.busy === 'start' ? t('wfm.browserStarting', 'Starting\u2026')
-      : b.busy === 'stop' ? t('wfm.browserStopping', 'Stopping\u2026')
-      : b.running ? t('wfm.browserStop', 'Turn off')
-      : t('wfm.browserStart', 'Turn on');
-  }
-
-  /** Ask the server whether the Local Browser is up, and repaint. Never rejects. */
-  function readBrowser() {
-    if (!state || !state.browser) return Promise.resolve();
-    var s = state;
-    // The ONE session registry (GET /browser/sessions): the Local Browser and
-    // every profile browser. `running` is the Local Browser itself; `others`
-    // are the profile browsers on the same desktop (Show browser can reach
-    // them through the same shared viewer, Turn off does not close them).
-    return call('/browser/sessions')
-      .then(function (d) {
-        // A press in flight owns the display until it finishes.
-        if (state !== s || s.browser.busy) return;
-        var list = (d && d.sessions) || [];
-        s.browser.running = !!(d && d.localBrowser && d.localBrowser.running);
-        s.browser.others = list.filter(function (x) { return x.kind === 'profile' && x.visibility !== 'hidden'; }).length;
-        paintBrowser();
-      })
-      .catch(function () { /* a status we cannot read changes nothing on screen */ });
-  }
-
-  function startBrowserWatch() {
-    if (!state || !state.els.browser) return;
-    var s = state;
-    s.browser = { running: false, busy: '', showing: false };
-    paintBrowser();
-    void readBrowser();
-    s.browserTimer = setInterval(function () {
-      if (state !== s) { stopBrowserWatch(s); return; }
-      void readBrowser();
-    }, BROWSER_POLL_MS);
-  }
-
-  function stopBrowserWatch(s) {
-    if (s && s.browserTimer) {
-      try { clearInterval(s.browserTimer); } catch (e) { /* fine */ }
-      s.browserTimer = 0;
-    }
-  }
-
-  /**
-   * The press. ON opens the viewer tab in THIS click (a popup opened after an
-   * await would be blocked), through the same openRealBrowser() the picker
-   * uses, so the cold-start retries, the workflow binding and the viewer URL
-   * are exactly the ones that already work. OFF is one POST.
-   */
-  function toggleBrowser() {
-    if (!state || !state.browser || state.browser.busy || state.browser.showing) return Promise.resolve();
-    var s = state;
-    var b = s.browser;
-    var wasRunning = b.running;
-
-    function done(ok, err) {
-      if (state !== s) return null;
-      b.busy = '';
-      if (ok) b.running = !wasRunning;
-      paintBrowser();
-      if (!ok) say((err && err.message) || t('wfm.browserFailed', 'Could not change the Local Browser.'), true);
-      // Whatever the press said, the server has the last word.
-      return readBrowser();
-    }
-
-    b.busy = wasRunning ? 'stop' : 'start';
-    paintBrowser();
-
-    if (wasRunning) {
-      // Bounded on the client too: whatever the server does, the button never
-      // stays on "Stopping…" — the server state is re-read in done().
-      var closing = call('/browser/real/close', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}'
-      });
-      var deadline = new Promise(function (res, rej) {
-        setTimeout(function () { rej(new Error(t('wfm.browserStopSlow', 'Turning off is taking too long; showing the current state.'))); }, 25000);
-      });
-      return Promise.race([closing, deadline]).then(function (d) {
-        var left = (d && d.otherSessions) || [];
-        var r = done(true);
-        if (left.length) say(t('wfm.browserProfilesKept', 'Local Browser turned off. Profile browsers stay open (close them in Browser profiles)') + ': ' + left.map(function (x) { return x.name; }).join(', '), false);
-        return r;
-      }, function (e) { return done(false, e); });
-    }
-
-    var started;
-    try {
-      // The SAME shared viewer tab as Browser Profiles (named window): Turn on
-      // never adds a second viewer next to one already showing the desktop.
-      var V = window.ProfileManager && window.ProfileManager.viewer;
-      var target = V ? V.claim() : null;
-      started = window.BrowserView.openRealBrowser('', target, { workflowId: s.workflowId });
-    } catch (e) {
-      started = Promise.reject(e);
-    }
-    return Promise.resolve(started).then(function () { return done(true); }, function (e) { return done(false, e); });
-  }
-
-  /**
-   * "Show browser": put the remote view of the RUNNING Local Browser back on
-   * screen in a new tab. Nothing is started or stopped by the operator's
-   * intent: this is for the tab that displayed the browser having been closed
-   * while the browser itself stayed up.
-   *
-   * Like Turn on it opens the tab in THIS click (a popup opened after an await
-   * would be blocked) through openRealBrowser(), which reuses the running
-   * Chrome. `showing` is its own flag, not `busy`: busy means the browser is
-   * changing state, and a show never changes it.
-   */
-  function showBrowser() {
-    if (!state || !state.browser || state.browser.busy || state.browser.showing) return Promise.resolve();
-    var s = state;
-    var b = s.browser;
-    var V = window.ProfileManager && window.ProfileManager.viewer;
-    if (!V) {
-      // Without the shared viewer helper, the old path (reuses a running Chrome).
-      b.showing = true; paintBrowser();
-      var shown;
-      try { shown = window.BrowserView.openRealBrowser('', null, { workflowId: s.workflowId }); } catch (e) { shown = Promise.reject(e); }
-      return Promise.resolve(shown).then(function () { b.showing = false; paintBrowser(); return readBrowser(); },
-        function (e) { b.showing = false; paintBrowser(); say((e && e.message) || t('wfm.browserShowFailed', 'Could not show the Local Browser.'), true); return readBrowser(); });
-    }
-    // ATTACH ONLY: the ONE shared viewer tab is reused (named window) or
-    // opened, pointed at the desktop with attach=1 — no browser is started,
-    // restarted or duplicated. Synchronous: we are inside the click.
-    var key = (window.API && window.API.getKey) ? (window.API.getKey() || '') : '';
-    var href = '/desktop/chrome?attach=1&api_key=' + encodeURIComponent(key) +
-      (s.workflowId ? '&workflowId=' + encodeURIComponent(s.workflowId) : '');
-    var tab = V.claim();
-    var fresh = V.isBlank(tab);
-    // A viewer already on screen keeps its own URL (it already shows the desktop).
-    if (fresh || !tab) V.show(tab, href);
-    else { try { tab.focus(); } catch (e) { /* fine */ } }
-    return readBrowser();
-  }
-
   /** Start the operator's own native picker, targeting `into`. */
   function askForUpload(into) {
     if (!state) return;
@@ -2199,12 +1950,11 @@
     head.appendChild(x);
     root.appendChild(head);
 
-    // ── Local Browser switch: the workflow editor's drawer only. browserRow()
-    // returns null on a page that cannot open the viewer, so no dead button.
-    var browserEls = (opts && opts.browseOnly) ? browserRow(root) : null;
-    // ── Browser profiles (the ONE profile system, js/profile-manager.js):
-    // list, multi-select, create (then open), rename, delete, open / close /
-    // release, and the access state of each profile. Same drawer only.
+    // ── Browser Profiles (the ONE browser section, js/profile-manager.js):
+    // Turn on / Turn off, Branches, multi-select, create (then open), rename,
+    // delete, open / close / release, and the access state of each profile.
+    // The workflow editor's drawer only. (The former separate browser switch
+    // above it was merged into this section.)
     var profilesHost = null;
     if (opts && opts.browseOnly && window.ProfileManager) {
       profilesHost = document.createElement('div');
@@ -2434,7 +2184,6 @@
       down: down, del: del,
       editor: editor, edName: edNameEl, edText: edTextEl, edGutter: edGutterEl,
       edSave: edSaveBtn, edStatus: edStatusEl, edMeta: edMetaEl,
-      browser: browserEls,
       profilesHost: profilesHost
     };
   }
@@ -2511,7 +2260,6 @@
     els.foot.classList.toggle('is-multi', !!state.multiple);
     render();
     void expand('');
-    startBrowserWatch();
     if (els.profilesHost && window.ProfileManager) {
       state.profiles = window.ProfileManager.mount(els.profilesHost, {
         workflowId: workflowId,
