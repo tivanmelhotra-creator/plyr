@@ -34,7 +34,7 @@ export function buildCompatible(existing: string | undefined | null, want: strin
   if (existing === want) return true;
   const e = split(existing); const w = split(want);
   if (e.headless !== w.headless) return false;
-  if (w.options === '' && w.launch === '') return true; // the run asks for nothing specific
+  if (w.options === '' && w.launch === '' && e.options === '') return true; // the run asks for nothing specific and the browser has no run-specific options
   return e.options === w.options && e.launch === w.launch;
 }
 
