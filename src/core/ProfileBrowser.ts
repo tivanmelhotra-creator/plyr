@@ -39,7 +39,7 @@ import { seedInspectorExtension } from './InspectorExtension';
 import { Desktop } from './Desktop';
 import { buildLaunchArgs } from './LaunchSettings';
 import { buildKey, getBuild, setBuild, forgetBuild } from './ProfileBuild';
-import { applyChromiumProfileName } from './ChromiumProfileName';
+import { applyChromiumProfileName, applyChromiumProfileLook } from './ChromiumProfileName';
 import { resolveChromiumProfile, withProfileSelection, verifyProfileSelected } from './ChromiumProfileLocation';
 import { closeContextBounded } from './SharedBrowsers';
 
@@ -181,6 +181,11 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
       if (input.displayName) {
         const named = await applyChromiumProfileName(loc.userDataRoot, input.displayName, loc.profileDirectory);
         if (!named.ok) console.warn(`[PROFILES] Chromium display name not set for ${input.leaseId}: ${named.skipped || 'unknown'}`);
+      }
+      // A registry profile (explicit folder) gets its own icon + color.
+      if (input.profileDirectory) {
+        const look = await applyChromiumProfileLook(loc.userDataRoot, loc.profileDirectory);
+        if (!look.ok) console.warn(`[PROFILES] Chromium profile look not set for ${input.leaseId}: ${look.skipped || 'unknown'}`);
       }
       const ctx = await launcher(loc.userDataRoot, withProfileSelection([...(await projectExtensionArgs()), ...launch.args], loc));
       if (!(await verifyProfileSelected(loc))) console.warn(`[PROFILES] ${input.leaseId}: expected Chromium profile path ${loc.profilePath} was not created`);

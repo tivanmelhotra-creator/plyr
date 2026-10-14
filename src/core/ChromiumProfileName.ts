@@ -88,3 +88,59 @@ export async function applyChromiumProfileName(userDataDir: string, name: string
     return { ok: false, changed: false, skipped: (e as Error).message.split('\n')[0] };
   }
 }
+
+/**
+ * A distinct look per profile (owner's brief, section 1: "the color and icon
+ * of profiles are not verified"). Before, every new profile got Chromium's
+ * same default avatar (IDR_PROFILE_AVATAR_26) and the same highlight color
+ * (MEASURED, Chromium 1194), so two profiles of one branch looked identical.
+ *
+ * Deterministic from the profile folder number (profile-001 -> slot 0 ...),
+ * so the same profile always has the same look; the panel shows the same color.
+ * Written like the name: merge, atomic, only while no browser runs, never on
+ * an unreadable file; a look the user picked in Chromium itself is kept.
+ */
+export const PROFILE_COLORS: readonly string[] = ['#1a73e8', '#d93025', '#188038', '#f29900', '#9334e6', '#e52592', '#12b5cb', '#e8710a'];
+const AVATARS = [27, 28, 29, 30, 31, 32, 33, 34];
+
+/** Pure: the look of a profile folder. */
+export function profileLookOf(folder: string): { color: string; argb: number; avatarIndex: number } {
+  const m = /(\d+)$/.exec(folder || '');
+  const slot = m ? (Number(m[1]) - 1 + PROFILE_COLORS.length * 1000) % PROFILE_COLORS.length : 0;
+  const hex = PROFILE_COLORS[slot]!;
+  const rgb = parseInt(hex.slice(1), 16);
+  // Chromium stores SkColor as a signed 32-bit ARGB int.
+  const argb = ((0xff000000 | rgb) >> 0);
+  return { color: hex, argb, avatarIndex: AVATARS[slot]! };
+}
+
+export async function applyChromiumProfileLook(userDataDir: string, dir: string):
+  Promise<{ ok: boolean; changed: boolean; skipped?: string }> {
+  try {
+    const look = profileLookOf(dir);
+    const lsFile = path.join(userDataDir, 'Local State');
+    const prFile = path.join(userDataDir, dir, 'Preferences');
+    const [ls, pr] = await Promise.all([readJson(lsFile), readJson(prFile)]);
+    if (ls.corrupt || pr.corrupt) return { ok: false, changed: false, skipped: 'Chromium profile files are unreadable; left untouched' };
+    const cache = ls.data?.profile?.info_cache?.[dir];
+    // The user chose an avatar in Chromium itself: keep it.
+    if (cache && cache.is_using_default_avatar === false && pr.data?.profile?.avatar_index !== undefined && pr.data?.plyr_look !== look.avatarIndex) {
+      return { ok: true, changed: false, skipped: 'look chosen in Chromium kept' };
+    }
+    if (pr.data?.plyr_look === look.avatarIndex && cache?.avatar_icon === `chrome://theme/IDR_PROFILE_AVATAR_${look.avatarIndex}`) return { ok: true, changed: false };
+    const st: Json = ls.data ? { ...ls.data } : {};
+    const profile: Json = { ...(st.profile || {}) };
+    const ic: Json = { ...(profile.info_cache || {}) };
+    ic[dir] = { ...(ic[dir] || {}), avatar_icon: `chrome://theme/IDR_PROFILE_AVATAR_${look.avatarIndex}`, is_using_default_avatar: false };
+    profile.info_cache = ic; st.profile = profile;
+    const p: Json = pr.data ? { ...pr.data } : {};
+    p.profile = { ...(p.profile || {}), avatar_index: look.avatarIndex, using_default_avatar: false };
+    p.browser = { ...(p.browser || {}), theme: { ...((p.browser || {}).theme || {}), user_color: look.argb } };
+    p.plyr_look = look.avatarIndex;
+    await writeJson(lsFile, st);
+    await writeJson(prFile, p);
+    return { ok: true, changed: true };
+  } catch (e) {
+    return { ok: false, changed: false, skipped: (e as Error).message.split('\n')[0] };
+  }
+}

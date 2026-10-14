@@ -10,6 +10,7 @@
  * Every surface (Workflow Files drawer, Workflow Settings, the worker's log)
  * asks HERE, so a profile never looks free in one place and busy in another.
  */
+import { profileLookOf } from './ChromiumProfileName';
 import { DEFAULT_PROFILE_ID, ProfileRegistry, type ProfileEntry } from './ProfileRegistry';
 import {
   leaseIdOf, type DenyReason, type HoldRecord, type LeaseRecord, type ProfileLeases, type ReservationLike,
@@ -140,6 +141,8 @@ export class ProfileAccess {
       builtIn: p.builtIn,
       branchId: p.branchId,
       branchLabel: p.branchLabel,
+      // The same color Chromium shows for this profile (core/ChromiumProfileName).
+      color: p.kind === 'local-browser' || p.builtIn ? null : profileLookOf(p.folder).color,
       branchBusyWith: busyWith ? { id: busyWith.id, name: busyWith.name } : null,
       status: deriveStatus({ problem: p.problem, lastOpenError: p.lastOpenError, lease, hold, activeReservation: active, session }),
       available: adm.ok && !p.problem,

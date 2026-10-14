@@ -642,6 +642,8 @@
         var dot = document.createElement('span');
         dot.className = 'pm-dot' + (p.browser && p.browser.open ? ' is-open' : '');
         dot.setAttribute('aria-hidden', 'true');
+        // The profile's own color: the same one Chromium shows in its window.
+        if (p.color && /^#[0-9a-f]{6}$/i.test(p.color)) dot.style.setProperty('--pm-profile-color', p.color);
         li.appendChild(dot);
         var txt = document.createElement('span');
         txt.className = 'pm-text';
