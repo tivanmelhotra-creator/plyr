@@ -1,15 +1,19 @@
 /**
  * BrowserLifecycle — what happens to a run's browser when the run ends.
  *
- * Workflow Settings → "After the run": `keep` (default, the existing
- * behaviour: the profile browser stays up for inspection and for the next run
- * on the same profile; the idle collector closes it later) or `close`.
+ * Workflow setting "Keep browser open after completion" (`afterRun`):
+ * `close` is the DEFAULT (owner's decision, phase 1), `keep` keeps it.
  *
- *   outcome   policy=keep   policy=close
- *   success   keep          close, if safe
- *   error     keep          keep (the failure can be inspected; idle closes it)
- *   timeout   keep          keep (same reason)
- *   cancelled keep          close, if safe (the operator asked to stop)
+ *   outcome   afterRun=close (default)   afterRun=keep
+ *   success   close, if safe             keep
+ *   cancelled close, if safe             keep
+ *   error     close, if safe             close, if safe
+ *   timeout   close, if safe             close, if safe
+ *
+ * Error / timeout: the run's status and the state needed for diagnosis
+ * (tabs + storage, core/BrowserStateSnapshot) are recorded first by the
+ * worker, then the browser is closed, so no orphan process is left. "Keep"
+ * is honoured only after success / cancel.
  *
  * "If safe" = no dependent other than this run (core/BrowserSessions), and
  * the browser is the run's own (never local mode / Real Chrome). Closing
@@ -22,7 +26,7 @@ export type AfterRunPolicy = 'keep' | 'close';
 export type RunOutcome = 'success' | 'error' | 'timeout' | 'cancelled';
 
 export function afterRunPolicyOf(v: unknown): AfterRunPolicy {
-  return v === 'close' ? 'close' : 'keep';
+  return v === 'keep' ? 'keep' : 'close';
 }
 
 export interface AfterRunInput {
@@ -37,14 +41,14 @@ export interface AfterRunInput {
 
 export type AfterRunDecision =
   | { action: 'close' }
-  | { action: 'keep'; why: 'policy' | 'inspect' | 'shared' | 'in_use' | 'not_open' };
+  | { action: 'keep'; why: 'policy' | 'shared' | 'in_use' | 'not_open' };
 
 export function decideAfterRun(i: AfterRunInput): AfterRunDecision {
   if (!i.sessionOpen) return { action: 'keep', why: 'not_open' };
   if (!i.ownBrowser) return { action: 'keep', why: 'shared' };
-  if (i.policy === 'keep') return { action: 'keep', why: 'policy' };
-  if (i.outcome === 'error' || i.outcome === 'timeout') return { action: 'keep', why: 'inspect' };
   if (i.otherDependents.length) return { action: 'keep', why: 'in_use' };
+  const failed = i.outcome === 'error' || i.outcome === 'timeout';
+  if (i.policy === 'keep' && !failed) return { action: 'keep', why: 'policy' };
   return { action: 'close' };
 }
 

@@ -38,6 +38,11 @@ import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 import { scheduleIdsByKey } from '../core/ProfileCoordinator';
+import { profileAccess } from '../core/ProfileAccess';
+import { profileProblems } from '../core/BranchPolicy';
+import { profileFailureReports } from '../core/ProfileFailureReports';
+import { launchProfilesOf, runProfileIdOf } from '../core/NodeProfile';
+import { leaseIdOf } from '../core/ProfileLease';
 import type { JobWorkspace } from '../core/WorkflowOutputs';
 
 /**
@@ -70,6 +75,9 @@ interface UserRoutesDeps {
     syncReservations: () => Promise<unknown>;
     /** Repeats without a job carrying their data: their profile is unknown (nothing reserved). */
     unresolvedSchedules?: () => Promise<Array<{ key: string }>>;
+    /** Windows of OTHER workflows' schedules a new cron would overlap on the same branch lock. */
+    projectedConflicts?: (input: { owner: string; leaseId: string; cron: string; tz?: string | null }) =>
+      Promise<Array<{ mine: { start: number; end: number }; other: { owner: string; ownerName?: string; start: number; end: number } }>>;
   };
 }
 
@@ -144,6 +152,25 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
     void profileCoordinator.syncReservations().catch((e: Error) => console.warn(`[PROFILES] reservation sync failed: ${e.message}`));
   };
   const workflowService = new WorkflowService(workflowStoreFor(connection));
+
+  /**
+   * Every profile a workflow's runs may use (workflow setting + Launch nodes),
+   * and those that cannot be used (record / branch / folder). Section 9:
+   * activation and schedule saving are refused while any is broken.
+   */
+  async function brokenProfilesOf(userId: string, steps: unknown, profileId: string | null | undefined, wf?: { id: string; name: string }, stage: 'activation' | 'schedule' = 'activation') {
+    const access = profileAccess();
+    if (!access) return [];
+    const ids = [...new Set([...(launchProfilesOf(steps)), runProfileIdOf(steps, profileId) || 'default'])];
+    const problems = await profileProblems(access.registry, userId, ids);
+    for (const p of problems) {
+      await profileFailureReports().record(userId, {
+        reason: p.reason, detail: p.detail, stage, workflowId: wf?.id ?? null, workflowName: wf?.name ?? null,
+        profileId: p.profileId, profileName: p.profileName ?? null, message: p.message,
+      });
+    }
+    return problems;
+  }
 
   /**
    * Whose workspace, and is it really theirs? Mirrors workflow-files.routes
@@ -486,6 +513,32 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         const design = WorkflowService.executableDesign(bound);
         scheduleSteps = design.steps;
         scheduleProfileId = design.profileId;
+        // Section 9: a schedule for a workflow with a missing profile is refused.
+        const broken = await brokenProfilesOf(userId, design.steps, design.profileId, { id: bound.id, name: bound.name }, 'schedule');
+        if (broken.length) {
+          return res.status(422).json({
+            success: false, code: 'profile_missing',
+            error: 'This workflow uses a browser profile that is missing or broken, so the schedule was not saved. Assign another profile first.',
+            details: broken.map((b) => `${b.message} (${b.detail})`), profiles: broken, action: 'assign_profile',
+          });
+        }
+        // Section 5: overlaps with OTHER workflows on the same BRANCH are shown
+        // BEFORE saving. The later run waits for the earlier one (one profile
+        // per branch); saving anyway needs { acceptOverlap: true }.
+        if (profileCoordinator?.projectedConflicts) {
+          const pid = runProfileIdOf(design.steps, design.profileId) || 'default';
+          const conflicts = await profileCoordinator.projectedConflicts({ owner: bound.id, leaseId: leaseIdOf(pid), cron: body.cron.trim() }).catch(() => []);
+          if (conflicts.length && req.body?.acceptOverlap !== true) {
+            const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16) + ' UTC';
+            const names = [...new Set(conflicts.map((c) => c.other.ownerName || c.other.owner))];
+            const first = conflicts[0]!;
+            return res.status(409).json({
+              success: false, code: 'schedule_overlap',
+              error: `This schedule overlaps "${names.join('", "')}" on the same browser branch (first at ${hhmm(first.mine.start)}–${hhmm(first.mine.end)}). Only one profile of a branch runs at a time: the later run will WAIT until the earlier one has finished. Save anyway to accept this, or choose another time or a profile in another branch.`,
+              conflicts: conflicts.slice(0, 20), behaviour: 'wait',
+            });
+          }
+        }
       }
       const scheduleName = body.name
         ? String(body.name).substring(0, 50).replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -1503,6 +1556,17 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           moduleExists: installedModuleExists,
         });
         if (issues.length) return refuse(issues.map(formatActivationIssue));
+        // Every referenced browser profile must exist with its branch and
+        // folder on disk; otherwise name each one and refuse.
+        const broken = await brokenProfilesOf(userId, current.steps, current.profileId, { id: current.id, name: current.name }, 'activation');
+        if (broken.length) {
+          return res.status(422).json({
+            success: false, code: 'profile_missing',
+            error: 'The workflow uses a browser profile that is missing or broken and cannot be activated. Assign another profile.',
+            details: broken.map((b) => `${b.message} (${b.detail})`),
+            profiles: broken, action: 'assign_profile', active: current.active,
+          });
+        }
         // Filled-in fields are not proof that the workflow works: a page may
         // never show the element, a site may refuse the request. Like n8n's
         // publish, the design must have passed a real run first - the last

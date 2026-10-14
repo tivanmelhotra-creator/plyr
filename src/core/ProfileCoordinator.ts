@@ -124,6 +124,13 @@ export class ProfileCoordinator {
     return needsLease(ref) ? ref.id : null;
   }
 
+  /** Workflow ids with at least one schedule (a scheduled workflow is always active). */
+  async scheduledWorkflowIds(): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const b of await this.bindings().catch(() => [])) if (b.owner && !b.owner.startsWith('schedule:') && !b.owner.startsWith('job:')) out.add(b.owner);
+    return out;
+  }
+
   /** Every repeatable schedule -> the profile its runs will lease. Inactive workflows reserve nothing. */
   async bindings(): Promise<ScheduleBinding[]> {
     return (await this.scan()).bindings;

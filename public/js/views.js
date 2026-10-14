@@ -2849,8 +2849,8 @@
           '<small>' + esc(t('wfs.profileChoose')) + ' ' + esc(t('wfs.profileHint')) + '</small></label>' +
         '<label class="wfs-field"><span>' + esc(t('wfs.afterRun')) + '</span>' +
           '<select id="wfs-afterrun">' +
-            '<option value="keep"' + (wf.afterRun === 'close' ? '' : ' selected') + '>' + esc(t('wfs.afterRunKeep')) + '</option>' +
-            '<option value="close"' + (wf.afterRun === 'close' ? ' selected' : '') + '>' + esc(t('wfs.afterRunClose')) + '</option>' +
+            '<option value="close"' + (wf.afterRun === 'keep' ? '' : ' selected') + '>' + esc(t('wfs.afterRunClose')) + '</option>' +
+            '<option value="keep"' + (wf.afterRun === 'keep' ? ' selected' : '') + '>' + esc(t('wfs.afterRunKeep')) + '</option>' +
           '</select><small>' + esc(t('wfs.afterRunHint')) + '</small></label>' +
         '<p class="wfs-note">' + esc(t('wfs.visibilityNote')) + '</p>' +
         '<div class="wfs-actions">' +

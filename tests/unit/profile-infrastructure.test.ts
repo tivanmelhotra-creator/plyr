@@ -151,18 +151,24 @@ describe('BrowserSessions: dependents decide every close', () => {
 
 describe('BrowserLifecycle: after the run', () => {
   const base = { ownBrowser: true, otherDependents: [] as string[], sessionOpen: true };
-  it('keep (default) keeps the browser after a successful run', () => {
-    expect(afterRunPolicyOf(undefined)).toBe('keep');
+  it('close is the default; keep is honoured after success', () => {
+    expect(afterRunPolicyOf(undefined)).toBe('close');
+    expect(afterRunPolicyOf('keep')).toBe('keep');
     expect(decideAfterRun({ ...base, policy: 'keep', outcome: 'success' })).toEqual({ action: 'keep', why: 'policy' });
+    expect(decideAfterRun({ ...base, policy: 'keep', outcome: 'cancelled' })).toEqual({ action: 'keep', why: 'policy' });
   });
   it('close closes after success / cancel, only when no one else depends on it', () => {
     expect(decideAfterRun({ ...base, policy: 'close', outcome: 'success' })).toEqual({ action: 'close' });
     expect(decideAfterRun({ ...base, policy: 'close', outcome: 'cancelled' })).toEqual({ action: 'close' });
     expect(decideAfterRun({ ...base, policy: 'close', outcome: 'success', otherDependents: ['operator:wf'] })).toEqual({ action: 'keep', why: 'in_use' });
   });
-  it('errors and timeouts keep the browser for inspection', () => {
-    expect(decideAfterRun({ ...base, policy: 'close', outcome: 'error' })).toEqual({ action: 'keep', why: 'inspect' });
-    expect(decideAfterRun({ ...base, policy: 'close', outcome: 'timeout' })).toEqual({ action: 'keep', why: 'inspect' });
+  it('errors and timeouts close the browser (state saved first by the worker); keep is ignored then', () => {
+    for (const policy of ['close', 'keep'] as const) {
+      expect(decideAfterRun({ ...base, policy, outcome: 'error' })).toEqual({ action: 'close' });
+      expect(decideAfterRun({ ...base, policy, outcome: 'timeout' })).toEqual({ action: 'close' });
+    }
+    // ...but never a browser somebody else depends on.
+    expect(decideAfterRun({ ...base, policy: 'keep', outcome: 'error', otherDependents: ['operator:wf'] })).toEqual({ action: 'keep', why: 'in_use' });
   });
   it("never closes a browser that is not the run's own (local mode, Real Chrome)", () => {
     expect(decideAfterRun({ ...base, ownBrowser: false, policy: 'close', outcome: 'success' })).toEqual({ action: 'keep', why: 'shared' });
