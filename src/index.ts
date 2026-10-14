@@ -8,7 +8,6 @@ import fsExtra from 'fs-extra';
 import path from 'path';
 import { BrowserWindowManager } from './core/BrowserWindowManager';
 import fs from 'fs/promises';
-import { glob } from 'glob';
 
 import { config } from './config';
 import { runPipeline } from './pipeline';
@@ -17,6 +16,7 @@ import { ProfileManager } from './core/ProfileManager';
 import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
 import { ProfileFailureReports, registerProfileFailureReports } from './core/ProfileFailureReports';
 import { preRunProfileCheck } from './core/BranchPolicy';
+import { reapOrphans, lockedRootsUnder } from './core/OrphanBrowsers';
 import { indexedProfile } from './core/ProfileIndex';
 import { runningProfileOf } from './core/BrowserSessions';
 import { ProfileRegistry } from './core/ProfileRegistry';
@@ -318,15 +318,18 @@ const hasOlderJobs = async (userId: string, currentJobId: string): Promise<boole
 // ============================================
 
 const cleanupSystem = async (): Promise<void> => {
-  console.log('[SYSTEM] Cleaning up stale locks...');
+  // Crash leftovers (core/OrphanBrowsers): Chromium processes on Aria's own
+  // data roots whose server died are stopped; a SingletonLock is removed only
+  // when no live browser holds that root. Browsers of a running server
+  // (this one or another) and personal Chrome are never touched.
+  console.log('[SYSTEM] Checking for leftover browsers and stale locks...');
   try {
-    const locks = await glob(path.join(config.PROFILES_DIR, '**/SingletonLock'));
-    for (const lock of locks) {
-      await fs.unlink(lock).catch(() => {});
-    }
-    if (locks.length > 0) {
-      console.log(`[SYSTEM] Cleaned ${locks.length} stale lock(s)`);
-    }
+    const areas = [config.PROFILES_DIR, config.BRANCH_BASE_DIR, config.REAL_CHROME_USER_DATA_DIR];
+    const roots = (await Promise.all(areas.map((a) => lockedRootsUnder(a)))).flat();
+    const r = await reapOrphans(areas, { roots });
+    if (r.skipped) console.warn(`[SYSTEM] ${r.skipped}`);
+    if (r.killed.length) console.log(`[SYSTEM] Stopped ${r.killed.length} leftover browser process(es) of a previous server run: ${r.killed.map((k) => `${k.pid} (${k.userDataDir})`).join(', ')}`);
+    if (r.unlocked.length) console.log(`[SYSTEM] Cleaned stale lock(s) in ${r.unlocked.length} profile root(s)`);
   } catch (e) {
     console.error('[SYSTEM] Cleanup error:', e);
   }
