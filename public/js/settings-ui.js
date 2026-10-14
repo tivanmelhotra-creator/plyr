@@ -156,9 +156,27 @@
       '</div>';
   }
 
+
+  function textControl(s) {
+    var envNote = s.envSet
+      ? (s.source === "env"
+          ? t("set.text.fromEnv") + " <code class=\"mono\">" + esc(s.envValue || s.active || s.value) + "</code>"
+          : t("set.text.overridesEnv") + " <code class=\"mono\">" + esc(s.envValue) + "</code>")
+      : t("set.text.notInEnv");
+    return "<div class=\"set-text-box\" data-key=\"" + esc(s.key) + "\">" +
+      "<form class=\"set-text\">" +
+        "<input class=\"set-input mono\" type=\"text\" dir=\"ltr\" value=\"" + esc(s.value) + "\" placeholder=\"" + esc(s.active || s.default || "") + "\" autocomplete=\"off\" spellcheck=\"false\" aria-label=\"" + esc(s.en) + "\">" +
+        "<button class=\"btn btn-primary btn-sm\" type=\"submit\">" + esc(t("set.save")) + "</button>" +
+        (s.source === "panel" ? "<button class=\"btn btn-ghost btn-sm\" type=\"button\" data-act=\"reset-text\">" + esc(t("set.clear")) + "</button>" : "") +
+      "</form>" +
+      "<p class=\"muted small set-addr-now\">" + esc(t("set.text.effective")) + " <code class=\"mono\">" + esc(s.active || s.value) + "</code> · " + envNote + "</p>" +
+      "</div>";
+  }
+
   function row(s, d) {
     var control = s.type === 'secret' ? secretControl(s)
       : s.key === 'PUBLIC_DOMAIN' ? addressControl(s)
+      : s.type === 'text' ? textControl(s)
       : choiceControl(s, d);
     return '<div class="set-row" id="set-row-' + esc(s.key) + '" data-key="' + esc(s.key) + '">' +
       '<div class="set-row-text">' +
@@ -496,6 +514,21 @@
         var c = {}; c[key] = v; save(root, c);
       });
     });
+
+    root.querySelectorAll(".set-text-box").forEach(function (box) {
+      var key = box.getAttribute("data-key");
+      var form = box.querySelector(".set-text");
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var v = form.querySelector("input").value.trim();
+        var c = {}; c[key] = v; save(root, c);
+      });
+      var rst = box.querySelector("[data-act=\"reset-text\"]");
+      if (rst) rst.addEventListener("click", function () {
+        var c = {}; c[key] = ""; save(root, c);
+      });
+    });
+
     root.querySelectorAll('.set-secret').forEach(function (box) {
       var key = box.getAttribute('data-key');
       var valEl = box.querySelector('.set-secret-val');

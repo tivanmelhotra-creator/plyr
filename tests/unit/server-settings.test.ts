@@ -195,4 +195,37 @@ describe('config getters follow a panel save without a restart', () => {
     store.saveSetting('STEP_TIMEOUT_MS', '60000', { file: path.join(dir, 's.env') });
     expect(config.STEP_TIMEOUT_MS).toBe(60000);
   });
+
+  it("BRANCH_BASE_DIR precedence: environment sets it, Settings -> Workflow Runs (settings.env) overrides it, and clearing returns to the environment value", async () => {
+    const envDir = path.join(dir, "env-branches");
+    const panelDir = path.join(dir, "panel-branches");
+    fs.mkdirSync(envDir, { recursive: true });
+    fs.mkdirSync(panelDir, { recursive: true });
+    vi.resetModules();
+    const savedEnv = process.env.BRANCH_BASE_DIR;
+    const savedSf = process.env.SETTINGS_FILE;
+    process.env.BRANCH_BASE_DIR = envDir;
+    process.env.SETTINGS_FILE = path.join(dir, "s-base.env");
+    try {
+      const store = await import("../../src/core/PersistedSettings");
+      const { config } = await import("../../src/config");
+      expect(config.BRANCH_BASE_DIR).toBe(envDir);
+      expect(store.sourceOf("BRANCH_BASE_DIR")).toBe("env");
+      expect(store.envValueOf("BRANCH_BASE_DIR")).toBe(envDir);
+
+      // Save in Settings -> Workflow Runs overrides environment live and on disk
+      store.saveSetting("BRANCH_BASE_DIR", panelDir, { file: process.env.SETTINGS_FILE });
+      expect(config.BRANCH_BASE_DIR).toBe(panelDir);
+      expect(store.sourceOf("BRANCH_BASE_DIR")).toBe("panel");
+      expect(store.envValueOf("BRANCH_BASE_DIR")).toBe(envDir);
+
+      // Resetting (null) returns to the environment value
+      store.saveSetting("BRANCH_BASE_DIR", null, { file: process.env.SETTINGS_FILE });
+      expect(config.BRANCH_BASE_DIR).toBe(envDir);
+      expect(store.sourceOf("BRANCH_BASE_DIR")).toBe("env");
+    } finally {
+      if (savedEnv === undefined) delete process.env.BRANCH_BASE_DIR; else process.env.BRANCH_BASE_DIR = savedEnv;
+      if (savedSf === undefined) delete process.env.SETTINGS_FILE; else process.env.SETTINGS_FILE = savedSf;
+    }
+  });
 });

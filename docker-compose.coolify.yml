@@ -78,6 +78,7 @@ services:
       APP_ENV: ${APP_ENV:-server}
       STORAGE_DRIVER: ${STORAGE_DRIVER:-sqlite}
       SQLITE_PATH: /app/data/plyr.db
+      BRANCH_BASE_DIR: /app/profiles/branches
       # --- Set these in the Coolify Environment Variables UI ---
       # Defaults provided here so the stack boots even before you
       # customise them; override in Coolify for production.

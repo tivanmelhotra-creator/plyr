@@ -76,6 +76,8 @@ function describe(spec: SettingSpec) {
     hasValue: value !== '',
     pendingRestart: spec.apply === 'restart' && value !== active,
     source,
+    envSet: envValue !== undefined && envValue.trim() !== '',
+    envValue: !isSecret && envValue !== undefined && envValue.trim() !== '' ? envValue.trim() : undefined,
     // The panel's value hides a different one in .env: say so, so nobody edits
     // .env and wonders why nothing changed.
     overridesEnv: source === 'panel' && envValue !== undefined && envValue.trim() !== '' && envValue.trim() !== value,
