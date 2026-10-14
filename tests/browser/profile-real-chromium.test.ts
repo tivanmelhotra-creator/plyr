@@ -211,9 +211,14 @@ async function activeUserDataDir(): Promise<string> {
       await sleep(1000);
       const names = (await BrowserWindowManager.list()).filter((w) => w.source === 'x11').map((w) => w.profileName);
       expect(names).toEqual(expect.arrayContaining(['22', 'Second']));
-      BrowserWindowManager.setProfileResolver(null);
       // Close A: B keeps working.
       expect((await closeProfileBrowser(pm, leaseIdOf(a.id), operatorDependent('wf_bbbbbb'))).closed).toBe(true);
+      // Task View: no stale card for the closed profile; the open one is still named.
+      await sleep(1000);
+      const after = (await BrowserWindowManager.list()).filter((w) => w.source === 'x11').map((w) => w.profileName);
+      expect(after).not.toContain('22');
+      expect(after).toContain('Second');
+      BrowserWindowManager.setProfileResolver(null);
       await ctxB.pages()[0]!.goto(`${url}/b2`);
       expect(ctxB.pages()[0]!.url()).toContain('/b2');
       // Reopen A: its cookie (persistent data) is still there.
