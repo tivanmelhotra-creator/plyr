@@ -109,6 +109,82 @@ describe('ProfileRegistry', () => {
     expect(await R.get('local', '../etc')).toBeNull();
     await expect(R.remove('local', '../x')).rejects.toMatchObject({ code: 'invalid_id' });
   });
+  it("legacy migration with temp fixtures (Local Browser root, legacy Default, legacy named profile, last_used pointing elsewhere): adopted in place, nothing moved, registry folder used, last_used ignored", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const { resolveChromiumProfile, withProfileSelection } = await import("../../src/core/ChromiumProfileLocation");
+    const { LOCAL_BROWSER_PROFILE_ID } = await import("../../src/core/BranchRegistry");
+
+    const profilesDir = path.join(dir, "profiles");
+    const baseDir = path.join(dir, "branches-base");
+    const localBrowserRoot = path.join(dir, "local-browser-root");
+    const defaultRoot = path.join(profilesDir, "local", "chrome-profile");
+    const namedRoot = path.join(profilesDir, "local", "browser-profiles", "shop-legacy");
+
+    // 1. Local Browser-style root where Chromium previously used Profile 2
+    mkdirSync(path.join(localBrowserRoot, "Profile 2"), { recursive: true });
+    writeFileSync(path.join(localBrowserRoot, "Profile 2", "Cookies"), "lb-cookie");
+    writeFileSync(path.join(localBrowserRoot, "Local State"), JSON.stringify({ profile: { last_used: "Profile 2" } }));
+
+    // 2. Legacy Default root where Default folder has cookies
+    mkdirSync(path.join(defaultRoot, "Default"), { recursive: true });
+    writeFileSync(path.join(defaultRoot, "Default", "Cookies"), "def-cookie");
+    writeFileSync(path.join(defaultRoot, "Local State"), JSON.stringify({ profile: { last_used: "Default" } }));
+
+    // 3. Legacy named profile with .plyr-profile.json and Profile 1 active
+    mkdirSync(path.join(namedRoot, "Profile 1"), { recursive: true });
+    writeFileSync(path.join(namedRoot, "Profile 1", "Cookies"), "shop-cookie");
+    writeFileSync(path.join(namedRoot, ".plyr-profile.json"), JSON.stringify({ name: "My Legacy Shop" }));
+    writeFileSync(path.join(namedRoot, "Local State"), JSON.stringify({ profile: { last_used: "Profile 1" } }));
+
+    const R = new ProfileRegistry(profilesDir, {
+      baseDir: () => baseDir,
+      localBrowserRoot: () => localBrowserRoot,
+    });
+
+    const list = await R.list("local", { includeLocalBrowser: true });
+    const branches = await R.branches("local");
+    expect(list.map((p) => p.id).sort()).toEqual(["default", LOCAL_BROWSER_PROFILE_ID, "shop-legacy"].sort());
+
+    // Adopted in place: roots are the exact original temp directories, and baseDir was not even created.
+    expect(R.dirOf("local", LOCAL_BROWSER_PROFILE_ID)).toBe(localBrowserRoot);
+    expect(R.dirOf("local", "default")).toBe(defaultRoot);
+    expect(R.dirOf("local", "shop-legacy")).toBe(namedRoot);
+    expect(existsSync(baseDir)).toBe(false);
+    expect(branches.every((b) => b.legacy === true)).toBe(true);
+
+    // Nothing moved or deleted: original files are intact in place.
+    expect(readFileSync(path.join(localBrowserRoot, "Profile 2", "Cookies"), "utf8")).toBe("lb-cookie");
+    expect(readFileSync(path.join(defaultRoot, "Default", "Cookies"), "utf8")).toBe("def-cookie");
+    expect(readFileSync(path.join(namedRoot, "Profile 1", "Cookies"), "utf8")).toBe("shop-cookie");
+
+    // Registry folders recorded from initial adoption:
+    expect(R.folderOf(LOCAL_BROWSER_PROFILE_ID)).toBe("Profile 2");
+    expect(R.folderOf("default")).toBe("Default");
+    expect(R.folderOf("shop-legacy")).toBe("Profile 1");
+    expect((await R.get("local", "shop-legacy"))!.name).toBe("My Legacy Shop");
+
+    // Now mutate Local State.profile.last_used in every root to point elsewhere (e.g. Profile 99):
+    for (const r of [localBrowserRoot, defaultRoot, namedRoot]) {
+      mkdirSync(path.join(r, "Profile 99"), { recursive: true });
+      writeFileSync(path.join(r, "Local State"), JSON.stringify({ profile: { last_used: "Profile 99" } }));
+    }
+
+    // Launching uses the registry folder explicitly and ignores last_used:
+    for (const [id, expectedRoot, expectedFolder] of [
+      [LOCAL_BROWSER_PROFILE_ID, localBrowserRoot, "Profile 2"],
+      ["default", defaultRoot, "Default"],
+      ["shop-legacy", namedRoot, "Profile 1"],
+    ] as const) {
+      const loc = await resolveChromiumProfile(R.dirOf("local", id), R.folderOf(id));
+      expect(loc).toMatchObject({
+        userDataRoot: expectedRoot,
+        profileDirectory: expectedFolder,
+        profilePath: path.join(expectedRoot, expectedFolder),
+        source: "registry",
+      });
+      expect(withProfileSelection([], loc)).toEqual([`--profile-directory=${expectedFolder}`]);
+    }
+  });
 });
 
 describe('BrowserSessions: dependents decide every close', () => {
