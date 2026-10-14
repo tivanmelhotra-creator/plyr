@@ -15,7 +15,8 @@ import { runPipeline } from './pipeline';
 import { buildItemsFromTrigger, buildManualItems } from './core/TriggerEngine';
 import { ProfileManager } from './core/ProfileManager';
 import { ProfileLeases, resolveRunProfile, needsLease, registerProfileLeases, type ProfileRef } from './core/ProfileLease';
-import { ProfileFailureReports, registerProfileFailureReports, reasonOf } from './core/ProfileFailureReports';
+import { ProfileFailureReports, registerProfileFailureReports } from './core/ProfileFailureReports';
+import { preRunProfileCheck } from './core/BranchPolicy';
 import { indexedProfile } from './core/ProfileIndex';
 import { runningProfileOf } from './core/BrowserSessions';
 import { ProfileRegistry } from './core/ProfileRegistry';
@@ -815,21 +816,17 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
       throw new Error(`PROFILE_MISSING: ${msg}`);
     }
   }
-  if (profile.profileId && (profile.kind === 'named' || profile.kind === 'run')) {
-    await profileRegistry.warm(userId).catch(() => {});
-    const chk = await profileRegistry.check(userId, profile.profileId).catch(() => null);
-    const knownProfile = !!indexedProfile(profile.profileId);
-    if (chk && !chk.ok && (knownProfile || chk.reason !== 'record_missing' || profile.profileId !== 'default')) {
-      const wfIdForReport = typeof (job.data.__workflowId || job.data.__scheduleWorkflowId) === 'string' ? String(job.data.__workflowId || job.data.__scheduleWorkflowId) : null;
-      const msg = `Browser profile "${profile.label}" cannot be used: ${chk.detail}. Assign another profile to the workflow.`;
-      await profileFailures.record(userId, {
-        reason: reasonOf(chk.reason), detail: chk.reason, stage: 'run',
-        workflowId: wfIdForReport, workflowName: job.data.__scheduleName || null,
-        profileId: profile.profileId, profileName: profile.label, jobId: String(job.id), message: msg,
-      });
-      void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message: msg } }).catch(() => {});
+  {
+    const broken = await preRunProfileCheck({
+      registry: profileRegistry, userId, profile,
+      workflowId: typeof (job.data.__workflowId || job.data.__scheduleWorkflowId) === 'string' ? String(job.data.__workflowId || job.data.__scheduleWorkflowId) : null,
+      workflowName: job.data.__scheduleName || null, jobId: String(job.id),
+      record: (u, r) => profileFailures.record(u, r),
+      notify: (message) => { void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message } }).catch(() => {}); },
+    });
+    if (broken) {
       await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
-      throw new Error(`PROFILE_BROKEN: ${msg}`);
+      throw new Error(`PROFILE_BROKEN: ${broken.message}`);
     }
   }
   const occurrence = job.data.__scheduled ? occurrenceOf(job) : null;

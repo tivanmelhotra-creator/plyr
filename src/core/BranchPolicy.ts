@@ -17,7 +17,8 @@
  * reference is cleared, their state becomes "profile missing").
  */
 import type { BranchRegistry, ProfileEntry } from './BranchRegistry';
-import { reasonOf, type FailureDetail, type FailureReason } from './ProfileFailureReports';
+import { reasonOf, type FailureDetail, type FailureReason, type FailureReport } from './ProfileFailureReports';
+import { indexedProfile } from './ProfileIndex';
 
 export interface WorkflowUse {
   workflowId: string;
@@ -51,6 +52,44 @@ export async function profileProblems(registry: BranchRegistry, userId: string, 
     });
   }
   return out;
+}
+
+/**
+ * The worker's check BEFORE a run launches anything (section 9): the run's
+ * profile must still exist (record, branch, folder). A folder removed
+ * outside Aria fails the run cleanly: a failure report is recorded, the user
+ * is told through `notify`, and nothing is created on disk. Returns the
+ * message when the run must fail, null when it may go on.
+ *
+ * An unregistered built-in Default (never created) is not breakage: legacy
+ * runs on it keep working as before.
+ */
+export async function preRunProfileCheck(input: {
+  registry: BranchRegistry;
+  userId: string;
+  profile: { profileId?: string | null; label: string; kind: string };
+  workflowId: string | null;
+  workflowName: string | null;
+  jobId: string;
+  record: (userId: string, r: Omit<FailureReport, 'at'>) => Promise<unknown>;
+  notify: (message: string) => void;
+}): Promise<{ message: string; reason: FailureReason; detail: FailureDetail } | null> {
+  const { registry, userId, profile } = input;
+  if (!profile.profileId || (profile.kind !== 'named' && profile.kind !== 'run')) return null;
+  await registry.warm(userId).catch(() => {});
+  const chk = await registry.check(userId, profile.profileId).catch(() => null);
+  if (!chk || chk.ok) return null;
+  const known = !!indexedProfile(profile.profileId);
+  if (!known && chk.reason === 'record_missing' && profile.profileId === 'default') return null;
+  const message = `Browser profile "${profile.label}" cannot be used: ${chk.detail}. Assign another profile to the workflow.`;
+  const reason = reasonOf(chk.reason);
+  await input.record(userId, {
+    reason, detail: chk.reason, stage: 'run',
+    workflowId: input.workflowId, workflowName: input.workflowName,
+    profileId: profile.profileId, profileName: profile.label, jobId: input.jobId, message,
+  });
+  input.notify(message);
+  return { message, reason, detail: chk.reason };
 }
 
 export type ProfileState = 'free' | 'reserved' | 'running';
