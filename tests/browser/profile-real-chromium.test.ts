@@ -3,13 +3,16 @@
  * X display (Xvfb + openbox + wmctrl). Skips (announced) when Chromium or the
  * display tools are missing.
  *
- *   - a created profile, opened by hand, is a VISIBLE Chromium on THAT
- *     profile's user-data-dir (one browser process per profile)
+ *   - branch model (core/BranchRegistry): a profile created in a NEW branch is
+ *     a VISIBLE Chromium on THAT branch's root (--user-data-dir) with its own
+ *     folder (--profile-directory=profile-NNN); one browser process per branch
+ *   - two profiles of ONE branch: the second open is refused (branch_busy,
+ *     the running profile named) and no second Chromium process is started
  *   - two profiles open side by side; opening one again brings ITS window to
  *     the front (BrowserWindowManager.focusByUserDataDir), without a 2nd launch
  *   - a manual run on a named profile is visible, an automatic (scheduled)
  *     run on the same profile is hidden (core/RunPolicy), same user-data-dir
- *   - closing saves the tabs into the profile (core/BrowserStateSnapshot)
+ *   - closing saves the tabs into the profile's own folder (core/BrowserStateSnapshot)
  */
 import { it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
@@ -86,13 +89,20 @@ async function activeUserDataDir(): Promise<string> {
     const userId = 'real-user';
     const reg = new ProfileRegistry(tmp);
     const pm = new ProfileManager();
+    /** What the /profiles/:id/open route passes (src/Routes/profile.routes.ts). */
+    const openInput = (p: { id: string; name: string; folder: string }, owner: string, extra: Record<string, unknown> = {}) => ({
+      leaseId: leaseIdOf(p.id), userId, userDataDir: reg.dirOf(userId, p.id), owner,
+      profileDirectory: p.folder, profileId: p.id, displayName: p.name, ...extra,
+    });
 
     it('two created profiles open as two visible browsers; re-opening one raises ITS window', async () => {
       const a = await reg.create(userId, 'Shop A');
       const b = await reg.create(userId, 'Shop B');
       const dirA = reg.dirOf(userId, a.id); const dirB = reg.dirOf(userId, b.id);
-      const ra = await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_aaaaaa' });
-      const rb = await openProfileBrowser(pm, { leaseId: leaseIdOf(b.id), userId, userDataDir: dirB, owner: 'wf_aaaaaa' });
+      expect(dirA).not.toBe(dirB); // a new profile without a branch gets a NEW branch
+      expect(a.folder).toBe('profile-001');
+      const ra = await openProfileBrowser(pm, openInput(a, 'wf_aaaaaa'));
+      const rb = await openProfileBrowser(pm, openInput(b, 'wf_aaaaaa'));
       expect(ra).toMatchObject({ reused: false, visibility: 'visible', settingsApplied: true });
       expect(rb.visibility).toBe('visible');
       await pm.getVipContext(leaseIdOf(a.id))!.context.pages()[0]!.goto(`${url}/a`);
@@ -111,13 +121,13 @@ async function activeUserDataDir(): Promise<string> {
       await sleep(500);
       expect(path.resolve(await activeUserDataDir())).toBe(path.resolve(dirB));
       // Opening A again reuses its browser (no second process).
-      const again = await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_aaaaaa' });
+      const again = await openProfileBrowser(pm, openInput(a, 'wf_aaaaaa'));
       expect(again.reused).toBe(true);
       // Close: tabs are saved into the profile first.
-      for (const [p, d] of [[a, dirA], [b, dirB]] as const) {
+      for (const p of [a, b]) {
         const r = await closeProfileBrowser(pm, leaseIdOf(p.id), operatorDependent('wf_aaaaaa'));
         expect(r.closed).toBe(true);
-        const snap = await readLastSession(d);
+        const snap = await readLastSession(reg.profilePathOf(userId, p.id));
         expect(snap!.tabs[0]!.url).toContain(url);
       }
     }, 90_000);
@@ -147,9 +157,10 @@ async function activeUserDataDir(): Promise<string> {
       // The run's browser selected the profile's root + pinned directory (same rule as Local Browser / Browser Profiles).
       const runCtx = pm.getVipContext(ref.id)!.context;
       const vp = await runCtx.newPage(); await vp.goto('chrome://version');
-      expect((await vp.locator('#profile_path').innerText()).trim()).toBe(path.join(ref.userDataDir!, 'Default'));
+      expect(ref.profileDirectory).toBe(p.folder);
+      expect((await vp.locator('#profile_path').innerText()).trim()).toBe(path.join(ref.userDataDir!, p.folder));
       await vp.close();
-      expect(manual).toMatch(/Profile data: Default \((adopted-default|pinned)\)/);
+      expect(manual).toMatch(/Profile data: profile-001 \(registry\)/);
       const auto = await runOnce('automatic', 'job-auto');
       // Visibility differs -> the browser is relaunched hidden on the same profile directory.
       expect(auto).toMatch(/hidden browser/);
@@ -166,11 +177,11 @@ async function activeUserDataDir(): Promise<string> {
       expect(dirA).not.toBe(dirB);
       const auto = buildLaunchArgs({ preset: 'automation', customFlags: '--lang=fa' });
       expect(auto.ok).toBe(true);
-      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_bbbbbb', displayName: '22', launch: { args: auto.args, hash: auto.hash, explicit: true } });
-      await openProfileBrowser(pm, { leaseId: leaseIdOf(b.id), userId, userDataDir: dirB, owner: 'wf_bbbbbb', displayName: 'Second' });
-      // The name Chromium itself uses for the profile.
-      expect(await readChromiumProfileName(dirA)).toBe('22');
-      expect(await readChromiumProfileName(dirB)).toBe('Second');
+      await openProfileBrowser(pm, openInput(a, 'wf_bbbbbb', { launch: { args: auto.args, hash: auto.hash, explicit: true } }));
+      await openProfileBrowser(pm, openInput(b, 'wf_bbbbbb'));
+      // The name Chromium itself uses for the profile (its folder in the branch root).
+      expect(await readChromiumProfileName(dirA, a.folder)).toBe('22');
+      expect(await readChromiumProfileName(dirB, b.folder)).toBe('Second');
       // The real process arguments: A has the preset + custom flag, B (Standard) does not; each its own dir.
       const argvOf = (dir: string): string[] => {
         for (const pidS of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
@@ -206,7 +217,7 @@ async function activeUserDataDir(): Promise<string> {
       await ctxB.pages()[0]!.goto(`${url}/b2`);
       expect(ctxB.pages()[0]!.url()).toContain('/b2');
       // Reopen A: its cookie (persistent data) is still there.
-      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_bbbbbb', displayName: '22' });
+      await openProfileBrowser(pm, openInput(a, 'wf_bbbbbb'));
       const ctxA2 = pm.getVipContext(leaseIdOf(a.id))!.context;
       expect((await ctxA2.cookies(url)).find((c) => c.name === 'who')?.value).toBe('A');
       for (const id of [a.id, b.id]) {
@@ -231,40 +242,78 @@ async function activeUserDataDir(): Promise<string> {
       return [];
     };
 
-    it('selection: root + pinned --profile-directory; chrome://version Profile Path is the intended one; data persists; two at once', async () => {
+    it('selection: branch root + explicit --profile-directory (registry folder); chrome://version Profile Path is the intended one; data persists; two at once', async () => {
       const a = await reg.create(userId, 'Sel A');
       const b = await reg.create(userId, 'Sel B');
       const dirA = reg.dirOf(userId, a.id); const dirB = reg.dirOf(userId, b.id);
-      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_cccccc', displayName: 'Sel A' });
-      await openProfileBrowser(pm, { leaseId: leaseIdOf(b.id), userId, userDataDir: dirB, owner: 'wf_cccccc', displayName: 'Sel B' });
+      await openProfileBrowser(pm, openInput(a, 'wf_cccccc'));
+      await openProfileBrowser(pm, openInput(b, 'wf_cccccc'));
       const ctxA = pm.getVipContext(leaseIdOf(a.id))!.context;
       const ctxB = pm.getVipContext(leaseIdOf(b.id))!.context;
       // Actual Profile Path, from Chromium itself.
-      expect(await profilePathOf(ctxA)).toBe(path.join(dirA, 'Default'));
-      expect(await profilePathOf(ctxB)).toBe(path.join(dirB, 'Default'));
+      expect(await profilePathOf(ctxA)).toBe(path.join(dirA, a.folder));
+      expect(await profilePathOf(ctxB)).toBe(path.join(dirB, b.folder));
+      expect(reg.profilePathOf(userId, a.id)).toBe(path.join(dirA, a.folder));
       // Real argv: own root, exactly one --profile-directory, two separate processes at the same time.
       const argA = argvOfRoot(dirA); const argB = argvOfRoot(dirB);
       expect(argA.filter((x) => x.startsWith('--profile-directory=')).length).toBe(1);
-      expect(argA).toContain('--profile-directory=Default');
-      expect(argB).toContain('--profile-directory=Default');
-      expect(JSON.parse(fs.readFileSync(path.join(dirA, PIN_FILE), 'utf8')).profileDirectory).toBe('Default');
+      expect(argA).toContain(`--profile-directory=${a.folder}`);
+      expect(argB).toContain(`--profile-directory=${b.folder}`);
+      expect(argA.some((x) => x.startsWith('--user-data-dir=') && x.endsWith(a.folder))).toBe(false); // a folder is never a root
+      // The registry names the folder: no pin file, Local State not consulted.
+      expect(fs.existsSync(path.join(dirA, PIN_FILE))).toBe(false);
       // Independent data, persisted across close + reopen.
       await ctxA.addCookies([{ name: 'sel', value: 'A', url, expires: Math.floor(Date.now() / 1000) + 3600 }]);
       expect((await ctxB.cookies(url)).some((c) => c.name === 'sel')).toBe(false);
       expect((await closeProfileBrowser(pm, leaseIdOf(a.id), operatorDependent('wf_cccccc'))).closed).toBe(true);
-      // Chromium's own last_used is changed behind our back (e.g. its profile menu): the pin still wins.
+      // Chromium's own last_used is changed behind our back (e.g. its profile menu): the explicit folder still wins.
       fs.mkdirSync(path.join(dirA, 'Profile 7'), { recursive: true });
       const lsFile = path.join(dirA, 'Local State');
       const ls = JSON.parse(fs.readFileSync(lsFile, 'utf8')); ls.profile.last_used = 'Profile 7'; fs.writeFileSync(lsFile, JSON.stringify(ls));
-      await openProfileBrowser(pm, { leaseId: leaseIdOf(a.id), userId, userDataDir: dirA, owner: 'wf_cccccc', displayName: 'Sel A' });
+      await openProfileBrowser(pm, openInput(a, 'wf_cccccc'));
       const ctxA2 = pm.getVipContext(leaseIdOf(a.id))!.context;
-      expect(await profilePathOf(ctxA2)).toBe(path.join(dirA, 'Default'));
+      expect(await profilePathOf(ctxA2)).toBe(path.join(dirA, a.folder));
       expect((await ctxA2.cookies(url)).find((c) => c.name === 'sel')?.value).toBe('A');
       for (const id of [a.id, b.id]) {
         const e = pm.getVipContext(leaseIdOf(id));
         if (e) await closeContextBounded(e.context);
         browserSessions().closed(leaseIdOf(id));
       }
+    }, 120_000);
+
+    it('branch model: two profiles of ONE branch share the root; the 2nd open is refused (branch_busy names the running one), no 2nd process; after close the 2nd opens its own folder', async () => {
+      const a = await reg.create(userId, 'Same A');
+      const b = await reg.create(userId, 'Same B', { branchId: a.branchId });
+      expect(b.branchId).toBe(a.branchId);
+      expect(b.folder).toBe('profile-002');
+      const root = reg.dirOf(userId, a.id);
+      expect(reg.dirOf(userId, b.id)).toBe(root);
+      expect(leaseIdOf(b.id)).toBe(leaseIdOf(a.id)); // one lock per branch
+      const procsOf = (dir: string) => fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x)).filter((pid) => {
+        try { const a2 = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); return a2.includes(`--user-data-dir=${dir}`) && !a2.some((x) => x.startsWith('--type=')); } catch { return false; }
+      }).length;
+      await openProfileBrowser(pm, openInput(a, 'wf_eeeeee'));
+      expect(procsOf(root)).toBe(1);
+      let err: any = null;
+      try { await openProfileBrowser(pm, openInput(b, 'wf_eeeeee')); } catch (e) { err = e; }
+      expect(err?.code).toBe('branch_busy');
+      expect(err?.runningProfileId).toBe(a.id);
+      expect(procsOf(root)).toBe(1); // nothing new was launched
+      // Opening the running profile again reuses it (no second process).
+      expect((await openProfileBrowser(pm, openInput(a, 'wf_eeeeee'))).reused).toBe(true);
+      expect(procsOf(root)).toBe(1);
+      const ctxA = pm.getVipContext(leaseIdOf(a.id))!.context;
+      expect(await profilePathOf(ctxA)).toBe(path.join(root, a.folder));
+      await ctxA.addCookies([{ name: 'branch', value: 'A', url, expires: Math.floor(Date.now() / 1000) + 3600 }]);
+      expect((await closeProfileBrowser(pm, leaseIdOf(a.id), operatorDependent('wf_eeeeee'))).closed).toBe(true);
+      // Now B may run: same root, its OWN folder, its own (empty) cookies.
+      await openProfileBrowser(pm, openInput(b, 'wf_eeeeee'));
+      const ctxB = pm.getVipContext(leaseIdOf(b.id))!.context;
+      expect(await profilePathOf(ctxB)).toBe(path.join(root, b.folder));
+      expect((await ctxB.cookies(url)).some((c) => c.name === 'branch')).toBe(false);
+      expect(argvOfRoot(root)).toContain(`--profile-directory=${b.folder}`);
+      await closeContextBounded(ctxB);
+      browserSessions().closed(leaseIdOf(b.id));
     }, 120_000);
 
     it('an existing root that used another profile directory is adopted as it is: same data, nothing moved', async () => {
@@ -288,7 +337,7 @@ async function activeUserDataDir(): Promise<string> {
       browserSessions().closed('named:legacy-root');
     }, 120_000);
 
-    it('why one root per profile: Chromium allows ONE process per root, a 2nd profile on it cannot be launched separately', async () => {
+    it('why one root per BRANCH runs one profile at a time: Chromium allows ONE process per root, a 2nd profile on it cannot be launched separately', async () => {
       const shared = path.join(tmp, 'shared-root');
       const env = { ...process.env, DISPLAY };
       const first = await chromium.launchPersistentContext(shared, { headless: false, args: ['--no-sandbox', '--profile-directory=Profile A'], env });

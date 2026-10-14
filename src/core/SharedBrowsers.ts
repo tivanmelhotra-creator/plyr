@@ -22,7 +22,7 @@
  * waiting on it) hanging.
  */
 import type { BrowserContext } from 'playwright';
-import { browserSessions, type SessionRecord, type Visibility } from './BrowserSessions';
+import { browserSessions, runningProfileOf, type SessionRecord, type Visibility } from './BrowserSessions';
 
 export const LOCAL_BROWSER_SESSION = 'realchrome';
 export const LOCAL_BROWSER_DEPENDENT = 'operator:local-browser';
@@ -53,6 +53,10 @@ export interface SessionSummary {
 /** Registry profile id of a session id, or null. Pure. */
 export function profileIdOfSession(id: string): string | null {
   if (id === LOCAL_BROWSER_SESSION) return null;
+  // Branch sessions (`branch:<user>/branch-NNN`, core/BranchRegistry) carry no
+  // profile id in their key: the branch runs ONE profile, recorded at launch.
+  const running = runningProfileOf(id);
+  if (running) return running;
   if (id === 'default') return 'default';
   return id.startsWith('named:') ? id.slice('named:'.length) : null;
 }
