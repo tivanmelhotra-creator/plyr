@@ -33,7 +33,9 @@ import { config } from '../config';
 import type { ProfileManager } from './ProfileManager';
 import { browserSessions, operatorDependent, setSessionDataDir, sessionDataDir, setRunningProfile, runningProfileOf } from './BrowserSessions';
 import { saveBeforeClose } from './BrowserStateSnapshot';
-import { withUtf8Locale } from './BrowserProfile';
+import { withUtf8Locale, IGNORED_DEFAULT_ARGS } from './BrowserProfile';
+import { listExtensions, extensionLaunchArgs } from './ChromeExtensions';
+import { seedInspectorExtension } from './InspectorExtension';
 import { Desktop } from './Desktop';
 import { buildLaunchArgs } from './LaunchSettings';
 import { buildKey, getBuild, setBuild, forgetBuild } from './ProfileBuild';
@@ -69,10 +71,30 @@ export const defaultLauncher: Launcher = async (userDataDir, args) => {
     ...(config.CHROME_EXE ? { executablePath: config.CHROME_EXE } : {}),
     // An ARRAY handed to execve by Playwright: no shell ever sees it.
     args,
-    ignoreDefaultArgs: ['--enable-automation'],
+    // Same as the Local Browser (core/RealChrome): Playwright's default
+    // --disable-extensions would make --load-extension a silent no-op, so the
+    // project extension never reached a profile browser.
+    ignoreDefaultArgs: [...IGNORED_DEFAULT_ARGS],
     env: withUtf8Locale(process.env),
   });
 };
+
+/**
+ * The project's extensions for a profile browser: the shipped Element
+ * Inspector is seeded into the extensions dir (as the Local Browser does) and
+ * everything there is loaded. Never blocks a launch: on failure the profile
+ * opens without extensions and the reason is logged.
+ */
+export async function projectExtensionArgs(extensionsDir = config.REAL_CHROME_EXTENSIONS_DIR): Promise<string[]> {
+  try {
+    const seeded = await seedInspectorExtension(extensionsDir);
+    if (seeded.reason === 'failed') console.warn(`[PROFILES] Inspector extension not seeded: ${(seeded as { error?: string }).error || 'unknown'}`);
+    return extensionLaunchArgs(await listExtensions(extensionsDir));
+  } catch (e) {
+    console.warn(`[PROFILES] extensions not loaded: ${(e as Error).message}`);
+    return [];
+  }
+}
 
 let launcher: Launcher = defaultLauncher;
 export function setProfileLauncherForTests(l: Launcher | null): void { launcher = l || defaultLauncher; }
@@ -160,7 +182,7 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
         const named = await applyChromiumProfileName(loc.userDataRoot, input.displayName, loc.profileDirectory);
         if (!named.ok) console.warn(`[PROFILES] Chromium display name not set for ${input.leaseId}: ${named.skipped || 'unknown'}`);
       }
-      const ctx = await launcher(loc.userDataRoot, withProfileSelection(launch.args, loc));
+      const ctx = await launcher(loc.userDataRoot, withProfileSelection([...(await projectExtensionArgs()), ...launch.args], loc));
       if (!(await verifyProfileSelected(loc))) console.warn(`[PROFILES] ${input.leaseId}: expected Chromium profile path ${loc.profilePath} was not created`);
       if (!ctx.pages().length) await ctx.newPage().catch(() => null);
       pm.setVipContext(input.leaseId, ctx, `operator:${input.owner}`);

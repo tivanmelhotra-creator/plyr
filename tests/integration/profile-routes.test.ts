@@ -269,6 +269,8 @@ describe('/profiles', () => {
     expect(lastArgs[lastArgs.length - 1]).toBe('--profile-directory=profile-001');
     expect(lastArgs.filter((a) => a.startsWith('--profile-directory')).length).toBe(1);
     expect(lastArgs.some((a) => a.startsWith('--user-data-dir'))).toBe(false);
+    // The project extension is loaded into every profile browser (as in the Local Browser).
+    expect(lastArgs.some((a) => a.startsWith('--load-extension=') && a.includes('ab-inspector'))).toBe(true);
     // A new profile lives in a new branch: --user-data-dir = <base>/branch-NNN.
     expect(path.basename(lastDir)).toMatch(/^branch-\d{3}$/);
     // The Chromium display name was written for THIS profile's folder.

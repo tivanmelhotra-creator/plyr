@@ -316,6 +316,24 @@ async function activeUserDataDir(): Promise<string> {
       browserSessions().closed(leaseIdOf(b.id));
     }, 120_000);
 
+    it('a NEW profile has the project extension (Element Inspector) loaded, like the Local Browser', async () => {
+      const prevExt = config.REAL_CHROME_EXTENSIONS_DIR;
+      (config as any).REAL_CHROME_EXTENSIONS_DIR = path.join(tmp, 'extensions');
+      try {
+        const p = await reg.create(userId, 'With extension');
+        await openProfileBrowser(pm, openInput(p, 'wf_ffffff'));
+        const ctx = pm.getVipContext(leaseIdOf(p.id))!.context;
+        expect(argvOfRoot(reg.dirOf(userId, p.id)).some((a) => a.startsWith('--load-extension=') && a.includes('ab-inspector'))).toBe(true);
+        expect(argvOfRoot(reg.dirOf(userId, p.id))).not.toContain('--disable-extensions');
+        // Chromium itself: the extension's service worker runs in this profile.
+        const sw = ctx.serviceWorkers().find((w) => w.url().startsWith('chrome-extension://'))
+          || await ctx.waitForEvent('serviceworker', { timeout: 15_000 }).catch(() => null);
+        expect(sw?.url()).toMatch(/^chrome-extension:\/\//);
+        await closeContextBounded(ctx);
+        browserSessions().closed(leaseIdOf(p.id));
+      } finally { (config as any).REAL_CHROME_EXTENSIONS_DIR = prevExt; }
+    }, 120_000);
+
     it('an existing root that used another profile directory is adopted as it is: same data, nothing moved', async () => {
       // A pre-existing user-data root (as an older Local Browser / profile could have left it):
       // its data lives in "Profile 1" and Chromium's last_used points there.
