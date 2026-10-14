@@ -9,6 +9,8 @@
  *   POST   /profiles/:id/hold              { workflowId }      refresh the hold (the open drawer does this)
  *   POST   /profiles/:id/release           { workflowId }      release the hold (does NOT close the browser)
  *   POST   /profiles/:id/close             { workflowId }      close the browser (does NOT release the hold)
+ *   POST   /profiles/turn-off                                  close every browser Browser Profiles opened, except
+ *                                                              one a workflow depends on (named in `keptOpen`)
  *   POST   /profiles/:id/restore           { workflowId }      reopen the tabs saved before the last automatic close
  *   GET    /profiles/launch-options                            presets, categorized options, rules for Custom Flags
  *   POST   /profiles/launch-settings/validate { launch }       the final argv + errors/warnings, without launching
@@ -458,6 +460,17 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
         res.status(409).json({ success: false, error: `Profile needs review: ${entry.problem}`, code: 'needs_review' });
         return;
       }
+      // Branch model, from the registry ONLY: root = the branch
+      // (--user-data-dir), folder = this profile (--profile-directory). The
+      // former path used `dirOf()`, which silently fell back to the legacy
+      // one-root-per-profile formula, and `entry?.folder`, whose absence made
+      // ChromiumProfileLocation read Local State / the pin file. Neither is
+      // allowed for a registry profile: refused before any hold or launch.
+      const loc = await access.registry.locationOf(userId, id);
+      if (!loc) {
+        res.status(409).json({ success: false, code: 'needs_review', error: 'Profile needs review: its branch folder or profile folder is not known in the registry.' });
+        return;
+      }
       const leaseId = leaseIdOf(id);
       const before = await access.leases.holdOf(leaseId);
       const h = await access.leases.hold(leaseId, owner, holdMs());
@@ -485,9 +498,9 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const profileId = id;
       let launchError: unknown = null;
       const started = await withStartBudget(() => openProfileBrowser(profileManager, {
-        leaseId, userId, userDataDir: access.registry.dirOf(userId, profileId), owner,
+        leaseId, userId, userDataDir: loc.root, owner,
         // Branch model: root = the branch, folder = this profile (--profile-directory).
-        profileDirectory: entry?.folder, profileId,
+        profileDirectory: loc.folder, profileId,
         displayName: entry?.name,
         launch: { args: resolved.args, hash: resolved.hash, explicit: hasLaunchChoice(launchIn) },
       }).catch((e) => { launchError = e; throw e; }), {
@@ -510,7 +523,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       // Several profile browsers share one desktop: raise THIS profile's
       // window so the view opened next shows it (best-effort, bounded).
       const focused = await Promise.race([
-        BrowserWindowManager.focusByUserDataDir(access.registry.dirOf(userId, id)).catch(() => null),
+        BrowserWindowManager.focusByUserDataDir(loc.root).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 3000)),
       ]);
       res.json({
@@ -555,6 +568,60 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       }
       fail(res, e);
     }
+  });
+
+  /**
+   * TURN OFF (Browser Profiles panel): close every browser that Browser
+   * Profiles opened (session created by an operator view, `operator:<owner>`),
+   * EXCEPT one a workflow depends on now (a run `job:<id>` or a continuation
+   * grant `grant:<owner>`): that one stays open and is reported with the
+   * workflow and profile names. Operator views are this panel's own, so they
+   * do not keep a browser open. Holds are NOT released (same as Close).
+   * Browsers this panel did not open (the RealChrome session, a run's own
+   * browser) are listed under `notOpenedHere` and left alone.
+   * Every close is bounded (closeContextBounded); the answer always comes.
+   */
+  router.post('/profiles/turn-off', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const sessions = browserSessions();
+      const wfs = await refs(userId);
+      const wfName = (o?: string | null) => (o ? wfs.find((w) => w.id === o)?.name : undefined);
+      const names = new Map((await access.registry.list(userId, { includeLocalBrowser: true }).catch(() => [])).map((p) => [p.id, p.name] as const));
+      const closed: Array<{ profileId: string | null; name: string; timedOut?: boolean }> = [];
+      const keptOpen: Array<{ profileId: string | null; name: string; reason: 'workflow'; workflows: Array<{ workflowId: string | null; name: string }> }> = [];
+      const notOpenedHere: Array<{ sessionId: string; name: string }> = [];
+      const failed: Array<{ profileId: string | null; name: string; error: string }> = [];
+      for (const rec of sessions.list()) {
+        const pid = runningProfileOf(rec.leaseId);
+        const name = (pid && names.get(pid)) || pid || rec.leaseId;
+        const ours = rec.createdBy.startsWith('operator:') && rec.createdBy !== 'operator:local-browser';
+        if (!ours) { notOpenedHere.push({ sessionId: rec.leaseId, name: rec.leaseId === 'realchrome' ? 'realchrome' : name }); continue; }
+        const blocking = rec.dependents.filter((d) => d.startsWith('job:') || d.startsWith('grant:'));
+        if (blocking.length) {
+          const lease = await access.leases.holder(rec.leaseId).catch(() => null);
+          const list: Array<{ workflowId: string | null; name: string }> = [];
+          for (const d of blocking) {
+            const owner = d.startsWith('grant:') ? d.slice('grant:'.length) : (lease?.owner || null);
+            const wid = owner && isValidWorkflowId(owner) ? owner : null;
+            const item = { workflowId: wid, name: wfName(wid) || owner || d };
+            if (!list.some((x) => x.name === item.name)) list.push(item);
+          }
+          keptOpen.push({ profileId: pid, name, reason: 'workflow', workflows: list });
+          continue;
+        }
+        // Only this panel's own views depend on it: they stop depending, then it closes.
+        for (const d of rec.dependents) if (d.startsWith('operator:')) sessions.detach(rec.leaseId, d);
+        try {
+          const r = await closeProfileBrowser(profileManager, rec.leaseId, operatorDependent(OPERATOR));
+          if (r.closed || r.reason === 'not_open') closed.push({ profileId: pid, name, ...(r.timedOut ? { timedOut: true } : {}) });
+          else failed.push({ profileId: pid, name, error: 'in use' });
+        } catch (e) {
+          failed.push({ profileId: pid, name, error: (e as Error)?.message || 'close failed' });
+        }
+      }
+      res.json({ success: true, closed, keptOpen, notOpenedHere, failed });
+    } catch (e) { fail(res, e); }
   });
 
   router.post('/profiles/:id/hold', async (req: AuthenticatedRequest, res) => {

@@ -27,6 +27,7 @@
  * data Chromium opens never depends on Chromium's own `last_used`.
  */
 import fs from 'fs';
+import path from 'path';
 import { chromium } from 'playwright';
 import type { BrowserContext } from 'playwright';
 import { config } from '../config';
@@ -93,6 +94,21 @@ export async function projectExtensionArgs(extensionsDir = config.REAL_CHROME_EX
   } catch (e) {
     console.warn(`[PROFILES] extensions not loaded: ${(e as Error).message}`);
     return [];
+  }
+}
+
+/**
+ * Pure check of the branch launch rule: `root` must not be the profile folder
+ * itself (nor end in it), and `folder` must be a plain directory name.
+ * Throws a launch_failed ProfileBrowserError otherwise.
+ */
+export function assertBranchLaunch(root: string, folder: string): void {
+  const r = path.resolve(root);
+  if (!folder || folder.includes('/') || folder.includes('\\') || folder === '.' || folder === '..') {
+    throw new ProfileBrowserError(`Invalid profile folder "${String(folder).slice(0, 80)}".`, 'launch_failed');
+  }
+  if (path.basename(r) === folder) {
+    throw new ProfileBrowserError(`Refusing to launch: the data directory "${path.basename(r)}" is the profile folder itself, not its branch root.`, 'launch_failed');
   }
 }
 
@@ -173,10 +189,18 @@ export async function openProfileBrowser(pm: ProfileManager, input: {
     }
   }
 
+  // Branch model guard (before anything is created on disk): the root is the
+  // BRANCH root and the folder is selected with --profile-directory. A root
+  // that IS the profile folder (<root>/<folder> passed as --user-data-dir)
+  // would make Chromium create a nested profile inside the profile's data.
+  if (input.profileDirectory) assertBranchLaunch(input.userDataDir, input.profileDirectory);
+
   let p = starting.get(input.leaseId);
   if (!p) {
     p = (async () => {
       await fs.promises.mkdir(input.userDataDir, { recursive: true });
+      // Explicit folder = registry profile: Local State and the pin file are
+      // not read (core/ChromiumProfileLocation 'registry' source).
       const loc = await resolveChromiumProfile(input.userDataDir, input.profileDirectory);
       if (input.displayName) {
         const named = await applyChromiumProfileName(loc.userDataRoot, input.displayName, loc.profileDirectory);

@@ -309,6 +309,22 @@ export class BranchRegistry {
     return indexedProfile(id)?.root || legacyProfileDir(this.opts.profilesDir, userId, id);
   }
 
+  /**
+   * Where a REGISTRY profile is launched: its branch root (--user-data-dir)
+   * and its folder (--profile-directory), read from the registry file itself.
+   * No legacy fallback and no Local State: null when the registry does not
+   * know both. Used by the manual Open path (POST /profiles/:id/open).
+   */
+  async locationOf(userId: string, id: string): Promise<{ root: string; folder: string } | null> {
+    const sid = sanitizeProfileId(id);
+    if (!sid) return null;
+    const f = await this.serial(userId, () => this.load(userId));
+    const p = f.profiles.find((x) => x.id === sid);
+    const b = p ? f.branches.find((x) => x.id === p.branchId) : undefined;
+    if (!p || !b || !isValidProfileDirectory(p.folder)) return null;
+    return { root: path.resolve(b.root), folder: p.folder };
+  }
+
   /** The profile's Chromium folder name (--profile-directory), or undefined when unknown. */
   folderOf(id: string): string | undefined { return indexedProfile(id)?.folder; }
 
