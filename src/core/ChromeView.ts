@@ -2218,9 +2218,12 @@ let viewerEnded = false;
  *     branch, tools/s35/opener-probe.mjs). window.close() was therefore never
  *     tried, and the tab stayed black. Chromium still lets the tab close
  *     itself (it was opened by a script and has one history entry).
- * A tab that refuses the close (the user typed the address) keeps an empty
- * page with the app's background, exactly as before; no dialog.
+ * A tab that refuses the close (the user typed the address, so Chromium
+ * does not let a script close it) is sent to the app's main page (owner
+ * brief 2.2 + owner decision S35): never a black or empty page, never a
+ * dialog. location.replace, so Back does not return to the dead viewer.
  */
+const VIEWER_CLOSE_WAIT_MS = 300;
 function endViewer() {
   if (viewerEnded) return;
   viewerEnded = true;
@@ -2230,8 +2233,12 @@ function endViewer() {
     rfb = null;
   }
   try { sessionStorage.removeItem(VIEW_SET_KEY); } catch (e) { /* fine */ }
-  try { window.close(); } catch (e) { /* refused: empty page below */ }
+  try { window.close(); } catch (e) { /* refused: main page below */ }
   document.body.classList.add('viewer-gone');
+  setTimeout(function () {
+    if (window.closed) return;
+    try { window.location.replace('/'); } catch (e) { window.location.href = '/'; }
+  }, VIEWER_CLOSE_WAIT_MS);
 }
 
 /**

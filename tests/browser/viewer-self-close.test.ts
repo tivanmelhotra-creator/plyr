@@ -273,22 +273,21 @@ afterAll(async () => {
       await opener.context().close();
     }, 60_000);
 
-    it('d. viewer opened by hand (address typed): last browser closed -> close() is refused, an EMPTY page in the app background (main behaviour, no dialog)', async () => {
+    it('d. viewer opened by hand (address typed): close() is refused -> the tab goes to the app main page (owner, brief 2.2)', async () => {
       if (!redisUp) return;
       const p = await newOpenProfile('Manual');
       const ctx = await operator!.newContext();
       const viewer = await ctx.newPage(); // typed into the address bar: no opener
       await viewer.goto(`${base}/desktop/chrome?profile=${encodeURIComponent(p.id)}&workflowId=wf_view`);
       await viewer.waitForFunction(() => !(document.querySelector('#burger') as HTMLElement).hidden, null, { timeout: 15_000 });
+      const t0 = Date.now();
       closeFromOutside(p.root);
       await waitSessions(0);
-      await viewer.waitForFunction(() => document.body.classList.contains('viewer-gone'), null, { timeout: 8000 });
-      const r = await viewer.evaluate(() => ({ text: document.body.innerText.trim(), bg: getComputedStyle(document.body).backgroundColor,
-        visible: Array.from(document.body.children).filter((e) => getComputedStyle(e).display !== 'none').length }));
+      await viewer.waitForURL((u) => u.pathname === '/', { timeout: 10_000 });
+      const r = { url: new URL(viewer.url()).pathname, title: await viewer.title(), main: await viewer.locator('#app-main').count(), ms: Date.now() - t0 };
       console.log(`[d] typed-address viewer after the last browser closed: ${JSON.stringify(r)} closed=${viewer.isClosed()}`);
-      expect(r.text).toBe('');
-      expect(r.visible).toBe(0);
-      expect(r.bg).not.toBe('rgb(0, 0, 0)');
+      expect(r.url).toBe('/');
+      expect(r.main).toBe(1);
       await ctx.close();
     }, 60_000);
 

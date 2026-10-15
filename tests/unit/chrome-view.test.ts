@@ -297,7 +297,8 @@ describe('the workflow files drawer in ChromeView', () => {
     const end = /function endViewer\(\)[\s\S]*?\n}\n/.exec(html)![0];
     expect(end).not.toMatch(/window\.opener/);
     expect(end).toMatch(/try \{ window\.close\(\); \}/);
-    expect(end).not.toContain('location.replace');
+    // Refused (typed address) -> the app's main page (owner, brief 2.2).
+    expect(end).toContain("window.location.replace('/')");
     expect(html).not.toMatch(/body\.viewer-gone \{ background: #000; \}/);
     // The drawer's Close browser closes THIS viewer's profiles (was: only the Local Browser).
     const at = html.indexOf("dcloseBrowserBtn.addEventListener('click'");
