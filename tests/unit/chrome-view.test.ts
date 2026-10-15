@@ -291,13 +291,20 @@ describe('the workflow files drawer in ChromeView', () => {
     expect(html).toContain('const VIEWER_END_CONFIRM_MS = 2000;');
     expect(fn).toMatch(/zeroAnswers >= 2 && now - firstZeroAt >= VIEWER_END_CONFIRM_MS/);
     expect(fn).toMatch(/\.catch\(\(\) => \{ reset\(\); \}\)/);
-    // S34 (brief 2.2): window.close() is ALWAYS tried (not only with an
-    // opener); refused -> the app's main page, never a black page.
+    // S35 (owner brief 2 / A): main's mechanism restored -- window.close()
+    // is UNCONDITIONAL (window.opener is always null under COOP same-origin,
+    // so gating on it meant close() was never tried); no redirect layer.
     const end = /function endViewer\(\)[\s\S]*?\n}\n/.exec(html)![0];
     expect(end).not.toMatch(/window\.opener/);
     expect(end).toMatch(/try \{ window\.close\(\); \}/);
-    expect(end).toContain("window.location.replace('/')");
+    expect(end).not.toContain('location.replace');
     expect(html).not.toMatch(/body\.viewer-gone \{ background: #000; \}/);
+    // The drawer's Close browser closes THIS viewer's profiles (was: only the Local Browser).
+    const at = html.indexOf("dcloseBrowserBtn.addEventListener('click'");
+    expect(at).toBeGreaterThan(0);
+    const dclose = html.slice(at, html.indexOf('Task View Controller', at));
+    expect(dclose).toContain("'/profiles/' + encodeURIComponent(id) + '/close'");
+    expect(dclose).toContain("['/browser/real/close']");
     expect(html).toContain('body.viewer-gone > * { display: none !important; }');
   });
 });

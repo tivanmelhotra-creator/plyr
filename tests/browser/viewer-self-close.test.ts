@@ -273,25 +273,36 @@ afterAll(async () => {
       await opener.context().close();
     }, 60_000);
 
-    it('d. viewer opened by hand (not by a script): last browser closed -> the tab goes to the main page (never black, no dialog)', async () => {
+    it('d. viewer opened by hand (address typed): last browser closed -> close() is refused, an EMPTY page in the app background (main behaviour, no dialog)', async () => {
       if (!redisUp) return;
       const p = await newOpenProfile('Manual');
       const ctx = await operator!.newContext();
       const viewer = await ctx.newPage(); // typed into the address bar: no opener
       await viewer.goto(`${base}/desktop/chrome?profile=${encodeURIComponent(p.id)}&workflowId=wf_view`);
       await viewer.waitForFunction(() => !(document.querySelector('#burger') as HTMLElement).hidden, null, { timeout: 15_000 });
-      expect(await viewer.evaluate(() => window.opener)).toBeNull();
-      const t0 = Date.now();
       closeFromOutside(p.root);
       await waitSessions(0);
-      await viewer.waitForURL((u) => u.pathname === '/', { timeout: 10_000 });
-      const r = { url: new URL(viewer.url()).pathname, title: await viewer.title(), main: await viewer.locator('#app-main').count(), ms: Date.now() - t0 };
-      console.log(`[d] manual viewer after the last browser closed: ${JSON.stringify(r)} closed=${viewer.isClosed()}`);
-      expect(viewer.isClosed()).toBe(false);
-      expect(r.url).toBe('/');
-      expect(r.main).toBe(1);
-      expect(r.title).toBe('Aria main');
+      await viewer.waitForFunction(() => document.body.classList.contains('viewer-gone'), null, { timeout: 8000 });
+      const r = await viewer.evaluate(() => ({ text: document.body.innerText.trim(), bg: getComputedStyle(document.body).backgroundColor,
+        visible: Array.from(document.body.children).filter((e) => getComputedStyle(e).display !== 'none').length }));
+      console.log(`[d] typed-address viewer after the last browser closed: ${JSON.stringify(r)} closed=${viewer.isClosed()}`);
+      expect(r.text).toBe('');
+      expect(r.visible).toBe(0);
+      expect(r.bg).not.toBe('rgb(0, 0, 0)');
       await ctx.close();
+    }, 60_000);
+
+    it('g. REGRESSION (owner brief 2 / A): the viewer drawer\'s "Close browser" closes the PROFILE browser it shows, and the tab closes itself', async () => {
+      if (!redisUp) return;
+      const p = await newOpenProfile('FromInside');
+      const { opener, viewer } = await viewerByScript(p.id);
+      viewer.on('dialog', (d) => d.accept());
+      const t0 = Date.now();
+      await viewer.evaluate(() => (document.getElementById('dclosebrowser') as HTMLElement).click());
+      await viewer.waitForEvent('close', { timeout: 10_000 });
+      console.log(`[g] Close browser from inside the viewer: tab closed itself ${Date.now() - t0} ms later; profile process left: ${browserPidOn(p.root)}`);
+      expect(browserPidOn(p.root)).toBe(0);
+      await opener.context().close();
     }, 60_000);
 
     it('e. viewer opened by script with noopener (window.opener is null): closes itself', async () => {
