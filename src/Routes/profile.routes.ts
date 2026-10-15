@@ -29,7 +29,6 @@
  * or `operator` when none is given. Runs of that same workflow are compatible
  * with it; every other workflow is refused with the reason.
  */
-import path from 'path';
 import { Router, type Response } from 'express';
 import type IORedis from 'ioredis';
 import { config } from '../config';
@@ -246,7 +245,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     const resv = await access.reservations.list(b.leaseKey).catch(() => []);
     const reserved = resv.some((r) => r.state !== 'missed' && r.start <= now && now < blockingUntil(r));
     const scan = scanBranch({
-      branchId: b.id, label: b.label, builtIn: !!b.builtIn, profiles,
+      branchId: b.id, label: b.label, profiles,
       workflows: await uses(userId),
       branchRunning: !!(lease || session || profileManager.getVipContext(b.leaseKey)),
       runningProfileId: runningProfileOf(b.leaseKey),
@@ -259,12 +258,12 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     try {
       const userId = userOf(req);
       const list = await access.registry.branches(userId);
-      const profiles = await access.registry.list(userId, { includeLocalBrowser: true });
+      const profiles = await access.registry.list(userId);
       res.json({
         success: true,
         baseDir: config.BRANCH_BASE_DIR,
-        branches: list.filter((b) => b.kind !== 'local-browser').map((b) => ({
-          id: b.id, label: b.label, legacy: !!b.legacy, builtIn: !!b.builtIn, external: !!b.external,
+        branches: list.map((b) => ({
+          id: b.id, label: b.label,
           running: !!browserSessions().get(b.leaseKey),
           runningProfileId: runningProfileOf(b.leaseKey),
           profiles: profiles.filter((p) => p.branchId === b.id).map((p) => ({ id: p.id, name: p.name, folder: p.folder })),
@@ -278,35 +277,6 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const userId = userOf(req);
       const b = await access.registry.createBranch(userId, req.body?.label);
       res.status(201).json({ success: true, branch: { id: b.id, label: b.label } });
-    } catch (e) { fail(res, e); }
-  });
-
-  /**
-   * Add an EXISTING folder from outside Aria (section 4). Two steps, never one:
-   *   1. POST /profiles/branches/external/inspect { root } -> read-only report
-   *      (profile folders, in use, personal-browser warning). Nothing changes.
-   *   2. POST /profiles/branches/external { root, confirm: <same root> } ->
-   *      registered. Without the separate, exact confirmation: 428, nothing done.
-   * The folder is never moved, copied or deleted (deleting the branch forgets it).
-   */
-  router.post('/profiles/branches/external/inspect', async (req: AuthenticatedRequest, res) => {
-    try {
-      res.json({ success: true, inspection: await access.registry.inspectExternal(userOf(req), req.body?.root) });
-    } catch (e) { fail(res, e); }
-  });
-
-  router.post('/profiles/branches/external', async (req: AuthenticatedRequest, res) => {
-    try {
-      const userId = userOf(req);
-      const ins = await access.registry.inspectExternal(userId, req.body?.root);
-      if (ins.errors.length) { res.status(400).json({ success: false, code: 'not_addable', error: ins.errors.join(' '), inspection: ins }); return; }
-      const confirm = typeof req.body?.confirm === 'string' && req.body.confirm.trim() ? path.resolve(req.body.confirm.trim()) : '';
-      if (confirm !== ins.root) {
-        res.status(428).json({ success: false, code: 'needs_confirmation', error: 'Adding a folder from outside Aria needs a separate confirmation of that exact folder.', inspection: ins });
-        return;
-      }
-      const r = await access.registry.addExternalBranch(userId, ins.root, req.body?.label);
-      res.status(201).json({ success: true, branch: { id: r.branch.id, label: r.branch.label, external: true }, profiles: r.profiles.map((p) => ({ id: p.id, name: p.name, folder: p.folder })), warnings: ins.warnings });
     } catch (e) { fail(res, e); }
   });
 
@@ -337,13 +307,12 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const branchId = String(req.params.branchId);
       const scan = await branchScan(userId, branchId);
       if (!scan) { res.status(404).json({ success: false, error: 'Branch not found', code: 'branch_not_found' }); return; }
-      if (scan.builtIn) { res.status(409).json({ success: false, code: 'builtin', error: 'This branch is built in and cannot be deleted.', scan }); return; }
       if (!scan.deletable || scan.held) {
         res.status(409).json({ success: false, code: 'blocked', error: 'The branch cannot be deleted now: it is in use or referenced by an active or scheduled workflow.', scan });
         return;
       }
       const ids = new Set(scan.profiles.map((p) => p.profileId));
-      const { removedProfiles, keptFolder } = await access.registry.removeBranch(userId, branchId);
+      const { removedProfiles } = await access.registry.removeBranch(userId, branchId);
       // Inactive workflows: clear the reference (state "profile missing").
       const cleared: string[] = [];
       for (const w of scan.inactiveWorkflows) {
@@ -358,7 +327,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
           }).then(() => cleared.push(wf.id)).catch(() => {});
         }
       }
-      res.json({ success: true, deleted: branchId, removedProfiles, ...(keptFolder ? { keptFolder } : {}), clearedWorkflows: cleared, profileMissing: scan.inactiveWorkflows.map((w) => w.workflowId) });
+      res.json({ success: true, deleted: branchId, removedProfiles, clearedWorkflows: cleared, profileMissing: scan.inactiveWorkflows.map((w) => w.workflowId) });
     } catch (e) { fail(res, e); }
   });
 
@@ -587,7 +556,7 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const sessions = browserSessions();
       const wfs = await refs(userId);
       const wfName = (o?: string | null) => (o ? wfs.find((w) => w.id === o)?.name : undefined);
-      const names = new Map((await access.registry.list(userId, { includeLocalBrowser: true }).catch(() => [])).map((p) => [p.id, p.name] as const));
+      const names = new Map((await access.registry.list(userId).catch(() => [])).map((p) => [p.id, p.name] as const));
       const closed: Array<{ profileId: string | null; name: string; timedOut?: boolean }> = [];
       const keptOpen: Array<{ profileId: string | null; name: string; reason: 'workflow'; workflows: Array<{ workflowId: string | null; name: string }> }> = [];
       const notOpenedHere: Array<{ sessionId: string; name: string }> = [];

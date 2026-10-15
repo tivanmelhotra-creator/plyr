@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { defaultBaseDir, checkBasePathShape, validateBaseDir } from '../../src/core/BranchBase';
 import { parseWindowsCimProcesses, findOrphans, reapOrphans, lockedRootsUnder } from '../../src/core/OrphanBrowsers';
-import { isPersonalBrowserFolder, BranchRegistry } from '../../src/core/BranchRegistry';
 
 describe('default base directory', () => {
   it('simulated Windows: %LOCALAPPDATA%\\AriaBrowser\\branches (per-user, no admin, not roaming/OneDrive, not Chromium "User Data")', () => {
@@ -148,7 +147,7 @@ describe('simulated Windows: OrphanBrowsers CIM output parsing and case-insensit
   });
 });
 
-describe('simulated Windows: lock file (lockfile vs SingletonLock symlink) and inspectExternal personal folders', () => {
+describe('simulated Windows: lock file (lockfile vs SingletonLock symlink)', () => {
   it('simulated Windows: both Windows lockfile and Linux dangling SingletonLock symlink are recognised everywhere a lock is read', async () => {
     const d = mkdtempSync(path.join(tmpdir(), 'aria-locks-'));
     const winRoot = path.join(d, 'win-branch');
@@ -169,14 +168,7 @@ describe('simulated Windows: lock file (lockfile vs SingletonLock symlink) and i
       expect((await validateBaseDir(winRoot)).ok).toBe(false);
       expect((await validateBaseDir(linRoot)).ok).toBe(false);
 
-      // 2. BranchRegistry.inspectExternal marks both inUse: true
-      const reg = new BranchRegistry({ profilesDir: path.join(d, 'reg'), baseDir: () => path.join(d, 'base') });
-      const insWin = await reg.inspectExternal('local', winRoot);
-      const insLin = await reg.inspectExternal('local', linRoot);
-      expect(insWin.inUse).toBe(true);
-      expect(insLin.inUse).toBe(true);
-
-      // 3. OrphanBrowsers.lockedRootsUnder & reapOrphans find and unlock both when no live browser holds them
+      // 2. OrphanBrowsers.lockedRootsUnder & reapOrphans find and unlock both when no live browser holds them
       const found = await lockedRootsUnder(d);
       expect(found.sort()).toEqual([linRoot, winRoot].sort());
       const reaped = await reapOrphans([d], { roots: found, list: async () => [] });
@@ -185,17 +177,6 @@ describe('simulated Windows: lock file (lockfile vs SingletonLock symlink) and i
     } finally {
       rmSync(d, { recursive: true, force: true });
     }
-  });
-
-  it('simulated Windows: inspectExternal personal-folder check on Windows-style paths (case-insensitive, backslashes, Default/Profile N)', () => {
-    expect(isPersonalBrowserFolder('C:\\Users\\ali\\AppData\\Local\\Google\\Chrome\\User Data')).toBe(true);
-    expect(isPersonalBrowserFolder('c:\\users\\ali\\appdata\\local\\chromium\\user data\\')).toBe(true);
-    expect(isPersonalBrowserFolder('C:\\Users\\ali\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data')).toBe(true);
-    expect(isPersonalBrowserFolder('C:\\Users\\ali\\AppData\\Local\\Microsoft\\Edge\\User Data\\Default')).toBe(true);
-    expect(isPersonalBrowserFolder('C:\\Users\\ali\\AppData\\Local\\Google\\Chrome\\User Data\\Profile 2')).toBe(true);
-    expect(isPersonalBrowserFolder('C:\\Users\\ali\\AppData\\Local\\AriaBrowser\\branches\\branch-001')).toBe(false);
-    expect(isPersonalBrowserFolder('/home/ali/.config/google-chrome')).toBe(true);
-    expect(isPersonalBrowserFolder('/home/ali/.local/share/aria-browser/branches/branch-001')).toBe(false);
   });
 });
 

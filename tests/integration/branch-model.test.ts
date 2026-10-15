@@ -224,12 +224,85 @@ describe('branch model', () => {
     cleanup();
   });
 
-  it('built-in branches (Default) cannot be deleted', async () => {
+  it('brief 2.1: a fresh install lists no branch; the first branch is branch-001; registry == UI list == folders on disk', async () => {
     if (!up) return;
-    const branches = (await request(app).get('/profiles/branches').expect(200)).body.branches;
-    const def = branches.find((b: any) => b.builtIn);
-    expect(def).toBeTruthy();
-    expect((await request(app).delete(`/profiles/branches/${def.id}`).expect(409)).body.code).toBe('builtin');
+    const { readdirSync } = await import('node:fs');
+    expect((await request(app).get('/profiles/branches').expect(200)).body.branches).toEqual([]);
+    const a = (await request(app).post('/profiles').send({ name: 'Shop A' }).expect(201)).body.profile;
+    const b = (await request(app).post('/profiles').send({ name: 'Shop B' }).expect(201)).body.profile;
+    expect([a.branchId, b.branchId]).toEqual(['branch-001', 'branch-002']);
+    const ui = (await request(app).get('/profiles/branches').expect(200)).body.branches.map((x: any) => x.id).sort();
+    const reg = (await registry.branches(USER)).map((x) => x.id).sort();
+    const disk = readdirSync(base).filter((d) => /^branch-\d+$/.test(d)).sort();
+    expect(ui).toEqual(['branch-001', 'branch-002']);
+    expect(reg).toEqual(ui);
+    expect(disk).toEqual(ui);
+    // No retired flags reach the UI.
+    for (const x of (await request(app).get('/profiles/branches')).body.branches) {
+      expect(x).not.toHaveProperty('builtIn'); expect(x).not.toHaveProperty('legacy'); expect(x).not.toHaveProperty('external');
+    }
+    cleanup();
+  });
+
+  it('brief 2.1: an old registry with a hidden Local Browser branch is cleaned; its folder is kept; ids are never reused', async () => {
+    if (!up) return;
+    const { mkdirSync, readFileSync: rf } = await import('node:fs');
+    const lbRoot = path.join(dir, 'chrome-profile');
+    mkdirSync(path.join(lbRoot, 'Default'), { recursive: true });
+    writeFileSync(path.join(lbRoot, 'Default', 'Cookies'), 'lb');
+    const now = new Date().toISOString();
+    const file = path.join(dir, 'profiles', USER, 'branches.json');
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ version: 1, nextBranch: 3, branches: [
+      { id: 'branch-001', label: 'Local Browser', root: lbRoot, leaseKey: 'realchrome', createdAt: now, updatedAt: now, legacy: true, builtIn: true, kind: 'local-browser', nextProfile: 1 },
+    ], profiles: [{ id: 'local-browser', branchId: 'branch-001', folder: 'Default', name: 'Local Browser', createdAt: now, updatedAt: now, builtIn: true }] }));
+    registry.forget();
+    expect((await request(app).get('/profiles/branches').expect(200)).body.branches).toEqual([]);
+    const saved = JSON.parse(rf(file, 'utf8'));
+    expect(saved.branches).toEqual([]);
+    expect(saved.profiles).toEqual([]);
+    expect(rf(path.join(lbRoot, 'Default', 'Cookies'), 'utf8')).toBe('lb'); // never deleted
+    const p = (await request(app).post('/profiles').send({ name: 'New' }).expect(201)).body.profile;
+    expect(p.branchId).toBe('branch-003'); // the counter is never lowered: no reuse
+    cleanup();
+  });
+
+  it('brief 2.1: unlisted branch-NNN folders under the base: empty -> removed, with data -> listed as "Branch N" (data kept)', async () => {
+    if (!up) return;
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(path.join(base, 'branch-004'), { recursive: true }); // leftover, no data
+    mkdirSync(path.join(base, 'branch-007', 'profile-001'), { recursive: true });
+    writeFileSync(path.join(base, 'branch-007', 'profile-001', 'Preferences'), '{}');
+    writeFileSync(path.join(base, 'branch-007', 'Local State'), JSON.stringify({ profile: { info_cache: { 'profile-001': { name: 'Recovered' } } } }));
+    registry.forget();
+    const list = (await request(app).get('/profiles/branches').expect(200)).body.branches;
+    expect(list.map((b: any) => [b.id, b.label])).toEqual([['branch-007', 'Branch 7']]);
+    expect(list[0].profiles.map((p: any) => [p.name, p.folder])).toEqual([['Recovered', 'profile-001']]);
+    expect(existsSync(path.join(base, 'branch-004'))).toBe(false);
+    expect(existsSync(path.join(base, 'branch-007', 'profile-001', 'Preferences'))).toBe(true);
+    const n = (await request(app).post('/profiles').send({ name: 'Next' }).expect(201)).body.profile;
+    expect(n.branchId).toBe('branch-008');
+    cleanup();
+  });
+
+  it('every branch can be deleted (no built-in branch exists)', async () => {
+    if (!up) return;
+    const p = (await request(app).post('/profiles').send({ name: 'Solo' }).expect(201)).body.profile;
+    await request(app).delete(`/profiles/branches/${p.branchId}`).expect(200);
+    expect((await request(app).get('/profiles/branches').expect(200)).body.branches).toEqual([]);
+    cleanup();
+  });
+
+  it('one profile of a branch with several can be deleted alone; the branch and its sibling stay; the folder number is not reused', async () => {
+    if (!up) return;
+    const a = (await request(app).post('/profiles').send({ name: 'A' }).expect(201)).body.profile;
+    const b = (await request(app).post('/profiles').send({ name: 'B', branchId: a.branchId }).expect(201)).body.profile;
+    expect(b.folder).toBe('profile-002');
+    await request(app).delete(`/profiles/${b.id}`).expect(200);
+    expect(existsSync(path.join(base, a.branchId, 'profile-002'))).toBe(false);
+    expect(existsSync(path.join(base, a.branchId, 'profile-001'))).toBe(true);
+    const c = (await request(app).post('/profiles').send({ name: 'C', branchId: a.branchId }).expect(201)).body.profile;
+    expect(c.folder).toBe('profile-003');
     cleanup();
   });
 
@@ -270,66 +343,15 @@ describe('branch model', () => {
     cleanup();
   });
 
-  it('an existing folder from OUTSIDE Aria: inspect changes nothing, adding needs a separate exact confirmation, open uses its own folder, delete forgets it but keeps the data', async () => {
+  it('brief 1.4: "Add an existing folder (outside Aria)" is gone: both routes answer 404 and nothing is registered', async () => {
     if (!up) return;
     const ext = path.join(dir, 'my-old-chrome');
-    const { mkdirSync, readdirSync } = await import('node:fs');
-    mkdirSync(path.join(ext, 'Profile 3'), { recursive: true });
-    writeFileSync(path.join(ext, 'Profile 3', 'Preferences'), '{}');
-    writeFileSync(path.join(ext, 'Profile 3', 'Cookies'), 'x');
-    writeFileSync(path.join(ext, 'Local State'), JSON.stringify({ profile: { last_used: 'Profile 3', info_cache: { 'Profile 3': { name: 'Shop' } } } }));
-    const before = readdirSync(ext).sort();
-    const ins = await request(app).post('/profiles/branches/external/inspect').send({ root: ext }).expect(200);
-    expect(ins.body.inspection).toMatchObject({ root: ext, profiles: [{ folder: 'Profile 3', chromiumName: 'Shop' }], inUse: false, errors: [] });
-    expect(ins.body.inspection.warnings.join(' ')).toMatch(/NEVER delete/);
-    expect(readdirSync(ext).sort()).toEqual(before); // nothing written
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(path.join(ext, 'Default'), { recursive: true });
+    writeFileSync(path.join(ext, 'Local State'), '{}');
+    await request(app).post('/profiles/branches/external/inspect').send({ root: ext }).expect(404);
+    await request(app).post('/profiles/branches/external').send({ root: ext, confirm: ext }).expect(404);
     expect((await registry.branches(USER)).some((b) => b.root === ext)).toBe(false);
-    // No confirmation, or a different folder confirmed: refused, nothing registered.
-    expect((await request(app).post('/profiles/branches/external').send({ root: ext }).expect(428)).body.code).toBe('needs_confirmation');
-    await request(app).post('/profiles/branches/external').send({ root: ext, confirm: path.join(dir, 'other') }).expect(428);
-    expect((await registry.branches(USER)).some((b) => b.root === ext)).toBe(false);
-    const add = await request(app).post('/profiles/branches/external').send({ root: ext, confirm: ext }).expect(201);
-    expect(add.body.branch.external).toBe(true);
-    expect(add.body.profiles).toEqual([expect.objectContaining({ name: 'Shop', folder: 'Profile 3' })]);
-    // Adding it twice is refused.
-    expect((await request(app).post('/profiles/branches/external').send({ root: ext, confirm: ext }).expect(400)).body.code).toBe('not_addable');
-    // Open: its own root + its existing folder, never "Default", never a new folder.
-    const pid = add.body.profiles[0].id;
-    await request(app).post(`/profiles/${pid}/open`).send({ workflowId: 'wf_ext' }).expect(200);
-    expect(launches.at(-1)!.root).toBe(ext);
-    expect(folderArg(launches.at(-1)!.args)).toEqual(['--profile-directory=Profile 3']);
-    await request(app).post(`/profiles/${pid}/close`).send({ workflowId: 'wf_ext' }).expect(200);
-    await request(app).post(`/profiles/${pid}/release`).send({ workflowId: 'wf_ext' });
-    // Delete: forgotten by Aria, data on disk kept.
-    const del = await request(app).delete(`/profiles/branches/${add.body.branch.id}`).expect(200);
-    expect(del.body.keptFolder).toBe(ext);
-    expect(existsSync(path.join(ext, 'Profile 3', 'Cookies'))).toBe(true);
-    expect((await registry.branches(USER)).some((b) => b.root === ext)).toBe(false);
-    cleanup();
-  });
-
-  it('outside-Aria checks: not a Chromium folder, in use, personal browser folder', async () => {
-    if (!up) return;
-    const { mkdirSync, symlinkSync } = await import('node:fs');
-    const empty = path.join(dir, 'empty'); mkdirSync(empty);
-    expect((await request(app).post('/profiles/branches/external/inspect').send({ root: empty })).body.inspection.errors.join(' ')).toMatch(/not a Chromium data folder/);
-    const busy = path.join(dir, 'busy'); mkdirSync(path.join(busy, 'Default'), { recursive: true });
-    writeFileSync(path.join(busy, 'Local State'), '{}'); writeFileSync(path.join(busy, 'Default', 'Preferences'), '{}');
-    symlinkSync('host-123', path.join(busy, 'SingletonLock'));
-    const b = (await request(app).post('/profiles/branches/external/inspect').send({ root: busy })).body.inspection;
-    expect(b.inUse).toBe(true);
-    // Windows names it `lockfile`.
-    const busyWin = path.join(dir, 'busy-win'); mkdirSync(path.join(busyWin, 'Default'), { recursive: true });
-    writeFileSync(path.join(busyWin, 'Local State'), '{}'); writeFileSync(path.join(busyWin, 'Default', 'Preferences'), '{}');
-    writeFileSync(path.join(busyWin, 'lockfile'), '');
-    expect((await request(app).post('/profiles/branches/external/inspect').send({ root: busyWin })).body.inspection.inUse).toBe(true);
-    expect(b.errors.join(' ')).toMatch(/using this folder right now/);
-    const personal = path.join(dir, 'home', '.config', 'chromium'); mkdirSync(path.join(personal, 'Default'), { recursive: true });
-    writeFileSync(path.join(personal, 'Local State'), '{}'); writeFileSync(path.join(personal, 'Default', 'Preferences'), '{}');
-    const pr = (await request(app).post('/profiles/branches/external/inspect').send({ root: personal })).body.inspection;
-    expect(pr.personal).toBe(true);
-    expect(pr.warnings.join(' ')).toMatch(/PERSONAL browser/);
-    expect((await request(app).post('/profiles/branches/external/inspect').send({ root: 'relative/x' })).body.inspection.errors.join(' ')).toMatch(/absolute/);
     cleanup();
   });
 });

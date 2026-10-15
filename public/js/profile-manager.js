@@ -139,8 +139,6 @@
     renameBranch: function (id, label) { return call('/profiles/branches/' + encodeURIComponent(id), 'PATCH', { label: label }); },
     deletionScan: function (id) { return call('/profiles/branches/' + encodeURIComponent(id) + '/deletion-scan'); },
     deleteBranch: function (id) { return call('/profiles/branches/' + encodeURIComponent(id), 'DELETE'); },
-    inspectExternal: function (root) { return call('/profiles/branches/external/inspect', 'POST', { root: root }); },
-    addExternal: function (root, confirm, label) { return call('/profiles/branches/external', 'POST', { root: root, confirm: confirm, label: label || undefined }); }
   };
 
   /** How long the Delete branch button must be held (owner's rule: 3 s). */
@@ -572,13 +570,7 @@
       nw.value = 'new';
       nw.textContent = t('pm.newBranch', 'New branch');
       branchSel.appendChild(nw);
-      var ext = document.createElement('option');
-      ext.value = 'external';
-      ext.textContent = t('pm.addExternal', 'Add an existing folder (outside Aria)\u2026');
-      branchSel.appendChild(ext);
       (st.branches || []).forEach(function (b) {
-        if (b.builtIn) return; // built-in roots (Default, Local Browser) do not take new profiles
-        if (b.external) return; // a folder from outside Aria: its profiles are what Chromium already has
         var op = document.createElement('option');
         op.value = b.id;
         op.textContent = (b.label && b.label !== b.id ? b.label + ' (' + b.id + ')' : b.id) + ' \u2014 ' + (b.profiles || []).length + ' ' + t('pm.profilesCount', 'profile(s)');
@@ -960,8 +952,7 @@
         line(dlg, t('pm.delInactive', 'Inactive workflows that will lose their profile (state: profile missing)') + ': ' +
           scan.inactiveWorkflows.map(function (w) { return w.name; }).join(', '), 'pm-dialog-row');
       }
-      if (branch.external) line(dlg, t('pm.delExternal', 'This folder was added from outside Aria: it is only removed from Aria, its data on disk is kept.'), 'pm-dialog-warn');
-      else line(dlg, t('pm.delPermanent', 'All data in this branch (cookies, logins, browser data) is deleted permanently. There is no recycle bin.'), 'pm-dialog-warn');
+      line(dlg, t('pm.delPermanent', 'All data in this branch (cookies, logins, browser data) is deleted permanently. There is no recycle bin.'), 'pm-dialog-warn');
       line(dlg, t('pm.delHoldHint', 'Press and hold the button (or hold Enter / Space) for 3 seconds.'), 'pm-dialog-hint');
       var hb = holdButton(t('pm.delHold', 'Hold to delete'), DELETE_HOLD_MS, function () {
         // At the end of the hold the server scans AGAIN: anything that started
@@ -1013,55 +1004,6 @@
 
     newBtn.addEventListener('click', function () { showForm({ kind: 'create' }, ''); });
     cancel.addEventListener('click', hideForm);
-    // "Add an existing folder (outside Aria)": never silent (section 4).
-    // Step 1 reads the folder (nothing changes) and shows every warning;
-    // step 2 is a SEPARATE confirmation that repeats the exact folder.
-    branchSel.addEventListener('change', function () {
-      if (branchSel.value !== 'external') return;
-      branchSel.value = 'new';
-      void startAddExternal();
-    });
-    function startAddExternal() {
-      var root = (window.prompt ? window.prompt(t('pm.extPrompt', 'Full path of an existing Chromium data folder (the folder that contains "Local State"):'), '') : '') || '';
-      root = String(root).trim();
-      if (!root) return Promise.resolve(null);
-      return api.inspectExternal(root).then(function (r) {
-        var ins = r.inspection || {};
-        dlg.innerHTML = '';
-        dlg.hidden = false;
-        dlg.setAttribute('data-kind', 'external');
-        line(dlg, t('pm.extTitle', 'Add a folder from outside Aria?'), 'pm-dialog-title');
-        line(dlg, ins.root || root, 'pm-dialog-row pm-ext-root');
-        if ((ins.profiles || []).length) {
-          line(dlg, t('pm.extProfiles', 'Chromium profiles found') + ': ' + ins.profiles.map(function (p) { return (p.chromiumName || p.folder) + ' (' + p.folder + ')'; }).join(', '), 'pm-dialog-row');
-        }
-        (ins.errors || []).forEach(function (m) { line(dlg, m, 'pm-dialog-warn pm-ext-error'); });
-        (ins.warnings || []).forEach(function (m) { line(dlg, m, 'pm-dialog-warn pm-ext-warning'); });
-        if (!(ins.errors || []).length) {
-          var confirmBtn = document.createElement('button');
-          confirmBtn.type = 'button';
-          confirmBtn.className = 'btn btn-sm btn-danger pm-ext-confirm';
-          confirmBtn.textContent = t('pm.extConfirm', 'I understand \u2014 add this folder');
-          confirmBtn.addEventListener('click', function () {
-            confirmBtn.disabled = true;
-            api.addExternal(ins.root, ins.root).then(function (d) {
-              closeDialog();
-              say(t('pm.extAdded', 'Folder added as a branch') + ': ' + (d.branch ? d.branch.id : ''), false);
-              return refresh();
-            }, function (e) { confirmBtn.disabled = false; say(e.message, true); });
-          });
-          dlg.appendChild(confirmBtn);
-        }
-        var c = document.createElement('button');
-        c.type = 'button';
-        c.className = 'btn btn-sm btn-subtle';
-        c.textContent = t('wfm.close', 'Close');
-        c.addEventListener('click', closeDialog);
-        dlg.appendChild(c);
-        return ins;
-      }, function (e) { say(e.message, true); return null; });
-    }
-
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var name = String(input.value || '').trim();
