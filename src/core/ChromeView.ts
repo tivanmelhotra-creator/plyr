@@ -1630,12 +1630,24 @@ const dcloseBrowserBtn = document.getElementById('dclosebrowser');
 if (dcloseBrowserBtn) {
   dcloseBrowserBtn.addEventListener('click', () => {
     if (confirm('Close Chromium session and all open tabs?')) {
-      fetch('/browser/real/close', {
-        method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        credentials: 'same-origin',
-        body: '{}',
-      }).catch(() => { /* the session watch below reports the real state */ });
+      // S35 (owner brief 2 / A, cause 2): this used to call ONLY
+      // /browser/real/close, which closes the Local Browser (RealChrome) and
+      // never a Browser-Profiles browser. A profile viewer's browser therefore
+      // stayed open, /browser/sessions never reached zero, and the tab stayed.
+      // Now: close the browsers THIS viewer shows (its profile set), each
+      // through its own route and ownership rule (POST /profiles/:id/close as
+      // this viewer's workflow owner); a viewer without a set (attach / the
+      // Local Browser view) closes the Local Browser as on main.
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, authHeaders());
+      const wf = WORKFLOW_ID_RE.test(qs.get('workflowId') || '') ? qs.get('workflowId') : '';
+      const body = JSON.stringify(wf ? { workflowId: wf } : {});
+      const targets = viewProfiles.length
+        ? viewProfiles.map((id) => '/profiles/' + encodeURIComponent(id) + '/close')
+        : ['/browser/real/close'];
+      targets.forEach((u) => {
+        fetch(u, { method: 'POST', headers, credentials: 'same-origin', body })
+          .catch(() => { /* the session watch below reports the real state */ });
+      });
       // No immediate "ended" here: whether this tab closes is decided ONLY
       // by the session watch (pollBrowserHealth), from /browser/sessions.
     }
@@ -2191,21 +2203,24 @@ let viewerEnded = false;
 
 /**
  * The LAST browser of this viewer's set is gone (confirmed, see
- * pollBrowserHealth): end the viewer. No dialog and no Relaunch button.
+ * pollBrowserHealth): the tab has no purpose any more and goes away.
  *
- * S34 (brief 2.2) root cause of "the tab stays black": the old fallback
- * painted an empty BLACK page (body.viewer-gone) whenever window.opener was
- * null -- a tab opened with 'noopener', typed by hand, or whose opener tab
- * was closed or reloaded away -- and never even tried window.close() there.
- * Now:
- *   1. window.close() is ALWAYS attempted. Chromium allows it for every tab
- *      a script opened (with or without an opener reference) and refuses it
- *      for a tab the user opened.
- *   2. Still open 300 ms later (refused) -> the tab goes to the app's main
- *      page (location.replace, so Back does not return to a dead viewer).
- *      Never a black page, never a dialog.
+ * This is main's mechanism (handleSessionClosed on main: rfb.disconnect(),
+ * then an UNCONDITIONAL window.close()), restored in S35. The regression on
+ * feat/profile-infrastructure (owner brief 2 / A):
+ *   - 984fa62 removed the window.close() call (the tab was to stay and show a
+ *     "Chromium Session Closed" dialog instead);
+ *   - 4f1cd0c removed the dialog but put window.close() behind
+ *     "if (window.opener)". The app's pages are served with
+ *     Cross-Origin-Opener-Policy: same-origin (helmet) and the viewer page is
+ *     not, so the tab is put in a new browsing-context group and
+ *     window.opener is ALWAYS null in the viewer (measured on main and on the
+ *     branch, tools/s35/opener-probe.mjs). window.close() was therefore never
+ *     tried, and the tab stayed black. Chromium still lets the tab close
+ *     itself (it was opened by a script and has one history entry).
+ * A tab that refuses the close (the user typed the address) keeps an empty
+ * page with the app's background, exactly as before; no dialog.
  */
-const VIEWER_CLOSE_WAIT_MS = 300;
 function endViewer() {
   if (viewerEnded) return;
   viewerEnded = true;
@@ -2215,13 +2230,8 @@ function endViewer() {
     rfb = null;
   }
   try { sessionStorage.removeItem(VIEW_SET_KEY); } catch (e) { /* fine */ }
-  try { window.close(); } catch (e) { /* refused: main page below */ }
-  setTimeout(function () {
-    if (window.closed) return;
-    // Refused (a tab the user opened): leave the dead viewer for the app.
-    document.body.classList.add('viewer-gone');
-    try { window.location.replace('/'); } catch (e) { window.location.href = '/'; }
-  }, VIEWER_CLOSE_WAIT_MS);
+  try { window.close(); } catch (e) { /* refused: empty page below */ }
+  document.body.classList.add('viewer-gone');
 }
 
 /**
