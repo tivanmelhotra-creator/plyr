@@ -658,10 +658,10 @@ export function chromeViewHtml(): string {
   .edfoot #edstatus.dirty { color: #f0862f; }
   #edmeta { color: #6d7382; }
 
-  /* The viewer after its last browser closed and the browser refused
-     window.close() (tab not opened by a script): an empty page, nothing else. */
+  /* The viewer after its last browser closed, for the instant before it
+     closes or moves to the app's main page: nothing of the dead viewer. */
   body.viewer-gone > * { display: none !important; }
-  body.viewer-gone { background: #000; }
+  body.viewer-gone { background: #0f1117; }
 </style>
 </head>
 <body>
@@ -2192,12 +2192,20 @@ let viewerEnded = false;
 /**
  * The LAST browser of this viewer's set is gone (confirmed, see
  * pollBrowserHealth): end the viewer. No dialog and no Relaunch button.
- *   - Tab opened by a script (window.opener is set: Browser Profiles opens
- *     the shared viewer with window.open(…, 'aria-browser-viewer'), and the
- *     opener survives the navigations a second Open causes) -> window.close().
- *   - Otherwise, or when the browser refuses the close -> an empty page:
- *     no text, no buttons (body.viewer-gone hides everything).
+ *
+ * S34 (brief 2.2) root cause of "the tab stays black": the old fallback
+ * painted an empty BLACK page (body.viewer-gone) whenever window.opener was
+ * null -- a tab opened with 'noopener', typed by hand, or whose opener tab
+ * was closed or reloaded away -- and never even tried window.close() there.
+ * Now:
+ *   1. window.close() is ALWAYS attempted. Chromium allows it for every tab
+ *      a script opened (with or without an opener reference) and refuses it
+ *      for a tab the user opened.
+ *   2. Still open 300 ms later (refused) -> the tab goes to the app's main
+ *      page (location.replace, so Back does not return to a dead viewer).
+ *      Never a black page, never a dialog.
  */
+const VIEWER_CLOSE_WAIT_MS = 300;
 function endViewer() {
   if (viewerEnded) return;
   viewerEnded = true;
@@ -2206,17 +2214,14 @@ function endViewer() {
     try { rfb.disconnect(); } catch (e) {}
     rfb = null;
   }
-  let openedByScript = false;
-  try { openedByScript = !!window.opener; } catch (e) { openedByScript = false; }
-  if (openedByScript) {
-    try { window.close(); } catch (e) { /* refused: blank page below */ }
-  }
+  try { sessionStorage.removeItem(VIEW_SET_KEY); } catch (e) { /* fine */ }
+  try { window.close(); } catch (e) { /* refused: main page below */ }
   setTimeout(function () {
-    // Still here: the close was not attempted or was refused.
     if (window.closed) return;
-    try { document.title = ''; } catch (e) { /* fine */ }
+    // Refused (a tab the user opened): leave the dead viewer for the app.
     document.body.classList.add('viewer-gone');
-  }, openedByScript ? 300 : 0);
+    try { window.location.replace('/'); } catch (e) { window.location.href = '/'; }
+  }, VIEWER_CLOSE_WAIT_MS);
 }
 
 /**

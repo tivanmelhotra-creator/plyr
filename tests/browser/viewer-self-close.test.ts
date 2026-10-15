@@ -16,8 +16,12 @@
  *      profile stays, no dialog
  *   c. a failed /browser/sessions probe (500) + a false /browser/real/health
  *      + ONE false "zero" answer -> the viewer does NOT close
- *   d. viewer opened by hand (not by a script), last browser closed -> an
- *      empty page, no dialog, no text, no buttons
+ *   d. viewer opened by hand (not by a script), last browser closed ->
+ *      window.close() is refused, the tab goes to the app's main page (S34:
+ *      before, a BLACK empty page stayed: brief 2.2)
+ *   e. viewer opened by script WITHOUT an opener reference ('noopener'),
+ *      and f. by script whose opener tab was closed: both close themselves
+ *      (S34: before, both stayed BLACK because window.opener was null)
  *   plus: the rendered DOM of the viewer and of the Browser Profiles panel
  *   contains none of "Turn on", "Turn off", "Chromium Session Closed",
  *   "Close Tab", "Relaunch".
@@ -169,6 +173,7 @@ beforeAll(async () => {
   app = express();
   app.use(express.json());
   app.get('/blank', (_q, s) => { s.type('html').send('<!doctype html><title>opener</title>'); });
+  app.get('/', (_q, s) => { s.type('html').send('<!doctype html><title>Aria main</title><main id="app-main">main</main>'); });
   app.get('/desktop/chrome', (_q, s) => { s.type('html').send(chromeViewHtml()); });
   app.get('/desktop/core/rfb.js', (_q, s) => { s.type('application/javascript').send(FAKE_RFB); });
   // The desktop stack (Xvfb/x11vnc/noVNC) is not what is tested here.
@@ -268,7 +273,7 @@ afterAll(async () => {
       await opener.context().close();
     }, 60_000);
 
-    it('d. viewer opened by hand (not by a script): last browser closed -> empty page, no dialog', async () => {
+    it('d. viewer opened by hand (not by a script): last browser closed -> the tab goes to the main page (never black, no dialog)', async () => {
       if (!redisUp) return;
       const p = await newOpenProfile('Manual');
       const ctx = await operator!.newContext();
@@ -276,21 +281,51 @@ afterAll(async () => {
       await viewer.goto(`${base}/desktop/chrome?profile=${encodeURIComponent(p.id)}&workflowId=wf_view`);
       await viewer.waitForFunction(() => !(document.querySelector('#burger') as HTMLElement).hidden, null, { timeout: 15_000 });
       expect(await viewer.evaluate(() => window.opener)).toBeNull();
+      const t0 = Date.now();
       closeFromOutside(p.root);
       await waitSessions(0);
-      await viewer.waitForFunction(() => document.body.classList.contains('viewer-gone'), null, { timeout: 8000 });
-      const r = await viewer.evaluate(() => ({
-        text: document.body.innerText.trim(),
-        visibleButtons: Array.from(document.querySelectorAll('button')).filter((b) => (b as HTMLElement).offsetParent !== null || getComputedStyle(b).position === 'fixed' && getComputedStyle(b).display !== 'none').length,
-        visibleElements: Array.from(document.body.children).filter((e) => getComputedStyle(e).display !== 'none').length,
-        title: document.title,
-      }));
+      await viewer.waitForURL((u) => u.pathname === '/', { timeout: 10_000 });
+      const r = { url: new URL(viewer.url()).pathname, title: await viewer.title(), main: await viewer.locator('#app-main').count(), ms: Date.now() - t0 };
       console.log(`[d] manual viewer after the last browser closed: ${JSON.stringify(r)} closed=${viewer.isClosed()}`);
       expect(viewer.isClosed()).toBe(false);
-      expect(r.text).toBe('');
-      expect(r.visibleButtons).toBe(0);
-      expect(r.visibleElements).toBe(0);
+      expect(r.url).toBe('/');
+      expect(r.main).toBe(1);
+      expect(r.title).toBe('Aria main');
       await ctx.close();
+    }, 60_000);
+
+    it('e. viewer opened by script with noopener (window.opener is null): closes itself', async () => {
+      if (!redisUp) return;
+      const p = await newOpenProfile('NoOpener');
+      const ctx = await operator!.newContext();
+      const opener = await ctx.newPage();
+      await opener.goto(`${base}/blank`);
+      const popupP = ctx.waitForEvent('page');
+      await opener.evaluate((href) => { window.open(href, '_blank', 'noopener'); }, `/desktop/chrome?profile=${encodeURIComponent(p.id)}&workflowId=wf_view`);
+      const viewer = await popupP;
+      await viewer.waitForLoadState('domcontentloaded');
+      await viewer.waitForFunction(() => !(document.querySelector('#burger') as HTMLElement).hidden, null, { timeout: 15_000 });
+      expect(await viewer.evaluate(() => window.opener)).toBeNull();
+      const t0 = Date.now();
+      closeFromOutside(p.root);
+      await waitSessions(0);
+      await viewer.waitForEvent('close', { timeout: 8000 });
+      console.log(`[e] noopener viewer closed itself ${Date.now() - t0} ms after the window was closed from outside`);
+      await ctx.close();
+    }, 60_000);
+
+    it('f. viewer opened by script whose opener tab was closed: closes itself', async () => {
+      if (!redisUp) return;
+      const p = await newOpenProfile('OpenerGone');
+      const { opener, viewer } = await viewerByScript(p.id);
+      await opener.close();
+      await sleep(300);
+      const t0 = Date.now();
+      closeFromOutside(p.root);
+      await waitSessions(0);
+      await viewer.waitForEvent('close', { timeout: 8000 });
+      console.log(`[f] viewer whose opener was closed closed itself ${Date.now() - t0} ms after the window was closed from outside`);
+      await viewer.context().close();
     }, 60_000);
 
     it('rendered DOM: no "Turn on", "Turn off", "Chromium Session Closed", "Close Tab", "Relaunch" in the viewer or the Browser Profiles panel', async () => {

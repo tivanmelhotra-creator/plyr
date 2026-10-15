@@ -291,11 +291,13 @@ describe('the workflow files drawer in ChromeView', () => {
     expect(html).toContain('const VIEWER_END_CONFIRM_MS = 2000;');
     expect(fn).toMatch(/zeroAnswers >= 2 && now - firstZeroAt >= VIEWER_END_CONFIRM_MS/);
     expect(fn).toMatch(/\.catch\(\(\) => \{ reset\(\); \}\)/);
-    // window.close() only for a tab a script opened; otherwise an empty page.
+    // S34 (brief 2.2): window.close() is ALWAYS tried (not only with an
+    // opener); refused -> the app's main page, never a black page.
     const end = /function endViewer\(\)[\s\S]*?\n}\n/.exec(html)![0];
-    expect(end).toMatch(/openedByScript = !!window\.opener/);
-    expect(end).toMatch(/if \(openedByScript\) \{\s*try \{ window\.close\(\); \}/);
-    expect(end).toContain("classList.add('viewer-gone')");
+    expect(end).not.toMatch(/window\.opener/);
+    expect(end).toMatch(/try \{ window\.close\(\); \}/);
+    expect(end).toContain("window.location.replace('/')");
+    expect(html).not.toMatch(/body\.viewer-gone \{ background: #000; \}/);
     expect(html).toContain('body.viewer-gone > * { display: none !important; }');
   });
 });
