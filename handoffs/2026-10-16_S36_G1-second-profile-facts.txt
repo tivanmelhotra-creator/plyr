@@ -1,0 +1,124 @@
+S36 — owner brief 2 / G.1: a second profile of the SAME branch (user-data-dir) by hand while the first runs under Playwright.
+Linux sandbox, Xvfb :77 + openbox, Playwright's pinned Chromium (chromium.executablePath()). Docker: NOT RUN (owner: do not install Docker here).
+Scripts: tools/s36/second-profile-facts.mjs, which-switch.mjs, forward-under-playwright.mjs, forward-consequences.mjs, identify-profile-targets.mjs
+
+ANSWER: exit code 21 is NOT a Chromium limit. It is caused by Playwright's default switch --enable-automation on the FIRST browser.
+  - First under plain Playwright (with --enable-automation) -> plain 2nd launch: exit 21 "Failed to create ... SingletonLock: File exists"
+    (Chromium refuses to forward into a browser started for automation).
+  - SingletonLock is NOT a hostname/PID-namespace artifact: lock -> "<our hostname>-<pid>", hostname matches, pid alive in our namespace, SingletonSocket present.
+  - Same first browser started WITHOUT --enable-automation (all other Playwright switches kept, incl. --remote-debugging-pipe):
+    plain 2nd launch: exit 0, forwarded into the SAME process, a window for profile-002 opens, folder profile-002 created.
+  - The app ALREADY launches Browser-Profiles browsers without it (core/BrowserProfile IGNORED_DEFAULT_ARGS = --disable-extensions, --enable-automation),
+    so in the app a second profile CAN be opened by hand in the same branch.
+Consequences (measured, first launched exactly as the app does):
+  a) Playwright's context SEES the second profile's tabs (context.pages() and the 'page' event include them) -> automation must ignore them.
+  b) Profiles stay separate: a cookie set in profile-001 is not visible in profile-002.
+  c) Closing the Playwright context (Stop of the first browser, run end) closes BOTH windows (one process).
+  d) Closing the second profile's window leaves the first Playwright session working.
+  e) Every tab carries its profile's CDP browserContextId (also tabs opened later with Ctrl+T), so the server can tell them apart.
+=> G.2 applies (hold-to-confirm, manual-only second browser).
+
+Raw output:
+--- /tmp/g1.txt
+RESULT {
+ "firstUnderPlaywright": {
+  "argvHasPipe": true,
+  "windowsBefore": 1,
+  "lock": {
+   "lockTarget": "sandbox.local-4464",
+   "ourHostname": "sandbox.local",
+   "hostMatches": true,
+   "lockPidAliveHere": true,
+   "socket": true,
+   "cookie": false
+  }
+ },
+ "P1_plainSecondWhilePlaywright": {
+  "exitCode": 21,
+  "stderr": [
+   "Failed to create /tmp/s36-JkxDgL/branch-A/SingletonLock: File exists (17)",
+   "Failed to create a ProcessSingleton for your profile directory. This means that running multiple instances would start multiple browser processes rather than opening a new window in the existing process. Aborting now to ",
+   "write: Broken pipe (32)"
+  ],
+  "newWindows": 0,
+  "profile002Created": false,
+  "firstSessionAlive": true,
+  "processesOnRoot": 1,
+  "pagesSeenByPlaywright": 1
+ },
+ "P4_firstPlain_lock": {
+  "lockTarget": "sandbox.local-4583",
+  "ourHostname": "sandbox.local",
+  "hostMatches": true,
+  "lockPidAliveHere": true,
+  "socket": true,
+  "cookie": false
+ },
+ "P4_plainSecondWhilePlain": {
+  "exitCode": 0,
+  "stderr": [
+   "Opening in existing browser session."
+  ],
+  "newWindows": 1,
+  "profile002Created": true,
+  "firstAlive": true,
+  "processesOnRoot": 1
+ }
+}
+--- /tmp/g1b.txt
+PLAYWRIGHT_ARGV ["--disable-field-trial-config","--disable-background-networking","--disable-background-timer-throttling","--disable-backgrounding-occluded-windows","--disable-back-forward-cache","--disable-breakpad","--disable-client-side-phishing-detection","--disable-component-extensions-with-background-pages","--disable-component-update","--no-default-browser-check","--disable-default-apps","--disable-dev-shm-usage","--disable-extensions","--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgr
+TRIAL all playwright switches: second exit=21 forwarded=false profile-002 created=false
+TRIAL without --remote-debugging-pipe: second exit=21 forwarded=false profile-002 created=false
+TRIAL without --no-startup-window: second exit=21 forwarded=false profile-002 created=false
+TRIAL without --enable-automation: second exit=0 forwarded=false profile-002 created=true
+TRIAL only --remote-debugging-pipe + --no-sandbox: second exit=0 forwarded=false profile-002 created=true
+TRIAL only --no-sandbox (plain): second exit=0 forwarded=false profile-002 created=true
+--- /tmp/g1c.txt
+RESULT {
+ "webdriver": true,
+ "second": {
+  "exitCode": 0,
+  "stderrHead": [],
+  "newWindows": 1,
+  "windowTitles": [
+   "first - Chromium",
+   "second-profile - Chromium"
+  ],
+  "profile002Created": true,
+  "browserProcessesOnRoot": 1,
+  "sameProcess": true
+ },
+ "firstSession": {
+  "alive": true,
+  "newPageWorks": true,
+  "pagesPlaywrightSees": [
+   "data:text/html,<title>still</title>",
+   "data:text/html,<title>second-profile</title>",
+   "data:text/html,<title>new-tab</title>"
+  ]
+ },
+ "secondVisibleToPlaywright": true,
+ "afterPlaywrightClose": {
+  "windowsLeft": 0,
+  "windowsClosed": 2,
+  "browserProcessesOnRoot": 0
+ }
+}
+--- /tmp/g1d.txt
+RESULT {
+ "a_automationSeesSecondProfileTab": {
+  "pageEvent": [
+   "http://127.0.0.1:32945/second",
+   "http://127.0.0.1:32945/second2"
+  ],
+  "inContextPages": true
+ },
+ "b_secondProfileCookie": "",
+ "b_firstProfileCookie": "who=first",
+ "d_firstAliveAfterSecondWindowClosed": true,
+ "c_closingPlaywrightContext": {
+  "windowsBefore": 2,
+  "windowsAfter": 0
+ }
+}
+--- identify-profile-targets: 2 browserContextIds, the Ctrl+T tab belongs to profile-002's id (see run in S36)
