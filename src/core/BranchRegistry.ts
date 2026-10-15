@@ -23,23 +23,36 @@
  * their profile always had (`default`, `named:<id>`, `realchrome`), so live
  * Redis records stay valid across the upgrade.
  *
- * MIGRATION WITHOUT MOVING DATA. On first use every pre-existing profile root
- * (registry `default`, `browser-profiles/<id>`, the Local Browser root) is
- * adopted as a LEGACY branch AT ITS CURRENT PATH, with the folder Chromium
- * already used (core/ChromiumProfileLocation adoption). Ids stay, so every
- * workflow reference keeps working. Nothing is copied, renamed or deleted.
+ * ONE KIND OF BRANCH (S34, owner brief 1.3 / 2.1). There is no "legacy",
+ * "built-in", "Local Browser" or "external" branch any more: every branch is
+ * listed, renamable and deletable under the same rules.
+ *   - The Local Browser root (REAL_CHROME_USER_DATA_DIR) is NOT a branch. It
+ *     belongs to core/RealChrome (internal session `realchrome`). Before S34
+ *     it was adopted as a hidden branch: that hidden record took branch-001
+ *     and was filtered out of the UI (bug 2.1). A stored record of it is now
+ *     dropped from the registry on load; its folder is left untouched.
+ *   - Pre-branch roots (`<PROFILES_DIR>/<user>/chrome-profile`,
+ *     `browser-profiles/<id>`) are adopted IN PLACE as normal branches only
+ *     when they hold user data (a Chromium profile or Local State); an empty
+ *     one is not a branch. Nothing is moved, copied or deleted.
+ *   - INVARIANT under BRANCH_BASE_DIR: the registry, the list the UI shows
+ *     and the `branch-NNN` folders on disk are the same set. At load an
+ *     unlisted `branch-NNN` folder without user data is removed; one WITH
+ *     data is listed as a normal branch ("Branch N"); nothing is destroyed
+ *     silently (both are logged). Branch ids are never reused.
  */
 import { promises as fs } from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
-import { resolveChromiumProfile, isValidProfileDirectory, PIN_FILE } from './ChromiumProfileLocation';
+import { resolveChromiumProfile, isValidProfileDirectory } from './ChromiumProfileLocation';
 import { sanitizeProfileId } from './ProfileLease';
 import { indexedProfile, replaceIndexFor, type IndexEntry } from './ProfileIndex';
 
 export { indexedProfile, indexedByLeaseKey } from './ProfileIndex';
 
 export const DEFAULT_PROFILE_ID = 'default';
-export const LOCAL_BROWSER_PROFILE_ID = 'local-browser';
+/** The id the pre-S34 registry gave the adopted Local Browser root. Only used to drop that record. */
+const OLD_LOCAL_BROWSER_PROFILE_ID = 'local-browser';
 export const REGISTRY_FILE = 'branches.json';
 const NAME_MAX = 60;
 
@@ -50,31 +63,7 @@ export interface BranchRecord {
   leaseKey: string;
   createdAt: string;
   updatedAt: string;
-  legacy?: boolean;
-  builtIn?: boolean;
-  kind?: 'local-browser' | 'profiles';
   nextProfile: number;
-  /**
-   * Added from OUTSIDE Aria (an existing Chromium data folder the user chose,
-   * after a warning and a separate confirmation). Aria never deletes such a
-   * folder: deleting the branch only forgets it.
-   */
-  external?: boolean;
-}
-
-/** What Aria found in an existing folder before the user confirms adding it. Read-only. */
-export interface ExternalInspection {
-  root: string;
-  /** Chromium profile folders found (Default, Profile 1, ...), with Chromium's display name. */
-  profiles: Array<{ folder: string; chromiumName: string | null }>;
-  /** A browser seems to use it right now (SingletonLock / Windows lockfile present). */
-  inUse: boolean;
-  /** It looks like a personal browser's default data folder. */
-  personal: boolean;
-  /** Already registered (as a branch root or inside one). */
-  alreadyRegistered: string | null;
-  warnings: string[];
-  errors: string[];
 }
 
 export interface ProfileRecord {
@@ -84,7 +73,6 @@ export interface ProfileRecord {
   name: string;
   createdAt: string;
   updatedAt: string;
-  builtIn?: boolean;
   lastOpenError?: { at: string; message: string } | null;
 }
 
@@ -96,13 +84,11 @@ export interface ProfileEntry {
   name: string;
   createdAt: string;
   updatedAt: string;
-  builtIn: boolean;
   problem?: string | null;
   lastOpenError?: { at: string; message: string } | null;
   branchId: string;
   branchLabel: string;
   folder: string;
-  kind: 'local-browser' | 'profiles';
 }
 
 export type RegistryErrorCode = 'invalid_name' | 'duplicate_name' | 'not_found' | 'builtin' | 'io' | 'invalid_id' | 'branch_not_found';
@@ -126,10 +112,6 @@ export const branchIdOf = (n: number): string => `branch-${String(n).padStart(3,
 export const profileFolderOf = (n: number): string => `profile-${String(n).padStart(3, '0')}`;
 export const isBranchId = (v: unknown): v is string => typeof v === 'string' && /^branch-\d{3,}$/.test(v);
 export function newProfileId(): string { return `prf_${randomBytes(6).toString('hex')}`; }
-export function isPersonalBrowserFolder(rawRoot: string): boolean {
-  const cleaned = String(rawRoot || "").trim().replace(/[\\/]+$/, "");
-  return /[\\/](User Data([\\/](Default|Profile \d+))?|\.config[\\/](chromium|google-chrome[^\\/]*|BraveSoftware[^\\/]*))$/i.test(cleaned);
-}
 
 /** Legacy profile root (the rule runs always used before branches). */
 export function legacyProfileDir(profilesDir: string, userId: string, id: string): string {
@@ -161,8 +143,40 @@ export interface BranchRegistryOptions {
   profilesDir: string;
   /** Where NEW branches are created (core/BranchBase). Read at each create. */
   baseDir: () => string;
-  /** The Local Browser's root (REAL_CHROME_USER_DATA_DIR), adopted as a built-in branch. */
-  localBrowserRoot?: () => string | null;
+  /**
+   * Reconcile `branch-NNN` folders under the base directory that no registry
+   * lists (see the header). Default true. Multi-user servers share one base
+   * directory, so a folder listed by ANY user's registry is never touched.
+   */
+  reconcileBase?: boolean;
+  /** Log sink for reconcile / migration events (default console). */
+  log?: (line: string) => void;
+}
+
+/** Does `root` hold Chromium user data (Local State, or a profile folder with Preferences)? Read-only. */
+export async function holdsUserData(root: string): Promise<boolean> {
+  if (await exists(path.join(root, 'Local State'))) return true;
+  let names: string[] = [];
+  try { names = (await fs.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return false; }
+  for (const n of names) if (await exists(path.join(root, n, 'Preferences'))) return true;
+  return false;
+}
+
+/** Profile folders Chromium created in `root` (a folder with Preferences), with Chromium's display name. Read-only. */
+async function chromiumProfilesIn(root: string): Promise<Array<{ folder: string; chromiumName: string | null }>> {
+  let ls: any = null;
+  try { ls = JSON.parse(await fs.readFile(path.join(root, 'Local State'), 'utf8')); } catch { ls = null; }
+  const cache = (ls?.profile?.info_cache || {}) as Record<string, { name?: string }>;
+  let names: string[] = [];
+  try { names = (await fs.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch { names = []; }
+  const out: Array<{ folder: string; chromiumName: string | null }> = [];
+  for (const n of names.sort()) {
+    if (!isValidProfileDirectory(n)) continue;
+    if (!(await exists(path.join(root, n, 'Preferences')))) continue;
+    const cn = cache[n]?.name;
+    out.push({ folder: n, chromiumName: typeof cn === 'string' && cn.trim() ? cn.trim() : null });
+  }
+  return out;
 }
 
 export class BranchRegistry {
@@ -212,7 +226,9 @@ export class BranchRegistry {
     }
     const fresh = !f;
     if (!f) f = { version: 1, nextBranch: 1, branches: [], profiles: [] };
-    const changed = await this.adoptLegacy(userId, f);
+    let changed = this.dropRetiredRecords(f);
+    if (await this.adoptPreBranchRoots(userId, f)) changed = true;
+    if (this.opts.reconcileBase !== false && await this.reconcileBase(userId, f)) changed = true;
     if (fresh || changed) await this.save(userId, f);
     else { this.cache.set(userId, f); this.reindex(userId, f); }
     return f;
@@ -229,23 +245,67 @@ export class BranchRegistry {
     return branchIdOf(n);
   }
 
-  private async adoptLegacy(userId: string, f: RegistryFile): Promise<boolean> {
+  private log(line: string): void { (this.opts.log || ((l: string) => console.log(l)))(line); }
+
+  /**
+   * Records the pre-S34 registry stored that no longer exist as concepts:
+   *   - the Local Browser branch (profile `local-browser`, kind
+   *     'local-browser'): the root is RealChrome's, not a branch. It held
+   *     branch-001 hidden from the UI (bug 2.1);
+   *   - branches added "from outside Aria" (`external`): that feature is
+   *     removed (brief 1.4). The record is forgotten, the folder is the
+   *     user's and is NEVER deleted.
+   * Every remaining record loses the retired flags (legacy / builtIn / kind).
+   */
+  private dropRetiredRecords(f: RegistryFile): boolean {
+    let changed = false;
+    const retired = new Set<string>();
+    for (const b of f.branches as Array<BranchRecord & Record<string, unknown>>) {
+      if (b.kind === 'local-browser' || b.external === true || f.profiles.some((p) => p.branchId === b.id && p.id === OLD_LOCAL_BROWSER_PROFILE_ID)) {
+        retired.add(b.id);
+        this.log(`[PROFILES] registry: dropped retired ${b.kind === 'local-browser' ? 'Local Browser' : 'outside-Aria'} branch record ${b.id} ("${b.label}"); its folder ${b.root} was left untouched`);
+      }
+    }
+    if (retired.size) {
+      f.branches = f.branches.filter((b) => !retired.has(b.id));
+      f.profiles = f.profiles.filter((p) => !retired.has(p.branchId) && p.id !== OLD_LOCAL_BROWSER_PROFILE_ID);
+      changed = true;
+    }
+    for (const b of f.branches as Array<BranchRecord & Record<string, unknown>>) {
+      for (const k of ['legacy', 'builtIn', 'kind', 'external']) if (k in b) { delete b[k]; changed = true; }
+    }
+    for (const p of f.profiles as Array<ProfileRecord & Record<string, unknown>>) {
+      if ('builtIn' in p) { delete p.builtIn; changed = true; }
+    }
+    return changed;
+  }
+
+  /**
+   * Profile roots from before branches existed (`<PROFILES_DIR>/<user>/chrome-profile`
+   * = profile `default`, `browser-profiles/<id>`), adopted IN PLACE as normal
+   * branches, but only when they hold user data. An empty root is not a
+   * branch (it used to become a hidden/empty "Default"). The folder is the
+   * one Chromium already used (core/ChromiumProfileLocation); the lock key
+   * stays the one the profile always had, so live Redis records stay valid.
+   */
+  private async adoptPreBranchRoots(userId: string, f: RegistryFile): Promise<boolean> {
     let changed = false;
     const now = new Date().toISOString();
     const known = new Set(f.profiles.map((p) => p.id));
-    const adopt = async (id: string, root: string, label: string, leaseKey: string, extra: Partial<BranchRecord>, name: string) => {
-      if (known.has(id)) return;
+    const knownRoots = new Set(f.branches.map((b) => path.resolve(b.root)));
+    const adopt = async (id: string, root: string, name: string) => {
+      if (known.has(id) || knownRoots.has(path.resolve(root))) return;
+      if (!(await isDir(root)) || !(await holdsUserData(root))) return;
       const loc = await resolveChromiumProfile(root); // pins the folder Chromium already used; moves nothing
       const bid = await this.allocBranch(f);
-      f.branches.push({ id: bid, label, root: path.resolve(root), leaseKey, createdAt: now, updatedAt: now, legacy: true, nextProfile: 1, kind: 'profiles', ...extra });
-      f.profiles.push({ id, branchId: bid, folder: loc.profileDirectory, name, createdAt: now, updatedAt: now, ...(extra.builtIn ? { builtIn: true } : {}) });
-      known.add(id);
+      f.branches.push({ id: bid, label: name, root: path.resolve(root), leaseKey: legacyLeaseKey(id), createdAt: now, updatedAt: now, nextProfile: 1 });
+      f.profiles.push({ id, branchId: bid, folder: loc.profileDirectory, name, createdAt: now, updatedAt: now });
+      known.add(id); knownRoots.add(path.resolve(root));
+      this.log(`[PROFILES] registry: adopted the existing profile root ${root} in place as ${bid} ("${name}")`);
       changed = true;
     };
-    const lb = this.opts.localBrowserRoot?.();
-    if (lb) await adopt(LOCAL_BROWSER_PROFILE_ID, lb, 'Local Browser', 'realchrome', { builtIn: true, kind: 'local-browser' }, 'Local Browser');
     const defRoot = legacyProfileDir(this.opts.profilesDir, userId, DEFAULT_PROFILE_ID);
-    await adopt(DEFAULT_PROFILE_ID, defRoot, 'Default', legacyLeaseKey(DEFAULT_PROFILE_ID), { builtIn: true }, (await readMetaName(defRoot)) || 'Default');
+    await adopt(DEFAULT_PROFILE_ID, defRoot, (await readMetaName(defRoot)) || 'Default');
     let names: string[] = [];
     try {
       names = (await fs.readdir(path.join(this.opts.profilesDir, userId, 'browser-profiles'), { withFileTypes: true }))
@@ -254,8 +314,68 @@ export class BranchRegistry {
     for (const n of names.sort()) {
       if (!sanitizeProfileId(n) || n === DEFAULT_PROFILE_ID) continue;
       const dir = path.join(this.opts.profilesDir, userId, 'browser-profiles', n);
-      const name = (await readMetaName(dir)) || n;
-      await adopt(n, dir, name, legacyLeaseKey(n), {}, name);
+      await adopt(n, dir, (await readMetaName(dir)) || n);
+    }
+    return changed;
+  }
+
+  /** Every branch root listed by ANY user's registry file (the base directory is shared). */
+  private async rootsListedAnywhere(): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const f of this.cache.values()) for (const b of f.branches) out.add(path.resolve(b.root));
+    let users: string[] = [];
+    try { users = (await fs.readdir(this.opts.profilesDir, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch { users = []; }
+    for (const u of users) {
+      try {
+        const raw = JSON.parse(await fs.readFile(path.join(this.opts.profilesDir, u, REGISTRY_FILE), 'utf8'));
+        for (const b of Array.isArray(raw?.branches) ? raw.branches : []) if (typeof b?.root === 'string') out.add(path.resolve(b.root));
+      } catch { /* no or unreadable registry: nothing listed there */ }
+    }
+    return out;
+  }
+
+  /**
+   * INVARIANT registry == disk under the base directory (brief 2.1). A
+   * `branch-NNN` folder no registry lists is:
+   *   - without user data -> removed (a leftover of an interrupted create);
+   *   - with user data    -> listed as a normal branch "Branch N", its
+   *     Chromium profile folders as profiles. Never destroyed.
+   * Either way the counter moves past N, so the id is never reused.
+   */
+  private async reconcileBase(userId: string, f: RegistryFile): Promise<boolean> {
+    let base: string;
+    try { base = path.resolve(this.opts.baseDir()); } catch { return false; }
+    let dirs: string[] = [];
+    try { dirs = (await fs.readdir(base, { withFileTypes: true })).filter((d) => d.isDirectory() && /^branch-\d{3,}$/.test(d.name)).map((d) => d.name); } catch { return false; }
+    if (!dirs.length) return false;
+    const listed = await this.rootsListedAnywhere();
+    for (const b of f.branches) listed.add(path.resolve(b.root));
+    let changed = false;
+    const now = new Date().toISOString();
+    for (const d of dirs.sort()) {
+      const root = path.join(base, d);
+      if (listed.has(root)) continue;
+      const n = Number(/^branch-(\d+)$/.exec(d)![1]);
+      if (n + 1 > (f.nextBranch || 1)) { f.nextBranch = n + 1; changed = true; }
+      if (!(await holdsUserData(root))) {
+        try {
+          await fs.rm(root, { recursive: true, force: true });
+          this.log(`[PROFILES] registry: removed ${root} (no registry lists it and it holds no user data)`);
+        } catch (e) { this.log(`[PROFILES] registry: could not remove the empty unlisted folder ${root}: ${(e as Error).message}`); }
+        continue;
+      }
+      if (f.branches.some((b) => b.id === d)) continue; // id taken by a branch elsewhere: leave the folder, never overwrite
+      const found = await chromiumProfilesIn(root);
+      f.branches.push({ id: d, label: `Branch ${n}`, root, leaseKey: `branch:${userId}/${d}`, createdAt: now, updatedAt: now, nextProfile: 1 });
+      let i = 0;
+      for (const p of found) {
+        i++;
+        let pid = newProfileId();
+        while (f.profiles.some((x) => x.id === pid)) pid = newProfileId();
+        f.profiles.push({ id: pid, branchId: d, folder: p.folder, name: p.chromiumName || `Profile ${i}`, createdAt: now, updatedAt: now });
+      }
+      this.log(`[PROFILES] registry: listed the unlisted folder ${root} as "Branch ${n}" (${found.length} profile(s)); its data was kept`);
+      changed = true;
     }
     return changed;
   }
@@ -266,20 +386,17 @@ export class BranchRegistry {
     const b = f.branches.find((x) => x.id === p.branchId);
     return {
       id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
-      builtIn: !!p.builtIn, problem: b ? null : 'its branch is missing from the registry',
+      problem: b ? null : 'its branch is missing from the registry',
       lastOpenError: p.lastOpenError ?? null,
       branchId: p.branchId, branchLabel: b?.label || p.branchId, folder: p.folder,
-      kind: b?.kind === 'local-browser' ? 'local-browser' : 'profiles',
     };
   }
 
-  /** Every profile: Default first, then by branch, then by name. The Local Browser only when asked. */
-  async list(userId: string, opts: { includeLocalBrowser?: boolean } = {}): Promise<ProfileEntry[]> {
+  /** Every profile, by branch, then by name. Nothing is hidden. */
+  async list(userId: string): Promise<ProfileEntry[]> {
     const f = await this.serial(userId, () => this.load(userId));
-    const order = (p: ProfileRecord) => (p.id === DEFAULT_PROFILE_ID ? 0 : p.id === LOCAL_BROWSER_PROFILE_ID ? 1 : 2);
     return f.profiles
-      .filter((p) => opts.includeLocalBrowser || p.id !== LOCAL_BROWSER_PROFILE_ID)
-      .slice().sort((a, b) => order(a) - order(b) || a.branchId.localeCompare(b.branchId) || a.name.localeCompare(b.name))
+      .slice().sort((a, b) => a.branchId.localeCompare(b.branchId) || a.name.localeCompare(b.name))
       .map((p) => this.entryOf(f, p));
   }
 
@@ -301,7 +418,7 @@ export class BranchRegistry {
   }
 
   async profilesOf(userId: string, branchId: string): Promise<ProfileEntry[]> {
-    return (await this.list(userId, { includeLocalBrowser: true })).filter((p) => p.branchId === branchId);
+    return (await this.list(userId)).filter((p) => p.branchId === branchId);
   }
 
   /** The branch root (Chromium --user-data-dir) of a profile; legacy formula when unknown. */
@@ -349,7 +466,7 @@ export class BranchRegistry {
       if (await exists(root)) throw new ProfileRegistryError(`The folder for ${id} already exists; a new branch is never created on existing data.`, 'io');
       try { await fs.mkdir(root, { recursive: true }); } catch (e) { throw new ProfileRegistryError(`Could not create the branch folder: ${(e as Error).message}`, 'io'); }
       const now = new Date().toISOString();
-      const b: BranchRecord = { id, label, root, leaseKey: `branch:${userId}/${id}`, createdAt: now, updatedAt: now, nextProfile: 1, kind: 'profiles' };
+      const b: BranchRecord = { id, label, root, leaseKey: `branch:${userId}/${id}`, createdAt: now, updatedAt: now, nextProfile: 1 };
       f.branches.push(b);
       await this.save(userId, f);
       return { ...b };
@@ -381,7 +498,6 @@ export class BranchRegistry {
       const f = await this.load(userId);
       const b = f.branches.find((x) => x.id === branchId);
       if (!b) throw new ProfileRegistryError('Branch not found', 'branch_not_found');
-      if (b.kind === 'local-browser') throw new ProfileRegistryError('Profiles cannot be added to the Local Browser branch.', 'builtin');
       let n = Math.max(1, b.nextProfile || 1);
       const used = new Set(f.profiles.filter((p) => p.branchId === b.id).map((p) => p.folder));
       let folder = profileFolderOf(n);
@@ -399,66 +515,6 @@ export class BranchRegistry {
     });
   }
 
-  /**
-   * Read-only look at an existing folder (section 4): nothing is opened,
-   * changed or written. The caller shows the warnings and asks for a SEPARATE
-   * confirmation before `addExternalBranch`.
-   */
-  async inspectExternal(userId: string, rawRoot: unknown): Promise<ExternalInspection> {
-    const root = typeof rawRoot === 'string' && rawRoot.trim() ? path.resolve(rawRoot.trim()) : '';
-    const out: ExternalInspection = { root, profiles: [], inUse: false, personal: false, alreadyRegistered: null, warnings: [], errors: [] };
-    if (!root || !path.isAbsolute(String(rawRoot).trim())) { out.errors.push('Use the full (absolute) path of an existing folder.'); return out; }
-    if (!(await isDir(root))) { out.errors.push('The folder does not exist.'); return out; }
-    const f = await this.serial(userId, () => this.load(userId));
-    const reg = f.branches.find((b) => {
-      const r = path.resolve(b.root);
-      return r === root || root.startsWith(r + path.sep) || r.startsWith(root + path.sep);
-    });
-    if (reg) { out.alreadyRegistered = reg.id; out.errors.push(`This folder is already used by ${reg.id} ("${reg.label}").`); }
-    let ls: any = null;
-    try { ls = JSON.parse(await fs.readFile(path.join(root, 'Local State'), 'utf8')); } catch { ls = null; }
-    const cache = (ls?.profile?.info_cache || {}) as Record<string, { name?: string }>;
-    let names: string[] = [];
-    try { names = (await fs.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch { names = []; }
-    for (const n of names.sort()) {
-      if (!isValidProfileDirectory(n)) continue;
-      if (!(await exists(path.join(root, n, 'Preferences')))) continue;
-      out.profiles.push({ folder: n, chromiumName: typeof cache[n]?.name === 'string' ? cache[n]!.name! : null });
-    }
-    if (!ls && !out.profiles.length) out.errors.push('This is not a Chromium data folder (no "Local State" and no profile folders).');
-    // Linux/macOS: SingletonLock (a symlink); Windows: lockfile.
-    for (const f of ['SingletonLock', 'lockfile']) if (await fs.lstat(path.join(root, f)).then(() => true, () => false)) out.inUse = true;
-    if (out.inUse) out.errors.push('A browser is using this folder right now. Close it first.');
-    out.personal = isPersonalBrowserFolder(root);
-    if (out.personal) out.warnings.push('This looks like the data folder of your PERSONAL browser. Aria would open and change it (cookies, logins, history). Use a copy instead.');
-    out.warnings.push('Aria will open this folder with its own browser and may change its data. Aria will NEVER delete it: deleting the branch only removes it from Aria.');
-    return out;
-  }
-
-  /** Register an existing folder as an external branch. Nothing is moved, copied or deleted. */
-  async addExternalBranch(userId: string, rawRoot: unknown, rawLabel?: unknown): Promise<{ branch: BranchRecord; profiles: ProfileEntry[] }> {
-    const ins = await this.inspectExternal(userId, rawRoot);
-    if (ins.errors.length) throw new ProfileRegistryError(ins.errors.join(' '), 'io');
-    const label = rawLabel === undefined || rawLabel === null || rawLabel === '' ? path.basename(ins.root) : normalizeName(rawLabel, 'Branch name');
-    return this.serial(userId, async () => {
-      const f = await this.load(userId);
-      const id = await this.allocBranch(f);
-      const now = new Date().toISOString();
-      const b: BranchRecord = { id, label, root: ins.root, leaseKey: `branch:${userId}/${id}`, createdAt: now, updatedAt: now, nextProfile: 1, kind: 'profiles', external: true };
-      f.branches.push(b);
-      const folders = ins.profiles.length ? ins.profiles : [{ folder: 'Default', chromiumName: null }];
-      const added: ProfileRecord[] = [];
-      for (const p of folders) {
-        let pid = newProfileId();
-        while (f.profiles.some((x) => x.id === pid)) pid = newProfileId();
-        const rec: ProfileRecord = { id: pid, branchId: id, folder: p.folder, name: p.chromiumName || p.folder, createdAt: now, updatedAt: now };
-        f.profiles.push(rec); added.push(rec);
-      }
-      await this.save(userId, f);
-      return { branch: { ...b }, profiles: added.map((r) => this.entryOf(f, r)) };
-    });
-  }
-
   /** Only the display name changes; id, branch, folder and references stay. */
   async rename(userId: string, id: string, rawName: unknown): Promise<ProfileEntry> {
     const name = normalizeName(rawName);
@@ -473,21 +529,6 @@ export class BranchRegistry {
     });
   }
 
-  /** Explicitly adopt a legacy profile id (creates its legacy root). Used by tools and tests only. */
-  async ensure(userId: string, id: string): Promise<ProfileEntry | null> {
-    const sid = sanitizeProfileId(id);
-    if (!sid) return null;
-    const cur = await this.get(userId, sid);
-    if (cur) return cur;
-    await fs.mkdir(legacyProfileDir(this.opts.profilesDir, userId, sid), { recursive: true });
-    return this.serial(userId, async () => {
-      const f = await this.load(userId);
-      if (await this.adoptLegacy(userId, f)) await this.save(userId, f);
-      const p = f.profiles.find((x) => x.id === sid);
-      return p ? this.entryOf(f, p) : null;
-    });
-  }
-
   async recordOpenError(userId: string, id: string, message: string | null): Promise<void> {
     await this.serial(userId, async () => {
       const f = await this.load(userId);
@@ -499,32 +540,46 @@ export class BranchRegistry {
     }).catch(() => {});
   }
 
-  /** Delete a whole branch (folder + profile records). Safety is the CALLER's (core/BranchDeletion). */
-  async removeBranch(userId: string, branchId: string): Promise<{ removedProfiles: string[]; keptFolder?: string }> {
+  /** Delete a whole branch (folder + profile records). Safety is the CALLER's (routes: dependency scan). */
+  async removeBranch(userId: string, branchId: string): Promise<{ removedProfiles: string[] }> {
     return this.serial(userId, async () => {
       const f = await this.load(userId);
       const b = f.branches.find((x) => x.id === branchId);
       if (!b) throw new ProfileRegistryError('Branch not found', 'branch_not_found');
-      if (b.builtIn) throw new ProfileRegistryError('This branch is built in and cannot be deleted.', 'builtin');
       const removed = f.profiles.filter((p) => p.branchId === b.id).map((p) => p.id);
-      // A folder added from outside Aria is the user's: forget it, never delete it.
-      if (!b.external) await fs.rm(b.root, { recursive: true, force: true });
+      await fs.rm(b.root, { recursive: true, force: true });
       f.branches = f.branches.filter((x) => x.id !== b.id);
       f.profiles = f.profiles.filter((p) => p.branchId !== b.id);
-      await this.save(userId, f); // nextBranch is untouched: the id is never reused
-      return { removedProfiles: removed, ...(b.external ? { keptFolder: b.root } : {}) };
+      // The counter must stay above this id even if it was the highest one.
+      const m = /^branch-(\d+)$/.exec(b.id);
+      if (m) f.nextBranch = Math.max(f.nextBranch || 1, Number(m[1]) + 1);
+      await this.save(userId, f);
+      return { removedProfiles: removed };
     });
   }
 
-  /** A single profile is deleted by deleting its branch, and only when it is alone in it. */
+  /**
+   * Delete ONE profile: its folder inside the branch and its record. The
+   * branch stays (it may become empty). Safety is the CALLER's (routes:
+   * deleteBlockers). The folder number is never reused (nextProfile).
+   */
   async remove(userId: string, id: string): Promise<void> {
     if (!sanitizeProfileId(id)) throw new ProfileRegistryError('Invalid profile id', 'invalid_id');
-    const e = await this.get(userId, id);
-    if (!e) throw new ProfileRegistryError('Profile not found', 'not_found');
-    if (e.builtIn) throw new ProfileRegistryError('The default profile cannot be deleted', 'builtin');
-    const siblings = (await this.profilesOf(userId, e.branchId)).filter((p) => p.id !== id);
-    if (siblings.length) throw new ProfileRegistryError('This profile shares its branch with other profiles; delete the branch instead.', 'builtin');
-    await this.removeBranch(userId, e.branchId);
+    await this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const p = f.profiles.find((x) => x.id === id);
+      if (!p) throw new ProfileRegistryError('Profile not found', 'not_found');
+      const b = f.branches.find((x) => x.id === p.branchId);
+      if (b && isValidProfileDirectory(p.folder)) {
+        const dir = path.join(path.resolve(b.root), p.folder);
+        if (path.dirname(dir) === path.resolve(b.root)) await fs.rm(dir, { recursive: true, force: true });
+        const m = /^profile-(\d+)$/.exec(p.folder);
+        if (m) b.nextProfile = Math.max(b.nextProfile || 1, Number(m[1]) + 1);
+        b.updatedAt = new Date().toISOString();
+      }
+      f.profiles = f.profiles.filter((x) => x.id !== id);
+      await this.save(userId, f);
+    });
   }
 
   /** Is the profile usable? Read-only: no folder is ever created here. */
@@ -538,10 +593,7 @@ export class BranchRegistry {
     if (!b) return { ok: false, reason: 'branch_missing', detail: `its branch ${p.branchId} is missing from the registry` };
     if (!(await isDir(b.root))) return { ok: false, reason: 'branch_missing', detail: `the folder of branch "${b.label}" is missing on disk` };
     if (!isValidProfileDirectory(p.folder) || !(await isDir(path.join(b.root, p.folder)))) {
-      // A legacy built-in root whose browser never started has no profile folder yet: not breakage.
-      const untouched = !!b.legacy && !(await exists(path.join(b.root, 'Local State')))
-        && (await fs.readdir(b.root).then((xs) => xs.every((x) => x === PIN_FILE || x.startsWith('.plyr')), () => true));
-      if (!untouched) return { ok: false, reason: 'folder_missing', detail: `the profile folder of "${p.name}" is missing on disk` };
+      return { ok: false, reason: 'folder_missing', detail: `the profile folder of "${p.name}" is missing on disk` };
     }
     return { ok: true, root: b.root, folder: p.folder };
   }

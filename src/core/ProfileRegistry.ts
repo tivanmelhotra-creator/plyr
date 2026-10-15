@@ -14,7 +14,7 @@ import path from 'path';
 import { BranchRegistry, type BranchRegistryOptions } from './BranchRegistry';
 
 export {
-  DEFAULT_PROFILE_ID, LOCAL_BROWSER_PROFILE_ID, ProfileRegistryError, normalizeProfileName, newProfileId,
+  DEFAULT_PROFILE_ID, ProfileRegistryError, normalizeProfileName, newProfileId,
   profileDirFor, legacyProfileDir, type ProfileEntry, type RegistryErrorCode, type BranchRecord,
 } from './BranchRegistry';
 
@@ -26,7 +26,8 @@ export class ProfileRegistry extends BranchRegistry {
     super({
       profilesDir,
       baseDir: opts.baseDir || (() => path.join(profilesDir, 'branches')),
-      localBrowserRoot: opts.localBrowserRoot,
+      reconcileBase: opts.reconcileBase,
+      log: opts.log,
     });
   }
 }

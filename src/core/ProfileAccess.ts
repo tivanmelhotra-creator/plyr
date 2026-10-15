@@ -25,7 +25,6 @@ export interface WorkflowRef { id: string; name: string; profileId: string }
 export interface ProfileView {
   id: string;
   name: string;
-  builtIn: boolean;
   /** The branch (Chromium root) this profile lives in (core/BranchRegistry). */
   branchId?: string;
   branchLabel?: string;
@@ -96,7 +95,7 @@ export function explainDenial(reason: DenyReason | null | undefined, d: {
   }
 }
 
-export interface DeleteBlocker { kind: 'lease' | 'hold' | 'browser' | 'reservation' | 'referenced' | 'builtin'; detail: string }
+export interface DeleteBlocker { kind: 'lease' | 'hold' | 'browser' | 'reservation' | 'referenced'; detail: string }
 
 export class ProfileAccess {
   constructor(
@@ -140,11 +139,10 @@ export class ProfileAccess {
     return {
       id: p.id,
       name: p.name,
-      builtIn: p.builtIn,
       branchId: p.branchId,
       branchLabel: p.branchLabel,
       // The same color Chromium shows for this profile (core/ChromiumProfileName).
-      color: p.kind === 'local-browser' || p.builtIn ? null : profileLookOf(p.folder).color,
+      color: profileLookOf(p.folder).color,
       branchBusyWith: busyWith ? { id: busyWith.id, name: busyWith.name } : null,
       status: deriveStatus({ problem: p.problem, lastOpenError: p.lastOpenError, lease, hold, activeReservation: active, session }),
       available: adm.ok && !p.problem,
@@ -172,16 +170,24 @@ export class ProfileAccess {
     };
   }
 
-  /** Everything that makes deleting a profile unsafe. Empty = may delete. */
+  /**
+   * Everything that makes deleting ONE profile unsafe. Empty = may delete.
+   * Leases, holds, sessions and reservations are keyed by BRANCH; they block
+   * this profile only when they are about THIS profile (the profile running
+   * in the branch, or a reservation of a workflow that uses it). A sibling
+   * running in the same branch does not block it.
+   */
   async deleteBlockers(id: string, workflows: WorkflowRef[]): Promise<DeleteBlocker[]> {
     const out: DeleteBlocker[] = [];
-    if (id === DEFAULT_PROFILE_ID) out.push({ kind: 'builtin', detail: 'The default profile cannot be deleted.' });
     const leaseId = leaseIdOf(id);
+    const running = runningProfileOf(leaseId);
+    const mine = !running || running === id;
     const lease = await this.leases.holder(leaseId);
-    if (lease) out.push({ kind: 'lease', detail: `A run (${lease.jobId}) is using it.` });
-    if (await this.leases.holdOf(leaseId)) out.push({ kind: 'hold', detail: 'It is opened by hand (release it first).' });
-    if (this.sessions.get(leaseId)) out.push({ kind: 'browser', detail: 'Its browser is open (close it first).' });
-    const pending = await this.reservations.pending(leaseId);
+    if (lease && mine) out.push({ kind: 'lease', detail: `A run (${lease.jobId}) is using it.` });
+    if (mine && await this.leases.holdOf(leaseId)) out.push({ kind: 'hold', detail: 'It is opened by hand (release it first).' });
+    if (this.sessions.get(leaseId) && mine) out.push({ kind: 'browser', detail: 'Its browser is open (close it first).' });
+    const users = new Set(workflows.filter((w) => w.profileId === id).map((w) => w.id));
+    const pending = (await this.reservations.pending(leaseId)).filter((r) => users.has(r.owner));
     if (pending.length) out.push({ kind: 'reservation', detail: `${pending.length} scheduled run(s) reserve it.` });
     const refs = workflows.filter((w) => w.profileId === id);
     if (refs.length) out.push({ kind: 'referenced', detail: `Used by: ${refs.map((r) => r.name).join(', ')}.` });

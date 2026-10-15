@@ -80,10 +80,13 @@ beforeEach(async () => {
 const cleanup = () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* fine */ } };
 
 describe('/profiles', () => {
-  it('lists the default profile with its status and the reservation settings', async () => {
+  it('a fresh install lists no profile (no automatic Default); a created one is free; the reservation settings are sent', async () => {
     if (!up) return;
+    const r0 = await request(app).get('/profiles').expect(200);
+    expect(r0.body.profiles).toEqual([]);
+    const c = await request(app).post('/profiles').send({ name: 'First' }).expect(201);
     const r = await request(app).get('/profiles').expect(200);
-    expect(r.body.profiles.map((p: any) => p.id)).toEqual(['default']);
+    expect(r.body.profiles.map((p: any) => p.id)).toEqual([c.body.profile.id]);
     expect(r.body.profiles[0].status).toBe('free');
     expect(r.body.settings).toMatchObject({ reserveBeforeMin: expect.any(Number), reserveAfterMin: expect.any(Number) });
     cleanup();
@@ -217,7 +220,7 @@ describe('/profiles', () => {
     await request(app).post('/profiles').send({ name: 'Dup' }).expect(201);
     await request(app).post('/profiles').send({ name: 'dup' }).expect(201);
     await request(app).patch('/profiles/nope').send({ name: 'x' }).expect(404);
-    await request(app).delete('/profiles/default').expect(409);
+    await request(app).delete('/profiles/default').expect(404); // no built-in profile exists
     cleanup();
   });
 

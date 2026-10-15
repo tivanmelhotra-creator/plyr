@@ -182,13 +182,14 @@ registerProfileLeases(profileLeases);
 // reservations, live browser sessions, and one view over all of them.
 // Branches (one Chromium user-data root each) and their profiles
 // (core/BranchRegistry). New branches go under the base directory
-// (Settings, core/BranchBase); the Local Browser root is a built-in branch.
+// (Settings, core/BranchBase). The Local Browser root (RealChrome) is NOT a
+// branch; a stored record of it is dropped on load (brief 2.1).
 const profileRegistry = new ProfileRegistry(config.PROFILES_DIR, {
   baseDir: () => config.BRANCH_BASE_DIR,
-  localBrowserRoot: () => config.REAL_CHROME_USER_DATA_DIR,
 });
 // Load the registry (and the profile -> branch lock index) before any run
-// resolves its profile. Adopts pre-branch roots IN PLACE; moves nothing.
+// resolves its profile. Adopts pre-branch roots with data IN PLACE (moves
+// nothing) and reconciles registry == disk under the base directory.
 void profileRegistry.warm(SINGLE_USER_ID).catch((e) => console.warn(`[PROFILES] registry not loaded: ${(e as Error).message}`));
 const profileFailures = new ProfileFailureReports(connection);
 registerProfileFailureReports(profileFailures);
@@ -201,7 +202,7 @@ registerProfileAccess(profileAccessService);
 // One branch = one root; the window belongs to the profile RUNNING on it.
 BrowserWindowManager.setProfileResolver(async (dir) => {
   const want = path.resolve(dir);
-  const list = await profileRegistry.list(SINGLE_USER_ID, { includeLocalBrowser: true }).catch(() => []);
+  const list = await profileRegistry.list(SINGLE_USER_ID).catch(() => []);
   const inRoot = list.filter((p) => path.resolve(profileRegistry.dirOf(SINGLE_USER_ID, p.id)) === want);
   if (!inRoot.length) return null;
   const key = indexedProfile(inRoot[0]!.id)?.leaseKey;

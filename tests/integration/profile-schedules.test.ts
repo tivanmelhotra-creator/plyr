@@ -82,7 +82,11 @@ describe('overlapping schedules are shown on the profile', () => {
     await schedule('sched:local:1:a', '0 * * * *', 'wf_a');
     await schedule('sched:local:2:b', '5 * * * *', 'wf_b');
     const { coord, app, access } = setup();
-    await access.registry.ensure('local', 'shop');
+    // A pre-branch named root WITH data is adopted in place (id 'shop', lock 'named:shop').
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(path.join(dir, 'local', 'browser-profiles', 'shop', 'Default'), { recursive: true });
+    writeFileSync(path.join(dir, 'local', 'browser-profiles', 'shop', 'Default', 'Preferences'), '{}');
+    await access.registry.warm('local');
     const s = await coord.syncReservations({ horizonMs: 3 * 3600_000 });
     expect(s.overlaps.length).toBeGreaterThan(0);
     const views = await coord.overlaps();
@@ -96,7 +100,7 @@ describe('overlapping schedules are shown on the profile', () => {
     expect(shop.overlaps.length).toBe(1);
     expect(shop.overlaps[0].message).toMatch(/Schedules overlap: "Morning A" .* and "Morning B"/);
     // Nothing else is flagged.
-    expect(r.body.profiles.find((p: any) => p.id === 'default').overlaps).toBeUndefined();
+    expect(r.body.profiles.filter((p: any) => p.id !== 'shop').every((p: any) => p.overlaps === undefined)).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
 

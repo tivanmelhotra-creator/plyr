@@ -61,8 +61,8 @@ export async function profileProblems(registry: BranchRegistry, userId: string, 
  * is told through `notify`, and nothing is created on disk. Returns the
  * message when the run must fail, null when it may go on.
  *
- * An unregistered built-in Default (never created) is not breakage: legacy
- * runs on it keep working as before.
+ * An unregistered `default` (no pre-branch root with data, never created) is
+ * not breakage: runs without a profile keep their ephemeral-free run root.
  */
 export async function preRunProfileCheck(input: {
   registry: BranchRegistry;
@@ -111,7 +111,6 @@ export interface DeletionScan {
   runningProfiles: Array<{ profileId: string; name: string }>;
   /** Inactive workflows whose reference will be cleared ("profile missing"). */
   inactiveWorkflows: Array<{ workflowId: string; name: string; profileId: string }>;
-  builtIn: boolean;
   /** May the branch be deleted right now? */
   deletable: boolean;
 }
@@ -127,7 +126,7 @@ export function workflowStateOf(w: WorkflowUse): 'inactive' | 'active' | 'schedu
  * browser or a run lease; `reserved` = a scheduled reservation is in force.
  */
 export function scanBranch(input: {
-  branchId: string; label: string; builtIn: boolean;
+  branchId: string; label: string;
   profiles: ProfileEntry[];
   workflows: WorkflowUse[];
   branchRunning: boolean;
@@ -153,8 +152,7 @@ export function scanBranch(input: {
   return {
     branchId: input.branchId, label: input.label, profiles: rows,
     blockingWorkflows: blocking, runningProfiles: running, inactiveWorkflows: inactive,
-    builtIn: input.builtIn,
-    deletable: !input.builtIn && blocking.length === 0 && running.length === 0 && !input.branchRunning,
+    deletable: blocking.length === 0 && running.length === 0 && !input.branchRunning,
   };
 }
 
