@@ -1,0 +1,17 @@
+HEAD c8f3652  2026-10-15T21:21:59Z
+RUN npx vitest run tests/unit tests/integration
+      Tests  4630 passed | 9 skipped (4639)
+ Test Files  202 passed | 1 skipped (203)
+EXIT=0
+RUN npx vitest run --config vitest.browser.config.ts <6 profile/viewer files>
+[a] viewer closed itself 2837 ms after the window was closed from outside
+[b] after closing "Pair A" from outside: viewer open=true, set=["prf_f151c7d84467"], B pid=8027
+[c] probes: real, 500, network-error, zero, malformed, real, real, real … (11 total); viewer open=true
+[d] typed-address viewer after the last browser closed: {"text":"","bg":"rgb(15, 17, 23)","visible":0} closed=false
+[g] Close browser from inside the viewer: tab closed itself 2957 ms later; profile process left: 0
+[e] noopener viewer closed itself 2992 ms after the window was closed from outside
+[f] viewer whose opener was closed closed itself 2642 ms after the window was closed from outside
+ Test Files  6 passed (6)
+      Tests  28 passed (28)
+EXIT=0
+ALLDONE
