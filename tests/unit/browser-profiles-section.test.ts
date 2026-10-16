@@ -31,13 +31,12 @@ function boot() {
   const w = dom.window as any;
   const calls: Array<{ url: string; method: string; body: any }> = [];
   const profiles = [
-    { id: 'default', name: 'Default', builtIn: true, status: 'free', available: true, branchId: 'branch-001', branchLabel: 'Default', browser: { open: true }, usedBy: [] },
+    { id: 'default', name: 'Default', status: 'free', available: true, branchId: 'branch-001', branchLabel: 'Default', browser: { open: true }, usedBy: [] },
     { id: 'prf_a', name: 'Shop', status: 'free', available: true, branchId: 'branch-002', branchLabel: 'branch-002', browser: { open: false }, usedBy: [] },
   ];
   w.AppUtil = { t: (k: string) => k, toast: () => undefined };
   w.API = { getKey: () => 'K' };
   w.FlowEditor = { getCurrentWorkflow: () => ({ id: 'wf_abc123' }) };
-  w.BrowserView = { openRealBrowser: () => { calls.push({ url: 'openRealBrowser', method: 'JS', body: null }); return Promise.resolve({}); } };
   w.open = () => ({ closed: false, location: { href: 'about:blank' }, document: { title: '' }, close() { this.closed = true; }, focus() {} });
   w.fetch = (url: string, init: any) => {
     const method = (init && init.method) || 'GET';
@@ -119,6 +118,18 @@ describe('wiring', () => {
     expect(i18n).not.toMatch(/'wfm\.browser[A-Za-z]*'/);
     expect(i18n).not.toMatch(/'pm\.(turn[A-Za-z]*|off[A-Z][A-Za-z]*)'/);
     expect(i18n).toContain("'pm.title': 'Browser Profiles'");
+  });
+
+  it('1.1 (S37): no dead Local Browser / built-in / native-dialog code is left in the panel', () => {
+    // removeProfile() was dead (never called) and used a native confirm();
+    // `builtIn` branches no longer exist on the server (S34, 2.1).
+    expect(pmSrc).not.toMatch(/removeProfile|builtIn|window\.confirm|window\.alert|window\.prompt/);
+    for (const k of ['pm.delete', 'pm.branch', 'pm.deleteConfirm', 'pm.deleted']) expect(i18n, k).not.toContain(`'${k}':`);
+    // Executable code only (block and line comments stripped).
+    const code = (pmSrc + '\n' + wfSrc).replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n');
+    expect(code).not.toMatch(/openRealBrowser|\/browser\/real\/|RealChrome|realchrome/);
+    // No UI string of the panel or the drawer names the Local Browser.
+    expect(code).not.toMatch(/Local Browser/i);
   });
 
   it('styles: the branch menu follows the dark theme; the form is a grid; the old row styles are gone', () => {

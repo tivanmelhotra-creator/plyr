@@ -646,7 +646,7 @@
           bl.textContent = p.branchLabel && p.branchLabel !== p.branchId ? p.branchLabel + ' (' + p.branchId + ')' : p.branchId;
           bh.appendChild(bl);
           var binfo = (st.branches || []).filter(function (b) { return b.id === p.branchId; })[0];
-          if (binfo && !binfo.builtIn) {
+          if (binfo) {
             var bdel = document.createElement('button');
             bdel.type = 'button';
             bdel.className = 'btn btn-sm btn-ghost pm-branch-del';
@@ -1035,24 +1035,6 @@
         st.busy = '';
         paintActions();
         say(e.message || t('pm.renameFailed', 'Could not rename the profile.'), true);
-      });
-    }
-
-    function removeProfile(p) {
-      var sure = true;
-      try { sure = window.confirm(t('pm.deleteConfirm', 'Delete this profile and all its browser data (logins, cookies)?') + '\n' + p.name); } catch (e) { sure = true; }
-      if (!sure) return Promise.resolve();
-      st.busy = 'delete';
-      paintActions();
-      return api.remove(p.id).then(function () {
-        st.busy = '';
-        delete st.selected[p.id];
-        say(t('pm.deleted', 'Profile deleted.'), false);
-        return refresh();
-      }, function (e) {
-        st.busy = '';
-        paintActions();
-        say(e.message || t('pm.deleteFailed', 'Could not delete the profile.'), true);
       });
     }
 

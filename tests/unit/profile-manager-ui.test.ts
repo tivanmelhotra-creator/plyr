@@ -26,7 +26,7 @@ function boot(o: Opts = {}) {
   const calls: Array<{ url: string; method: string; body: any }> = [];
   const tabs: Array<{ location: string; closed: boolean; document: any; close: () => void; name?: string; history: string[]; focus: () => void }> = [];
   let profiles: any[] = [
-    { id: 'default', name: 'Default', builtIn: true, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] },
+    { id: 'default', name: 'Default', status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] },
     o.blocked
       ? { id: 'prf_b', name: 'Busy', builtIn: false, status: 'reserved', available: false, denyReason: 'reserved', explanation: 'Reserved for the scheduled run of "Nightly".', browser: { open: false, dependents: 0 }, usedBy: [] }
       : { id: 'prf_b', name: 'Second', builtIn: false, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] },
@@ -39,7 +39,6 @@ function boot(o: Opts = {}) {
   w.AppUtil = { t: (k: string) => k, toast: () => undefined };
   w.API = { getKey: () => 'K' };
   w.FlowEditor = { getCurrentWorkflow: () => ({ id: 'wf_abc123' }) };
-  w.BrowserView = { openRealBrowser: () => Promise.resolve({ success: true }) };
   w.confirm = () => true;
   // Like a real browser: window.open(url, name) returns the EXISTING tab of
   // that name (navigating it when a url is given) instead of opening another.
@@ -58,7 +57,6 @@ function boot(o: Opts = {}) {
     calls.push({ url, method, body });
     let status = 200;
     let answer: any = { success: true, entries: [] };
-    if (url === '/browser/real/health') answer = { success: true, running: false };
     if (url === '/browser/sessions') answer = { success: true, localBrowser: { running: false }, sessions: [] };
     if (url === '/profiles/launch-options') answer = { success: true, categories: [], options: [], presets: [{ id: 'standard', label: 'Standard', options: [], description: '' }], defaultPreset: 'standard' };
     if (url.startsWith('/profiles') && method === 'GET') answer = { success: true, profiles, unknownSchedules };

@@ -1,0 +1,55 @@
+HEAD 32c4cf8 (+ uncommitted 1.1 cleanup in the panel only)  2026-10-16T10:05:00Z
+RUN tools/s35/start-server.sh /home/user/webapp /tmp/s35-c ; node tools/s35/no-profile-and-local-browser.mjs
+ENV REAL_CHROME_USER_DATA_DIR=/tmp/s35-c/profiles/chrome-profile PROFILES_DIR=/tmp/s35-c/profiles BRANCH_BASE_DIR=/tmp/s35-c/branches
+RESULT {
+ "D_enqueue": {
+  "status": 200,
+  "jobId": "1"
+ },
+ "D_result": {
+  "state": "completed",
+  "failedReason": null,
+  "chromiumSeen": [
+   {
+    "udd": "/tmp/s35-c/profiles/local/chrome-profile",
+    "pd": "Default",
+    "headless": false
+   }
+  ]
+ },
+ "D_branchesAfter": [],
+ "C_branchesBefore": [],
+ "C_open": {
+  "status": 200,
+  "success": true
+ },
+ "C_health_after_open": {
+  "success": true,
+  "enabled": true,
+  "running": true,
+  "responsive": true
+ },
+ "C_chromium": [
+  {
+   "udd": "/tmp/s35-c/profiles/chrome-profile",
+   "pd": "Default",
+   "headless": false
+  }
+ ],
+ "C_close": {
+  "status": 200,
+  "success": true,
+  "running": false
+ },
+ "C_health_after_close": {
+  "success": true,
+  "enabled": true,
+  "running": false,
+  "responsive": false
+ },
+ "C_chromium_after_close": [],
+ "C_branchesAfter": []
+}
+
+git diff --stat 491de46..HEAD -- src/core/RealChrome.ts src/Routes/browser.routes.ts:
+(empty = unchanged)
