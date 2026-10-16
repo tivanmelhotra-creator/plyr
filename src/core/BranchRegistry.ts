@@ -82,6 +82,15 @@ export interface ProfileRecord {
   createdAt: string;
   updatedAt: string;
   lastOpenError?: { at: string; message: string } | null;
+  /**
+   * PROFILE LOCK (owner brief section 6): this profile belongs to exactly ONE
+   * workflow; no other workflow may use it. Persistent and explicit — it is
+   * NOT a run lease, a scheduled reservation, an operator hold or a grant
+   * (core/ProfileLease): those are short-lived claims in Redis; the lock is a
+   * fact about the profile, stored with it, and survives restarts. It stores
+   * the workflow ID, so a rename of the workflow never breaks it.
+   */
+  lockedTo?: { workflowId: string; at: string } | null;
 }
 
 interface RegistryFile { version: 1; nextBranch: number; branches: BranchRecord[]; profiles: ProfileRecord[] }
@@ -97,9 +106,11 @@ export interface ProfileEntry {
   branchId: string;
   branchLabel: string;
   folder: string;
+  /** Section 6: locked to this workflow (id), or null. */
+  lockedTo?: { workflowId: string; at: string } | null;
 }
 
-export type RegistryErrorCode = 'invalid_name' | 'duplicate_name' | 'not_found' | 'builtin' | 'io' | 'invalid_id' | 'branch_not_found';
+export type RegistryErrorCode = 'invalid_name' | 'duplicate_name' | 'not_found' | 'builtin' | 'io' | 'invalid_id' | 'branch_not_found' | 'locked';
 
 export class ProfileRegistryError extends Error {
   constructor(message: string, readonly code: RegistryErrorCode) { super(message); this.name = 'ProfileRegistryError'; }
@@ -424,6 +435,7 @@ export class BranchRegistry {
       problem: b ? null : 'its branch is missing from the registry',
       lastOpenError: p.lastOpenError ?? null,
       branchId: p.branchId, branchLabel: b?.label || p.branchId, folder: p.folder,
+      lockedTo: p.lockedTo ? { workflowId: p.lockedTo.workflowId, at: p.lockedTo.at } : null,
     };
   }
 
@@ -582,12 +594,72 @@ export class BranchRegistry {
     }).catch(() => {});
   }
 
+  // ── profile lock (section 6) ──────────────────────────────────────────
+  // Every write goes through serial(): two lock requests for one profile are
+  // handled one after the other, so exactly one wins (the other: 'locked').
+
+  /** Lock `id` to `workflowId`. Already locked to it: unchanged. Locked to another: 'locked'. */
+  async lock(userId: string, id: string, workflowId: string): Promise<ProfileEntry> {
+    if (!sanitizeProfileId(id)) throw new ProfileRegistryError('Invalid profile id', 'invalid_id');
+    if (!/^wf_[A-Za-z0-9_-]{1,64}$/.test(workflowId)) throw new ProfileRegistryError('Invalid workflow id', 'invalid_id');
+    return this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const p = f.profiles.find((x) => x.id === id);
+      if (!p) throw new ProfileRegistryError('Profile not found', 'not_found');
+      if (p.lockedTo && p.lockedTo.workflowId !== workflowId) {
+        throw new ProfileRegistryError(`This profile is already locked to another workflow (${p.lockedTo.workflowId}).`, 'locked');
+      }
+      if (!p.lockedTo) { p.lockedTo = { workflowId, at: new Date().toISOString() }; p.updatedAt = p.lockedTo.at; await this.save(userId, f); }
+      return this.entryOf(f, p);
+    });
+  }
+
+  /** Remove the lock of `id` (no-op when unlocked). Returns the former owner. */
+  async unlock(userId: string, id: string): Promise<string | null> {
+    if (!sanitizeProfileId(id)) throw new ProfileRegistryError('Invalid profile id', 'invalid_id');
+    return this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const p = f.profiles.find((x) => x.id === id);
+      if (!p) throw new ProfileRegistryError('Profile not found', 'not_found');
+      const was = p.lockedTo?.workflowId || null;
+      if (was) { p.lockedTo = null; delete p.lockedTo; p.updatedAt = new Date().toISOString(); await this.save(userId, f); }
+      return was;
+    });
+  }
+
+  /** Release every lock owned by `workflowId` (the workflow was deleted). One write. */
+  async releaseLocksOf(userId: string, workflowId: string): Promise<Array<{ id: string; name: string }>> {
+    return this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const out: Array<{ id: string; name: string }> = [];
+      for (const p of f.profiles) if (p.lockedTo?.workflowId === workflowId) { delete p.lockedTo; out.push({ id: p.id, name: p.name }); }
+      if (out.length) await this.save(userId, f);
+      return out;
+    });
+  }
+
+  /** Boot / periodic sweep: drop locks whose workflow no longer exists. Never throws on one bad record. */
+  async sweepLocks(userId: string, existingWorkflowIds: Set<string>): Promise<Array<{ id: string; name: string; workflowId: string }>> {
+    return this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const out: Array<{ id: string; name: string; workflowId: string }> = [];
+      for (const p of f.profiles) {
+        const w = p.lockedTo?.workflowId;
+        if (w && !existingWorkflowIds.has(w)) { delete p.lockedTo; out.push({ id: p.id, name: p.name, workflowId: w }); }
+      }
+      if (out.length) await this.save(userId, f);
+      return out;
+    });
+  }
+
   /** Delete a whole branch (folder + profile records). Safety is the CALLER's (routes: dependency scan). */
   async removeBranch(userId: string, branchId: string): Promise<{ removedProfiles: string[] }> {
     return this.serial(userId, async () => {
       const f = await this.load(userId);
       const b = f.branches.find((x) => x.id === branchId);
       if (!b) throw new ProfileRegistryError('Branch not found', 'branch_not_found');
+      const locked = f.profiles.filter((p) => p.branchId === b.id && p.lockedTo);
+      if (locked.length) throw new ProfileRegistryError(`The branch has locked profiles (${locked.map((p) => p.name).join(', ')}); unlock them first.`, 'locked');
       const removed = f.profiles.filter((p) => p.branchId === b.id).map((p) => p.id);
       await fs.rm(b.root, { recursive: true, force: true });
       f.branches = f.branches.filter((x) => x.id !== b.id);
@@ -611,6 +683,7 @@ export class BranchRegistry {
       const f = await this.load(userId);
       const p = f.profiles.find((x) => x.id === id);
       if (!p) throw new ProfileRegistryError('Profile not found', 'not_found');
+      if (p.lockedTo) throw new ProfileRegistryError(`"${p.name}" is locked to a workflow; unlock it first.`, 'locked');
       const b = f.branches.find((x) => x.id === p.branchId);
       if (b && isValidProfileDirectory(p.folder)) {
         const dir = path.join(path.resolve(b.root), p.folder);

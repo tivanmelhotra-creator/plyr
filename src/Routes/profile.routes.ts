@@ -119,7 +119,7 @@ function ownerOf(raw: unknown): string {
 
 function fail(res: Response, e: unknown): void {
   if (e instanceof ProfileRegistryError) {
-    const status = e.code === 'not_found' || e.code === 'branch_not_found' ? 404 : e.code === 'duplicate_name' || e.code === 'builtin' ? 409 : e.code === 'io' ? 500 : 400;
+    const status = e.code === 'not_found' || e.code === 'branch_not_found' ? 404 : e.code === 'duplicate_name' || e.code === 'builtin' || e.code === 'locked' ? 409 : e.code === 'io' ? 500 : 400;
     res.status(status).json({ success: false, error: e.message, code: e.code });
     return;
   }
