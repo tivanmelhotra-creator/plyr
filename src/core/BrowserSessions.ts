@@ -29,6 +29,7 @@
  * instead of silently assuming nothing was there. Mirror writes are
  * best-effort; the in-memory record is the truth for this process.
  */
+import { forgetManual } from './ManualProfiles';
 import type IORedis from 'ioredis';
 import { INSTANCE_ID } from './ProfileLease';
 
@@ -128,6 +129,10 @@ export class BrowserSessions {
   closed(leaseId: string): void {
     this.map.delete(leaseId);
     runningProfiles.delete(leaseId);
+    // Manual-only profiles opened inside this branch's browser (core/
+    // ManualProfiles) had their windows in this process: they are gone too
+    // (measured, S36 G.1 c).
+    forgetManual(leaseId);
     this.mirror(null, leaseId);
   }
 

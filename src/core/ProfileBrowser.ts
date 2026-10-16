@@ -112,6 +112,57 @@ export function assertBranchLaunch(root: string, folder: string): void {
   }
 }
 
+/**
+ * Open a SECOND profile of a branch whose browser is running (owner brief 2 /
+ * G.2): a plain Chromium invocation on the same root with this profile's
+ * --profile-directory. Chromium forwards it into the running process (measured,
+ * S36 G.1) and the invocation exits 0 at once. Injectable for tests.
+ */
+export type ForwardLauncher = (root: string, folder: string) => Promise<{ code: number | null; stderr: string }>;
+export const defaultForwardLauncher: ForwardLauncher = async (root, folder) => {
+  const { spawn } = await import('child_process');
+  const exe = config.CHROME_EXE || chromium.executablePath();
+  return new Promise((resolve) => {
+    // An argv ARRAY (no shell). --no-sandbox only when the running browser was
+    // started with it (container/root); otherwise Chromium keeps its sandbox.
+    const args = [`--user-data-dir=${root}`, `--profile-directory=${folder}`, '--no-first-run', '--no-default-browser-check'];
+    if (process.getuid?.() === 0 || process.env.PLYR_CHROME_NO_SANDBOX === '1' || process.env.CI) args.push('--no-sandbox');
+    args.push('about:blank');
+    const c = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'], env: withUtf8Locale(process.env), detached: false });
+    let err = '';
+    c.stderr?.on('data', (d) => { if (err.length < 4000) err += d; });
+    const t = setTimeout(() => { try { c.kill(); } catch { /* gone */ } resolve({ code: null, stderr: err }); }, 15_000);
+    c.on('exit', (code) => { clearTimeout(t); resolve({ code, stderr: err }); });
+    c.on('error', (e) => { clearTimeout(t); resolve({ code: -1, stderr: String(e.message) }); });
+  });
+};
+let forwardLauncher: ForwardLauncher = defaultForwardLauncher;
+export function setForwardLauncherForTests(l: ForwardLauncher | null): void { forwardLauncher = l || defaultForwardLauncher; }
+
+/**
+ * Launch `profileId` (folder `folder`) by hand INSIDE the running browser of
+ * its branch. Manual-only (core/ManualProfiles): never leased, never a session
+ * of its own, never used by automation. The caller has checked the owner's
+ * explicit confirmation (G.2: hold-to-confirm, valid for this one launch).
+ */
+export async function openManualProfile(pm: ProfileManager, input: { leaseId: string; root: string; folder: string; profileId: string }): Promise<{ windowOpened: boolean }> {
+  const { markManualOpen, learnManualContext, forgetManual } = await import('./ManualProfiles');
+  const entry = pm.getVipContext(input.leaseId);
+  if (!entry) throw new ProfileBrowserError('The browser of this branch is not running any more. Press Play again to open this profile normally.', 'launch_failed');
+  // Local State belongs to the RUNNING process now: it is not written here
+  // (Chromium would overwrite it on exit). The display name / look are applied
+  // at this profile's next normal launch.
+  markManualOpen(input.leaseId, input.profileId, input.folder);
+  const r = await forwardLauncher(input.root, input.folder);
+  if (r.code !== 0) {
+    forgetManual(input.leaseId, input.profileId);
+    const line = r.stderr.split('\n').find((l) => /ERROR/.test(l)) || '';
+    throw new ProfileBrowserError(`Chromium did not open this profile next to the running one (exit ${r.code ?? 'timeout'})${line ? `: ${line.replace(/^\[[^\]]*\]\s*/, '').slice(0, 160)}` : ''}.`, 'launch_failed');
+  }
+  const ctxId = await learnManualContext(input.leaseId, input.profileId, entry.context);
+  return { windowOpened: !!ctxId };
+}
+
 let launcher: Launcher = defaultLauncher;
 export function setProfileLauncherForTests(l: Launcher | null): void { launcher = l || defaultLauncher; }
 

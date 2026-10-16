@@ -729,7 +729,16 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
         }
 
         context.browserContext = existing.context;
-        context.page = existing.context.pages()[0];
+        // Owner brief 2 / G.2: tabs of a manual-only profile opened by hand in
+        // this branch's browser are never used by a run (core/ManualProfiles).
+        const { ownPages, manualProfilesOf } = await import('./core/ManualProfiles');
+        if (manualProfilesOf(key).length) {
+          const own = await ownPages(key, existing.context);
+          context.page = own[0] || await existing.context.newPage();
+          log(`[BROWSER] ${manualProfilesOf(key).length} profile(s) opened by hand in this branch are left alone (manual only)`);
+        } else {
+          context.page = existing.context.pages()[0];
+        }
         profileManager.setVipContext(userId, existing.context, jobId);
         profileManager.registerPage(jobId, context.page);
         profileManager.updateActivity(userId);

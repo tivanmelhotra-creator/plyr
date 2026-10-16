@@ -16,6 +16,7 @@ import {
   leaseIdOf, type DenyReason, type HoldRecord, type LeaseRecord, type ProfileLeases, type ReservationLike,
 } from './ProfileLease';
 import { blockingUntil, type ProfileReservations, type Reservation } from './ProfileReservations';
+import { isManualProfileOpen } from './ManualProfiles';
 import { runningProfileOf, type BrowserSessions, type SessionRecord } from './BrowserSessions';
 
 export type ProfileStatus = 'free' | 'reserved' | 'in_use' | 'needs_review';
@@ -42,7 +43,7 @@ export interface ProfileView {
   hold?: { owner: string; ownerName?: string; until: number; mine: boolean } | null;
   reservation?: { owner: string; ownerName?: string; start: number; end: number; state: string; blockingUntil: number | null } | null;
   nextReservation?: { owner: string; ownerName?: string; start: number; end: number } | null;
-  browser: { open: boolean; visibility?: string; dependents: number; startedAt?: number; lastActivity?: number };
+  browser: { open: boolean; manual?: boolean; visibility?: string; dependents: number; startedAt?: number; lastActivity?: number };
   usedBy: Array<{ workflowId: string; name: string }>;
   problem?: string | null;
   lastOpenError?: { at: string; message: string } | null;
@@ -163,7 +164,11 @@ export class ProfileAccess {
       nextReservation: next ? { owner: next.owner, ownerName: next.ownerName || nameOf(next.owner), start: next.start, end: next.end } : null,
       browser: session && !busyWith
         ? { open: true, visibility: session.visibility, dependents: session.dependents.length, startedAt: session.startedAt, lastActivity: session.lastActivity }
-        : { open: false, dependents: 0 },
+        // Owner brief 2 / G.2: opened by hand inside the running browser of its
+        // branch (manual-only: automation never uses it).
+        : session && busyWith && isManualProfileOpen(leaseId, p.id)
+          ? { open: true, manual: true, visibility: session.visibility, dependents: 0, startedAt: session.startedAt, lastActivity: session.lastActivity }
+          : { open: false, dependents: 0 },
       usedBy: workflows.filter((w) => (w.profileId || DEFAULT_PROFILE_ID) === p.id).map((w) => ({ workflowId: w.id, name: w.name })),
       problem: p.problem ?? null,
       lastOpenError: p.lastOpenError ?? null,

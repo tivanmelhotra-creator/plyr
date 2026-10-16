@@ -527,6 +527,10 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
           success: false, code: 'branch_busy',
           error: `"${name}" is already running in this branch. Only one profile of a branch can run at a time. Close it first, or bring it to the front.`,
           runningProfile: running ? { id: running.id, name: running.name } : null,
+          // Owner brief 2 / G.2: a second profile CAN be opened by hand in the
+          // running browser (manual-only), after an explicit confirmation:
+          // POST /profiles/:id/open-manual { confirm: 'manual-only' }.
+          manualOpenPossible: true,
           viewPath: running ? `/desktop/chrome?profile=${encodeURIComponent(running.id)}` : null,
         });
         return;
@@ -537,6 +541,72 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       }
       fail(res, e);
     }
+  });
+
+  /**
+   * OPEN BY HAND IN A RUNNING BRANCH (owner brief 2 / G.2). Another profile of
+   * this branch is running; this opens THIS profile as a window of that same
+   * browser process (Chromium forwards it; measured in S36 G.1). The result is
+   * MANUAL-ONLY (core/ManualProfiles): no lease, no hold, no session of its
+   * own, never used by a run.
+   *   - Needs { confirm: 'manual-only' } in THIS request: the UI sends it only
+   *     after the 3-second hold-to-confirm, for this one launch (428 otherwise).
+   *   - Refused when the branch is not running (409 not_running: use Open), when
+   *     this profile IS the branch's running profile (409 already_running), or
+   *     when it is already open by hand (200, reused).
+   * What a workflow does meanwhile: the branch keeps its ONE lease; a run of
+   * the branch waits for it exactly as before (the manual profile adds no
+   * lease or reservation). A run that owns the branch's browser never sees the
+   * manual profile's tabs (pipeline skips them).
+   */
+  router.post('/profiles/:id/open-manual', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      if (req.body?.confirm !== 'manual-only') {
+        res.status(428).json({ success: false, code: 'needs_confirmation', error: 'Opening a second browser in this branch needs the explicit confirmation (hold "I understand").' });
+        return;
+      }
+      const loc = await access.registry.locationOf(userId, id);
+      if (!loc) { res.status(409).json({ success: false, code: 'needs_review', error: 'Profile needs review: its branch folder or profile folder is not known in the registry.' }); return; }
+      const leaseId = leaseIdOf(id);
+      const { isManualProfileOpen } = await import('../core/ManualProfiles');
+      const running = runningProfileOf(leaseId);
+      if (!profileManager.getVipContext(leaseId) || !running) {
+        res.status(409).json({ success: false, code: 'not_running', error: 'No browser is open in this branch any more. Press Play to open this profile normally.' });
+        return;
+      }
+      if (running === id) { res.status(409).json({ success: false, code: 'already_running', error: 'This profile is the one already running in this branch.' }); return; }
+      if (isManualProfileOpen(leaseId, id)) {
+        res.json({ success: true, profileId: id, manual: true, reused: true, viewPath: `/desktop/chrome?profile=${encodeURIComponent(running)}` });
+        return;
+      }
+      const { openManualProfile } = await import('../core/ProfileBrowser');
+      const r = await openManualProfile(profileManager, { leaseId, root: loc.root, folder: loc.folder, profileId: id });
+      const entry = await access.registry.get(userId, id);
+      console.log(`[PROFILES] manual-only: "${entry?.name || id}" opened by hand inside the running browser of its branch (window ${r.windowOpened ? 'seen' : 'not yet seen'})`);
+      await access.registry.recordOpenError(userId, id, null);
+      // The viewer follows the branch's session (the manual profile's windows are on the same desktop).
+      res.json({ success: true, profileId: id, manual: true, reused: false, windowOpened: r.windowOpened, viewPath: `/desktop/chrome?profile=${encodeURIComponent(running)}` });
+    } catch (e) {
+      if (e instanceof ProfileBrowserError) { res.status(503).json({ success: false, code: e.code, error: e.message, retryable: true }); return; }
+      fail(res, e);
+    }
+  });
+
+  /** Stop a manual-only profile: closes ONLY its windows; the branch's running profile stays. */
+  router.post('/profiles/:id/close-manual', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      const leaseId = leaseIdOf(id);
+      const { closeManualProfile, isManualProfileOpen } = await import('../core/ManualProfiles');
+      if (!isManualProfileOpen(leaseId, id)) { res.json({ success: true, closed: false, reason: 'not_open' }); return; }
+      const tabs = await closeManualProfile(leaseId, id, profileManager.getVipContext(leaseId)?.context || null);
+      res.json({ success: true, closed: true, tabs });
+    } catch (e) { fail(res, e); }
   });
 
   /**
