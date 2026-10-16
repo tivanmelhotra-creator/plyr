@@ -2,7 +2,7 @@
 
 Points to the newest handoff. Read that file first; then continue.
 
-LATEST HANDOFF: handoffs/NEXT-SESSION-S31.md (START HERE: done/open per brief + how to continue) -> then handoffs/2026-10-14_S30_phase1-report.md (section-14 report)
+LATEST HANDOFF: handoffs/NEXT-SESSION-S37.md (START HERE: state, done, open items in order) + briefs in handoffs/task-pull-76/
 BRANCH / HEAD:  feat/profile-infrastructure (PR #76, phase 1).
 BACKUP:         lineage is kept in the handoff files; backups are NOT in git (tar.gz shared via Genspark file links).
 TRANSCRIPT:     after a sandbox reset, the owner's full chat transcript (incl. the phase-1 brief, sections 0-14) is in the
@@ -11,7 +11,7 @@ TRANSCRIPT:     after a sandbox reset, the owner's full chat transcript (incl. t
 
 PLAN:           docs/PLAN-node-logic-v2.md (node logic v2 + production roadmap; start with milestone M1).
 
-NEXT ACTION: see handoffs/NEXT-SESSION-S31.md (Windows manual checks are owner-run and non-blocking). PR #76 pushed, NOT merged.
+NEXT ACTION: see handoffs/NEXT-SESSION-S37.md section 4 (G.2 UI first). PR #76 NOT pushed since 491de46, NOT merged.
 
 Layout:
 - current-handoff.md   -> this pointer
