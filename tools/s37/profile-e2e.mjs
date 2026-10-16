@@ -34,6 +34,7 @@ const list = async () => (await j('GET', '/profiles?workflowId=wf_e2e')).d.profi
 const folderOf = (id) => (registry().profiles.find((p) => p.id === id) || {}).folder || null;
 const byName = async (n) => { const p = (await list()).find((x) => x.name === n); return p ? { ...p, folder: folderOf(p.id) } : p; };
 const registry = () => JSON.parse(fs.readFileSync(path.join(DATA, 'profiles', 'local', 'branches.json'), 'utf8'));
+const waitOpen = (n) => waitFor(async () => { const p = await byName(n); return p && p.browser && p.browser.open ? p : null; }, 30000);
 const waitFor = async (fn, ms = 20000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(300); } return null; };
 
 const browser = await chromium.launch({ headless: true });
@@ -70,7 +71,7 @@ if (phase === 'phase1') {
 
   // b. create in a NEW branch through the form -> opens automatically
   await createViaForm('E2E One', 'new');
-  const one = await byName('E2E One');
+  const one = (await waitOpen('E2E One')) || (await byName('E2E One'));
   const b1 = browsers();
   step('b create in NEW branch -> opened automatically (real Chromium, branch root + --profile-directory)', one && one.browser.open && b1.length === 1 && b1[0].pd === one.folder,
     { id: one?.id, branchId: one?.branchId, folder: one?.folder, chromium: b1, note: lastNote() });
@@ -117,13 +118,15 @@ if (phase === 'phase1') {
 
   // f. a launch that fails: branch root replaced by a file
   await createViaForm('E2E Fail', 'new');
-  const fl = await byName('E2E Fail');
+  const fl = (await waitOpen('E2E Fail')) || (await byName('E2E Fail'));
   const flRoot = browsers()[0]?.udd || null;
   await j('POST', `/profiles/${fl.id}/close`, { workflowId: 'wf_e2e' });
   await waitFor(() => browsers().length === 0);
+  await waitFor(async () => { const p = await byName('E2E Fail'); return p && !p.browser.open; });
   const regRoot = registry().branches.find((b) => b.id === fl.branchId)?.root;
   fs.renameSync(regRoot, regRoot + '.moved'); fs.writeFileSync(regRoot, 'not a directory');
   await refresh();
+  await page.waitForSelector(`${row(fl.id)} .pm-play`, { timeout: 20000 });
   notes.length = 0;
   await page.click(`${row(fl.id)} .pm-play`); await idle();
   await refresh();
@@ -133,6 +136,8 @@ if (phase === 'phase1') {
   step('f failed launch -> profile kept, plain error line on the row and in the note, Play still there', flAfter && !flAfter.browser.open && flAfter.lastOpenError && rowText.includes('Last open failed') && playBack === 1 && notes.some((n) => n.e),
     { lastOpenError: flAfter?.lastOpenError?.message, rowText: rowText.replace(/\s+/g, ' ').slice(0, 200), note: notes.find((n) => n.e) });
   fs.rmSync(regRoot); fs.renameSync(regRoot + '.moved', regRoot);
+  await refresh();
+  await page.waitForSelector(`${row(fl.id)} .pm-play`, { timeout: 20000 });
   await page.click(`${row(fl.id)} .pm-play`); await idle();
   const b5 = await waitFor(() => { const b = browsers(); return b.length ? b : null; });
   await refresh();
@@ -144,7 +149,7 @@ if (phase === 'phase1') {
 
   // g. create + delete
   await createViaForm('E2E Three', 'new');
-  const th = await byName('E2E Three');
+  const th = (await waitOpen('E2E Three')) || (await byName('E2E Three'));
   await j('POST', `/profiles/${th.id}/close`, { workflowId: 'wf_e2e' });
   await j('POST', `/profiles/${th.id}/release`, { workflowId: 'wf_e2e' });
   await waitFor(() => browsers().length === 0);
@@ -166,6 +171,7 @@ if (phase === 'phase1') {
   step('r3 the deleted profile stays deleted', !now.some((p) => p.id === prev.deleted.id) && !fs.existsSync(path.join(prev.deleted.root, prev.deleted.folder)), prev.deleted);
   await refresh();
   const uno = now.find((p) => p.name === 'E2E Uno');
+  await page.waitForSelector(`${row(uno.id)} .pm-play`, { timeout: 20000 });
   await page.click(`${row(uno.id)} .pm-play`); await idle();
   const b = await waitFor(() => { const x = browsers(); return x.length ? x : null; });
   const cookiesDir = fs.existsSync(path.join(prev.one.root, prev.one.folder, 'Preferences'));
