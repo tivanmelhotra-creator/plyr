@@ -131,6 +131,9 @@
     hold: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/hold', 'POST', { workflowId: workflowId || undefined }); },
     release: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/release', 'POST', { workflowId: workflowId || undefined }); },
     close: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close', 'POST', { workflowId: workflowId || undefined }); },
+    /** Owner brief 2 / G.2: open by hand inside the branch's running browser (manual-only). Sent only after the 3-second hold. */
+    openManual: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/open-manual', 'POST', { confirm: 'manual-only', workflowId: workflowId || undefined }); },
+    closeManual: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/close-manual', 'POST', { workflowId: workflowId || undefined }); },
     launchOptions: function () { return call('/profiles/launch-options'); },
     validateLaunch: function (launch) { return call('/profiles/launch-settings/validate', 'POST', { launch: launch || {} }); },
     restore: function (id, workflowId) { return call('/profiles/' + encodeURIComponent(id) + '/restore', 'POST', { workflowId: workflowId || undefined }); },
@@ -143,16 +146,27 @@
 
   /** How long the Delete branch button must be held (owner's rule: 3 s). */
   var DELETE_HOLD_MS = 3000;
+  /** How long "I understand" (second browser in a running branch) must be held (owner brief 2 / G.2: exactly 3 s). */
+  var MANUAL_HOLD_MS = 3000;
+  var MOUNT_SEQ = 0;
+
+  function reducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+  }
 
   /**
    * Press-and-hold button: `onDone` runs only after `ms` of continuous
    * pointer OR Enter/Space hold. Releasing earlier cancels and resets the
-   * progress. Returns { el, reset }.
+   * progress. Works with mouse, touch and pen (pointer events; the long-press
+   * context menu is suppressed) and the keyboard. With reduced motion the
+   * bar moves in whole-second steps instead of a smooth fill.
+   * `opts.className` replaces the default danger look. Returns { el, reset }.
    */
-  function holdButton(label, ms, onDone) {
+  function holdButton(label, ms, onDone, opts) {
+    var oo = opts || {};
     var b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn btn-sm btn-danger pm-hold';
+    b.className = 'btn btn-sm ' + (oo.className || 'btn-danger') + ' pm-hold';
     var bar = document.createElement('span');
     bar.className = 'pm-hold-bar';
     bar.setAttribute('aria-hidden', 'true');
@@ -163,10 +177,13 @@
     b.appendChild(txt);
     b.setAttribute('aria-describedby', '');
     var started = 0, raf = 0, timer = 0, done = false;
+    var stepped = reducedMotion();
+    if (stepped) b.setAttribute('data-reduced-motion', 'true');
     function frame() {
       if (!started) return;
       var p = Math.min(1, (Date.now() - started) / ms);
-      bar.style.width = (p * 100).toFixed(1) + '%';
+      var shown = stepped ? Math.floor(p * (ms / 1000)) / (ms / 1000) : p;
+      bar.style.width = (shown * 100).toFixed(1) + '%';
       b.setAttribute('data-progress', String(Math.round(p * 100)));
       raf = (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(frame);
     }
@@ -198,8 +215,10 @@
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); if (!e.repeat) start(); }
     });
     b.addEventListener('keyup', function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') cancelHold(); });
-    // A click alone never deletes.
+    // A click alone never confirms.
     b.addEventListener('click', function (e) { e.preventDefault(); });
+    // Touch: a long press must not open the context menu (it would cancel the hold).
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     return { el: b, reset: reset, _start: start, _cancel: cancelHold };
   }
 
@@ -531,6 +550,16 @@
     notes.hidden = true;
     root.appendChild(notes);
 
+    // Owner brief 2 / G.2: the inset alert shown when Play is pressed while
+    // another browser of the same branch is open. Inside the panel; never a
+    // native alert/confirm/prompt.
+    var manualBox = document.createElement('div');
+    manualBox.className = 'pm-manual-alert';
+    manualBox.hidden = true;
+    manualBox.setAttribute('role', 'alertdialog');
+    manualBox.setAttribute('aria-labelledby', 'pm-manual-title-' + (++MOUNT_SEQ));
+    root.appendChild(manualBox);
+
     var actions = document.createElement('div');
     actions.className = 'pm-actions';
     var openBtn = document.createElement('button');
@@ -663,7 +692,9 @@
         var lbl = STATUS_LABEL[p.status] || STATUS_LABEL.needs_review;
         badge.textContent = t(lbl[0], lbl[1]);
         txt.appendChild(badge);
-        var det = p.branchBusyWith
+        var det = (p.browser && p.browser.manual)
+          ? t('pm.manualOpen', 'Open by hand (manual use only; workflows cannot use it)')
+          : p.branchBusyWith
           ? t('pm.branchBusy', 'Waits: another profile of this branch is running') + ' (\u201c' + p.branchBusyWith.name + '\u201d).'
           : detailOf(p);
         if (det) {
@@ -780,6 +811,8 @@
       if (fresh) { try { tab.document.title = t('pm.opening', 'Opening\u2026'); } catch (e) { /* fine */ } }
       var results = [];
       var lastHref = '';
+      var manualAsk = null;
+      hideManualAlert();
       return ids.reduce(function (chain, id) {
         return chain.then(function () {
           return api.open(id, o.workflowId, launch).then(function (r) {
@@ -794,6 +827,12 @@
             var b = e.body || {};
             var msg = e.message || t('pm.openFailed', 'Could not open the browser.');
             if (b.code === 'needs_confirmation') msg = t('pm.confirmFlags', 'Confirm the risky launch flags in Launch settings first.') + ' ' + msg;
+            if (b.code === 'branch_busy' && b.manualOpenPossible) {
+              // Owner brief 2 / G.2: ask (inset alert + 3-second hold); launch nothing now.
+              results.push({ id: id, ok: false, code: b.code, askedManual: true });
+              if (!manualAsk) manualAsk = { id: id, running: b.runningProfile || null };
+              return;
+            }
             if (b.code === 'branch_busy' && b.viewPath) {
               // Bring the running profile of the branch to the front instead.
               var showHref = viewHref({ viewPath: b.viewPath });
@@ -811,8 +850,77 @@
         st.busy = '';
         if (!results.some(function (r) { return r.ok; }) && fresh) { try { tab.close(); } catch (x) { /* fine */ } }
         if (results.some(function (r) { return r.ok; })) startHoldRefresh();
+        if (manualAsk) showManualAlert(manualAsk.id, manualAsk.running);
         return refresh().then(function () { return results; });
       });
+    }
+
+    /**
+     * Owner brief 2 / G.2: Play on a closed profile while another browser of
+     * its branch is open. Inset alert with Cancel and a 3-second hold-to-confirm
+     * "I understand". The confirmation is for THIS one launch of THIS profile:
+     * nothing is remembered, the next Play asks again.
+     */
+    function hideManualAlert() {
+      if (st.manualHold) { try { st.manualHold.reset(); } catch (e) { /* fine */ } }
+      st.manualHold = null;
+      st.manualFor = null;
+      manualBox.hidden = true;
+      manualBox.innerHTML = '';
+    }
+
+    function showManualAlert(id, running) {
+      var p = byId(id);
+      manualBox.innerHTML = '';
+      manualBox.hidden = false;
+      st.manualFor = id;
+      var title = document.createElement('p');
+      title.className = 'pm-dialog-title';
+      title.id = manualBox.getAttribute('aria-labelledby');
+      title.textContent = t('pm.manualTitle', 'Another browser is open in this branch');
+      manualBox.appendChild(title);
+      if (running && running.name) {
+        line(manualBox, '\u201c' + running.name + '\u201d ' + t('pm.manualRunning', 'is already open in this branch.'), 'pm-dialog-row pm-manual-running');
+      }
+      line(manualBox, t('pm.manualA', 'Automated runs can control only ONE browser per branch.'), 'pm-dialog-row');
+      line(manualBox, t('pm.manualB', 'This second browser is for manual use only; workflows cannot use it.'), 'pm-dialog-row');
+      line(manualBox, t('pm.manualC', 'Closing the browser that is already running here (Stop, the end of a run that uses it, or closing when idle) also closes this one.'), 'pm-dialog-row');
+      line(manualBox, t('pm.manualD', 'Better: keep this profile in a different branch, so both can run at the same time.'), 'pm-dialog-row pm-manual-better');
+      line(manualBox, t('pm.manualHoldHint', 'Press and hold \u201cI understand\u201d (or hold Enter / Space) for 3 seconds.'), 'pm-dialog-hint');
+      var btns = document.createElement('div');
+      btns.className = 'pm-manual-buttons';
+      var c = document.createElement('button');
+      c.type = 'button';
+      c.className = 'btn btn-sm btn-subtle pm-manual-cancel';
+      c.textContent = t('wfm.cancel', 'Cancel');
+      c.addEventListener('click', hideManualAlert);
+      var hb = holdButton(t('pm.manualHold', 'I understand'), MANUAL_HOLD_MS, function () {
+        // The hold ends inside the pointer/key gesture's activation window, so
+        // the shared viewer can still be claimed here.
+        var tab = claimViewer();
+        var fresh = isBlankTab(tab);
+        hideManualAlert();
+        st.busy = 'open';
+        paintActions();
+        return api.openManual(id, o.workflowId).then(function (r) {
+          var href = viewHref(r);
+          if (o.openView) o.openView(href, tab); else showInViewer(tab, href);
+          st.busy = '';
+          say((p ? p.name + ': ' : '') + t('pm.manualOpened', 'Opened for manual use only.'), false);
+          return refresh();
+        }, function (e) {
+          if (fresh) { try { tab.close(); } catch (x) { /* fine */ } }
+          st.busy = '';
+          say((p ? p.name + ': ' : '') + (e.message || t('pm.openFailed', 'Could not open the browser.')), true);
+          return refresh();
+        });
+      }, { className: 'btn-primary pm-manual-confirm' });
+      btns.appendChild(c);
+      btns.appendChild(hb.el);
+      manualBox.appendChild(btns);
+      st.manualHold = hb;
+      try { hb.el.focus(); } catch (x) { /* jsdom */ }
+      try { if (manualBox.scrollIntoView) manualBox.scrollIntoView({ block: 'nearest' }); } catch (x) { /* jsdom */ }
     }
 
     function createProfile(name) {
@@ -1013,7 +1121,11 @@
     });
     openBtn.addEventListener('click', function () { void openProfiles(selectedIds()); });
     closeBtn.addEventListener('click', function () {
-      void each(function (id) { return api.close(id, o.workflowId); }, selectedIds().filter(function (id) { var p = byId(id); return p && p.browser && p.browser.open; }));
+      void each(function (id) {
+        var p = byId(id);
+        // A manual-only browser closes ONLY its own windows; the branch's running one stays.
+        return (p && p.browser && p.browser.manual) ? api.closeManual(id, o.workflowId) : api.close(id, o.workflowId);
+      }, selectedIds().filter(function (id) { var p = byId(id); return p && p.browser && p.browser.open; }));
     });
     restoreBtn.addEventListener('click', function () {
       void each(function (id) {
@@ -1035,6 +1147,8 @@
       openProfiles: openProfiles,
       createProfile: createProfile,
       startDeleteBranch: startDeleteBranch,
+      showManualAlert: showManualAlert,
+      hideManualAlert: hideManualAlert,
       destroy: function () {
         st.destroyed = true;
         if (st.timer) clearInterval(st.timer);
@@ -1045,7 +1159,7 @@
   }
 
   window.ProfileManager = {
-    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText, holdButton: holdButton, DELETE_HOLD_MS: DELETE_HOLD_MS,
+    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText, holdButton: holdButton, DELETE_HOLD_MS: DELETE_HOLD_MS, MANUAL_HOLD_MS: MANUAL_HOLD_MS,
     mountLaunchSettings: mountLaunchSettings, viewer: { name: VIEWER_NAME, claim: claimViewer, show: showInViewer, isBlank: isBlankTab }
   };
 })();

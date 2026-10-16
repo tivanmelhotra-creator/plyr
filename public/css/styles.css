@@ -9793,3 +9793,11 @@ tr.is-unset .xv-var-val code { color: var(--xv-faint); font-style: italic; backg
 .pm-hold { position: relative; overflow: hidden; margin-right: 6px; }
 .pm-hold-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255,255,255,.35); pointer-events: none; }
 .pm-hold-text { position: relative; }
+/* Owner brief 2 / G.2: inset alert "Another browser is open in this branch" + 3-second hold "I understand". */
+.pm-manual-alert { margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); color: var(--text); }
+.pm-manual-better { opacity: .85; }
+.pm-manual-buttons { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.pm-manual-confirm { min-width: 120px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.pm-hold { touch-action: none; }
+.pm-hold-bar { transition: none; }
+.pm-hold:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
