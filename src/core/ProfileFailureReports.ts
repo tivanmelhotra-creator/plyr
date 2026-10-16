@@ -16,8 +16,8 @@
  */
 import type IORedis from 'ioredis';
 
-export type FailureReason = 'profile_missing' | 'profile_broken';
-export type FailureDetail = 'record_missing' | 'branch_missing' | 'folder_missing';
+export type FailureReason = 'profile_missing' | 'profile_broken' | 'profile_locked';
+export type FailureDetail = 'record_missing' | 'branch_missing' | 'folder_missing' | 'locked_to_other';
 
 export interface FailureReport {
   at: string;

@@ -40,6 +40,7 @@ import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
 import { scheduleIdsByKey } from '../core/ProfileCoordinator';
 import { profileAccess } from '../core/ProfileAccess';
 import { profileProblems } from '../core/BranchPolicy';
+import { lockViolations, type LockViolation } from '../core/ProfileLock';
 import { profileFailureReports } from '../core/ProfileFailureReports';
 import { launchProfilesOf, runProfileIdOf } from '../core/NodeProfile';
 import { leaseIdOf } from '../core/ProfileLease';
@@ -176,6 +177,36 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       });
     }
     return problems;
+  }
+
+  /**
+   * PROFILE LOCK (owner brief 6.5): may workflow `workflowId` (null = a new
+   * one / an ad-hoc run) use every profile its runs take? A profile locked to
+   * ANOTHER workflow is a violation. Called by create, update, activation and
+   * schedule saving (and the worker re-checks before the lease, core index).
+   */
+  async function lockViolationsOf(userId: string, workflowId: string | null, steps: unknown, profileId: string | null | undefined): Promise<LockViolation[]> {
+    const access = profileAccess();
+    if (!access) return [];
+    const ids = [...new Set([...(launchProfilesOf(steps)), runProfileIdOf(steps, profileId) || 'default'])];
+    const profiles = await access.registry.list(userId).catch(() => []);
+    if (!profiles.some((p) => p.lockedTo)) return [];
+    const names = new Map((await workflowService.list(userId).catch(() => [])).map((w) => [w.id, w.name] as const));
+    return lockViolations(workflowId, ids, profiles, (id) => names.get(id));
+  }
+  const lockRefusal = (v: LockViolation[], what: string) => ({
+    success: false, code: 'profile_locked',
+    error: `${v.map((x) => x.message).join('; ')}. ${what}`,
+    profiles: v,
+  });
+
+  /** Section 6.6: a deleted workflow's locks go with it. Never fails the delete. */
+  async function releaseLocksOfWorkflow(userId: string, workflowId: string, name: string, reason: string): Promise<Array<{ id: string; name: string }>> {
+    const access = profileAccess();
+    if (!access) return [];
+    const out = await access.registry.releaseLocksOf(userId, workflowId).catch(() => []);
+    for (const p of out) console.log(`[PROFILES] lock released automatically: "${p.name}" (workflow "${name}": ${reason})`);
+    return out;
   }
 
   /**
@@ -527,6 +558,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
             error: 'This workflow uses a browser profile that is missing or broken, so the schedule was not saved. Assign another profile first.',
             details: broken.map((b) => `${b.message} (${b.detail})`), profiles: broken, action: 'assign_profile',
           });
+        }
+        {
+          const v = await lockViolationsOf(userId, bound.id, design.steps, design.profileId);
+          if (v.length) return res.status(409).json(lockRefusal(v, 'The schedule was not saved: choose another profile.'));
         }
         // Section 5: overlaps with OTHER workflows on the same BRANCH are shown
         // BEFORE saving. The later run waits for the earlier one (one profile
@@ -1115,6 +1150,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
+      {
+        const v = await lockViolationsOf(userId, null, steps, body.profileId ? profileIdOrThrow(body.profileId) : null);
+        if (v.length) return res.status(409).json(lockRefusal(v, 'Choose another profile.'));
+      }
       const wf = await workflowService.create(userId, {
         name: body.name,
         description: body.description ?? null,
@@ -1278,6 +1317,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
+      {
+        // Only the profiles this save would make the workflow use. The current
+        // profile is kept when profileId is omitted.
+        const cur = body.profileId !== undefined ? null : await workflowService.get(userId, workflowId);
+        const pid = body.profileId !== undefined ? profileIdOrThrow(body.profileId) : cur?.profileId;
+        const v = await lockViolationsOf(userId, workflowId, steps, pid);
+        if (v.length) return res.status(409).json(lockRefusal(v, 'Choose another profile.'));
+      }
       const wf = await workflowService.update(userId, workflowId, {
         name: body.name,
         description: body.description ?? null,
@@ -1306,9 +1353,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!isValidWorkflowId(workflowId)) {
         return res.status(400).json({ success: false, error: 'Invalid workflow id' });
       }
+      const gone = await workflowService.get(userId, workflowId).catch(() => null);
       const removed = await workflowService.remove(userId, workflowId);
       if (!removed) return res.status(404).json({ success: false, error: 'Workflow not found' });
-      return res.json({ success: true, deleted: true, workflowId });
+      // Section 6.6: its locks are released with it (and logged).
+      const released = await releaseLocksOfWorkflow(userId, workflowId, gone?.name || workflowId, 'workflow deleted');
+      return res.json({ success: true, deleted: true, workflowId, releasedLocks: released });
     } catch (e: unknown) {
       const error = e as Error;
       res.status(500).json({ success: false, error: error.message });
@@ -1572,6 +1622,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
             details: broken.map((b) => `${b.message} (${b.detail})`),
             profiles: broken, action: 'assign_profile', active: current.active,
           });
+        }
+        // Section 6.2/6.5: a profile locked to ANOTHER workflow -> refused
+        // with "profile locked to <workflow>" (also catches imports).
+        {
+          const v = await lockViolationsOf(userId, current.id, current.steps, current.profileId);
+          if (v.length) return res.status(409).json({ ...lockRefusal(v, 'It cannot be activated: choose another profile.'), active: current.active });
         }
         // Filled-in fields are not proof that the workflow works: a page may
         // never show the element, a site may refuse the request. Like n8n's

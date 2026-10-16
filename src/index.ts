@@ -18,6 +18,7 @@ import { ProfileFailureReports, registerProfileFailureReports } from './core/Pro
 import { preRunProfileCheck } from './core/BranchPolicy';
 import { applyAfterRun } from './core/BrowserLifecycle';
 import { reapOrphans, lockedRootsUnder } from './core/OrphanBrowsers';
+import { sweepStaleLocks } from './core/ProfileLock';
 import { indexedProfile } from './core/ProfileIndex';
 import { runningProfileOf } from './core/BrowserSessions';
 import { ProfileRegistry } from './core/ProfileRegistry';
@@ -190,7 +191,13 @@ const profileRegistry = new ProfileRegistry(config.PROFILES_DIR, {
 // Load the registry (and the profile -> branch lock index) before any run
 // resolves its profile. Adopts pre-branch roots with data IN PLACE (moves
 // nothing) and reconciles registry == disk under the base directory.
-void profileRegistry.warm(SINGLE_USER_ID).catch((e) => console.warn(`[PROFILES] registry not loaded: ${(e as Error).message}`));
+void profileRegistry.warm(SINGLE_USER_ID)
+  // Owner brief 6.6: locks of workflows that no longer exist are removed (logged).
+  .then(() => sweepStaleLocks({
+    registry: profileRegistry, userId: SINGLE_USER_ID,
+    workflowIds: async (u) => (await new WorkflowService(workflowStoreFor(connection)).list(u)).map((w) => w.id),
+  }))
+  .catch((e) => console.warn(`[PROFILES] registry not loaded: ${(e as Error).message}`));
 const profileFailures = new ProfileFailureReports(connection);
 registerProfileFailureReports(profileFailures);
 const profileReservations = new ProfileReservations(connection);
@@ -832,6 +839,22 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     if (broken) {
       await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
       throw new Error(`PROFILE_BROKEN: ${broken.message}`);
+    }
+  }
+  // PROFILE LOCK (owner brief 6.5): a profile locked to ANOTHER workflow is
+  // never used by this run, whatever started it (manual, schedule, webhook,
+  // ad-hoc /run). Checked before any lease, so the run takes nothing.
+  if (profile.profileId) {
+    const entry = await profileRegistry.get(userId, profile.profileId).catch(() => null);
+    const lockOwner = entry?.lockedTo?.workflowId;
+    if (entry && lockOwner && lockOwner !== ownWfId) {
+      const ownerName = (await new WorkflowService(workflowStoreFor(connection)).get(userId, lockOwner).catch(() => null))?.name || lockOwner;
+      const msg = `Profile "${entry.name}" is locked to "${ownerName}"; this run cannot use it. Choose another profile.`;
+      await profileFailures.record(userId, { reason: 'profile_locked', detail: 'locked_to_other', stage: 'run', workflowId: ownWfId, workflowName: job.data.__scheduleName || null,
+        profileId: entry.id, profileName: entry.name, jobId: String(job.id), message: msg }).catch(() => {});
+      void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message: msg } }).catch(() => {});
+      await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
+      throw new Error(`PROFILE_LOCKED: ${msg}`);
     }
   }
   const occurrence = job.data.__scheduled ? occurrenceOf(job) : null;

@@ -115,3 +115,28 @@ export class ProfileLockedError extends Error {
     this.name = 'ProfileLockedError';
   }
 }
+
+/**
+ * 6.6 boot-time sweep: locks that point to a workflow that no longer exists
+ * are removed and logged. (A lock lives ON its profile record, so a missing
+ * profile cannot leave a lock behind; a missing profile FOLDER is reported
+ * as "profile missing" by the existing checks and keeps its lock.) Never
+ * throws: a failure is logged and the server starts.
+ */
+export async function sweepStaleLocks(deps: {
+  registry: { sweepLocks(userId: string, ids: Set<string>): Promise<Array<{ id: string; name: string; workflowId: string }>> };
+  workflowIds: (userId: string) => Promise<string[]>;
+  userId: string;
+  log?: (m: string) => void;
+}): Promise<Array<{ id: string; name: string; workflowId: string }>> {
+  const log = deps.log || ((m: string) => console.log(m));
+  try {
+    const ids = new Set(await deps.workflowIds(deps.userId));
+    const removed = await deps.registry.sweepLocks(deps.userId, ids);
+    for (const r of removed) log(`[PROFILES] lock removed at start: "${r.name}" pointed to workflow ${r.workflowId}, which no longer exists`);
+    return removed;
+  } catch (e) {
+    log(`[PROFILES] lock sweep skipped: ${(e as Error).message}`);
+    return [];
+  }
+}
