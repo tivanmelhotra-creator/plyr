@@ -1,0 +1,11 @@
+HEAD(before commit) ecddd19  2026-10-16T09:54:41Z
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/manual-second-profile.test.ts
+[G.2] context pages=2 own(automation may use)=1 titles=["first-still"] windows=2 processes=1
+[G.2 UI] mouse: 2.9 s release -> progress 97%, no request; 3 s hold -> open-manual x1, windows 1->2, processes on root 1
+[G.2 UI] keyboard: Enter 2.9 s -> no request; Enter 3 s -> open-manual (total 2); native dialogs: 0
+ ✓ tests/browser/manual-second-profile.test.ts (3 tests) 35589ms
+   ✓ a second profile of a running branch, opened by hand (G.2) > opens inside the running process after the explicit confirmation, manual-only, Stop closes only it, Stop of the first closes both 10491ms
+   ✓ a second profile of a running branch, opened by hand (G.2) > UI in real Chromium: Play on B -> inset alert; mouse release at 2.9 s launches nothing; 3 s hold launches B by hand; Stop on B -> close-manual; Enter held 3 s also launches; no native dialogs 23093ms
+      Tests  3 passed (3)
+EXIT=0
+RUN npx vitest run tests/unit/manual-second-profile-ui.test.ts -> 10 passed (jsdom)

@@ -18,7 +18,10 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import express from 'express';
+import { chromium, type Browser } from 'playwright';
 import request from 'supertest';
 import IORedis from 'ioredis';
 import { describeBrowser, ensureProbed } from './real-browser';
@@ -44,6 +47,9 @@ let wm: ChildProcess | null = null;
 let redis: IORedis | null = null;
 let redisUp = false;
 let app: express.Express;
+let server: http.Server | null = null;
+let base = '';
+let operator: Browser | null = null;
 let pm: ProfileManager;
 let registry: ProfileRegistry;
 const prev = { display: process.env.DISPLAY, profiles: config.PROFILES_DIR, base: config.BRANCH_BASE_DIR, ext: config.REAL_CHROME_EXTENSIONS_DIR, nosb: process.env.PLYR_CHROME_NO_SANDBOX };
@@ -80,10 +86,26 @@ beforeAll(async () => {
   registerProfileAccess(access);
   app = express();
   app.use(express.json());
+  // The real panel (public/js/profile-manager.js) for the UI case.
+  const read = (f: string) => fs.readFileSync(path.join(__dirname, '..', '..', f), 'utf8');
+  app.get('/panel', (_q, s) => {
+    s.type('html').send('<!doctype html><html><head><style>' + read('public/css/styles.css') + '</style></head><body><div id="host"></div>' +
+      '<script>window.AppUtil={t:function(k){return k},toast:function(){}};window.API={getKey:function(){return ""}};<' + '/script>' +
+      '<script src="/js/i18n.js"><' + '/script><script src="/js/profile-manager.js"><' + '/script>' +
+      '<script>window.__pm=window.ProfileManager.mount(document.getElementById("host"),{workflowId:"' + WF + '",launchSettings:false});<' + '/script></body></html>');
+  });
+  app.get('/js/:f', (q, s) => { s.type('application/javascript').send(read('public/js/' + path.basename(q.params.f))); });
+  app.get('/desktop/chrome', (_q, s) => { s.type('html').send('<!doctype html><title>viewer stub</title>'); });
   app.use(createProfileRoutes({ connection: redis, access, profileManager: pm, schedules: { overlaps: async () => [], unresolvedSchedules: async () => [], scheduledWorkflowIds: async () => new Set() } }));
+  server = http.createServer(app);
+  await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  operator = await chromium.launch({ headless: true });
 }, 60_000);
 
 afterAll(async () => {
+  await operator?.close().catch(() => {});
+  if (server) await new Promise((r) => server!.close(r));
   if (pm) for (const [, e] of (pm as any).vipContexts || []) await closeContextBounded(e.context).catch(() => {});
   if (redis) { for (const k of await redis.keys('profile:*').catch(() => [] as string[])) await redis.del(k).catch(() => 0); redis.disconnect(); }
   (config as any).PROFILES_DIR = prev.profiles;
@@ -168,6 +190,115 @@ afterAll(async () => {
       expect(after.find((v: any) => v.id === b.id).browser.open).toBe(false);
       await request(app).post(`/profiles/${a.id}/release`).send({ workflowId: WF });
     }, 120_000);
+
+    it('UI in real Chromium: Play on B -> inset alert; mouse release at 2.9 s launches nothing; 3 s hold launches B by hand; Stop on B -> close-manual; Enter held 3 s also launches; no native dialogs', async () => {
+      if (!redisUp) return;
+      const a = (await request(app).post('/profiles').send({ name: 'UI First', branchId: 'new' }).expect(201)).body.profile;
+      const b = (await request(app).post('/profiles').send({ name: 'UI Second', branchId: a.branchId }).expect(201)).body.profile;
+      const root = (await registry.locationOf(USER, a.id))!.root;
+      const leaseId = leaseIdOf(a.id);
+      await request(app).post(`/profiles/${a.id}/open`).send({ workflowId: WF }).expect(200);
+      const w0 = windows().length;
+
+      const ctx = await operator!.newContext({ viewport: { width: 900, height: 900 } });
+      const page = await ctx.newPage();
+      const dialogs: string[] = [];
+      page.on('dialog', (d) => { dialogs.push(d.type()); void d.dismiss(); });
+      ctx.on('page', (pg) => pg.on('dialog', (d) => { dialogs.push(d.type()); void d.dismiss(); }));
+      const posted: string[] = [];
+      page.on('request', (r) => { if (r.method() === 'POST') posted.push(new URL(r.url()).pathname); });
+      await page.goto(`${base}/panel`);
+      await page.waitForSelector(`.pm-row[data-id="${b.id}"]`);
+
+      async function playB() {
+        await page.waitForFunction(() => !(window as any).__pm.state.busy);
+        const box = page.locator(`.pm-row[data-id="${b.id}"] .pm-check`);
+        if (!(await box.isChecked())) await box.check();
+        await page.click('.pm-open');
+        await page.waitForSelector('.pm-manual-alert:not([hidden]) .pm-manual-confirm');
+      }
+
+      // Play on B: the inset alert, nothing launched.
+      await playB();
+      const text = await page.locator('.pm-manual-alert').innerText();
+      expect(text).toContain('Another browser is open in this branch');
+      expect(text).toContain('Better: keep this profile in a different branch, so both can run at the same time.');
+      expect(text).toContain('UI First');
+      expect(await page.locator('.pm-manual-cancel').isVisible()).toBe(true);
+      expect(windows().length).toBe(w0);
+
+      // Mouse: release at 2.9 s -> nothing.
+      const btn = page.locator('.pm-manual-confirm');
+      const bb = (await btn.boundingBox())!;
+      await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+      await page.mouse.down();
+      await sleep(2900);
+      const midProgress = Number(await btn.getAttribute('data-progress'));
+      await page.mouse.up();
+      await sleep(1500);
+      expect(midProgress).toBeGreaterThanOrEqual(85);
+      expect(await btn.getAttribute('data-progress')).toBe('0');
+      expect(posted.filter((u) => u.endsWith('/open-manual'))).toHaveLength(0);
+      expect(windows().length).toBe(w0);
+      expect(isManualProfileOpen(leaseId, b.id)).toBe(false);
+
+      // Mouse: a full 3 s hold -> B by hand inside A's process.
+      await page.mouse.down();
+      await sleep(3300);
+      await page.mouse.up();
+      await page.waitForFunction(() => document.querySelector('.pm-manual-alert')!.hasAttribute('hidden'));
+      await page.waitForFunction(() => !(window as any).__pm.state.busy, null, { timeout: 30_000 });
+      expect(posted.filter((u) => u.endsWith('/open-manual'))).toHaveLength(1);
+      await sleep(1000);
+      expect(isManualProfileOpen(leaseId, b.id)).toBe(true);
+      expect(procsOn(root)).toBe(1);
+      expect(windows().length).toBe(w0 + 1);
+      console.log(`[G.2 UI] mouse: 2.9 s release -> progress ${midProgress}%, no request; 3 s hold -> open-manual x1, windows ${w0}->${windows().length}, processes on root ${procsOn(root)}`);
+
+      // Stop on B's row (the panel's Close) -> close-manual only; A stays.
+      await page.evaluate(() => (window as any).__pm.refresh());
+      await page.waitForSelector(`.pm-row[data-id="${b.id}"] .pm-check`);
+      const boxB = page.locator(`.pm-row[data-id="${b.id}"] .pm-check`);
+      if (!(await boxB.isChecked())) await boxB.check();
+      await page.click('.pm-close');
+      await page.waitForFunction(() => !(window as any).__pm.state.busy, null, { timeout: 30_000 });
+      await sleep(1500);
+      expect(posted).toContain(`/profiles/${b.id}/close-manual`);
+      expect(posted).not.toContain(`/profiles/${b.id}/close`);
+      expect(isManualProfileOpen(leaseId, b.id)).toBe(false);
+      expect(procsOn(root)).toBe(1);
+      expect(windows().length).toBe(w0);
+
+      // The confirmation was for that one launch: Play asks again. Keyboard this time.
+      await page.evaluate(() => (window as any).__pm.refresh());
+      await playB();
+      await btn.focus();
+      await page.keyboard.down('Enter');
+      await sleep(2900);
+      await page.keyboard.up('Enter');
+      await sleep(1000);
+      expect(posted.filter((u) => u.endsWith('/open-manual'))).toHaveLength(1);
+      await btn.focus();
+      await page.keyboard.down('Enter');
+      await sleep(3300);
+      await page.keyboard.up('Enter');
+      await page.waitForFunction(() => !(window as any).__pm.state.busy, null, { timeout: 30_000 });
+      await sleep(1000);
+      expect(posted.filter((u) => u.endsWith('/open-manual'))).toHaveLength(2);
+      expect(isManualProfileOpen(leaseId, b.id)).toBe(true);
+      expect(procsOn(root)).toBe(1);
+
+      // No native dialog at any point, and none in the DOM.
+      expect(dialogs).toEqual([]);
+      expect(await page.locator('dialog[open]').count()).toBe(0);
+      console.log(`[G.2 UI] keyboard: Enter 2.9 s -> no request; Enter 3 s -> open-manual (total ${posted.filter((u) => u.endsWith('/open-manual')).length}); native dialogs: ${dialogs.length}`);
+
+      await request(app).post(`/profiles/${a.id}/close`).send({ workflowId: WF }).expect(200);
+      await sleep(1500);
+      expect(procsOn(root)).toBe(0);
+      await request(app).post(`/profiles/${a.id}/release`).send({ workflowId: WF });
+      await ctx.close();
+    }, 150_000);
 
     it('open-manual when the branch is not running -> 409 not_running (use Play)', async () => {
       if (!redisUp) return;
