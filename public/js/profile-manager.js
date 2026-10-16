@@ -1010,6 +1010,13 @@
             // showing other browsers is never taken away.
             if (fresh) { try { tab.close(); } catch (x) { /* fine */ } }
             st.busy = '';
+            var b = e.body || {};
+            if (b.code === 'branch_busy' && b.manualOpenPossible) {
+              // Created in a branch whose other profile is running (S37, found
+              // in 2.3): the same choice as Play (G.2), not an error.
+              say(t('pm.created', 'Profile created.'), false);
+              return refresh().then(function () { showManualAlert(p.id, b.runningProfile || null); });
+            }
             // The profile is KEPT; Open can be pressed again.
             say(t('pm.createdNotOpened', 'Profile created, but its browser did not open') + ': ' + (e.message || '') + ' ' + t('pm.tryOpenAgain', 'Press Open browser to try again.'), true);
             return refresh();

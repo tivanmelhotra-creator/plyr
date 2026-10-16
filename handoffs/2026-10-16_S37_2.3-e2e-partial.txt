@@ -1,0 +1,21 @@
+HEAD c113609 + uncommitted createProfile fix  2026-10-16T10:09:31Z
+RUN tools/s35/start-server.sh /home/user/webapp /tmp/s37-e2e ; node tools/s37/profile-e2e.mjs phase1 /tmp/s37-e2e  (PARTIAL: stopped at step f; phase2 NOT RUN)
+PASS a invalid name -> plain error, nothing created {"status":400,"error":"Profile name cannot be empty"}
+FAIL b create in NEW branch -> opened automatically (real Chromium, branch root + --profile-directory) {"id":"prf_9da56e3ccd2b","branchId":"branch-001","folder":"profile-001","chromium":[{"pid":10312,"udd":"/tmp/s37-e2e/branches/branch-001","pd":"profile-001"}],"note":{"t":"Profile created. Opening its browser…","e":false}}
+PASS c close then reopen -> same root and folder, one process {"afterClose":true,"reopened":[{"pid":10463,"udd":"/tmp/s37-e2e/branches/branch-001","pd":"profile-001"}]}
+PASS d create in EXISTING branch while another runs -> kept, G.2 alert, no second browser {"id":"prf_215fd25833d2","branchId":"branch-001","folder":"profile-002","alertShown":1,"chromium":[{"pid":10463,"udd":"/tmp/s37-e2e/branches/branch-001","pd":"profile-001"}],"note":{"t":"Profile created.","e":false}}
+PASS d2 One closed, Play Two -> Two runs in the same branch root with its own folder {"chromium":[{"pid":10594,"udd":"/tmp/s37-e2e/branches/branch-001","pd":"profile-002"}]}
+PASS e rename closed + running profile -> ids stable, list shows new names, Two still running {"r1":200,"r2":200,"names":["E2E Dos","E2E Uno"],"chromium":[{"pid":10594,"udd":"/tmp/s37-e2e/branches/branch-001","pd":"profile-002"}]}
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+page.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator('.pm-row[data-id="prf_22d53fcfc66e"] .pm-play')
+
+    at /home/user/webapp/tools/s37/profile-e2e.mjs:128:14 {
+  name: 'TimeoutError'
+}
+
+Node.js v22.23.2
