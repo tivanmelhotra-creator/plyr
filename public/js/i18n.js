@@ -2070,6 +2070,7 @@
       'wf.nameRequired': 'Name cannot be empty.',
       'wf.renamed': 'Workflow renamed.',
       'wf.duplicated': 'Workflow duplicated.',
+      'wf.copyNoLockedProfile': 'The profile is locked to the original workflow, so the copy uses the Default profile.',
       'wf.deleted': 'Workflow deleted.',
       'wf.created': 'New workflow created.',
       'wf.saved': 'Workflow saved',

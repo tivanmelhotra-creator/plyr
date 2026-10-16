@@ -3512,6 +3512,16 @@
           steps: wf.steps, webhookUrl: wf.webhookUrl || null,
           profileId: wf.profileId || null,
         })
+          .catch(function (err) {
+            // Section 6.6: a copy never inherits a profile LOCK. When the
+            // profile is locked to the original, the copy is made without it
+            // (Default profile) and the user is told why.
+            if (!err || err.code !== 'profile_locked') throw err;
+            return API.createWorkflow(uid, {
+              name: wf.name + ' ' + t('wf.copySuffix'), description: wf.description || null,
+              steps: wf.steps, webhookUrl: wf.webhookUrl || null, profileId: null,
+            }).then(function () { U().toast(t('wf.copyNoLockedProfile'), 'info'); });
+          })
           .then(function () { U().toast(t('wf.duplicated'), 'success'); load(); })
           .catch(function (err) { U().toast(err.message, 'error'); });
         return;

@@ -220,4 +220,19 @@ describe('the profile lock on every workflow path (6.5 / 6.6)', () => {
     await registry.unlock(USER, p.id);
     expect(await preRunLockCheck({ ...base, workflowId: 'wf_someoneelse00' })).toBeNull();
   });
+
+  it('DUPLICATE (same body as the UI sends: name + steps + profileId) does not inherit the lock: the copy is refused on a locked profile; a copy without it is fine', async () => {
+    if (!up) return;
+    const p = await registry.create(USER, 'Dup src');
+    const owner = await workflowWith(p.id);
+    await lockTo(p.id, owner);
+    const src = (await request(app).get(`/workflows/${USER}/${owner}`).expect(200)).body.workflow;
+    const copy = await request(app).post(`/workflows/${USER}`).send({ name: src.name + ' (copy)', steps: src.steps, profileId: src.profileId });
+    expect(copy.status).toBe(409);
+    expect(copy.body.code).toBe('profile_locked');
+    const plain = await request(app).post(`/workflows/${USER}`).send({ name: src.name + ' (copy 2)', steps: src.steps });
+    expect(plain.status).toBe(201);
+    // The lock still belongs to the original only.
+    expect((await registry.get(USER, p.id))!.lockedTo!.workflowId).toBe(owner);
+  });
 });
