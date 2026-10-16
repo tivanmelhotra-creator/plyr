@@ -1,0 +1,67 @@
+Launch Settings audit (owner brief 3)  HEAD a3a4d5b  2026-10-16T10:28:38Z
+RUN bash tools/s35/start-server.sh /home/user/webapp /tmp/s37-ls && node tools/s37/launch-settings-audit.mjs /tmp/s37-ls
+Ground truth: /proc/<pid>/cmdline of the browser process (= chrome://version Command Line); window size from wmctrl -G on the app display (1280x800).
+
+== none (panel untouched: launch not sent)
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--start-maximized']
+   reached Chromium   : ALL
+   argv vs 'none'     : +[] -[]
+   screen 1280x800 window(s) [(1280, 800)]
+== preset standard
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--start-maximized']
+   reached Chromium   : ALL
+   argv vs 'none'     : +[] -[]
+   screen 1280x800 window(s) [(1280, 800)]
+== standard, Start maximized OFF
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
+   reached Chromium   : ALL
+   argv vs 'none'     : +[] -['--start-maximized']
+   screen 1280x800 window(s) [(1280, 800)]
+== preset automation
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--start-maximized', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding']
+   reached Chromium   : ALL
+   argv vs 'none'     : +[] -[]
+   screen 1280x800 window(s) [(1280, 800)]
+== preset diagnostics
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--start-maximized', '--enable-logging=stderr', '--v=1']
+   reached Chromium   : ALL
+   argv vs 'none'     : +['--enable-logging=stderr', '--v=1'] -[]
+   screen 1280x800 window(s) [(1280, 800)]
+== custom --window-size=900,600 (maximized off)
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--window-size=900,600']
+   reached Chromium   : ALL
+   argv vs 'none'     : +['--window-size=900,600'] -['--start-maximized']
+   screen 1280x800 window(s) [(900, 600)]
+== custom --lang=fa --mute-audio
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--start-maximized', '--lang=fa', '--mute-audio']
+   reached Chromium   : ALL
+   argv vs 'none'     : +['--lang=fa', '--mute-audio'] -[]
+   screen 1280x800 window(s) [(1280, 800)]
+== custom --user-agent (risky, no ack): HTTP 409 needs_confirmation -> NOT LAUNCHED. Confirm these launch flags first: --user-agent: every request uses this user agent; sites may break or flag it
+== custom --user-agent (risky, ack)
+   app args sent      : ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--start-maximized', '--user-agent=AuditUA/1.0']
+   reached Chromium   : ALL
+   argv vs 'none'     : +['--user-agent=AuditUA/1.0'] -[]
+   screen 1280x800 window(s) [(1280, 800)]
+== forbidden --user-data-dir=/tmp/x: HTTP 400 invalid_launch_settings -> NOT LAUNCHED. Launch settings refused: --user-data-dir=/tmp/x — --user-data-dir is controlled by the application: the profil
+== forbidden --headless: HTTP 400 invalid_launch_settings -> NOT LAUNCHED. Launch settings refused: --headless — --headless is controlled by the application: visible / hidden is decided
+== Playwright defaults ALREADY present in EVERY launch (no LaunchSettings involved): ['--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--no-default-browser-check', '--no-first-run']
+== REOPEN while open with other settings: {'status': 200, 'relaunched': True, 'settingsApplied': True, 'pidBefore': 6614, 'pidAfter': 6735, 'argvAfterHasAutomationFlags': True}
+== STORED per profile: {'registryMentionsLaunch': False, 'registryChangedOtherThanTimestamps': False}
+== RUN on the same profile: headless False | has --start-maximized: False | state completed
+
+CONCLUSION (measured, real Chromium):
+REAL effect (reaches argv AND changes the browser):
+  - Custom Flags: every accepted flag reaches Chromium unchanged (--window-size=900,600 -> window 900x600; --lang, --mute-audio, --user-agent present).
+  - Diagnostics preset: adds --enable-logging=stderr --v=1 (Chromium log in the server log).
+  - Validation is real: app-controlled flags (--user-data-dir, --headless, ...) -> 400, nothing launched; risky flags -> 409 until acknowledgeRisk.
+  - Choosing other settings while the profile's browser is open and free -> real relaunch (new pid) with the new argv.
+NO visible effect (decorative on this desktop):
+  - "Start maximized" (Standard): window is 1280x800 = the whole screen with OR without it (openbox + Chromium's default fill the 1280x800 display).
+  - "Automation" preset: all 5 flags (--no-first-run, --no-default-browser-check, --disable-background-timer-throttling,
+    --disable-backgrounding-occluded-windows, --disable-renderer-backgrounding) are ALREADY in every launch as Playwright defaults -> argv identical to Standard.
+  - The 4 categories / preset structure: UI grouping only.
+NOT CONNECTED:
+  - Nothing is stored per profile (registry unchanged): settings apply only to that one Open, and are lost after it.
+  - Workflow RUNS never use LaunchSettings: a run on the same profile used the pipeline's own args (no --start-maximized), job completed.
+  - Always added, not user-visible: --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-blink-features=AutomationControlled.
