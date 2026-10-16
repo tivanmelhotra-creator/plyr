@@ -1,0 +1,8 @@
+HEAD(before commit) 27dec0f  2026-10-16T10:01:59Z
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/play-link-semantics.test.ts
+[B] Play dblclick -> /open x1, pid 6579, viewer tabs 1; link x2 -> /open total 1, pid 6579, tabs 1
+[B] viewer tab closed, link -> new tab "viewer prf_2a21eb46f67f", pid 6579 (same: true), /open total 1
+ ✓ tests/browser/play-link-semantics.test.ts (1 test) 10202ms
+   ✓ Play / link semantics (brief 2 B) > Play launches + one viewer tab; link twice -> one process, one session, one tab, no /open; close tab + link -> new tab, same browser; Play double click launches once 8270ms
+      Tests  1 passed (1)
+RUN npx vitest run tests/unit/profile-manager-ui.test.ts tests/unit/icons.test.ts tests/unit/manual-second-profile-ui.test.ts -> 49 passed

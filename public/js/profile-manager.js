@@ -711,6 +711,7 @@
           txt.appendChild(w);
         });
         li.appendChild(txt);
+        li.appendChild(rowIcons(p));
         var ren = document.createElement('button');
         ren.type = 'button';
         ren.className = 'btn btn-sm btn-ghost pm-ren';
@@ -721,6 +722,59 @@
         list.appendChild(li);
       });
       paintActions();
+    }
+
+    /**
+     * Per-row state icons (owner brief 4.5 / brief 2 B). An icon that is not
+     * useful in the current state does not exist in the row (never disabled):
+     *   - browser CLOSED: Play = launch AND show it in the viewer tab, once;
+     *   - browser OPEN:   external-link = ONLY show it (focus the viewer tab if
+     *     it is open, else open one). It never calls /open, so it can never
+     *     launch, relaunch or start a second browser or session.
+     *     Stop = close it (a manual-only one: only its own windows).
+     */
+    function iconButton(cls, icon, label, onClick) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-sm btn-ghost pm-icon ' + cls;
+      b.title = label;
+      b.setAttribute('aria-label', label);
+      if (window.Icons && window.Icons.svg) b.innerHTML = window.Icons.svg(icon, { size: 14 });
+      else b.textContent = label;
+      b.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); onClick(); });
+      return b;
+    }
+
+    function rowIcons(p) {
+      var g = document.createElement('span');
+      g.className = 'pm-row-icons';
+      var open = !!(p.browser && p.browser.open);
+      if (open) {
+        g.appendChild(iconButton('pm-link', 'external-link', t('pm.showBrowser', 'Show this browser in a new tab'), function () { showProfile(p); }));
+        g.appendChild(iconButton('pm-stop', 'square', t('pm.closeBrowser', 'Close browser'), function () { void stopProfile(p); }));
+      } else if (p.available || (p.hold && p.hold.mine)) {
+        g.appendChild(iconButton('pm-play', 'play', t('pm.open', 'Open browser'), function () { void openProfiles([p.id]); }));
+      }
+      return g;
+    }
+
+    /** The link icon: show an already-running browser. Never launches anything. */
+    function showProfile(p) {
+      // A manual-only profile is a window of its branch's running browser:
+      // the viewer follows that browser's session.
+      var target = (p.browser && p.browser.manual && p.branchBusyWith) ? p.branchBusyWith.id : p.id;
+      var href = viewHref({ viewPath: '/desktop/chrome?profile=' + encodeURIComponent(target) });
+      var tab = claimViewer();
+      if (o.openView) o.openView(href, tab); else showInViewer(tab, href);
+    }
+
+    function stopProfile(p) {
+      if (st.busy) return Promise.resolve();
+      st.busy = 'act';
+      paintActions();
+      var req = (p.browser && p.browser.manual) ? api.closeManual(p.id, o.workflowId) : api.close(p.id, o.workflowId);
+      return req.then(function () { /* refresh shows it */ }, function (e) { say(p.name + ': ' + (e.message || t('pm.closeFailed', 'Could not close the browser.')), true); })
+        .then(function () { st.busy = ''; return refresh(); });
     }
 
     function paintNotes() {
@@ -1148,6 +1202,7 @@
       createProfile: createProfile,
       startDeleteBranch: startDeleteBranch,
       showManualAlert: showManualAlert,
+      showProfile: showProfile,
       hideManualAlert: hideManualAlert,
       destroy: function () {
         st.destroyed = true;

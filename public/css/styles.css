@@ -9801,3 +9801,7 @@ tr.is-unset .xv-var-val code { color: var(--xv-faint); font-style: italic; backg
 .pm-hold { touch-action: none; }
 .pm-hold-bar { transition: none; }
 .pm-hold:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+/* Brief 4.5 / brief 2 B: per-row state icons (absent when not useful, never disabled). */
+.pm-row-icons { display: inline-flex; gap: 2px; margin-left: auto; align-items: center; }
+.pm-icon { padding: 2px 5px; line-height: 0; }
+.pm-icon:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }

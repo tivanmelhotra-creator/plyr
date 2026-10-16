@@ -18,7 +18,7 @@ const wfSrc = read('public/js/workflow-files.js');
 const i18n = read('public/js/i18n.js');
 const html = read('public/index.html');
 
-interface Opts { openFails?: boolean; blocked?: boolean; overlap?: boolean; unknown?: boolean }
+interface Opts { openFails?: boolean; blocked?: boolean; overlap?: boolean; unknown?: boolean; running?: boolean }
 
 function boot(o: Opts = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="stage"></div></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
@@ -31,6 +31,7 @@ function boot(o: Opts = {}) {
       ? { id: 'prf_b', name: 'Busy', builtIn: false, status: 'reserved', available: false, denyReason: 'reserved', explanation: 'Reserved for the scheduled run of "Nightly".', browser: { open: false, dependents: 0 }, usedBy: [] }
       : { id: 'prf_b', name: 'Second', builtIn: false, status: 'free', available: true, browser: { open: false, dependents: 0 }, usedBy: [] },
   ];
+  if (o.running) profiles[1] = { ...profiles[1], browser: { open: true, dependents: 1 }, hold: { mine: true } };
   if (o.overlap) {
     profiles[1].overlaps = [{ message: 'x', a: { owner: 'wf_a', ownerName: 'Morning A', start: 0, end: 600000 }, b: { owner: 'wf_b', ownerName: 'Morning B', start: 300000, end: 900000 } }];
   }
@@ -201,6 +202,31 @@ describe('the profile panel in the Workflow Files drawer', () => {
   it('without such warnings the notes list stays hidden', async () => {
     await openDrawer();
     expect((b.stage.querySelector('.pm-notes') as HTMLElement).hidden).toBe(true);
+  });
+});
+
+describe('row icons: Play vs link (brief 2 B, brief 4.3 absent-icon rule)', () => {
+  it('closed profile: Play exists, link and Stop do not exist (not disabled: absent)', async () => {
+    await openDrawer();
+    const row = b.stage.querySelector('.pm-row[data-id="prf_b"]') as HTMLElement;
+    expect(row.querySelector('.pm-play')).toBeTruthy();
+    expect(row.querySelector('.pm-link')).toBeNull();
+    expect(row.querySelector('.pm-stop')).toBeNull();
+    expect(row.querySelector('.pm-row-icons button[disabled]')).toBeNull();
+  });
+  it('running profile: link + Stop, no Play; the link never POSTs (never launches) and reuses the ONE viewer tab', async () => {
+    await openDrawer({ running: true });
+    const row = b.stage.querySelector('.pm-row[data-id="prf_b"]') as HTMLElement;
+    expect(row.querySelector('.pm-play')).toBeNull();
+    const link = row.querySelector('.pm-link') as HTMLButtonElement;
+    expect(link.getAttribute('aria-label')).toBeTruthy();
+    expect(row.querySelector('.pm-stop')).toBeTruthy();
+    const before = b.calls.filter((c) => c.method === 'POST').length;
+    link.click(); link.click();
+    await b.settle();
+    expect(b.calls.filter((c) => c.method === 'POST').length).toBe(before);
+    expect(b.tabs.filter((t) => !t.closed)).toHaveLength(1);
+    expect(b.tabs[0]!.location).toContain('/desktop/chrome?profile=prf_b');
   });
 });
 
