@@ -91,6 +91,12 @@ export interface ProfileRecord {
    * the workflow ID, so a rename of the workflow never breaks it.
    */
   lockedTo?: { workflowId: string; at: string } | null;
+  /**
+   * Launch flags (owner brief section 5): catalog ids -> typed values
+   * (core/FlagCatalog). Absent = Default (standard launch). Stored per
+   * profile ID: survives rename and restart, deleted with the profile.
+   */
+  launchFlags?: Record<string, unknown> | null;
 }
 
 interface RegistryFile { version: 1; nextBranch: number; branches: BranchRecord[]; profiles: ProfileRecord[] }
@@ -108,6 +114,8 @@ export interface ProfileEntry {
   folder: string;
   /** Section 6: locked to this workflow (id), or null. */
   lockedTo?: { workflowId: string; at: string } | null;
+  /** Section 5: stored launch flags (catalog ids), or null = Default. */
+  launchFlags?: Record<string, unknown> | null;
 }
 
 export type RegistryErrorCode = 'invalid_name' | 'duplicate_name' | 'not_found' | 'builtin' | 'io' | 'invalid_id' | 'branch_not_found' | 'locked';
@@ -436,6 +444,7 @@ export class BranchRegistry {
       lastOpenError: p.lastOpenError ?? null,
       branchId: p.branchId, branchLabel: b?.label || p.branchId, folder: p.folder,
       lockedTo: p.lockedTo ? { workflowId: p.lockedTo.workflowId, at: p.lockedTo.at } : null,
+      launchFlags: p.launchFlags && Object.keys(p.launchFlags).length ? { ...p.launchFlags } : null,
     };
   }
 
@@ -624,6 +633,24 @@ export class BranchRegistry {
       const was = p.lockedTo?.workflowId || null;
       if (was) { p.lockedTo = null; delete p.lockedTo; p.updatedAt = new Date().toISOString(); await this.save(userId, f); }
       return was;
+    });
+  }
+
+  /**
+   * Store the launch flags of a profile (already validated by the caller,
+   * core/FlagCatalog.buildFlags). Empty / null = Default: every
+   * customization is removed (5.2).
+   */
+  async setLaunchFlags(userId: string, id: string, flags: Record<string, unknown> | null): Promise<ProfileEntry> {
+    if (!sanitizeProfileId(id)) throw new ProfileRegistryError('Invalid profile id', 'invalid_id');
+    return this.serial(userId, async () => {
+      const f = await this.load(userId);
+      const p = f.profiles.find((x) => x.id === id);
+      if (!p) throw new ProfileRegistryError('Profile not found', 'not_found');
+      if (flags && Object.keys(flags).length) p.launchFlags = { ...flags }; else delete p.launchFlags;
+      p.updatedAt = new Date().toISOString();
+      await this.save(userId, f);
+      return this.entryOf(f, p);
     });
   }
 
