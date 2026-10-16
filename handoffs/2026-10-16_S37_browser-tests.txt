@@ -1,0 +1,23 @@
+HEAD 418d141  2026-10-16T11:38:23Z  (groups, one vitest process each)
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/profile-real-chromium.test.ts tests/browser/turn-off-and-show.test.ts
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+EXIT=0
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/orphan-browsers.test.ts tests/browser/local-browser-profile-selection.test.ts tests/browser/profile-open-turn-off.test.ts
+[REAL-CHROME] 🔍 Element Inspector fresh (v1.1.0) → /tmp/plyr-lb-qKEf3Q/extensions/ab-inspector
+ Test Files  3 passed (3)
+      Tests  8 passed (8)
+EXIT=0
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/viewer-self-close.test.ts
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+EXIT=0
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/manual-second-profile.test.ts
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+EXIT=0
+RUN npx vitest run --config vitest.browser.config.ts tests/browser/play-link-semantics.test.ts
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+EXIT=0
+ALLDONE

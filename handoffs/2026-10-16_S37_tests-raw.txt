@@ -4,3 +4,5 @@ RUN npx vitest run tests/unit tests/integration
  Test Files  203 passed | 1 skipped (204)
 EXIT=0
 RUN npx vitest run --config vitest.browser.config.ts <8 profile/viewer files>
+  -> NOT COMPLETED in this run: the sandbox froze (~1 GB RAM) while 8 browser files ran in ONE process; the failure seen before the freeze was manual-second-profile UI under that load.
+     Re-run in groups (tools/s37/run-browser-groups.sh): handoffs/2026-10-16_S37_browser-tests.txt -> 32 passed, 0 failed, 0 skipped.
