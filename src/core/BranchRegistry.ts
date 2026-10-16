@@ -54,7 +54,15 @@ export const DEFAULT_PROFILE_ID = 'default';
 /** The id the pre-S34 registry gave the adopted Local Browser root. Only used to drop that record. */
 const OLD_LOCAL_BROWSER_PROFILE_ID = 'local-browser';
 export const REGISTRY_FILE = 'branches.json';
-const NAME_MAX = 60;
+/**
+ * Display-name rules (owner brief 3.1), enforced ONLY on create and rename:
+ * trimmed, runs of whitespace collapsed, not empty, at most NAME_MAX
+ * characters (Unicode code points, so Persian / emoji count as one each).
+ * Branch names are unique per user, profile names unique inside their
+ * branch, both case-insensitive (locale-independent). Existing data that
+ * breaks a rule still loads and is never renamed silently.
+ */
+export const NAME_MAX = 24;
 
 export interface BranchRecord {
   id: string;
@@ -101,12 +109,39 @@ export function normalizeName(raw: unknown, what = 'Profile name'): string {
   if (typeof raw !== 'string') throw new ProfileRegistryError(`${what} is required`, 'invalid_name');
   const v = raw.replace(/\s+/g, ' ').trim();
   if (!v) throw new ProfileRegistryError(`${what} cannot be empty`, 'invalid_name');
-  if (v.length > NAME_MAX) throw new ProfileRegistryError(`${what} must be at most ${NAME_MAX} characters`, 'invalid_name');
+  if (Array.from(v).length > NAME_MAX) throw new ProfileRegistryError(`${what} must be at most ${NAME_MAX} characters`, 'invalid_name');
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(v)) throw new ProfileRegistryError(`${what} contains control characters`, 'invalid_name');
   return v;
 }
 export const normalizeProfileName = (raw: unknown): string => normalizeName(raw);
+
+/** Comparison key for uniqueness: case-insensitive, Unicode-normalized, locale-independent. */
+export function nameKey(v: string): string {
+  return v.normalize('NFKC').toLowerCase();
+}
+
+function displayLabel(b: { id: string; label: string }): string { return b.label || b.id; }
+
+/** "Branch N" (N from the id), or the next free "Branch N" if a user already named one so. */
+function freeBranchName(f: { branches: Array<{ id: string; label: string }> }, id: string): string {
+  const taken = new Set(f.branches.map((x) => nameKey(displayLabel(x))));
+  let n = Number((/(\d+)$/.exec(id) || [])[1]) || f.branches.length + 1;
+  while (taken.has(nameKey(`Branch ${n}`))) n++;
+  return `Branch ${n}`;
+}
+
+function assertBranchNameFree(f: { branches: Array<{ id: string; label: string }> }, label: string, selfId: string | null): void {
+  const k = nameKey(label);
+  const clash = f.branches.find((x) => x.id !== selfId && nameKey(displayLabel(x)) === k);
+  if (clash) throw new ProfileRegistryError(`A branch named "${displayLabel(clash)}" already exists`, 'duplicate_name');
+}
+
+function assertProfileNameFree(f: { profiles: Array<{ id: string; branchId: string; name: string }> }, b: { id: string }, name: string, selfId: string | null): void {
+  const k = nameKey(name);
+  const clash = f.profiles.find((x) => x.branchId === b.id && x.id !== selfId && nameKey(x.name) === k);
+  if (clash) throw new ProfileRegistryError(`A profile named "${clash.name}" already exists in this branch`, 'duplicate_name');
+}
 
 export const branchIdOf = (n: number): string => `branch-${String(n).padStart(3, '0')}`;
 export const profileFolderOf = (n: number): string => `profile-${String(n).padStart(3, '0')}`;
@@ -461,7 +496,10 @@ export class BranchRegistry {
     return this.serial(userId, async () => {
       const f = await this.load(userId);
       const id = await this.allocBranch(f);
-      const label = rawLabel === undefined || rawLabel === null || rawLabel === '' ? id : normalizeName(rawLabel, 'Branch name');
+      // No name typed: the system picks a unique display name "Branch N"
+      // (owner brief 1.2 / 4.5: the UI never shows branch-NNN). Renameable.
+      const label = rawLabel === undefined || rawLabel === null || rawLabel === '' ? freeBranchName(f, id) : normalizeName(rawLabel, 'Branch name');
+      assertBranchNameFree(f, label, null);
       const root = path.resolve(this.opts.baseDir(), id);
       if (await exists(root)) throw new ProfileRegistryError(`The folder for ${id} already exists; a new branch is never created on existing data.`, 'io');
       try { await fs.mkdir(root, { recursive: true }); } catch (e) { throw new ProfileRegistryError(`Could not create the branch folder: ${(e as Error).message}`, 'io'); }
@@ -479,6 +517,7 @@ export class BranchRegistry {
       const f = await this.load(userId);
       const b = f.branches.find((x) => x.id === branchId);
       if (!b) throw new ProfileRegistryError('Branch not found', 'branch_not_found');
+      assertBranchNameFree(f, label, b.id);
       b.label = label; b.updatedAt = new Date().toISOString();
       await this.save(userId, f);
       return { ...b };
@@ -498,6 +537,7 @@ export class BranchRegistry {
       const f = await this.load(userId);
       const b = f.branches.find((x) => x.id === branchId);
       if (!b) throw new ProfileRegistryError('Branch not found', 'branch_not_found');
+      assertProfileNameFree(f, b, name, null);
       let n = Math.max(1, b.nextProfile || 1);
       const used = new Set(f.profiles.filter((p) => p.branchId === b.id).map((p) => p.folder));
       let folder = profileFolderOf(n);
@@ -523,6 +563,8 @@ export class BranchRegistry {
       const f = await this.load(userId);
       const p = f.profiles.find((x) => x.id === id);
       if (!p) throw new ProfileRegistryError('Profile not found', 'not_found');
+      const b = f.branches.find((x) => x.id === p.branchId);
+      if (b) assertProfileNameFree(f, b, name, p.id);
       p.name = name; p.updatedAt = new Date().toISOString();
       await this.save(userId, f);
       return this.entryOf(f, p);

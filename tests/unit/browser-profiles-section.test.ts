@@ -79,7 +79,8 @@ describe('one Browser Profiles section', () => {
     await open();
     expect(q('.pm-title').textContent).toBe('Browser Profiles');
     expect(q('.pm-list-label').textContent).toBe('Branches');
-    expect(q('.pm-branch-label').textContent).toBe('Default (branch-001)');
+    // Display names only (brief 1.2): no branch-NNN in the UI.
+    expect(q('.pm-branch-label').textContent).toBe('Default');
     // Owner: profiles open by name through their own Open; no bulk controls.
     expect(q('.pm-turn-on')).toBeNull();
     expect(q('.pm-turn-off')).toBeNull();

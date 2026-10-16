@@ -144,6 +144,17 @@
     deleteBranch: function (id) { return call('/profiles/branches/' + encodeURIComponent(id), 'DELETE'); },
   };
 
+  /** Display names (owner brief 3.1): the server enforces the same limit. */
+  var NAME_MAX = 24;
+  var NAME_COUNT_FROM = 20;
+
+  /** A branch's display name; an old record whose label is still its id shows "Branch N". */
+  function branchName(label, id) {
+    if (label && label !== id) return label;
+    var m = /(\d+)$/.exec(String(id || ''));
+    return t('pm.branchN', 'Branch') + ' ' + (m ? String(Number(m[1])) : '');
+  }
+
   /** How long the Delete branch button must be held (owner's rule: 3 s). */
   var DELETE_HOLD_MS = 3000;
   /** How long "I understand" (second browser in a running branch) must be held (owner brief 2 / G.2: exactly 3 s). */
@@ -507,11 +518,29 @@
     form.hidden = true;
     var input = document.createElement('input');
     input.type = 'text';
-    input.maxLength = 60;
+    input.maxLength = NAME_MAX;
     input.className = 'pm-input';
     input.setAttribute('aria-label', t('pm.namePrompt', 'Profile name'));
     input.placeholder = t('pm.namePrompt', 'Profile name');
     form.appendChild(input);
+    // Owner brief 3.1: a muted counter from 20 characters on, and a plain
+    // error line under the input (the server's own words).
+    var counter = document.createElement('small');
+    counter.className = 'pm-name-count';
+    counter.hidden = true;
+    form.appendChild(counter);
+    var formErr = document.createElement('small');
+    formErr.className = 'pm-form-error';
+    formErr.setAttribute('role', 'alert');
+    formErr.hidden = true;
+    form.appendChild(formErr);
+    function paintCounter() {
+      var n = Array.from(String(input.value || '')).length;
+      counter.hidden = n < NAME_COUNT_FROM;
+      counter.textContent = n + '/' + NAME_MAX;
+    }
+    function formError(msg) { formErr.textContent = msg || ''; formErr.hidden = !msg; }
+    input.addEventListener('input', function () { paintCounter(); formError(''); });
     // Where the new profile goes: an existing branch Aria created, or a new
     // branch (the system creates branch-NNN; no path is typed).
     var branchSel = document.createElement('select');
@@ -602,7 +631,8 @@
       (st.branches || []).forEach(function (b) {
         var op = document.createElement('option');
         op.value = b.id;
-        op.textContent = (b.label && b.label !== b.id ? b.label + ' (' + b.id + ')' : b.id) + ' \u2014 ' + (b.profiles || []).length + ' ' + t('pm.profilesCount', 'profile(s)');
+        // Display names only (brief 1.2): never branch-NNN.
+        op.textContent = branchName(b.label, b.id) + ' \u2014 ' + (b.profiles || []).length + ' ' + t('pm.profilesCount', 'profile(s)');
         branchSel.appendChild(op);
       });
     }
@@ -613,12 +643,14 @@
       branchSel.hidden = branchHint.hidden = mode.kind !== 'create';
       if (mode.kind === 'create') paintBranchSelect();
       input.value = initial || '';
+      paintCounter();
+      formError('');
       ok.textContent = mode.kind === 'create' ? t('pm.create', 'Create') : t('pm.rename', 'Rename');
       try { input.focus(); input.select(); } catch (e) { /* jsdom */ }
       // The panel scrolls inside the drawer: bring the name field into view.
       try { if (form.scrollIntoView) form.scrollIntoView({ block: 'nearest' }); } catch (e) { /* jsdom */ }
     }
-    function hideForm() { formMode = null; form.hidden = true; input.value = ''; }
+    function hideForm() { formMode = null; form.hidden = true; input.value = ''; paintCounter(); formError(''); }
 
     function selectedIds() {
       return st.profiles.filter(function (p) { return st.selected[p.id]; }).map(function (p) { return p.id; });
@@ -643,7 +675,8 @@
           var bl = document.createElement('span');
           bl.className = 'pm-branch-label';
           // Under the "Branches" label: the branch's own name, no prefix.
-          bl.textContent = p.branchLabel && p.branchLabel !== p.branchId ? p.branchLabel + ' (' + p.branchId + ')' : p.branchId;
+          bl.textContent = branchName(p.branchLabel, p.branchId);
+          bl.title = bl.textContent;
           bh.appendChild(bl);
           var binfo = (st.branches || []).filter(function (b) { return b.id === p.branchId; })[0];
           if (binfo) {
@@ -686,6 +719,7 @@
         var nm = document.createElement('span');
         nm.className = 'pm-name';
         nm.textContent = p.name;
+        nm.title = p.name;
         txt.appendChild(nm);
         var badge = document.createElement('span');
         badge.className = 'pm-badge is-' + p.status;
@@ -1026,7 +1060,9 @@
         if (fresh) { try { tab.close(); } catch (x) { /* fine */ } }
         st.busy = '';
         paintActions();
-        say(e.message || t('pm.createFailed', 'Could not create the profile.'), true);
+        var em = e.message || t('pm.createFailed', 'Could not create the profile.');
+        if (e.body && (e.body.code === 'invalid_name' || e.body.code === 'duplicate_name')) formError(em);
+        else say(em, true);
       });
     }
 
@@ -1041,7 +1077,9 @@
       }, function (e) {
         st.busy = '';
         paintActions();
-        say(e.message || t('pm.renameFailed', 'Could not rename the profile.'), true);
+        var em = e.message || t('pm.renameFailed', 'Could not rename the profile.');
+        if (e.body && (e.body.code === 'invalid_name' || e.body.code === 'duplicate_name')) formError(em);
+        else say(em, true);
       });
     }
 
@@ -1203,7 +1241,7 @@
   }
 
   window.ProfileManager = {
-    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText, holdButton: holdButton, DELETE_HOLD_MS: DELETE_HOLD_MS, MANUAL_HOLD_MS: MANUAL_HOLD_MS,
+    api: api, mount: mount, detailOf: detailOf, overlapText: overlapText, NAME_MAX: NAME_MAX, branchName: branchName, holdButton: holdButton, DELETE_HOLD_MS: DELETE_HOLD_MS, MANUAL_HOLD_MS: MANUAL_HOLD_MS,
     mountLaunchSettings: mountLaunchSettings, viewer: { name: VIEWER_NAME, claim: claimViewer, show: showInViewer, isBlank: isBlankTab }
   };
 })();

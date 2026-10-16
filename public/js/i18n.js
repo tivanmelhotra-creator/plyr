@@ -1010,6 +1010,7 @@
       'pm.branchHint': 'A branch is one browser data folder. Only one profile of a branch can run at a time; profiles in different branches can run together.',
       'pm.delBlockedTitle': 'This branch cannot be deleted yet',
       'pm.delHold': 'Hold to delete',
+      'pm.branchN': 'Branch',
       'pm.showBrowser': 'Show this browser in a new tab',
       'pm.closeFailed': 'Could not close the browser.',
       'pm.manualTitle': 'Another browser is open in this branch',
