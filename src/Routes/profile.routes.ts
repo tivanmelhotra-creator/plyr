@@ -55,6 +55,8 @@ import { runningProfileOf } from '../core/BrowserSessions';
 import { blockingUntil } from '../core/ProfileReservations';
 import { defaultBaseDir, validateBaseDir } from '../core/BranchBase';
 import { saveSetting } from '../core/PersistedSettings';
+import { canLock, canUnlock, type LockWorkflowView } from '../core/ProfileLock';
+import { workflowStateOf } from '../core/BranchPolicy';
 
 /** Pure: the launch-settings part of a request body, or null. */
 export function launchInputOf(body: unknown): LaunchSettingsInput | null {
@@ -331,6 +333,65 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     } catch (e) { fail(res, e); }
   });
 
+  // ── PROFILE LOCK (owner brief section 6; rules in core/ProfileLock) ─────
+
+  async function lockViews(userId: string): Promise<LockWorkflowView[]> {
+    return (await uses(userId)).map((w) => ({ workflowId: w.workflowId, name: w.name, state: workflowStateOf(w), profileIds: w.profileIds }));
+  }
+
+  /**
+   * POST /profiles/:id/lock { workflowId } — lock the profile to ONE workflow.
+   * Atomic: the check and the write run in the registry's per-user queue
+   * order, and the registry refuses a second owner ('locked'), so of two
+   * simultaneous requests for different workflows exactly one wins.
+   * 409 referenced_by_others lists the blocking workflows (for "Reassign to…").
+   */
+  router.post('/profiles/:id/lock', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      const workflowId = typeof req.body?.workflowId === 'string' ? req.body.workflowId : '';
+      const entry = (await access.registry.get(userId, id))!;
+      const views = await lockViews(userId);
+      const d = canLock(entry, workflowId, views);
+      if (!d.ok) {
+        res.status(d.code === 'workflow_not_found' ? 404 : 409).json({ success: false, code: d.code, error: d.message, blocking: d.blocking || [] });
+        return;
+      }
+      const after = await access.registry.lock(userId, id, workflowId);
+      const owner = views.find((w) => w.workflowId === workflowId)!;
+      console.log(`[PROFILES] lock: "${after.name}" locked to workflow "${owner.name}"`);
+      res.json({ success: true, profileId: id, lockedTo: { workflowId, name: owner.name, at: after.lockedTo?.at } });
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * POST /profiles/:id/unlock { confirm?: true } — owner running: 409
+   * owner_running ("stop it first"). Owner active/scheduled: 428
+   * needs_confirmation naming it, unless confirm === true. The owner's own
+   * reference stays valid; only the exclusivity ends.
+   */
+  router.post('/profiles/:id/unlock', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      const entry = (await access.registry.get(userId, id))!;
+      if (!entry.lockedTo) { res.json({ success: true, profileId: id, unlocked: false, reason: 'not_locked' }); return; }
+      const d = canUnlock(entry, await lockViews(userId));
+      if (!d.ok) { res.status(409).json({ success: false, code: d.code, error: d.message }); return; }
+      if (d.needsConfirmation && req.body?.confirm !== true) {
+        res.status(428).json({ success: false, code: 'needs_confirmation', error: d.message, owner: d.owner });
+        return;
+      }
+      const was = await access.registry.unlock(userId, id);
+      const ownerName = (was && (await workflows.get(userId, was).catch(() => null))?.name) || was;
+      console.log(`[PROFILES] unlock: "${entry.name}" unlocked (was locked to "${ownerName}")`);
+      res.json({ success: true, profileId: id, unlocked: true, was: was ? { workflowId: was, name: ownerName } : null });
+    } catch (e) { fail(res, e); }
+  });
+
   /** Failure reports (profile_missing / profile_broken), newest first. */
   router.get('/profiles/reports', async (req: AuthenticatedRequest, res) => {
     try {
@@ -390,6 +451,11 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
       const id = await idOrFail(userId, req.params.id, res);
       if (!id) return;
       const blockers = await access.deleteBlockers(id, await refs(userId));
+      const entry = await access.registry.get(userId, id);
+      if (entry?.lockedTo?.workflowId) {
+        const owner = (await workflows.get(userId, entry.lockedTo.workflowId).catch(() => null))?.name || entry.lockedTo.workflowId;
+        blockers.unshift({ kind: 'locked', detail: `It is locked to "${owner}" (unlock it first).` } as never);
+      }
       if (blockers.length) {
         res.status(409).json({ success: false, error: `This profile cannot be deleted: ${blockers.map((b) => b.detail).join(' ')}`, blockers });
         return;

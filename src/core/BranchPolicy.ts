@@ -111,6 +111,8 @@ export interface DeletionScan {
   runningProfiles: Array<{ profileId: string; name: string }>;
   /** Inactive workflows whose reference will be cleared ("profile missing"). */
   inactiveWorkflows: Array<{ workflowId: string; name: string; profileId: string }>;
+  /** Section 6.6: profiles locked to a workflow (unlock them first). */
+  lockedProfiles: Array<{ profileId: string; name: string; workflowId: string; workflowName: string }>;
   /** May the branch be deleted right now? */
   deletable: boolean;
 }
@@ -137,7 +139,12 @@ export function scanBranch(input: {
   const blocking: DeletionScan['blockingWorkflows'] = [];
   const inactive: DeletionScan['inactiveWorkflows'] = [];
   const running: DeletionScan['runningProfiles'] = [];
+  const locked: DeletionScan['lockedProfiles'] = [];
   for (const p of input.profiles) {
+    if (p.lockedTo?.workflowId) {
+      const w = input.workflows.find((x) => x.workflowId === p.lockedTo!.workflowId);
+      locked.push({ profileId: p.id, name: p.name, workflowId: p.lockedTo.workflowId, workflowName: w?.name || p.lockedTo.workflowId });
+    }
     const isRunning = input.branchRunning && (!input.runningProfileId || input.runningProfileId === p.id);
     const users = input.workflows.filter((w) => w.profileIds.includes(p.id));
     const state: ProfileState = isRunning ? 'running' : input.branchReserved && users.some((w) => w.scheduled) ? 'reserved' : 'free';
@@ -151,8 +158,8 @@ export function scanBranch(input: {
   }
   return {
     branchId: input.branchId, label: input.label, profiles: rows,
-    blockingWorkflows: blocking, runningProfiles: running, inactiveWorkflows: inactive,
-    deletable: blocking.length === 0 && running.length === 0 && !input.branchRunning,
+    blockingWorkflows: blocking, runningProfiles: running, inactiveWorkflows: inactive, lockedProfiles: locked,
+    deletable: blocking.length === 0 && running.length === 0 && locked.length === 0 && !input.branchRunning,
   };
 }
 
