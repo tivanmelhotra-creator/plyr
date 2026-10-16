@@ -1,0 +1,6 @@
+HEAD 25e7609  2026-10-16T10:28:43Z
+RUN npx vitest run tests/unit tests/integration
+      Tests  4643 passed | 9 skipped (4652)
+ Test Files  203 passed | 1 skipped (204)
+EXIT=0
+RUN npx vitest run --config vitest.browser.config.ts <8 profile/viewer files>
