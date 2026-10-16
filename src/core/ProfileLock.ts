@@ -140,3 +140,32 @@ export async function sweepStaleLocks(deps: {
     return [];
   }
 }
+
+/**
+ * 6.5 — the worker's pre-run check (src/index.ts, before the lease and the
+ * launch): a run never uses a profile locked to ANOTHER workflow, whatever
+ * started it (manual, schedule, webhook, ad-hoc /run). On refusal: a
+ * `profile_locked` failure report + a notification; returns the message.
+ */
+export async function preRunLockCheck(input: {
+  registry: { get(userId: string, id: string): Promise<{ id: string; name: string; lockedTo?: { workflowId: string } | null } | null> };
+  userId: string;
+  profileId: string | null | undefined;
+  workflowId: string | null;
+  workflowName: string | null;
+  jobId: string;
+  workflowNameOf: (id: string) => Promise<string | undefined>;
+  record: (userId: string, r: { reason: 'profile_locked'; detail: 'locked_to_other'; stage: 'run'; workflowId: string | null; workflowName: string | null; profileId: string; profileName: string; jobId: string; message: string }) => Promise<unknown>;
+  notify: (message: string) => void;
+}): Promise<{ message: string } | null> {
+  if (!input.profileId) return null;
+  const entry = await input.registry.get(input.userId, input.profileId).catch(() => null);
+  const owner = entry?.lockedTo?.workflowId;
+  if (!entry || !owner || owner === input.workflowId) return null;
+  const ownerName = (await input.workflowNameOf(owner).catch(() => undefined)) || owner;
+  const message = `Profile "${entry.name}" is locked to "${ownerName}"; this run cannot use it. Choose another profile.`;
+  await input.record(input.userId, { reason: 'profile_locked', detail: 'locked_to_other', stage: 'run', workflowId: input.workflowId, workflowName: input.workflowName,
+    profileId: entry.id, profileName: entry.name, jobId: input.jobId, message }).catch(() => {});
+  input.notify(message);
+  return { message };
+}

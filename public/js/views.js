@@ -2874,6 +2874,12 @@
           var o = document.createElement('option');
           o.value = p.id;
           o.textContent = p.name + (p.status !== 'free' ? ' \u2014 ' + p.status.replace('_', ' ') : '');
+          // Section 6.5: a profile locked to ANOTHER workflow is shown disabled
+          // with the reason; only its owner can pick it (the server refuses too).
+          if (p.lockedTo && !p.lockedTo.mine) {
+            o.disabled = p.id !== cur;
+            o.textContent = p.name + ' \u2014 ' + t('pm.lockedTo', 'Locked to') + ' \u201c' + p.lockedTo.name + '\u201d';
+          }
           if (p.id === cur) o.selected = true;
           sel.appendChild(o);
         });

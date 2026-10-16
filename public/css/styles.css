@@ -9806,6 +9806,6 @@ tr.is-unset .xv-var-val code { color: var(--xv-faint); font-style: italic; backg
 .pm-icon { padding: 2px 5px; line-height: 0; }
 .pm-icon:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
 /* Owner brief 3.1: name counter (from 20 chars) and the plain error line under the name input. */
-.pm-name-count { color: var(--text-muted, #8b8f9c); font-size: 11px; justify-self: end; }
-.pm-form-error { color: #f87171; opacity: .9; font-size: 12px; grid-column: 1 / -1; }
+.pm-name-count { color: var(--text-dim); font-size: 11px; justify-self: end; }
+.pm-form-error { color: var(--danger); opacity: .9; font-size: 12px; grid-column: 1 / -1; }
 .pm-branch-label, .pm-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

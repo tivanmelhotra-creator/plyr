@@ -210,4 +210,32 @@ describe('profile lock routes (section 6)', () => {
     const fresh = new ProfileRegistry(path.join(dir, 'profiles'), { baseDir: () => base });
     expect((await fresh.get(USER, p.id))!.lockedTo!.workflowId).toBe(w.id);
   });
+
+  it('6.6 manual open of a LOCKED profile: allowed; refused (existing reservation rule) while the owner is inside its reservation window; refused while the owner runs', async () => {
+    if (!up) return;
+    const p = (await request(app).post('/profiles').send({ name: 'Manual', branchId: 'new' }).expect(201)).body.profile;
+    const owner = await makeWorkflow('Night owner', p.id);
+    await request(app).post(`/profiles/${p.id}/lock`).send({ workflowId: owner.id }).expect(200);
+    const leaseId = leaseIdOf(p.id);
+    // Free: a manual open (operator, another workflow context) is allowed.
+    const o1 = await request(app).post(`/profiles/${p.id}/open`).send({ workflowId: 'wf_operatorctx000' });
+    expect(o1.status, JSON.stringify(o1.body)).toBe(200);
+    await request(app).post(`/profiles/${p.id}/close`).send({ workflowId: 'wf_operatorctx000' }).expect(200);
+    await request(app).post(`/profiles/${p.id}/release`).send({ workflowId: 'wf_operatorctx000' });
+    // Inside the owner's reservation window: refused with the reason.
+    const resv = new ProfileReservations(redis!);
+    await resv.markFired(leaseId, { scheduleId: 'sch-1', owner: owner.id, ownerName: 'Night owner' }, Date.now(), 'job-r', { beforeMs: 600_000, afterMs: 600_000 });
+    const o2 = await request(app).post(`/profiles/${p.id}/open`).send({ workflowId: 'wf_operatorctx000' });
+    expect(o2.status, JSON.stringify(o2.body)).toBe(409);
+    expect(o2.body.error).toMatch(/Night owner|reserved/i);
+    console.log(`[6.6 manual] free -> ${o1.status}; inside the owner's reservation -> ${o2.status} "${String(o2.body.error).slice(0, 120)}"`);
+    await redis!.del(resv.key(leaseId));
+    // The owner runs (its lease): refused.
+    const got = await leases.acquire(leaseId, 'job-m', { owner: owner.id });
+    expect(got.ok).toBe(true);
+    const o3 = await request(app).post(`/profiles/${p.id}/open`).send({ workflowId: 'wf_operatorctx000' });
+    expect(o3.status, JSON.stringify(o3.body)).toBe(409);
+    console.log(`[6.6 manual] owner running -> ${o3.status} "${String(o3.body.error).slice(0, 120)}"`);
+    await leases.release(leaseId, got.ok ? got.token : null);
+  });
 });

@@ -1011,6 +1011,7 @@
       'pm.delBlockedTitle': 'This branch cannot be deleted yet',
       'pm.delHold': 'Hold to delete',
       'pm.branchN': 'Branch',
+      'pm.lockedTo': 'Locked to',
       'pm.showBrowser': 'Show this browser in a new tab',
       'pm.closeFailed': 'Could not close the browser.',
       'pm.manualTitle': 'Another browser is open in this branch',

@@ -45,6 +45,11 @@ export interface ProfileView {
   nextReservation?: { owner: string; ownerName?: string; start: number; end: number } | null;
   browser: { open: boolean; manual?: boolean; visibility?: string; dependents: number; startedAt?: number; lastActivity?: number };
   usedBy: Array<{ workflowId: string; name: string }>;
+  /**
+   * Section 6: locked to ONE workflow (its current name, from the id), and
+   * whether the workflow asking (`owner`) may use it: false = "Locked to X".
+   */
+  lockedTo?: { workflowId: string; name: string; mine: boolean } | null;
   problem?: string | null;
   lastOpenError?: { at: string; message: string } | null;
   /** Tabs saved before the last automatic close (count only), for "Restore tabs". */
@@ -170,6 +175,9 @@ export class ProfileAccess {
           ? { open: true, manual: true, visibility: session.visibility, dependents: 0, startedAt: session.startedAt, lastActivity: session.lastActivity }
           : { open: false, dependents: 0 },
       usedBy: workflows.filter((w) => (w.profileId || DEFAULT_PROFILE_ID) === p.id).map((w) => ({ workflowId: w.id, name: w.name })),
+      lockedTo: p.lockedTo?.workflowId
+        ? { workflowId: p.lockedTo.workflowId, name: nameOf(p.lockedTo.workflowId) || p.lockedTo.workflowId, mine: p.lockedTo.workflowId === owner }
+        : null,
       problem: p.problem ?? null,
       lastOpenError: p.lastOpenError ?? null,
     };

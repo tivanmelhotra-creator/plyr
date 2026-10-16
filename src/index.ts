@@ -18,7 +18,7 @@ import { ProfileFailureReports, registerProfileFailureReports } from './core/Pro
 import { preRunProfileCheck } from './core/BranchPolicy';
 import { applyAfterRun } from './core/BrowserLifecycle';
 import { reapOrphans, lockedRootsUnder } from './core/OrphanBrowsers';
-import { sweepStaleLocks } from './core/ProfileLock';
+import { sweepStaleLocks, preRunLockCheck } from './core/ProfileLock';
 import { indexedProfile } from './core/ProfileIndex';
 import { runningProfileOf } from './core/BrowserSessions';
 import { ProfileRegistry } from './core/ProfileRegistry';
@@ -842,19 +842,18 @@ const worker = new Worker('automation-jobs', async (job: Job, token?: string) =>
     }
   }
   // PROFILE LOCK (owner brief 6.5): a profile locked to ANOTHER workflow is
-  // never used by this run, whatever started it (manual, schedule, webhook,
-  // ad-hoc /run). Checked before any lease, so the run takes nothing.
-  if (profile.profileId) {
-    const entry = await profileRegistry.get(userId, profile.profileId).catch(() => null);
-    const lockOwner = entry?.lockedTo?.workflowId;
-    if (entry && lockOwner && lockOwner !== ownWfId) {
-      const ownerName = (await new WorkflowService(workflowStoreFor(connection)).get(userId, lockOwner).catch(() => null))?.name || lockOwner;
-      const msg = `Profile "${entry.name}" is locked to "${ownerName}"; this run cannot use it. Choose another profile.`;
-      await profileFailures.record(userId, { reason: 'profile_locked', detail: 'locked_to_other', stage: 'run', workflowId: ownWfId, workflowName: job.data.__scheduleName || null,
-        profileId: entry.id, profileName: entry.name, jobId: String(job.id), message: msg }).catch(() => {});
-      void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message: msg } }).catch(() => {});
+  // never used by this run, whatever started it. Before any lease.
+  {
+    const locked = await preRunLockCheck({
+      registry: profileRegistry, userId, profileId: profile.profileId, workflowId: ownWfId,
+      workflowName: job.data.__scheduleName || null, jobId: String(job.id),
+      workflowNameOf: async (id) => (await new WorkflowService(workflowStoreFor(connection)).get(userId, id))?.name,
+      record: (u, r) => profileFailures.record(u, r),
+      notify: (message) => { void liveBus.publish({ type: 'log', userId, jobId: String(job.id), seq: 0, data: { message } }).catch(() => {}); },
+    });
+    if (locked) {
       await connection.srem(getUserActiveJobsKey(userId), job.id!).catch(() => {});
-      throw new Error(`PROFILE_LOCKED: ${msg}`);
+      throw new Error(`PROFILE_LOCKED: ${locked.message}`);
     }
   }
   const occurrence = job.data.__scheduled ? occurrenceOf(job) : null;
