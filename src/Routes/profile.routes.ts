@@ -56,6 +56,7 @@ import { blockingUntil } from '../core/ProfileReservations';
 import { defaultBaseDir, validateBaseDir } from '../core/BranchBase';
 import { saveSetting } from '../core/PersistedSettings';
 import { canLock, canUnlock, type LockWorkflowView } from '../core/ProfileLock';
+import { buildFlags, catalogView } from '../core/FlagCatalog';
 import { workflowStateOf } from '../core/BranchPolicy';
 
 /** Pure: the launch-settings part of a request body, or null. */
@@ -333,6 +334,61 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
     } catch (e) { fail(res, e); }
   });
 
+  // ── LAUNCH FLAGS PER PROFILE (owner brief section 5; core/FlagCatalog) ─
+
+  const browserOpenFor = (id: string): boolean => !!browserSessions().get(leaseIdOf(id)) && runningProfileOf(leaseIdOf(id)) === id;
+
+  /**
+   * GET /profiles/:id/launch-flags — the stored selection, the argv it builds,
+   * stored ids no longer in the catalog ("No longer supported", 5.10), and
+   * whether the browser is open (then: "Applies the next time this browser opens").
+   */
+  router.get('/profiles/:id/launch-flags', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      const e = (await access.registry.get(userId, id))!;
+      const built = buildFlags({ flags: e.launchFlags || {} });
+      res.json({ success: true, profileId: id, default: !e.launchFlags, flags: e.launchFlags || {}, args: built.args,
+        unsupported: built.unsupported, errors: built.errors, browserOpen: browserOpenFor(id) });
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * PUT /profiles/:id/launch-flags { default: true } | { flags: { <id>: value } }
+   * Only catalog ids with typed values; refused (400 invalid_flags, every
+   * problem listed) otherwise. Default -> every customization removed (5.2).
+   * Applies on the NEXT launch (5.10). Values of secret flags are not logged.
+   */
+  router.put('/profiles/:id/launch-flags', async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = userOf(req);
+      const id = await idOrFail(userId, req.params.id, res);
+      if (!id) return;
+      if (req.body?.default === true) {
+        const e = await access.registry.setLaunchFlags(userId, id, null);
+        console.log(`[PROFILES] launch flags of "${e.name}" reset to Default`);
+        res.json({ success: true, profileId: id, default: true, flags: {}, args: [], appliesNextLaunch: browserOpenFor(id) });
+        return;
+      }
+      const raw = req.body?.flags;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        res.status(400).json({ success: false, code: 'invalid_flags', error: 'Send { default: true } or { flags: { <catalog id>: value } }.', errors: [] });
+        return;
+      }
+      const built = buildFlags({ flags: raw });
+      if (!built.ok || built.unsupported.length) {
+        const errors = [...built.errors, ...built.unsupported.map((u) => ({ id: u, message: 'Not a flag of the catalog.' }))];
+        res.status(400).json({ success: false, code: 'invalid_flags', error: errors.map((x) => `${x.id}: ${x.message}`).join(' '), errors });
+        return;
+      }
+      const e = await access.registry.setLaunchFlags(userId, id, built.selection as Record<string, unknown>);
+      console.log(`[PROFILES] launch flags of "${e.name}" saved: ${built.logSafe.join(' ') || '(none)'}`);
+      res.json({ success: true, profileId: id, default: !Object.keys(built.selection).length, flags: built.selection, args: built.args, appliesNextLaunch: browserOpenFor(id) });
+    } catch (e) { fail(res, e); }
+  });
+
   // ── PROFILE LOCK (owner brief section 6; rules in core/ProfileLock) ─────
 
   async function lockViews(userId: string): Promise<LockWorkflowView[]> {
@@ -415,7 +471,9 @@ export function createProfileRoutes(deps: ProfileRoutesDeps): Router {
   });
 
   router.get('/profiles/launch-options', (_req, res) => {
-    res.json({ success: true, ...launchCatalogue() });
+    // `catalog`: the section-5 flag catalog (core/FlagCatalog), the one the
+    // per-profile launch flags use. The rest is the older panel's catalogue.
+    res.json({ success: true, ...launchCatalogue(), catalog: catalogView() });
   });
 
   router.post('/profiles/launch-settings/validate', (req, res) => {
