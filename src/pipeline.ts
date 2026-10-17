@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { URL } from 'url';
 import { chromium } from 'playwright-extra';
+import { resolveChromiumProfile, withProfileSelection } from './core/ChromiumProfileLocation';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import { config, PlanConfig } from './config';
 import type { AutomationContext, JobResult, StepOutput, CancelChecker, AutomationStep, ConditionPath } from './types';
@@ -11,13 +12,18 @@ import { ConditionEngine } from './core/ConditionEngine';
 import {
   normalizeErrorPolicy,
   shouldRetry,
-  retryDelayMs,
   isStopAndError,
+  failureKindOf,
+  retriesKind,
+  backoffDelayMs,
 } from './core/ErrorPolicy';
+import { failureItem, outputBranchFor } from './core/NodeOutputs';
 import { runCodeNode, parseAllowModules, varsToObject, CodeNodeError } from './core/CodeNode';
 import { isTriggerAction } from './core/TriggerEngine';
 import { hiddenLaunchOptions, describeVisibility } from './core/RunPolicy';
 import type { ProfileRef } from './core/ProfileLease';
+import { browserSessions, jobDependent, setSessionDataDir, sessionDataDir, setRunningProfile, runningProfileOf } from './core/BrowserSessions';
+import { saveBeforeClose } from './core/BrowserStateSnapshot';
 import { GlobalBrowser } from './core/GlobalBrowser';
 import {
   EXT_BROWSER_FLAG,
@@ -42,6 +48,7 @@ import {
   type NodeFileRef,
 } from './core/WorkflowOutputs';
 import { acquireContext } from './core/BrowserAdapter';
+import { buildKey, buildCompatible, getBuild, setBuild, forgetBuild } from './core/ProfileBuild';
 import { Desktop } from './core/Desktop';
 import { withUtf8Locale } from './core/BrowserProfile';
 import {
@@ -54,6 +61,9 @@ import {
   summarizeItems,
   type WorkflowItem
 } from './core/WorkflowItems';
+import { continueSession, workflowExistsRegistered } from './core/SessionContinuation';
+import { profileLeasesRegistry } from './core/ProfileLease';
+import { isValidWorkflowId } from './utils/redis-keys';
 
 // برای Node.js < 18، این را uncomment کنید:
 // import fetch from 'node-fetch';
@@ -643,7 +653,8 @@ export function toCsv(data: any): string {
 // Launch Browser option — or a manual (visible) run arriving after an
 // automatic (hidden) one — would reuse a browser built differently. Keyed by
 // the profile's lease id.
-const profileBuildHash = new Map<string, string>();
+// Shared with the operator's launcher (core/ProfileBuild), so a browser opened
+// by hand is not mistaken for one "built differently" by the next manual run.
 
 /** Tell the user which options could not apply to the browser they are on. */
 function logIgnoredOptions(context: AutomationContext, plan: { ignored: Array<{ id: string; reason: string }> }): void {
@@ -666,11 +677,25 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
   const profile = context.profile;
   const key = profile?.id || 'default';
   const optPlan = planFor(context.browserOptions, 'vip');
-  const wantHash = `${optPlan.hash}|headless=${headless ? 1 : 0}`;
+  const wantHash = buildKey({ optionsHash: optPlan.hash, headless });
   const profileDir = profile?.userDataDir || path.join(config.PROFILES_DIR, context.userId, 'chrome-profile');
   const userId = key; // ProfileManager's persistent-context map is keyed by profile
 
-  await fs.promises.mkdir(profileDir, { recursive: true });
+  // A registry profile (explicit folder): its branch root and folder must
+  // already exist. The worker checks this before the lease; this is the last
+  // line of defence. Never recreate a folder removed outside Aria.
+  if (profile?.profileDirectory) {
+    const st = await fs.promises.stat(path.join(profileDir, profile.profileDirectory)).catch(() => null);
+    const rootOk = await fs.promises.stat(profileDir).then((x) => x.isDirectory(), () => false);
+    // A legacy built-in root never started has no folder yet (Chromium creates
+    // it): allowed only when the root has never held a browser.
+    const neverStarted = rootOk && !(await fs.promises.readdir(profileDir).catch(() => [] as string[])).includes('Local State');
+    if (!rootOk || ((!st || !st.isDirectory()) && !neverStarted)) {
+      throw new BrowserError(`PROFILE_BROKEN: the folder of browser profile "${profile.label}" is missing on disk; it was not recreated.`);
+    }
+  } else {
+    await fs.promises.mkdir(profileDir, { recursive: true });
+  }
 
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
@@ -678,7 +703,16 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
 
   if (existing) {
     try {
-      const optionsChanged = (profileBuildHash.get(key) ?? '') !== wantHash;
+      // The branch's browser runs ANOTHER profile of the branch: it cannot be
+      // reused (it would be that profile's data) and is not ours to close.
+      const runningOther = profile?.profileId && runningProfileOf(key) && runningProfileOf(key) !== profile.profileId;
+      if (runningOther) {
+        const rel = browserSessions().canClose(key, jobDependent(jobId));
+        if (!rel.ok && rel.reason === 'in_use') {
+          throw new BrowserError(`Another profile of this branch is running (${rel.dependents.join(', ')}); only one profile of a branch can run at a time.`);
+        }
+      }
+      const optionsChanged = !!runningOther || !buildCompatible(getBuild(key), wantHash);
       if (optionsChanged) log('[BROWSER] Browser options or visibility changed - relaunching the profile browser');
       if (!optionsChanged && await checkBrowserHealth(existing.context, log)) {
         const pages = existing.context.pages();
@@ -695,10 +729,25 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
         }
 
         context.browserContext = existing.context;
-        context.page = existing.context.pages()[0];
+        // Owner brief 2 / G.2: tabs of a manual-only profile opened by hand in
+        // this branch's browser are never used by a run (core/ManualProfiles).
+        const { ownPages, manualProfilesOf } = await import('./core/ManualProfiles');
+        if (manualProfilesOf(key).length) {
+          const own = await ownPages(key, existing.context);
+          context.page = own[0] || await existing.context.newPage();
+          log(`[BROWSER] ${manualProfilesOf(key).length} profile(s) opened by hand in this branch are left alone (manual only)`);
+        } else {
+          context.page = existing.context.pages()[0];
+        }
         profileManager.setVipContext(userId, existing.context, jobId);
         profileManager.registerPage(jobId, context.page);
         profileManager.updateActivity(userId);
+        // The live browser is SHARED state: record this run as depending on it
+        // (core/BrowserSessions), so nothing else may close it under the run.
+        if (!browserSessions().get(key)) {
+          browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
+        }
+        browserSessions().attach(key, jobDependent(jobId));
         log(`[BROWSER] Reusing the browser of profile "${profile?.label || key}" (${describeVisibility(headless)})`);
         return;
       }
@@ -706,8 +755,17 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
       log(`[BROWSER] Error checking existing context: ${err.message}`);
     }
 
+    // Relaunching replaces the browser. Never do that under another dependent
+    // (an operator view of this profile): the run waits for the lease, so
+    // another RUN cannot be on it, but the operator may be watching.
+    const relaunch = browserSessions().canClose(key, jobDependent(jobId));
+    if (!relaunch.ok && relaunch.reason === 'in_use') {
+      throw new BrowserError(`The browser of profile "${profile?.label || key}" is in use (${relaunch.dependents.join(', ')}) and was built with different options or visibility; close it first, then run again.`);
+    }
     try {
+      await saveBeforeClose(existing.context, sessionDataDir(key) || profileDir, 'relaunch');
       await existing.context.close();
+      browserSessions().closed(key);
       log('[BROWSER] Closed the previous profile browser');
     } catch (err: any) {
       log(`[BROWSER] Error closing unhealthy context: ${err.message}`);
@@ -718,6 +776,10 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
   if (await context.isCancelled()) throw new Error('CANCELLED_BY_USER');
 
   log(`[BROWSER] Launching profile "${profile?.label || key}" — ${describeVisibility(headless)} browser`);
+  // Resolved only on a launch: pinning may write into the root, which is safe
+  // only while no browser runs on it (core/ChromiumProfileLocation).
+  const profileLoc = await resolveChromiumProfile(profileDir, profile?.profileDirectory);
+  log(`[BROWSER] Profile data: ${profileLoc.profileDirectory} (${profileLoc.source}) in ${profileLoc.userDataRoot}`);
 
   // A VISIBLE browser (a manual run) needs an X display. On a server there
   // is none until we start one, and without it Playwright dies with the opaque
@@ -759,7 +821,9 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
       ...(optPlan.launch.proxy ? { proxy: optPlan.launch.proxy } : {}),
       ...optPlan.context,
       headless,
-      args: [...baseArgs, ...extraArgs],
+      // Same data selection as the Local Browser and Browser Profiles: the
+      // profile's root + its pinned --profile-directory (core/ChromiumProfileLocation).
+      args: withProfileSelection([...baseArgs, ...extraArgs], profileLoc),
       // A UTF-8 locale, or a downloaded file whose name is not pure ASCII
       // loses that name AND its extension to the literal string `download`.
       // See withUtf8Locale in core/BrowserProfile for the measurement.
@@ -785,7 +849,19 @@ async function ensureProfileBrowser(context: AutomationContext): Promise<void> {
 
     profileManager.setVipContext(userId, browserContext, jobId);
     profileManager.registerPage(jobId, page);
-    profileBuildHash.set(key, wantHash);
+    setBuild(key, wantHash);
+    browserSessions().opened(key, { userId: context.userId, visibility: headless ? 'hidden' : 'visible', createdBy: jobDependent(jobId) });
+    setSessionDataDir(key, profileLoc.profilePath);
+    setRunningProfile(key, profile?.profileId || null);
+    browserSessions().attach(key, jobDependent(jobId));
+    // A browser that dies on its own must not leave a session record behind.
+    browserContext.on('close', () => {
+      if (profileManager.getVipContext(userId)?.context === browserContext) {
+        profileManager.removeVipContext(userId);
+        forgetBuild(key);
+      }
+      if (!profileManager.getVipContext(userId)) browserSessions().closed(key);
+    });
     context.browserOptionsHash = optPlan.hash;
 
     context.browserContext = browserContext;
@@ -894,6 +970,9 @@ async function runPipelineImpl(params: {
   userPlan: PlanConfig;
   /** The browser profile this run holds the lease for (core/ProfileLease). */
   profile?: ProfileRef;
+  /** Phase 2: this run's lease token and owner (Continue Session node). */
+  leaseToken?: string | null;
+  owner?: string;
   onEvent?: (type: string, data?: Record<string, unknown>) => void;
   /** Who started the run (core/RunPolicy). Informational here: `headless` already follows it. */
   origin?: 'manual' | 'automatic';
@@ -952,6 +1031,8 @@ async function runPipelineImpl(params: {
     variables: new Map<string, any>(),
     globalLoopCounter: 0,
     profile,
+    leaseToken: params.leaseToken ?? null,
+    owner: params.owner,
     onEvent,
     // Step 21: start every workflow with a single empty item, like n8n,
     // so the first node always has exactly one input item to act on.
@@ -1110,6 +1191,8 @@ async function runPipelineImpl(params: {
         for (const c of Object.values(st.cases ?? {})) walk(c);
         walk(st.catch);
         walk(st.finally);
+        walk(st.errorSteps);
+        walk(st.timeoutSteps);
       }
     };
     walk(steps);
@@ -1189,6 +1272,12 @@ async function runPipelineImpl(params: {
 
       // ── Step 27: per-step error policy (retry / continue-on-fail) ──
       const __policy = normalizeErrorPolicy(step);
+      // Phase 2: this node's own timeout bounds every Playwright wait and
+      // navigation of THIS step (restored to Playwright's 30 s default after).
+      const __applyTimeout = (ms: number): void => {
+        try { context.browserContext?.setDefaultTimeout(ms); context.browserContext?.setDefaultNavigationTimeout(ms); } catch { /* no browser yet */ }
+      };
+      if (__policy.timeoutMs > 0) __applyTimeout(__policy.timeoutMs);
       const __sgBefore = globalStepNumber;
       const __soBefore = stepOutputs.length;
       let __attempt = 0;
@@ -2781,6 +2870,32 @@ async function runPipelineImpl(params: {
         }
 
         // ════════════════════════════════════════════════════════════════
+        // 37c. CONTINUE SESSION (phase 2) — hand THIS browser session to
+        // another workflow through the explicit, expiring grant path only
+        // (core/SessionContinuation). No implicit transfer: the owner comes
+        // from the worker, the proof is the run's own lease token.
+        // ════════════════════════════════════════════════════════════════
+        if (step.action === 'continue-session' || step.action === 'continue_session') {
+          const leases = profileLeasesRegistry();
+          if (!leases) throw new Error('Continue Session is not available here (no profile leases).');
+          const ttlMin = finalParams.ttlMinutes;
+          const r = await continueSession({
+            leases, sessions: browserSessions(), workflowExists: workflowExistsRegistered, isValidWorkflowId,
+          }, {
+            userId, leaseId: context.leaseToken ? (context.profile?.id || null) : null, leaseToken: context.leaseToken ?? null,
+            jobId, fromOwner: context.owner || `job:${jobId}`, toWorkflowId: finalParams.workflowId,
+            ttlMs: ttlMin !== undefined && ttlMin !== '' ? Number(ttlMin) * 60_000 : undefined,
+          });
+          if (!r.ok) throw new Error(`Continue Session: ${r.message}`);
+          log(`[SESSION] This browser session may be continued by workflow ${r.to} until ${new Date(r.until).toISOString()}`);
+          globalStepNumber++;
+          const out = { continuedBy: r.to, until: new Date(r.until).toISOString() };
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, out, log);
+          stepOutputs.push(createStepOutput(globalStepNumber, step.action, true, out, stepStartTime));
+          continue stepLoop;
+        }
+
+        // ════════════════════════════════════════════════════════════════
         // 38. CLOSE BROWSER
         // ════════════════════════════════════════════════════════════════
         if (step.action === 'close-browser' || step.action === 'close_browser' || step.action === 'close') {
@@ -2795,7 +2910,17 @@ async function runPipelineImpl(params: {
             log('[BROWSER] Close requested — detaching from your local browser (it stays open)');
             // On Real Chrome the run's own tabs are its to close; nothing else is.
             if (context.data[EXT_BROWSER_FLAG]) await closeOwnedPages(context.data);
+          } else if (context.browserContext && !browserSessions().canClose(context.profile?.id || 'default', jobDependent(jobId)).ok) {
+            // Another dependent (an operator view) uses this browser: a run
+            // that is not its exclusive owner must not close it. Detach only.
+            const d = browserSessions().canClose(context.profile?.id || 'default', jobDependent(jobId));
+            log(`[BROWSER] Close requested, but the browser is in use by ${!d.ok && d.reason === 'in_use' ? d.dependents.join(', ') : 'another user'} - detaching instead of closing`);
+            browserSessions().detach(context.profile?.id || 'default', jobDependent(jobId));
+            context.browserShared = true;
           } else if (context.browserContext) {
+            // Recoverable: tabs + storage saved into the profile first (never logged).
+            const saved = await saveBeforeClose(context.browserContext, sessionDataDir(context.profile?.id || 'default') || context.profile?.userDataDir, 'node');
+            if (saved) log(`[BROWSER] Saved ${saved.tabs} tab(s)${saved.storage ? ' and the storage state' : ''} for recovery before closing`);
             try {
               const pages = context.browserContext.pages();
               for (const p of pages) {
@@ -2811,7 +2936,9 @@ async function runPipelineImpl(params: {
             // Nothing to un-register with a pool: the browser was never ours.
           } else {
             profileManager.removeVipContext(context.profile?.id || 'default');
-            profileBuildHash.delete(context.profile?.id || 'default');
+            forgetBuild(context.profile?.id || 'default');
+            // The browser is gone; the run's LEASE is not (released by the worker).
+            browserSessions().closed(context.profile?.id || 'default');
           }
           profileManager.unregisterPage(jobId);
 
@@ -3326,7 +3453,8 @@ async function runPipelineImpl(params: {
         const result = await withStepTimeout(
           loadedModule.run(context, finalParams),
           globalStepNumber + 1,
-          step.action
+          step.action,
+          __policy.timeoutMs > 0 ? __policy.timeoutMs : config.STEP_TIMEOUT_MS
         );
 
         globalStepNumber++;
@@ -3345,19 +3473,22 @@ async function runPipelineImpl(params: {
 
         if (ownsProfileBrowser && !context.browserShared) {
           profileManager.updateActivity(context.profile?.id || 'default');
+          browserSessions().touch(context.profile?.id || 'default');
         }
 
       } catch (stepError: any) {
         // Step 27: never retry/swallow fatal control-flow errors.
         const __fatal = stepError instanceof WorkflowFailError
           || /^(CANCELLED_BY_USER|PAGE_CLOSED_BY_USER|Safety Stop)/.test(String(stepError && stepError.message));
+        const __kind = failureKindOf(stepError);
         // Retry-on-fail: roll back this attempt's bookkeeping and try again.
-        if (!__fatal && __policy.retryOnFail && shouldRetry(__attempt, __policy.maxTries)) {
+        // Phase 2: only the failure kinds the node retries (retryOn), with its backoff.
+        if (!__fatal && __policy.retryOnFail && retriesKind(__policy, __kind) && shouldRetry(__attempt, __policy.maxTries)) {
           globalStepNumber = __sgBefore;
           stepOutputs.length = __soBefore;
-          const __delay = retryDelayMs(__attempt, __policy.waitBetweenTriesMs);
-          log(`[RETRY] Step '${step.action}' failed (attempt ${__attempt}/${__policy.maxTries}): ${stepError.message}. Retrying in ${__delay}ms...`);
-          context.onEvent?.('step.retry', { index: globalStepNumber + 1, action: step.action, attempt: __attempt, maxTries: __policy.maxTries, error: String(stepError.message || stepError) });
+          const __delay = backoffDelayMs(__attempt, __policy.waitBetweenTriesMs, __policy.backoff);
+          log(`[RETRY] Step '${step.action}' failed (${__kind}, attempt ${__attempt}/${__policy.maxTries}): ${stepError.message}. Retrying in ${__delay}ms...`);
+          context.onEvent?.('step.retry', { index: globalStepNumber + 1, action: step.action, attempt: __attempt, maxTries: __policy.maxTries, kind: __kind, error: String(stepError.message || stepError) });
           await new Promise(r => setTimeout(r, __delay));
           continue; // retry the step body (while loop)
         }
@@ -3371,8 +3502,25 @@ async function runPipelineImpl(params: {
           stepStartTime,
           stepError.message
         ));
-        context.onEvent?.('step.error', { index: globalStepNumber, action: step.action, error: String(stepError.message || stepError) });
+        context.onEvent?.('step.error', { index: globalStepNumber, action: step.action, error: String(stepError.message || stepError), kind: __kind });
         __errored = true; // step.error already closed this step; the finally must not add a step.done
+        // Phase 2: the node's ERROR / TIMEOUT output. The failure becomes the
+        // branch's item ({ error, kind, node, attempts }); the branch runs and
+        // the group is LEFT (the success chain after this node does not run),
+        // exactly like a taken `if` path. Fatal control flow never routes.
+        const __branch = __fatal ? null : outputBranchFor(step, __kind);
+        if (__branch) {
+          log(`[OUTPUT] Step '${step.action}' failed (${__kind}) - continuing on its ${__branch.port} output`);
+          context.onEvent?.('step.path', { index: globalStepNumber, action: step.action, path: __branch.port, name: __branch.port });
+          if (step.saveAs) safeStoreVariable(context.variables, step.saveAs, failureItem(step, stepError, __kind, __attempt).json, log);
+          context.items = [failureItem(step, stepError, __kind, __attempt)];
+          if (__policy.timeoutMs > 0) __applyTimeout(30_000);
+          if (__branch.steps.length) {
+            const bres = await executeStepGroup(__branch.steps);
+            if (bres) return bres;
+          }
+          break stepLoop;
+        }
         // Continue-on-fail: swallow the (non-fatal) error and carry on.
         if (!__fatal && __policy.continueOnFail) {
           log(`[CONTINUE-ON-FAIL] Step '${step.action}' failed but continueOnFail is set; continuing.`);
@@ -3386,6 +3534,7 @@ async function runPipelineImpl(params: {
       break; // attempt succeeded — leave the retry loop
       } // end Step 27 retry while-loop
       } finally {
+        if (__policy.timeoutMs > 0) __applyTimeout(30_000);
         // Step 16: live event - announce step completion (best-effort).
         // A step that failed already got `step.error` (also under continueOnFail);
         // don't double-report it.

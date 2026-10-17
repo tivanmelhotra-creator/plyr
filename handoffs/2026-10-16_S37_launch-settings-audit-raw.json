@@ -1,0 +1,674 @@
+{
+ "cases": [
+  {
+   "name": "none (panel untouched: launch not sent)",
+   "sent": null,
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "preset standard",
+   "sent": {
+    "preset": "standard"
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "standard, Start maximized OFF",
+   "sent": {
+    "preset": "standard",
+    "options": {
+     "start-maximized": false
+    }
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "preset automation",
+   "sent": {
+    "preset": "automation"
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "preset diagnostics",
+   "sent": {
+    "preset": "diagnostics"
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--enable-logging=stderr",
+    "--v=1"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--enable-logging=stderr",
+    "--v=1",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "custom --window-size=900,600 (maximized off)",
+   "sent": {
+    "preset": "standard",
+    "options": {
+     "start-maximized": false
+    },
+    "customFlags": "--window-size=900,600"
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--window-size=900,600"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--window-size=900,600",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 10,
+      "y": 10,
+      "w": 900,
+      "h": 600,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "custom --lang=fa --mute-audio",
+   "sent": {
+    "preset": "standard",
+    "customFlags": "--lang=fa\n--mute-audio"
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--lang=fa",
+    "--mute-audio"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--lang=fa",
+    "--mute-audio",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   }
+  },
+  {
+   "name": "custom --user-agent (risky, no ack)",
+   "sent": {
+    "preset": "standard",
+    "customFlags": "--user-agent=AuditUA/1.0"
+   },
+   "status": 409,
+   "code": "needs_confirmation",
+   "error": "Confirm these launch flags first: --user-agent: every request uses this user agent; sites may break or flag it.",
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--user-agent=AuditUA/1.0"
+   ]
+  },
+  {
+   "name": "custom --user-agent (risky, ack)",
+   "sent": {
+    "preset": "standard",
+    "customFlags": "--user-agent=AuditUA/1.0",
+    "acknowledgeRisk": true
+   },
+   "status": 200,
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--user-agent=AuditUA/1.0"
+   ],
+   "settingsApplied": true,
+   "argv": [
+    "--disable-field-trial-config",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-back-forward-cache",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-component-update",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+    "--enable-features=CDPScreenshotNewSurface",
+    "--allow-pre-commit-input",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--no-service-autorun",
+    "--export-tagged-pdf",
+    "--disable-search-engine-choice-screen",
+    "--unsafely-disable-devtools-self-xss-warnings",
+    "--edge-skip-compat-layer-relaunch",
+    "--no-sandbox",
+    "--load-extension=/home/user/webapp/profiles/extensions/ab-inspector",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized",
+    "--user-agent=AuditUA/1.0",
+    "--profile-directory=profile-001"
+   ],
+   "geometry": {
+    "screen": "1280x800",
+    "windows": [
+     {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 800,
+      "title": "about:blank - Chromium"
+     }
+    ]
+   },
+   "note": "see uaSeen"
+  },
+  {
+   "name": "forbidden --user-data-dir=/tmp/x",
+   "sent": {
+    "preset": "standard",
+    "customFlags": "--user-data-dir=/tmp/x"
+   },
+   "status": 400,
+   "code": "invalid_launch_settings",
+   "error": "Launch settings refused: --user-data-dir=/tmp/x — --user-data-dir is controlled by the application: the profile's data directory is chosen by the profile, not b",
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized"
+   ]
+  },
+  {
+   "name": "forbidden --headless",
+   "sent": {
+    "preset": "standard",
+    "customFlags": "--headless"
+   },
+   "status": 400,
+   "code": "invalid_launch_settings",
+   "error": "Launch settings refused: --headless — --headless is controlled by the application: visible / hidden is decided by the run policy (manual = visible, scheduled = ",
+   "serverArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--start-maximized"
+   ]
+  }
+ ],
+ "reopenWithOtherSettings": {
+  "status": 200,
+  "relaunched": true,
+  "settingsApplied": true,
+  "pidBefore": 6614,
+  "pidAfter": 6735,
+  "argvAfterHasAutomationFlags": true
+ },
+ "storedPerProfile": {
+  "registryMentionsLaunch": false,
+  "registryChangedOtherThanTimestamps": false
+ },
+ "run": {
+  "status": 200,
+  "jobId": "1",
+  "argv": [
+   "--disable-field-trial-config",
+   "--disable-background-networking",
+   "--disable-background-timer-throttling",
+   "--disable-backgrounding-occluded-windows",
+   "--disable-back-forward-cache",
+   "--disable-breakpad",
+   "--disable-client-side-phishing-detection",
+   "--disable-component-update",
+   "--no-default-browser-check",
+   "--disable-dev-shm-usage",
+   "--disable-features=AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument",
+   "--enable-features=CDPScreenshotNewSurface",
+   "--allow-pre-commit-input",
+   "--disable-hang-monitor",
+   "--disable-ipc-flooding-protection",
+   "--disable-popup-blocking",
+   "--disable-prompt-on-repost",
+   "--disable-renderer-backgrounding",
+   "--force-color-profile=srgb",
+   "--metrics-recording-only",
+   "--no-first-run",
+   "--password-store=basic",
+   "--use-mock-keychain",
+   "--no-service-autorun",
+   "--export-tagged-pdf",
+   "--disable-search-engine-choice-screen",
+   "--unsafely-disable-devtools-self-xss-warnings",
+   "--edge-skip-compat-layer-relaunch",
+   "--enable-automation",
+   "--no-sandbox",
+   "--no-sandbox",
+   "--disable-setuid-sandbox",
+   "--disable-blink-features=AutomationControlled,AutomationControlled",
+   "--disable-dev-shm-usage",
+   "--profile-directory=Default"
+  ],
+  "headless": false,
+  "state": "completed"
+ }
+}

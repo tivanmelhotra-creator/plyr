@@ -516,13 +516,18 @@
               '<td class="mono">' + esc(s.cron) + '</td>' +
               '<td>' + esc(fmtTime(s.nextRun)) + '</td>' +
               '<td>' + esc(s.timezone) + '</td>' +
+              // 'unknown': no queued job carries this schedule's data, so its
+              // profile (and reservation) cannot be known. Said, not hidden.
+              '<td>' + (s.reservation === 'unknown'
+                ? '<span class="pm-badge is-needs_review" title="' + esc(s.reservationNote || '') + '">' + esc(t('sched.reservationUnknown')) + '</span>'
+                : '<span class="pm-badge is-free">' + esc(t('sched.reservationPlanned')) + '</span>') + '</td>' +
               '<td><button class="btn btn-ghost btn-sm" data-del="' + esc(s.key) + '">' + t('common.delete') + '</button></td>' +
             '</tr>';
           }).join('');
           body.innerHTML = head +
             '<div class="table-wrap"><table class="data"><thead><tr>' +
             '<th>' + t('sched.name') + '</th><th>' + t('sched.cron') + '</th><th>' + t('sched.next') + '</th>' +
-            '<th>' + t('sched.tz') + '</th><th>' + t('sched.actions') + '</th>' +
+            '<th>' + t('sched.tz') + '</th><th>' + t('sched.reservation') + '</th><th>' + t('sched.actions') + '</th>' +
             '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
           body.querySelectorAll('[data-del]').forEach(function (b) {
@@ -2834,10 +2839,19 @@
         '<label class="wfs-field"><span>' + esc(t('wfs.webhook')) + '</span>' +
           '<input id="wfs-webhook" type="url" placeholder="https://…" value="' + esc(wf.webhookUrl || '') + '">' +
           '<small>' + esc(t('wfs.webhookHint')) + '</small></label>' +
+        // The profile is chosen from the ONE profile registry (/profiles via
+        // js/profile-manager.js) by its stable id, so renaming a profile
+        // never breaks this reference. Until the list arrives (or if it cannot
+        // be read) the current id is kept as the only option.
         '<label class="wfs-field"><span>' + esc(t('wfs.profile')) + '</span>' +
-          '<input id="wfs-profile" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="default" value="' +
-            esc(wf.profileId && wf.profileId !== 'default' ? wf.profileId : '') + '">' +
-          '<small>' + esc(t('wfs.profileHint')) + '</small></label>' +
+          '<select id="wfs-profile"><option value="' + esc(wf.profileId || 'default') + '">' +
+            esc(wf.profileId && wf.profileId !== 'default' ? wf.profileId : 'Default') + '</option></select>' +
+          '<small>' + esc(t('wfs.profileChoose')) + ' ' + esc(t('wfs.profileHint')) + '</small></label>' +
+        '<label class="wfs-field"><span>' + esc(t('wfs.afterRun')) + '</span>' +
+          '<select id="wfs-afterrun">' +
+            '<option value="close"' + (wf.afterRun === 'keep' ? '' : ' selected') + '>' + esc(t('wfs.afterRunClose')) + '</option>' +
+            '<option value="keep"' + (wf.afterRun === 'keep' ? ' selected' : '') + '>' + esc(t('wfs.afterRunKeep')) + '</option>' +
+          '</select><small>' + esc(t('wfs.afterRunHint')) + '</small></label>' +
         '<p class="wfs-note">' + esc(t('wfs.visibilityNote')) + '</p>' +
         '<div class="wfs-actions">' +
           '<button type="button" class="btn btn-ghost btn-sm" id="wfs-cancel">' + esc(t('common.cancel')) + '</button>' +
@@ -2850,6 +2864,40 @@
     dlg.addEventListener('click', function (e) { if (e.target === dlg) close(); });
     dlg.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
     dlg.querySelector('#wfs-name').focus();
+    if (window.ProfileManager) {
+      window.ProfileManager.api.list(wf.id).then(function (d) {
+        var sel = dlg.querySelector('#wfs-profile');
+        if (!sel || !d || !d.profiles) return;
+        var cur = wf.profileId || 'default';
+        sel.innerHTML = '';
+        d.profiles.forEach(function (p) {
+          var o = document.createElement('option');
+          o.value = p.id;
+          o.textContent = p.name + (p.status !== 'free' ? ' \u2014 ' + p.status.replace('_', ' ') : '');
+          // Section 6.5: a profile locked to ANOTHER workflow is shown disabled
+          // with the reason; only its owner can pick it (the server refuses too).
+          if (p.lockedTo && !p.lockedTo.mine) {
+            o.disabled = p.id !== cur;
+            o.textContent = p.name + ' \u2014 ' + t('pm.lockedTo', 'Locked to') + ' \u201c' + p.lockedTo.name + '\u201d';
+          }
+          if (p.id === cur) o.selected = true;
+          sel.appendChild(o);
+        });
+        // Overlapping schedules on the chosen profile: said here too, where
+        // the profile is picked, not only in the drawer.
+        var warn = document.createElement('small');
+        warn.className = 'pm-overlap wfs-overlap';
+        sel.parentNode.appendChild(warn);
+        var paintWarn = function () {
+          var p = d.profiles.filter(function (x) { return x.id === sel.value; })[0];
+          var list = (p && p.overlaps) || [];
+          warn.textContent = list.map(function (ov) { return '\u26a0 ' + window.ProfileManager.overlapText(ov); }).join(' ');
+          warn.hidden = !list.length;
+        };
+        sel.addEventListener('change', paintWarn);
+        paintWarn();
+      }).catch(function () { /* keep the current value as the only option */ });
+    }
     dlg.querySelector('#wfs-form').addEventListener('submit', function (e) {
       e.preventDefault();
       var name = dlg.querySelector('#wfs-name').value.trim();
@@ -2861,7 +2909,8 @@
         description: dlg.querySelector('#wfs-desc').value.trim() || null,
         steps: wf.steps,
         webhookUrl: dlg.querySelector('#wfs-webhook').value.trim() || null,
-        profileId: dlg.querySelector('#wfs-profile').value.trim() || 'default',
+        profileId: String(dlg.querySelector('#wfs-profile').value || '').trim() || 'default',
+        afterRun: dlg.querySelector('#wfs-afterrun').value === 'close' ? 'close' : 'keep',
       })
         .then(function (d) {
           U().toast(t('wfs.saved'), 'success');
@@ -3463,6 +3512,16 @@
           steps: wf.steps, webhookUrl: wf.webhookUrl || null,
           profileId: wf.profileId || null,
         })
+          .catch(function (err) {
+            // Section 6.6: a copy never inherits a profile LOCK. When the
+            // profile is locked to the original, the copy is made without it
+            // (Default profile) and the user is told why.
+            if (!err || err.code !== 'profile_locked') throw err;
+            return API.createWorkflow(uid, {
+              name: wf.name + ' ' + t('wf.copySuffix'), description: wf.description || null,
+              steps: wf.steps, webhookUrl: wf.webhookUrl || null, profileId: null,
+            }).then(function () { U().toast(t('wf.copyNoLockedProfile'), 'info'); });
+          })
           .then(function () { U().toast(t('wf.duplicated'), 'success'); load(); })
           .catch(function (err) { U().toast(err.message, 'error'); });
         return;

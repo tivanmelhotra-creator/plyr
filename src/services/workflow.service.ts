@@ -29,6 +29,10 @@ export interface WorkflowInput {
   webhookUrl?: string | null;
   /** Stable default profile; runtime is resolved per execution. */
   profileId?: string | null;
+  /** Browser after a run (core/BrowserLifecycle). Omitted = unchanged. */
+  afterRun?: 'keep' | 'close' | null;
+  /** Set when the profile reference was cleared because its branch was deleted (state "profile missing"). */
+  profileMissing?: { profileId: string; profileName?: string | null; at: string } | null;
   // Optional on create (defaults below). On UPDATE they are ignored: the
 
   // Workspace switches are owned by setState(), so saving a new design in the
@@ -180,6 +184,7 @@ export class WorkflowService {
       headless: input.headless ?? undefined,
       webhookUrl: input.webhookUrl ?? undefined,
       profileId: input.profileId ?? undefined,
+      ...(input.afterRun ? { afterRun: input.afterRun } : {}),
       version: 1,
 
       createdAt: ts,
@@ -227,7 +232,11 @@ export class WorkflowService {
       steps: input.steps,
       headless: input.headless ?? undefined,
       webhookUrl: input.webhookUrl ?? undefined,
-      profileId: input.profileId ?? existing.profileId,
+      // undefined = unchanged; null = explicitly cleared (its branch was deleted).
+      profileId: input.profileId === null ? undefined : (input.profileId ?? existing.profileId),
+      profileMissing: input.profileId === null ? (input.profileMissing ?? existing.profileMissing ?? null)
+        : (input.profileId !== undefined ? null : existing.profileMissing ?? null),
+      afterRun: input.afterRun ?? existing.afterRun,
       version: existing.version + 1,
 
       updatedAt: nowIso(),

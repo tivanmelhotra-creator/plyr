@@ -110,6 +110,23 @@ export interface AutomationStep {
   maxTries?: number;
   /** Base wait between retry attempts, in milliseconds. */
   waitBetweenTriesMs?: number;
+
+  // ── Phase 2: per-node outputs, retry and timeout ──
+  /** Which failures Retry On Fail retries (default any). */
+  retryOn?: 'any' | 'error' | 'timeout';
+  /** How the wait grows between tries (default linear). */
+  retryBackoff?: 'fixed' | 'linear' | 'exponential';
+  /** This node's own timeout in ms (browser waits / navigation of this step). */
+  timeoutMs?: number;
+  /**
+   * The node's ERROR output: run when the step failed (after its retries).
+   * Present = the node has Success / Error / Timeout outputs: success goes on
+   * down the chain, a failure runs this branch with the error as its item and
+   * then leaves the group (the success chain does not run), like an `if` path.
+   */
+  errorSteps?: AutomationStep[];
+  /** The node's TIMEOUT output; a timeout without it goes to `errorSteps`. */
+  timeoutSteps?: AutomationStep[];
 }
 
 // ============================================
@@ -153,6 +170,10 @@ export interface AutomationContext {
   globalLoopCounter: number;
   /** The browser profile this run holds the lease for (core/ProfileLease). */
   profile?: ProfileRef;
+  /** Phase 2: proof that this run holds the profile's lease (Continue Session). */
+  leaseToken?: string | null;
+  /** Phase 2: who the run works for (its workflow id), decided by the worker. */
+  owner?: string;
   // Step 21 (item-based data model): the uniform item stream flowing
   // between steps (n8n-style). Starts as a single empty item.
   items: WorkflowItem[];
@@ -362,6 +383,14 @@ export interface Workflow {
   webhookUrl?: string | null;
   /** Optional default profile; executions may select other profiles/scopes. */
   profileId?: string;
+  /**
+   * What happens to the run's browser when a run ends (core/BrowserLifecycle):
+   * `keep` (default) or `close` when safe. A runtime setting of the workflow,
+   * not part of its design: read live at the end of every run.
+   */
+  afterRun?: 'keep' | 'close';
+  /** The profile this workflow used was deleted with its branch (state "profile missing"). */
+  profileMissing?: { profileId: string; profileName?: string | null; at: string } | null;
   version: number;
   createdAt: string;
   updatedAt: string;

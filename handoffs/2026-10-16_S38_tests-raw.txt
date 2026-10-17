@@ -1,0 +1,6 @@
+HEAD b0523e2  2026-10-16T13:56:19Z
+RUN npx vitest run tests/unit tests/integration
+      Tests  4667 passed | 9 skipped (4676)
+ Test Files  206 passed | 1 skipped (207)
+EXIT=0
+ALLDONE

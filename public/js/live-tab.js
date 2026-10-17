@@ -28,7 +28,7 @@
   // ---- should we open a tab at all? ---------------------------------------
 
   var LAUNCH_ACTIONS = { 'launch': 1, 'launch-browser': 1, 'launch_browser': 1 };
-  var CHILD_KEYS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback'];
+  var CHILD_KEYS = ['then', 'else', 'steps', 'catch', 'finally', 'fallback', 'errorSteps', 'timeoutSteps'];
 
   function walk(steps, visit) {
     if (!Array.isArray(steps)) return false;
@@ -268,7 +268,7 @@
   var ACTION_NAMES = {
     goto: 'Open URL', 'open-extension': 'Open Extension', wait: 'Wait', launch: 'Launch Browser',
     'wait-element': 'Wait Element', delay: 'Delay', 'switch-frame': 'Switch Frame', 'switch-tab': 'Switch Tab',
-    'close-tab': 'Close Tab', 'close-browser': 'Close Browser', 'handle-dialog': 'Handle Dialog',
+    'close-tab': 'Close Tab', 'close-browser': 'Close Browser', 'continue-session': 'Continue Session', 'handle-dialog': 'Handle Dialog',
     click: 'Click Element', dblclick: 'Double Click', hover: 'Hover', focus: 'Focus Element',
     'mouse-move': 'Move Mouse', 'drag-drop': 'Drag & Drop', scroll: 'Scroll Page', fill: 'Type Text',
     type: 'Type Keystrokes', press: 'Press Key', select: 'Select Option', check: 'Check Box',

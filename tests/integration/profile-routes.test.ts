@@ -1,0 +1,333 @@
+/**
+ * /profiles over HTTP, with real Redis and a fake browser launcher (no
+ * Chromium needed). Self-skips without Redis.
+ *
+ * Acceptance criteria covered:
+ *   1  create / list / rename / delete from the workspace API
+ *   2  create, then open (the UI chains them); a failed open keeps the profile
+ *      and can be retried
+ *   5  a reservation of another workflow refuses the manual open, with a reason
+ *   7  close browser and release hold are independent
+ *   8  the browser cannot be closed while a run depends on it
+ */
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import express from 'express';
+import request from 'supertest';
+import IORedis from 'ioredis';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { ProfileLeases, HOLD_PREFIX, RESV_PREFIX, leaseIdOf } from '../../src/core/ProfileLease';
+import { ProfileRegistry } from '../../src/core/ProfileRegistry';
+import { ProfileReservations } from '../../src/core/ProfileReservations';
+import { BrowserSessions, registerBrowserSessions, jobDependent } from '../../src/core/BrowserSessions';
+import { ProfileAccess } from '../../src/core/ProfileAccess';
+import { ProfileManager } from '../../src/core/ProfileManager';
+import { setProfileLauncherForTests } from '../../src/core/ProfileBrowser';
+import { createProfileRoutes } from '../../src/Routes/profile.routes';
+
+let redis: IORedis | null = null;
+let up = false;
+let dir = '';
+let app: express.Express;
+let sessions: BrowserSessions;
+let pm: ProfileManager;
+let launches = 0;
+let failLaunch = '';
+let lastArgs: string[] = [];
+let lastDir = '';
+
+class FakeContext {
+  closed = false;
+  private handlers: Array<() => void> = [];
+  _pages: any[] = [{ url: () => 'https://saved.example/inbox', title: async () => 'Inbox' }];
+  pages() { if (this.closed) throw new Error('closed'); return this._pages; }
+  async newPage() { const p: any = { _u: 'about:blank', url: () => p._u, title: async () => '', goto: async (u: string) => { p._u = u; } }; this._pages.push(p); return p; }
+  async storageState() { return { cookies: [], origins: [] }; }
+  on(ev: string, fn: () => void) { if (ev === 'close') this.handlers.push(fn); }
+  async close() { this.closed = true; this.handlers.forEach((h) => h()); }
+}
+
+beforeAll(async () => {
+  redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', { lazyConnect: true, maxRetriesPerRequest: 1 });
+  try { await redis.connect(); await redis.ping(); up = true; } catch { up = false; }
+});
+afterAll(async () => { if (redis) redis.disconnect(); setProfileLauncherForTests(null); });
+
+beforeEach(async () => {
+  if (!up) return;
+  for (const pre of ['profile:lease:', HOLD_PREFIX, RESV_PREFIX, 'profile:grant:', 'profile:session:']) {
+    const keys = await redis!.keys(`${pre}*`);
+    if (keys.length) await redis!.del(...keys);
+  }
+  dir = mkdtempSync(path.join(tmpdir(), 'plyr-pr-'));
+  launches = 0; failLaunch = '';
+  setProfileLauncherForTests(async (udd: string, args: string[]) => {
+    launches++;
+    lastArgs = args; lastDir = udd;
+    if (failLaunch) throw new Error(failLaunch);
+    return new FakeContext() as any;
+  });
+  sessions = new BrowserSessions(redis!);
+  registerBrowserSessions(sessions);
+  pm = new ProfileManager();
+  const access = new ProfileAccess(new ProfileRegistry(dir), new ProfileLeases(redis!, 120), new ProfileReservations(redis!), sessions);
+  app = express();
+  app.use(express.json());
+  app.use(createProfileRoutes({ connection: redis!, access, profileManager: pm }));
+});
+
+const cleanup = () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* fine */ } };
+
+describe('/profiles', () => {
+  it('a fresh install lists no profile (no automatic Default); a created one is free; the reservation settings are sent', async () => {
+    if (!up) return;
+    const r0 = await request(app).get('/profiles').expect(200);
+    expect(r0.body.profiles).toEqual([]);
+    const c = await request(app).post('/profiles').send({ name: 'First' }).expect(201);
+    const r = await request(app).get('/profiles').expect(200);
+    expect(r.body.profiles.map((p: any) => p.id)).toEqual([c.body.profile.id]);
+    expect(r.body.profiles[0].status).toBe('free');
+    expect(r.body.settings).toMatchObject({ reserveBeforeMin: expect.any(Number), reserveAfterMin: expect.any(Number) });
+    cleanup();
+  });
+
+  it('create -> open (as the UI chains it) -> rename keeps the id -> delete refused while open', async () => {
+    if (!up) return;
+    const c = await request(app).post('/profiles').send({ name: 'Shop' }).expect(201);
+    const id = c.body.profile.id;
+    expect(launches).toBe(0); // creating never opens
+    const o = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+    expect(o.body.viewPath).toBe(`/desktop/chrome?profile=${id}`);
+    expect(launches).toBe(1);
+    // A second press reuses the running browser: no duplicate session.
+    const o2 = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+    expect(o2.body.reused).toBe(true);
+    expect(launches).toBe(1);
+    const rn = await request(app).patch(`/profiles/${id}`).send({ name: 'Shop 2' }).expect(200);
+    expect(rn.body.profile.id).toBe(id);
+    expect(rn.body.profile.name).toBe('Shop 2');
+    const del = await request(app).delete(`/profiles/${id}`).expect(409);
+    expect(del.body.blockers.map((b: any) => b.kind)).toEqual(expect.arrayContaining(['hold', 'browser']));
+    cleanup();
+  });
+
+  it('concurrent opens of one profile start ONE browser', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Par' })).body.profile.id;
+    await Promise.all(Array.from({ length: 5 }, () => request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' })));
+    expect(launches).toBe(1);
+    cleanup();
+  });
+
+  it('a failed open keeps the profile, records the reason, gives the hold back, and can be retried', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Flaky' })).body.profile.id;
+    failLaunch = 'Missing X server';
+    const f = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(503);
+    expect(f.body.retryable).toBe(true);
+    const list = (await request(app).get('/profiles?workflowId=wf_a')).body.profiles;
+    const p = list.find((x: any) => x.id === id);
+    expect(p).toBeTruthy();
+    expect(p.status).toBe('needs_review');
+    expect(p.lastOpenError.message).toContain('Missing X server');
+    expect(await redis!.get(HOLD_PREFIX + leaseIdOf(id))).toBeNull();
+    failLaunch = '';
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+    const after = (await request(app).get('/profiles?workflowId=wf_a')).body.profiles.find((x: any) => x.id === id);
+    expect(after.lastOpenError).toBeNull();
+    cleanup();
+  });
+
+  it("another workflow cannot open a profile this workflow holds; it is told why", async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Mine' })).body.profile.id;
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+    const b = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_b' }).expect(409);
+    expect(b.body.code).toBe('held');
+    const view = (await request(app).get('/profiles?workflowId=wf_b')).body.profiles.find((x: any) => x.id === id);
+    expect(view.available).toBe(false);
+    expect(view.explanation).toMatch(/Opened by hand/);
+    cleanup();
+  });
+
+  it("a reservation of another workflow refuses the manual open, naming it and its window", async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Sched' })).body.profile.id;
+    const now = Date.now();
+    await redis!.hset(RESV_PREFIX + leaseIdOf(id), 'x', JSON.stringify({ id: 'x', owner: 'wf_s', ownerName: 'Nightly', scheduleId: 's', occurrence: now, start: now - 60_000, end: now + 600_000, state: 'planned' }));
+    const r = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_b' }).expect(409);
+    expect(r.body.code).toBe('reserved');
+    expect(r.body.error).toContain('Nightly');
+    expect(launches).toBe(0);
+    // The reserving workflow itself may open it.
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_s' }).expect(200);
+    cleanup();
+  });
+
+  it('close and release are independent; a browser a run depends on cannot be closed', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Life' })).body.profile.id;
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+    // A run of the same workflow now also depends on this browser.
+    sessions.attach(leaseIdOf(id), jobDependent('run1'));
+    const c1 = await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_a' }).expect(409);
+    expect(c1.body.code).toBe('in_use');
+    sessions.detach(leaseIdOf(id), jobDependent('run1'));
+    const c2 = await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_a' }).expect(200);
+    expect(c2.body.closed).toBe(true);
+    expect(c2.body.holdKept).toBe(true); // closing did NOT release the claim
+    expect(await redis!.get(HOLD_PREFIX + leaseIdOf(id))).not.toBeNull();
+    const rel = await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_a' }).expect(200);
+    expect(rel.body.released).toBe(true);
+    // Now nothing depends on it: it can be deleted.
+    await request(app).delete(`/profiles/${id}`).expect(200);
+    cleanup();
+  });
+
+  it('a slow cold start answers 503 retryable in time, keeps going, and the retry joins the same launch', async () => {
+    if (!up) return;
+    process.env.REMOTE_BROWSER_START_BUDGET_MS = '1000';
+    let release: () => void = () => {};
+    setProfileLauncherForTests(async () => {
+      launches++;
+      await new Promise<void>((r) => { release = r; });
+      return new FakeContext() as any;
+    });
+    try {
+      const id = (await request(app).post('/profiles').send({ name: 'Slow' })).body.profile.id;
+      const t0 = Date.now();
+      const first = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(503);
+      expect(Date.now() - t0).toBeLessThan(5000);
+      expect(first.body).toMatchObject({ retryable: true, code: 'starting' });
+      // The hold stays while the browser is being started for it.
+      expect(await redis!.get(HOLD_PREFIX + leaseIdOf(id))).not.toBeNull();
+      release();
+      await new Promise((r) => setTimeout(r, 50));
+      const again = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_a' }).expect(200);
+      expect(again.body.reused).toBe(true);
+      expect(launches).toBe(1);
+    } finally {
+      delete process.env.REMOTE_BROWSER_START_BUDGET_MS;
+      cleanup();
+    }
+  });
+
+  it('rejects bad names and unknown ids', async () => {
+    if (!up) return;
+    await request(app).post('/profiles').send({ name: '' }).expect(400);
+    // Display names are not keys (owner's model): duplicates are allowed.
+    await request(app).post('/profiles').send({ name: 'Dup' }).expect(201);
+    await request(app).post('/profiles').send({ name: 'dup' }).expect(201);
+    await request(app).patch('/profiles/nope').send({ name: 'x' }).expect(404);
+    await request(app).delete('/profiles/default').expect(404); // no built-in profile exists
+    cleanup();
+  });
+
+  it('closing saves the tabs into the profile; after reopening, Restore tabs brings them back', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Snap' })).body.profile.id;
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_s' }).expect(200);
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_s' }).expect(200);
+    const list = await request(app).get('/profiles?workflowId=wf_s').expect(200);
+    const v = list.body.profiles.find((p: any) => p.id === id);
+    expect(v.lastSession).toMatchObject({ tabs: 1, reason: 'operator' });
+    expect(JSON.stringify(list.body)).not.toContain('saved.example'); // URLs are never in the list
+    // Restore needs an open browser of your own.
+    await request(app).post(`/profiles/${id}/restore`).send({ workflowId: 'wf_other' }).expect(409);
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_s' }).expect(200);
+    // The fresh fake browser has the same tab -> nothing duplicated; drop it to see the restore.
+    const ctx: any = pm.getVipContext(leaseIdOf(id))!.context;
+    ctx._pages = [];
+    const r = await request(app).post(`/profiles/${id}/restore`).send({ workflowId: 'wf_s' }).expect(200);
+    expect(r.body.restored).toBe(1);
+    // Leave nothing behind for the next suite (a hold of this instance would read as orphaned there).
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_s' });
+    await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_s' }).expect(200);
+    cleanup();
+  });
+
+  it('launch settings: validated before anything is claimed; applied as argv; never change the data dir', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: '22' })).body.profile.id;
+    // App-controlled flag: 400, no hold, no session, no launch.
+    const bad = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { customFlags: '--user-data-dir=/tmp/other' } }).expect(400);
+    expect(bad.body.code).toBe('invalid_launch_settings');
+    expect(bad.body.launch.errors[0].message).toMatch(/controlled by the application/);
+    expect(launches).toBe(0);
+    expect(await redis!.exists(HOLD_PREFIX + leaseIdOf(id))).toBe(0);
+    expect(sessions.get(leaseIdOf(id))).toBeNull();
+    // Risky flag without confirmation: 409, nothing started.
+    const risky = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { customFlags: '--disable-web-security' } }).expect(409);
+    expect(risky.body.code).toBe('needs_confirmation');
+    expect(launches).toBe(0);
+    // Valid: preset + option + custom flag reach the launcher; the dir is the profile's own.
+    const ok = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'automation', options: { 'auto-devtools': true }, customFlags: '--lang=fa' } }).expect(200);
+    expect(ok.body.settingsApplied).toBe(true);
+    expect(lastArgs).toContain('--no-first-run');
+    expect(lastArgs).toContain('--auto-open-devtools-for-tabs');
+    // The custom flag is the last USER argument; the app-owned data selection
+    // (core/ChromiumProfileLocation) follows it and occurs exactly once.
+    expect(lastArgs[lastArgs.length - 2]).toBe('--lang=fa');
+    expect(lastArgs[lastArgs.length - 1]).toBe('--profile-directory=profile-001');
+    expect(lastArgs.filter((a) => a.startsWith('--profile-directory')).length).toBe(1);
+    expect(lastArgs.some((a) => a.startsWith('--user-data-dir'))).toBe(false);
+    // The project extension is loaded into every profile browser (as in the Local Browser).
+    expect(lastArgs.some((a) => a.startsWith('--load-extension=') && a.includes('ab-inspector'))).toBe(true);
+    // A new profile lives in a new branch: --user-data-dir = <base>/branch-NNN.
+    expect(path.basename(lastDir)).toMatch(/^branch-\d{3}$/);
+    // The Chromium display name was written for THIS profile's folder.
+    const { readChromiumProfileName } = await import('../../src/core/ChromiumProfileName');
+    expect(await readChromiumProfileName(lastDir, 'profile-001')).toBe('22');
+    // Same settings again: reused, no second process.
+    const again = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'automation', options: { 'auto-devtools': true }, customFlags: '--lang=fa' } }).expect(200);
+    expect(again.body.reused).toBe(true);
+    expect(launches).toBe(1);
+    // Other settings while only this operator depends on it: relaunched with them (same dir).
+    const other = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'standard' } }).expect(200);
+    expect(other.body.relaunched).toBe(true);
+    expect(launches).toBe(2);
+    expect(lastArgs).not.toContain('--no-first-run');
+    expect(path.basename(lastDir)).toMatch(/^branch-\d{3}$/);
+    // Other settings while a RUN depends on it: refused with the reason, browser untouched.
+    sessions.attach(leaseIdOf(id), jobDependent('77'));
+    const busy = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l', launch: { preset: 'diagnostics' } }).expect(409);
+    expect(busy.body.code).toBe('in_use_settings');
+    expect(launches).toBe(2);
+    // Plain open (no settings) while the run depends on it: reused as it is.
+    const plain = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_l' }).expect(200);
+    expect(plain.body.reused).toBe(true);
+    sessions.detach(leaseIdOf(id), jobDependent('77'));
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_l' }).expect(200);
+    await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_l' }).expect(200);
+    cleanup();
+  });
+
+  it('launch options catalogue and validation endpoint', async () => {
+    if (!up) return;
+    const cat = await request(app).get('/profiles/launch-options').expect(200);
+    expect(cat.body.presets.map((p: any) => p.id)).toEqual(['standard', 'automation', 'diagnostics']);
+    expect(cat.body.appControlled.some((x: any) => x.flag === '--user-data-dir')).toBe(true);
+    const v = await request(app).post('/profiles/launch-settings/validate').send({ launch: { customFlags: '--lang=fa\n--headless' } }).expect(200);
+    expect(v.body.launch.ok).toBe(false);
+    expect(v.body.launch.custom).toEqual(['--lang=fa']);
+    cleanup();
+  });
+
+  it('a failed launch keeps the profile and its error, and the retry works (no hold left behind)', async () => {
+    if (!up) return;
+    const id = (await request(app).post('/profiles').send({ name: 'Retry me' })).body.profile.id;
+    failLaunch = 'Missing X server';
+    const r = await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_r' });
+    expect(r.status).toBe(503);
+    expect(r.body.retryable).toBe(true);
+    expect(await redis!.exists(HOLD_PREFIX + leaseIdOf(id))).toBe(0);
+    const list = await request(app).get('/profiles?workflowId=wf_r').expect(200);
+    expect(list.body.profiles.find((p: any) => p.id === id).lastOpenError.message).toMatch(/Missing X server/);
+    failLaunch = '';
+    await request(app).post(`/profiles/${id}/open`).send({ workflowId: 'wf_r' }).expect(200);
+    await request(app).post(`/profiles/${id}/close`).send({ workflowId: 'wf_r' }).expect(200);
+    await request(app).post(`/profiles/${id}/release`).send({ workflowId: 'wf_r' }).expect(200);
+    cleanup();
+  });
+});

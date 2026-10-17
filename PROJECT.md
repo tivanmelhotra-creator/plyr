@@ -356,6 +356,104 @@ Supporting core modules include `BrowserTabs`, `BrowserInput`, `BrowserProfile`,
 `RemoteDownloads`, `RemoteUploads`, `RemoteFileChooser`, `DownloadHeaders`,
 `SessionHandoff`, `SelfHeal`, `GlobalBrowser`.
 
+### 6.1 Browser profiles, sessions, runs and reservations
+
+Four concepts, four modules, never merged:
+
+| Concept | What it is | Module | Stored in |
+| --- | --- | --- | --- |
+| **Branch / Profile** | a **branch** (`branch-NNN`, ids never reused) is one Chromium `--user-data-dir` root under `BRANCH_BASE_DIR`; a **profile** (`prf_<hex>`) is a `profile-NNN` folder inside it selected only with `--profile-directory` (one running profile per branch; different branches run in parallel) | `core/BranchRegistry`, `core/ProfileRegistry` (facade), `core/BranchBase`, `core/ChromiumProfileLocation` | `<PROFILES_DIR>/<user>/branches.json` |
+| **Session** | a live browser on a profile + who depends on it | `core/BrowserSessions` | memory, mirrored to Redis `profile:session:*` |
+| **Run** | one execution of a workflow | BullMQ job | Redis |
+| **Claim** | lease (run), hold (operator), reservation (schedule), grant (explicit) | `core/ProfileLease`, `core/ProfileReservations` | Redis `profile:{lease,hold,resv,grant}:*` |
+
+`core/ProfileAccess` derives the status the user sees (free / reserved / in use /
+needs review) and the refusal sentence; `core/ProfileCoordinator` connects the
+queue to reservations; `core/BrowserLifecycle` decides what happens to a run's
+browser at the end; `core/ProfileBrowser` opens / closes a profile's browser by
+hand. HTTP: `Routes/profile.routes.ts` (`/profiles`). UI: `public/js/profile-manager.js`,
+mounted in the Workflow Files drawer and used by Workflow Settings.
+
+**Admission is one atomic Lua script** (`ADMIT_LUA`): lease, hold, reservations
+and grants are read and the new claim written in one step, so two claimants can
+never both win. Claims carry an **owner** (the workflow id); a claim of the same
+owner is compatible, any other is not, unless the owner wrote an explicit,
+expiring **grant** (`ProfileLeases.grant`, for phase 2's "continue session"
+node — never created implicitly).
+
+**Reservations.** Each scheduled occurrence reserves its profile for
+`[t − PROFILE_RESERVE_BEFORE_MIN, t + PROFILE_RESERVE_AFTER_MIN]` (defaults 10/10,
+Settings → Workflow Runs). States: `planned → fired → settled`, or `missed`. A
+`fired` reservation blocks until its run settles it, so a 10:00 run that lasts
+until 10:20 keeps the profile until 10:20; a `settled` one blocks until
+`max(window end, real end)`. Unknown is never free: the sweep (every minute)
+settles / misses reservations only from queue evidence. Inactive workflows
+reserve nothing; activation / schedule / profile changes re-plan reservations
+and never touch holds or browsers. An operator hold is capped at the start of
+the next foreign reservation.
+
+**Lifecycle.** Closing a browser never releases a claim, and a claim ending never
+closes a browser. A browser with a dependent other than the requester is never
+closed (Close Browser node detaches instead; after-run close and the idle
+collector skip it). Workflow setting `afterRun`: `close` (default) or `keep`
+(honoured after success / cancel, if safe; errors and timeouts save state first and then close the browser).
+Unused browsers close after `BROWSER_IDLE_CLOSE_MIN` (default 10, 0 = never); a
+run in a Wait node is a dependent, so it is never idle.
+
+**Visibility** is unchanged and still follows `core/RunPolicy` (manual click =
+visible, schedules / triggers / API = hidden); it does not depend on the
+environment or on the `active` flag.
+
+**State before closing** (`core/BrowserStateSnapshot`): every close we cause
+(after-run, idle, GC, Close Browser node, operator Close, relaunch) first saves
+the open http(s) tabs and Playwright `storageState` into
+`<profile>/.plyr-state/` (0600, 4 s budget, never logged). `POST
+/profiles/:id/restore` reopens the tabs into the caller's open browser.
+
+**Viewer tabs** (`core/ProfileViewers`): the profile view's VNC socket carries
+`?profile=&workflowId=`; 30 s after the last one closes, the operator dependent
+is detached from the browser. The hold is NOT released by this.
+
+**Window focus**: opening a profile raises that profile's window on the shared
+desktop (`BrowserWindowManager.focusByUserDataDir`, by `--user-data-dir`).
+
+**Schedule warnings**: `GET /profiles` returns `overlaps` (two workflows'
+reservations overlapping on one profile) and `unknownSchedules` (a repeat whose
+data no queued job carries — it reserves nothing). BullMQ 5 repeatables carry no
+`id`; schedule ids are recovered from the next job (`scheduleIdsByKey`).
+
+**Phase 2 — nodes on this infrastructure.** A Launch Browser node may name
+its profile (`params.profileId`, `core/NodeProfile`; one profile per run, the
+lease/reservations follow it). Every non-control-flow node can have Success /
+Error / Timeout outputs (`errorSteps` / `timeoutSteps`, `core/NodeOutputs`),
+a retry policy (`retryOn`, `retryBackoff`) and a timeout (`timeoutMs`). The
+Continue Session node hands the run's browser to another workflow only through
+`ProfileLeases.grant` + the `grant:<to>` session dependent
+(`core/SessionContinuation`); the grant is consumed when the target ran.
+
+**Chromium data selection** (`core/ChromiumProfileLocation`, used by all three
+launchers: Local Browser `core/RealChrome`, Browser Profiles `core/ProfileBrowser`,
+runs `pipeline.ensureProfileBrowser`). Four identities stay separate: Aria profile
+id (registry) → user-data root (`ProfileRegistry.dirOf`, or
+`REAL_CHROME_USER_DATA_DIR` for the Local Browser) → **pinned
+`--profile-directory`** (`<root>/.plyr-chromium-profile.json`) → display name
+(`core/ChromiumProfileName`, written for the pinned directory). Every launch
+passes `--profile-directory`, because without it Chromium opens `Local State`
+`last_used`, and that can point at other data. An existing root is
+adopted with the directory it already used (`last_used` if it exists, otherwise
+`Default`). Nothing is moved. Custom Flags cannot set either switch. **One root per
+profile** is required, not a style choice: Chromium allows one process per root
+(measured: a 2nd launch fails with ProcessSingleton, and a plain 2nd invocation is
+forwarded into the first process and is invisible to Playwright). Simultaneous,
+separately leased, separately visible profile browsers therefore need separate
+roots. Tests: `tests/unit/chromium-profile-location.test.ts`,
+`tests/browser/{profile-real-chromium,local-browser-profile-selection}.test.ts`
+(`chrome://version` Profile Path).
+
+**Recovery at boot**: leases and holds of an earlier incarnation are released,
+its session records are reported and forgotten; reservations are kept and
+resolved by evidence.
+
 ---
 
 ## 7. Inspector / Extension

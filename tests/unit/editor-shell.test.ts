@@ -375,9 +375,9 @@ describe('item D — blocks palette', () => {
     expect(list).toContain('leftovers');
   });
 
-  it('the six rows really do cover every catalog action (53: Open Extension, Code and Router joined the 50)', () => {
+  it('the six rows really do cover every catalog action (54: Open Extension, Code, Router and Continue Session joined the 50)', () => {
     const covered = CATALOG.actions.filter((a: any) => groupIds.indexOf(a.cat || 'other') !== -1);
-    expect(CATALOG.actions.length).toBe(53);
+    expect(CATALOG.actions.length).toBe(54);
     // The property that matters: no action is left without a palette row.
     expect(covered.length).toBe(CATALOG.actions.length);
   });

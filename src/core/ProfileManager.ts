@@ -335,9 +335,19 @@ export class ProfileManager {
   // GARBAGE COLLECTOR (Updated for Hybrid)
   // ============================================
 
-  async runGarbageCollector(staleThresholdMinutes: number): Promise<void> {
+  async runGarbageCollector(staleThresholdMinutes: number, guard?: {
+    /** May this profile's browser be closed now? (core/BrowserSessions: no dependents). */
+    mayCloseVip: (key: string) => boolean;
+    onVipClosed?: (key: string) => void;
+    /** Save what is needed to recover the browser (core/BrowserStateSnapshot) before it closes. */
+    beforeVipClose?: (key: string, context: BrowserContext) => Promise<void>;
+    /** Idle timeout for profile browsers; 0 = never by time. Overrides the threshold. */
+    idleMs?: number;
+  }): Promise<void> {
     const now = Date.now();
-    const vipThresholdMs = staleThresholdMinutes * 60 * 1000;
+    const vipThresholdMs = guard && typeof guard.idleMs === 'number'
+      ? (guard.idleMs > 0 ? guard.idleMs : Number.POSITIVE_INFINITY)
+      : staleThresholdMinutes * 60 * 1000;
     const freeMaxLifeMs = config.FREE_CONTEXT_MAX_LIFETIME_MS || 600000; // 10 min default
 
     let closedVip = 0;
@@ -364,12 +374,18 @@ export class ProfileManager {
         shouldClose = true;
       }
 
+      // A browser someone depends on (a run, an operator view) is never
+      // collected — not even one with zero pages or a quiet activity clock.
+      if (shouldClose && guard && !guard.mayCloseVip(userId)) shouldClose = false;
+
       if (shouldClose) {
         console.log(`[GC] Closing stale VIP browser for user: ${userId}`);
+        if (guard?.beforeVipClose) await guard.beforeVipClose(userId, entry.context).catch(() => {});
         try {
           await entry.context.close();
         } catch {}
         this.vipContexts.delete(userId);
+        guard?.onVipClosed?.(userId);
         closedVip++;
       }
     }

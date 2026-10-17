@@ -165,6 +165,8 @@ export function activationIssues(steps: unknown, opts: ActivationOptions = {}): 
       walk(step.catch, `${path}.catch`);
       walk(step.finally, `${path}.finally`);
       walk(step.fallback, `${path}.default`);
+      walk(step.errorSteps, `${path}.error`);
+      walk(step.timeoutSteps, `${path}.timeout`);
       if (step.cases && typeof step.cases === 'object') {
         for (const [k, v] of Object.entries(step.cases)) walk(v, `${path}.case(${k})`);
       }

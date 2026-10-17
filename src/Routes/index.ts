@@ -2,6 +2,9 @@ import type { Queue } from 'bullmq';
 import type IORedis from 'ioredis';
 import type { ProfileManager } from '../core/ProfileManager';
 import type { ProfileLeases } from '../core/ProfileLease';
+import type { ProfileAccess } from '../core/ProfileAccess';
+import type { ProfileCoordinator } from '../core/ProfileCoordinator';
+import { createProfileRoutes } from './profile.routes';
 
 import { createHealthRoutes } from './health.routes';
 import { createUserRoutes } from './user.routes';
@@ -14,6 +17,8 @@ interface RoutesDeps {
   connection: IORedis;
   profileManager: ProfileManager;
   profileLeases?: ProfileLeases;
+  profileAccess?: ProfileAccess;
+  profileCoordinator?: ProfileCoordinator;
   luaScriptsLoaded: () => boolean;
   reloadLuaScripts: () => Promise<void>;
 }
@@ -29,8 +34,14 @@ export const createAllRoutes = (deps: RoutesDeps) => {
       queue: deps.queue,
       connection: deps.connection,
       profileManager: deps.profileManager,
-      profileLeases: deps.profileLeases
+      profileLeases: deps.profileLeases,
+      profileCoordinator: deps.profileCoordinator,
     }),
+    // Browser profiles: the one registry every surface uses (list / create /
+    // rename / delete / open / close / release). See Routes/profile.routes.ts.
+    profiles: deps.profileAccess
+      ? createProfileRoutes({ connection: deps.connection, access: deps.profileAccess, profileManager: deps.profileManager, schedules: deps.profileCoordinator })
+      : null,
     // Real Chrome / extensions / cookies / remote desktop. No deps: it talks
     // to process-level singletons (RealChrome, Desktop) rather than to Redis.
     browser: createBrowserRoutes(),
@@ -52,3 +63,4 @@ export { createUserRoutes } from './user.routes';
 export { createBrowserRoutes } from './browser.routes';
 export { createModeRoutes } from './mode.routes';
 export { createWorkflowFilesRoutes } from './workflow-files.routes';
+export { createProfileRoutes } from './profile.routes';

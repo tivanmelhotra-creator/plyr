@@ -60,6 +60,9 @@
       { k: 'url', label: 'p.url', type: 'string', ph: '(optional) https://example.com', expr: true, help: 'help.launchUrl' },
       { k: 'timeout', label: 'p.timeout', type: 'number', ph: '60000', min: 0 },
       { k: 'waitUntil', label: 'p.waitUntil', type: 'options', options: ['domcontentloaded', 'load', 'networkidle'] },
+      // Phase 2: this node's browser profile (stable id from the profile
+      // registry). Empty = the workflow's profile. One profile per run.
+      { k: 'profileId', label: 'p.profile', type: 'string', ph: '(workflow profile)', help: 'help.launchProfile' },
       // JSON text of the per-run browser options (browser-options.js). Owned by
       // the "Add option" panel (browser-options-ui.js), never a raw input.
       { k: 'browserOptions', label: 'bo.title', type: 'json', internal: true },
@@ -275,6 +278,12 @@
       { k: 'index', label: 'p.index', type: 'number', ph: '(optional) tab index', min: 0 },
     ] },
     { id: 'close-browser', icon: 'power', cat: 'navigation', fields: [] },
+    // Phase 2: hand THIS browser session (same profile, tabs, cookies) to
+    // another workflow, through an explicit, expiring grant (core/SessionContinuation).
+    { id: 'continue-session', icon: 'link', cat: 'navigation', fields: [
+      { k: 'workflowId', label: 'p.targetWorkflow', type: 'string', ph: 'wf_…', help: 'help.continueSession' },
+      { k: 'ttlMinutes', label: 'p.ttlMinutes', type: 'number', ph: '15', min: 1 },
+    ] },
     { id: 'handle-dialog', icon: 'message-square', cat: 'navigation', fields: [
       { k: 'action', label: 'p.op', type: 'options', options: ['accept', 'dismiss'] },
       { k: 'promptText', label: 'p.promptText', type: 'string', ph: '(optional) text for prompt' },

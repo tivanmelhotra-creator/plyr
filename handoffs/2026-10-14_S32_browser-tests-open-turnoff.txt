@@ -1,0 +1,22 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /home/user/webapp
+
+stdout | tests/browser/profile-open-turn-off.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+stdout | tests/browser/profile-open-turn-off.test.ts > Browser Profiles Open / Turn off with real Chromium > Open: --user-data-dir = branch root, one explicit --profile-directory, Local State last_used ignored, reopen reuses the process
+[open] root=/tmp/plyr-ot-p2sW6B/base/branch-002 folder=profile-001 pid=4623 profilePath=/tmp/plyr-ot-p2sW6B/base/branch-002/profile-001 reused=true
+
+stdout | tests/browser/profile-open-turn-off.test.ts > Browser Profiles Open / Turn off with real Chromium > Turn off: closes the free profile browser, keeps the one a workflow uses open and names the workflow
+[turn-off] 124ms {"success":true,"closed":[{"profileId":"prf_948b1ee4ba82","name":"Free real"}],"keptOpen":[{"profileId":"prf_69a4acdd1b9a","name":"Used real","reason":"workflow","workflows":[{"workflowId":"wf_0fd45dd2079f5eaa","name":"Real nightly"}]}],"notOpenedHere":[],"failed":[]}
+
+ ✓ tests/browser/profile-open-turn-off.test.ts (2 tests) 6576ms
+   ✓ Browser Profiles Open / Turn off with real Chromium > Open: --user-data-dir = branch root, one explicit --profile-directory, Local State last_used ignored, reopen reuses the process 3802ms
+   ✓ Browser Profiles Open / Turn off with real Chromium > Turn off: closes the free profile browser, keeps the one a workflow uses open and names the workflow 1780ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  22:50:26
+   Duration  11.01s (transform 1.35s, setup 21ms, collect 2.98s, tests 6.58s, environment 0ms, prepare 108ms)
+

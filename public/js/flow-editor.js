@@ -693,6 +693,14 @@
       });
     }
     if (needsNext) ports.push({ id: 'next', label: 'port.next' });
+    // Phase 2: Success / Error / Timeout outputs (node Settings). `next` is
+    // the Success output; the two failure ports follow it.
+    if (gs && gs.hasFailurePorts && gs.hasFailurePorts(node)) {
+      if (!ports.some(function (p) { return p.id === 'next'; })) ports.unshift({ id: 'next', label: 'port.success' });
+      ports = ports.map(function (p) { return p.id === 'next' ? { id: 'next', label: 'port.success' } : p; });
+      ports.push({ id: 'error', label: 'port.error' });
+      ports.push({ id: 'timeout', label: 'port.timeout' });
+    }
     return ports;
   }
   function nodeH(node) {
@@ -2243,6 +2251,30 @@
       return row;
     }
 
+    function selectRow(key, labelKey, options) {
+      var row = document.createElement('div');
+      row.className = 'form-row ndv-row';
+      var lw = document.createElement('div');
+      lw.className = 'ndv-label-wrap';
+      var lab = document.createElement('label');
+      lab.textContent = t(labelKey);
+      lw.appendChild(lab);
+      row.appendChild(lw);
+      var sel = document.createElement('select');
+      sel.className = 'field ndv-field';
+      sel.setAttribute('data-setting', key);
+      options.forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o[0];
+        opt.textContent = t(o[1]);
+        if ((ep[key] || options[0][0]) === o[0]) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', function () { ep[key] = sel.value === options[0][0] ? undefined : sel.value; });
+      row.appendChild(sel);
+      return row;
+    }
+
     function numRow(key, labelKey, ph, min) {
       var row = document.createElement('div');
       row.className = 'form-row ndv-row';
@@ -2274,8 +2306,24 @@
     wrap.appendChild(toggleRow('retryOnFail', 'settings.retryOnFail', 'help.retryOnFail', syncRetrySub));
     retrySub.appendChild(numRow('maxTries', 'settings.maxTries', '3', 1));
     retrySub.appendChild(numRow('waitBetweenTriesMs', 'settings.waitBetweenTries', '1000', 0));
+    retrySub.appendChild(selectRow('retryOn', 'settings.retryOn', [['any', 'settings.retryOnAny'], ['error', 'settings.retryOnError'], ['timeout', 'settings.retryOnTimeout']]));
+    retrySub.appendChild(selectRow('retryBackoff', 'settings.retryBackoff', [['linear', 'settings.backoffLinear'], ['fixed', 'settings.backoffFixed'], ['exponential', 'settings.backoffExponential']]));
     wrap.appendChild(retrySub);
     syncRetrySub();
+
+    // Phase 2: the node's own timeout and its Success / Error / Timeout outputs.
+    wrap.appendChild(numRow('timeoutMs', 'settings.timeoutMs', '30000', 0));
+    var gsx = GS();
+    var canOutputs = !(node.action in { 'if': 1, router: 1, 'switch': 1, 'try': 1, loop: 1, foreach: 1, 'while': 1 });
+    if (canOutputs && gsx && gsx.hasFailurePorts) {
+      wrap.appendChild(toggleRow('outputs', 'settings.outputs', 'help.outputs', function () {
+        // Turning the outputs off drops the edges of the failure ports, so a
+        // hidden port can never keep a branch alive.
+        if (ep.outputs !== true && state && Array.isArray(state.edges)) {
+          state.edges = state.edges.filter(function (e) { return !(e.from === node.id && (e.port === 'error' || e.port === 'timeout')); });
+        }
+      }));
+    }
 
     return wrap;
   }
@@ -2579,6 +2627,7 @@
     'switch-tab': 'nk.switchTab',
     'close-tab': 'nk.closeTab',
     'close-browser': 'nk.closeBrowser',
+    'continue-session': 'nk.continueSession',
     'handle-dialog': 'nk.handleDialog',
     // interaction
     click: 'nk.clickElement',

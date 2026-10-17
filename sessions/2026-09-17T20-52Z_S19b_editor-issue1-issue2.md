@@ -143,7 +143,7 @@ GitHub push: FAILED — No Valid GitHub Tokens Found
 
 **بکاپ پروژه:**
 
-https://www.genspark.ai/api/files/s/aYOd0xQo
+(backup link removed)
 
 مأموریت را کامل کن.
 
@@ -4287,7 +4287,7 @@ You've used all your credits. Kindly visit this page to add more: [upgrade](http
 
 برای بازیابی اخرین وضعیت پروژه یعنی تا همینجا که اومدیم:
 
-"https://www.genspark.ai/api/files/s/wdBOCFOo"
+"(backup link removed)"
 
 Backup to File
 Create a compressed backup of your project source code for safekeeping or migration. Note: Only source files are included - git data, node_modules, and build artifacts are excluded

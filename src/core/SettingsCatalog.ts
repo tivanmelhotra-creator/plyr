@@ -118,6 +118,47 @@ export const CATALOG: readonly SettingSpec[] = Object.freeze([
   },
 
   {
+    key: 'PROFILE_RESERVE_BEFORE_MIN', group: 'runs', type: 'choice', apply: 'live', dflt: '10',
+    fa: 'رزرو پروفایل قبل از اجرای زمان‌بندی‌شده', en: 'Reserve the profile before a scheduled run',
+    hintFa: 'از این مدت قبل از زمان برنامه‌ریزی‌شده، پروفایلِ آن اجرا به Workflow دیگری داده نمی‌شود.',
+    hintEn: 'From this long before a scheduled run, its profile is not given to any other workflow.',
+    options: [
+      { value: '0', fa: 'بدون حاشیه', en: 'No margin' }, { value: '5', fa: '۵ دقیقه', en: '5 minutes' },
+      { value: '10', fa: '۱۰ دقیقه (پیش‌فرض)', en: '10 minutes (default)' }, { value: '15', fa: '۱۵ دقیقه', en: '15 minutes' },
+      { value: '30', fa: '۳۰ دقیقه', en: '30 minutes' }, { value: '60', fa: '۱ ساعت', en: '1 hour' },
+    ],
+  },
+  {
+    key: 'PROFILE_RESERVE_AFTER_MIN', group: 'runs', type: 'choice', apply: 'live', dflt: '10',
+    fa: 'رزرو پروفایل بعد از اجرای زمان‌بندی‌شده', en: 'Reserve the profile after a scheduled run',
+    hintFa: 'حداقل تا این مدت بعد از زمان برنامه‌ریزی‌شده رزرو می‌ماند؛ اگر اجرا طولانی‌تر شود، تا پایان واقعی آن.',
+    hintEn: 'Kept at least this long after the scheduled time; longer if the run itself lasts longer.',
+    options: [
+      { value: '0', fa: 'بدون حاشیه', en: 'No margin' }, { value: '5', fa: '۵ دقیقه', en: '5 minutes' },
+      { value: '10', fa: '۱۰ دقیقه (پیش‌فرض)', en: '10 minutes (default)' }, { value: '15', fa: '۱۵ دقیقه', en: '15 minutes' },
+      { value: '30', fa: '۳۰ دقیقه', en: '30 minutes' }, { value: '60', fa: '۱ ساعت', en: '1 hour' },
+    ],
+  },
+  {
+    key: 'BROWSER_IDLE_CLOSE_MIN', group: 'runs', type: 'choice', apply: 'live', dflt: '10',
+    fa: 'بستن مرورگرِ بلااستفاده', en: 'Close an unused browser after',
+    hintFa: 'مرورگری که هیچ اجرا یا نمای اپراتوری به آن وابسته نیست، پس از این مدت بسته می‌شود. انتظار داخل یک Workflow بیکاری حساب نمی‌شود.',
+    hintEn: 'A browser no run and no operator view depends on is closed after this long. A Wait inside a run is not idleness.',
+    options: [
+      { value: '5', fa: '۵ دقیقه', en: '5 minutes' }, { value: '10', fa: '۱۰ دقیقه (پیش‌فرض)', en: '10 minutes (default)' },
+      { value: '30', fa: '۳۰ دقیقه', en: '30 minutes' }, { value: '60', fa: '۱ ساعت', en: '1 hour' },
+      { value: '0', fa: 'هرگز', en: 'Never' },
+    ],
+  },
+
+  {
+    key: 'BRANCH_BASE_DIR', group: 'runs', type: 'text', apply: 'live', dflt: '',
+    fa: 'پوشهٔ پایهٔ شاخه‌های مرورگر', en: 'Browser branches folder',
+    hintFa: 'شاخه‌های جدید (branch-001، branch-002، …) اینجا ساخته می‌شوند. تغییرش چیزی را جابه‌جا نمی‌کند؛ شاخه‌های موجود سر جایشان می‌مانند. خالی = پیش‌فرض این سیستم‌عامل.',
+    hintEn: 'New branches (branch-001, branch-002, …) are created here. Changing it moves nothing; existing branches stay where they are. Empty = this OS default.',
+  },
+
+  {
     key: 'DOWNLOAD_TTL_MINUTES', group: 'storage', type: 'choice', apply: 'live', dflt: '30',
     fa: 'نگهداری فایل‌های دانلودی موقت', en: 'Keep temporary downloads',
     hintFa: 'فایل‌های پوشهٔ downloads خودِ هر workflow پاک نمی‌شوند.', hintEn: 'Files in a workflow\'s own downloads folder are never swept.',

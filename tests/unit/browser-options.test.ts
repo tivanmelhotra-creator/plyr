@@ -299,8 +299,11 @@ describe('serializer round trip (UI <-> backend)', () => {
 describe('pipeline: the plan reaches the launch call', () => {
   it('the profile launch uses launch+context keys and relaunches when options or visibility change', async () => {
     const src = readFileSync(join(__dirname, '..', '..', 'src', 'pipeline.ts'), 'utf8');
-    expect(src).toMatch(/profileBuildHash/);
-    expect(src).toMatch(/headless=\$\{headless \? 1 : 0\}/);
+    // The build record is shared with the operator's launcher (core/ProfileBuild).
+    expect(src).toMatch(/buildKey\(\{ optionsHash: optPlan\.hash, headless \}\)/);
+    expect(src).toMatch(/buildCompatible\(getBuild\(key\), wantHash\)/);
+    const pb = readFileSync(join(__dirname, '..', '..', 'src', 'core', 'ProfileBuild.ts'), 'utf8');
+    expect(pb).toMatch(/headless=\$\{parts\.headless \? 1 : 0\}/);
     expect(src).toMatch(/\.\.\.optPlan\.context/);
     expect(src).toMatch(/hiddenLaunchOptions\(headless, config\.CHROME_EXE\)/);
     void vi;

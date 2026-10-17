@@ -54,6 +54,8 @@ const JS_ALL = [
   // canvas views). Renders folder rows, button labels and error sentences, so
   // it is user-visible copy and its icons must resolve like everyone else's.
   'workflow-files.js', 'workflow-exchange.js',
+  // The browser-profile panel mounted in that drawer: names, badges, buttons.
+  'profile-manager.js',
   // Per-run browser option catalog + its "Add option" panel (Launch Browser node).
   'browser-options.js', 'browser-options-ui.js',
   // Server settings (Settings page): every label, badge and button is user-visible copy.

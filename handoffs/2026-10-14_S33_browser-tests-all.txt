@@ -1,0 +1,110 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /home/user/webapp
+
+stdout | tests/browser/profile-real-chromium.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+ ✓ tests/browser/profile-real-chromium.test.ts (9 tests) 30522ms
+   ✓ profiles on a real Chromium + X display > two created profiles open as two visible browsers; re-opening one raises ITS window 6791ms
+   ✓ profiles on a real Chromium + X display > manual run on a named profile = visible, scheduled run on the same profile = hidden 3882ms
+   ✓ profiles on a real Chromium + X display > phase 1: name 22 in Chromium, presets/custom flags in the real argv, independent data, close one keeps the other 5002ms
+   ✓ profiles on a real Chromium + X display > selection: branch root + explicit --profile-directory (registry folder); chrome://version Profile Path is the intended one; data persists; two at once 4018ms
+   ✓ profiles on a real Chromium + X display > branch model: two profiles of ONE branch share the root; the 2nd open is refused (branch_busy names the running one), no 2nd process; after close the 2nd opens its own folder 2325ms
+   ✓ profiles on a real Chromium + X display > a NEW profile has the project extension (Element Inspector) loaded, like the Local Browser 861ms
+   ✓ profiles on a real Chromium + X display > each profile of a branch gets its OWN icon and color in Chromium (before: all identical), kept by Chromium across a launch 3347ms
+   ✓ profiles on a real Chromium + X display > an existing root that used another profile directory is adopted as it is: same data, nothing moved 1764ms
+   ✓ profiles on a real Chromium + X display > why one root per BRANCH runs one profile at a time: Chromium allows ONE process per root, a 2nd profile on it cannot be launched separately 794ms
+stdout | tests/browser/viewer-self-close.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > a. one profile closed from outside: the viewer tab (opened by script) closes itself within ~5 s
+[a] viewer closed itself 2825 ms after the window was closed from outside
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > b. two profiles, one closed from outside: viewer stays, the other remains, no dialog
+[b] after closing "Pair A" from outside: viewer open=true, set=["prf_6fc598f55f12"], B pid=7725
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > c. one failed probe, a false /browser/real/health and ONE false zero answer do NOT close the viewer
+[c] probes: real, 500, network-error, zero, malformed, real, real, real … (11 total); viewer open=true
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > d. viewer opened by hand (not by a script): last browser closed -> empty page, no dialog
+[d] manual viewer after the last browser closed: {"text":"","visibleButtons":0,"visibleElements":0,"title":""} closed=false
+
+stdout | tests/browser/viewer-self-close.test.ts > viewer self-close with real Chromium > rendered DOM: no "Turn on", "Turn off", "Chromium Session Closed", "Close Tab", "Relaunch" in the viewer or the Browser Profiles panel
+[dom] viewer 2073 chars, panel 3387 chars: none of ["Turn on","Turn off","Chromium Session Closed","Close Tab","Relaunch"]
+
+ ✓ tests/browser/viewer-self-close.test.ts (5 tests) 41932ms
+   ✓ viewer self-close with real Chromium > a. one profile closed from outside: the viewer tab (opened by script) closes itself within ~5 s 7887ms
+   ✓ viewer self-close with real Chromium > b. two profiles, one closed from outside: viewer stays, the other remains, no dialog 12634ms
+   ✓ viewer self-close with real Chromium > c. one failed probe, a false /browser/real/health and ONE false zero answer do NOT close the viewer 13013ms
+   ✓ viewer self-close with real Chromium > d. viewer opened by hand (not by a script): last browser closed -> empty page, no dialog 4831ms
+   ✓ viewer self-close with real Chromium > rendered DOM: no "Turn on", "Turn off", "Chromium Session Closed", "Close Tab", "Relaunch" in the viewer or the Browser Profiles panel 1371ms
+stdout | tests/browser/turn-off-and-show.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+stdout | tests/browser/turn-off-and-show.test.ts > Turn Off / Show Browser with real Chromium > Turn Off closes ONLY the Local Browser, answers, names the profile browsers; they keep running and Show Browser finds the same session
+[RealChrome][trace] launch census pages=1 [p1:chrome://new-tab-page/]
+[RealChrome] ✓ persistent Chrome up — 1 extension(s), profile=/tmp/plyr-off-hQqyPl/local-browser, profile-directory=Default (adopted-default), tab-restore=restore_on_startup unset -> 5, installs=no profile yet
+
+stderr | tests/browser/turn-off-and-show.test.ts > Turn Off / Show Browser with real Chromium > Turn Off closes ONLY the Local Browser, answers, names the profile browsers; they keep running and Show Browser finds the same session
+[ChromiumDownloads] DevTools session closed; reconnecting
+
+stderr | tests/browser/turn-off-and-show.test.ts > Turn Off / Show Browser with real Chromium > Turn Off closes ONLY the Local Browser, answers, names the profile browsers; they keep running and Show Browser finds the same session
+[ChromiumDownloads] DevTools session closed; reconnecting
+
+ ✓ tests/browser/turn-off-and-show.test.ts (3 tests) 19526ms
+   ✓ Turn Off / Show Browser with real Chromium > Turn Off closes ONLY the Local Browser, answers, names the profile browsers; they keep running and Show Browser finds the same session 10111ms
+   ✓ Turn Off / Show Browser with real Chromium > two scheduled runs on two profiles of ONE branch: the later one WAITS (no parallel Chromium), then runs on its own folder 3838ms
+   ✓ Turn Off / Show Browser with real Chromium > "Keep browser open": honoured after success, ignored after error (state saved first, no process left) 4679ms
+stdout | tests/browser/profile-open-turn-off.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+stdout | tests/browser/profile-open-turn-off.test.ts > Browser Profiles Open / Turn off with real Chromium > Open: --user-data-dir = branch root, one explicit --profile-directory, Local State last_used ignored, reopen reuses the process
+[open] root=/tmp/plyr-ot-u8Kp0h/base/branch-002 folder=profile-001 pid=8963 profilePath=/tmp/plyr-ot-u8Kp0h/base/branch-002/profile-001 reused=true
+
+stdout | tests/browser/profile-open-turn-off.test.ts > Browser Profiles Open / Turn off with real Chromium > Turn off: closes the free profile browser, keeps the one a workflow uses open and names the workflow
+[turn-off] 384ms {"success":true,"closed":[{"profileId":"prf_8075dbab58c7","name":"Free real"}],"keptOpen":[{"profileId":"prf_73ce99f41a1f","name":"Used real","reason":"workflow","workflows":[{"workflowId":"wf_4f79117eac57b6ba","name":"Real nightly"}]}],"notOpenedHere":[],"failed":[]}
+
+ ✓ tests/browser/profile-open-turn-off.test.ts (2 tests) 6439ms
+   ✓ Browser Profiles Open / Turn off with real Chromium > Open: --user-data-dir = branch root, one explicit --profile-directory, Local State last_used ignored, reopen reuses the process 1977ms
+   ✓ Browser Profiles Open / Turn off with real Chromium > Turn off: closes the free profile browser, keeps the one a workflow uses open and names the workflow 3460ms
+ ✓ tests/browser/orphan-browsers.test.ts (4 tests) 40301ms
+   ✓ orphan cleanup with real Chromium > stops the leftover of a dead server, keeps our own browser and a personal one, unlocks only the dead root 40218ms
+stdout | tests/browser/local-browser-profile-selection.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+stdout | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > a fresh root opens <root>/Default and pins it
+[REAL-CHROME] 🔍 Element Inspector fresh (v1.1.0) → /tmp/plyr-lb-f65oxD/extensions/ab-inspector
+
+stdout | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > a fresh root opens <root>/Default and pins it
+[RealChrome][trace] launch census pages=1 [p1:chrome://new-tab-page/]
+[RealChrome] ✓ persistent Chrome up — 1 extension(s), profile=/tmp/plyr-lb-f65oxD/fresh-root, profile-directory=Default (adopted-default), tab-restore=restore_on_startup unset -> 5, installs=no profile yet
+
+stdout | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > a fresh root opens <root>/Default and pins it
+[RealChrome][trace] page created id=p2 url=about:blank count=2
+
+stdout | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > a fresh root opens <root>/Default and pins it
+[RealChrome][trace] page created id=p3 url=about:blank count=2
+
+stdout | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > an existing root with data in another profile directory is adopted, nothing moved
+[RealChrome][trace] launch census pages=1 [p4:about:blank]
+[RealChrome] ✓ persistent Chrome up — 1 extension(s), profile=/tmp/plyr-lb-f65oxD/existing-root, profile-directory=Profile 2 (adopted-last-used), tab-restore=restore_on_startup unset -> 5, installs=already allowed
+
+stdout | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > an existing root with data in another profile directory is adopted, nothing moved
+[RealChrome][trace] page created id=p5 url=about:blank count=2
+
+stderr | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > an existing root with data in another profile directory is adopted, nothing moved
+[ChromiumDownloads] DevTools session closed; reconnecting
+
+stderr | tests/browser/local-browser-profile-selection.test.ts > Local Browser: root + pinned --profile-directory > an existing root with data in another profile directory is adopted, nothing moved
+[ChromiumDownloads] DevTools session closed; reconnecting
+
+ ✓ tests/browser/local-browser-profile-selection.test.ts (2 tests) 21238ms
+   ✓ Local Browser: root + pinned --profile-directory > a fresh root opens <root>/Default and pins it 17939ms
+   ✓ Local Browser: root + pinned --profile-directory > an existing root with data in another profile directory is adopted, nothing moved 2474ms
+
+ Test Files  6 passed (6)
+      Tests  25 passed (25)
+   Start at  23:43:04
+   Duration  168.03s (transform 2.83s, setup 46ms, collect 6.49s, tests 159.96s, environment 0ms, prepare 124ms)
+

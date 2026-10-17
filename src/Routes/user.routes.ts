@@ -37,6 +37,13 @@ import { parseExchange, buildNativeEnvelope, enforceImportedCodeDisabled } from 
 import { workflowStoreFor, executionsFor } from '../services/storage';
 import { WorkflowStorage } from '../core/WorkflowStorage';
 import { SINGLE_USER_ID, type AuthenticatedRequest } from '../middleware/auth';
+import { scheduleIdsByKey } from '../core/ProfileCoordinator';
+import { profileAccess } from '../core/ProfileAccess';
+import { profileProblems } from '../core/BranchPolicy';
+import { lockViolations, type LockViolation } from '../core/ProfileLock';
+import { profileFailureReports } from '../core/ProfileFailureReports';
+import { launchProfilesOf, runProfileIdOf } from '../core/NodeProfile';
+import { leaseIdOf } from '../core/ProfileLease';
 import type { JobWorkspace } from '../core/WorkflowOutputs';
 
 /**
@@ -64,9 +71,38 @@ interface UserRoutesDeps {
   profileManager: ProfileManager;
   /** Optional: lets the Workspace report which profile is busy. */
   profileLeases?: ProfileLeases;
+  /** Reservations follow schedules / activation / profile changes (core/ProfileCoordinator). */
+  profileCoordinator?: {
+    syncReservations: () => Promise<unknown>;
+    /** Repeats without a job carrying their data: their profile is unknown (nothing reserved). */
+    unresolvedSchedules?: () => Promise<Array<{ key: string }>>;
+    /** Windows of OTHER workflows' schedules a new cron would overlap on the same branch lock. */
+    projectedConflicts?: (input: { owner: string; leaseId: string; cron: string; tz?: string | null }) =>
+      Promise<Array<{ mine: { start: number; end: number }; other: { owner: string; ownerName?: string; start: number; end: number } }>>;
+  };
 }
 
 const SCHEDULE_PREFIX = 'sched';
+
+/**
+ * The repeatables of the queue with OUR schedule id (`sched:<user>:<ts>:<name>`)
+ * filled in. BullMQ 5.x stopped returning the `jobId` given to a repeatable
+ * from getRepeatableJobs(), so every `job.id?.startsWith('sched:<user>:')`
+ * filter here matched nothing: the Schedules list was empty, deleting a
+ * schedule answered 403 and the schedule limit was never reached. The id is
+ * recovered from the schedule's next job (core/ProfileCoordinator
+ * scheduleIdsByKey). A repeatable whose id cannot be recovered at all (no job
+ * carries its data) is attributed to the single user in single-user mode, so
+ * it stays visible (as "profile unknown") and deletable instead of vanishing.
+ */
+async function repeatablesWithIds(queue: Queue): Promise<Array<Awaited<ReturnType<Queue['getRepeatableJobs']>>[number] & { id?: string | null }>> {
+  const reps = (await queue.getRepeatableJobs()) as Array<Awaited<ReturnType<Queue['getRepeatableJobs']>>[number] & { id?: string | null }>;
+  const ids = await scheduleIdsByKey(queue, reps);
+  return reps.map((r) => {
+    const id = r.id || (r.key ? ids.get(r.key) : undefined) || (config.IS_SINGLE_USER ? `${SCHEDULE_PREFIX}:${SINGLE_USER_ID}:0:unknown` : null);
+    return { ...r, id };
+  });
+}
 
 
 // [F3] Block until a job reaches a terminal state (completed/failed) or the
@@ -105,8 +141,73 @@ const waitForJobResult = async (
 
 export const createUserRoutes = (deps: UserRoutesDeps): Router => {
   const router = Router();
-  const { queue, connection, profileManager, profileLeases } = deps;
+  const { queue, connection, profileManager, profileLeases, profileCoordinator } = deps;
+  /**
+   * Re-plan profile reservations after anything that changes which profile a
+   * scheduled occurrence will use (schedule added / removed, workflow
+   * activated / deactivated, profile changed). Best-effort and off the
+   * response path: the periodic sweep converges anyway.
+   */
+  const resyncReservations = (): void => {
+    if (!profileCoordinator) return;
+    void profileCoordinator.syncReservations().catch((e: Error) => console.warn(`[PROFILES] reservation sync failed: ${e.message}`));
+  };
   const workflowService = new WorkflowService(workflowStoreFor(connection));
+
+  /**
+   * Every profile a workflow's runs may use (workflow setting + Launch nodes),
+   * and those that cannot be used (record / branch / folder). Section 9:
+   * activation and schedule saving are refused while any is broken.
+   */
+  async function brokenProfilesOf(userId: string, steps: unknown, profileId: string | null | undefined,
+    wf?: { id: string; name: string; profileMissing?: { profileId: string; profileName?: string | null } | null }, stage: 'activation' | 'schedule' = 'activation') {
+    const access = profileAccess();
+    if (!access) return [];
+    const ids = [...new Set([...(launchProfilesOf(steps)), runProfileIdOf(steps, profileId) || 'default'])];
+    const problems = await profileProblems(access.registry, userId, ids);
+    // Its profile was deleted with its branch: never fall back to Default silently.
+    if (wf?.profileMissing && !profileId && !launchProfilesOf(steps).length) {
+      problems.push({ profileId: wf.profileMissing.profileId, profileName: wf.profileMissing.profileName ?? null, reason: 'profile_missing', detail: 'record_missing',
+        message: `Profile "${wf.profileMissing.profileName || wf.profileMissing.profileId}": it was deleted with its branch` });
+    }
+    for (const p of problems) {
+      await profileFailureReports().record(userId, {
+        reason: p.reason, detail: p.detail, stage, workflowId: wf?.id ?? null, workflowName: wf?.name ?? null,
+        profileId: p.profileId, profileName: p.profileName ?? null, message: p.message,
+      });
+    }
+    return problems;
+  }
+
+  /**
+   * PROFILE LOCK (owner brief 6.5): may workflow `workflowId` (null = a new
+   * one / an ad-hoc run) use every profile its runs take? A profile locked to
+   * ANOTHER workflow is a violation. Called by create, update, activation and
+   * schedule saving (and the worker re-checks before the lease, core index).
+   */
+  async function lockViolationsOf(userId: string, workflowId: string | null, steps: unknown, profileId: string | null | undefined): Promise<LockViolation[]> {
+    const access = profileAccess();
+    if (!access) return [];
+    const ids = [...new Set([...(launchProfilesOf(steps)), runProfileIdOf(steps, profileId) || 'default'])];
+    const profiles = await access.registry.list(userId).catch(() => []);
+    if (!profiles.some((p) => p.lockedTo)) return [];
+    const names = new Map((await workflowService.list(userId).catch(() => [])).map((w) => [w.id, w.name] as const));
+    return lockViolations(workflowId, ids, profiles, (id) => names.get(id));
+  }
+  const lockRefusal = (v: LockViolation[], what: string) => ({
+    success: false, code: 'profile_locked',
+    error: `${v.map((x) => x.message).join('; ')}. ${what}`,
+    profiles: v,
+  });
+
+  /** Section 6.6: a deleted workflow's locks go with it. Never fails the delete. */
+  async function releaseLocksOfWorkflow(userId: string, workflowId: string, name: string, reason: string): Promise<Array<{ id: string; name: string }>> {
+    const access = profileAccess();
+    if (!access) return [];
+    const out = await access.registry.releaseLocksOf(userId, workflowId).catch(() => []);
+    for (const p of out) console.log(`[PROFILES] lock released automatically: "${p.name}" (workflow "${name}": ${reason})`);
+    return out;
+  }
 
   /**
    * Whose workspace, and is it really theirs? Mirrors workflow-files.routes
@@ -449,6 +550,36 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         const design = WorkflowService.executableDesign(bound);
         scheduleSteps = design.steps;
         scheduleProfileId = design.profileId;
+        // Section 9: a schedule for a workflow with a missing profile is refused.
+        const broken = await brokenProfilesOf(userId, design.steps, design.profileId, { id: bound.id, name: bound.name, profileMissing: bound.profileMissing }, 'schedule');
+        if (broken.length) {
+          return res.status(422).json({
+            success: false, code: 'profile_missing',
+            error: 'This workflow uses a browser profile that is missing or broken, so the schedule was not saved. Assign another profile first.',
+            details: broken.map((b) => `${b.message} (${b.detail})`), profiles: broken, action: 'assign_profile',
+          });
+        }
+        {
+          const v = await lockViolationsOf(userId, bound.id, design.steps, design.profileId);
+          if (v.length) return res.status(409).json(lockRefusal(v, 'The schedule was not saved: choose another profile.'));
+        }
+        // Section 5: overlaps with OTHER workflows on the same BRANCH are shown
+        // BEFORE saving. The later run waits for the earlier one (one profile
+        // per branch); saving anyway needs { acceptOverlap: true }.
+        if (profileCoordinator?.projectedConflicts) {
+          const pid = runProfileIdOf(design.steps, design.profileId) || 'default';
+          const conflicts = await profileCoordinator.projectedConflicts({ owner: bound.id, leaseId: leaseIdOf(pid), cron: body.cron.trim() }).catch(() => []);
+          if (conflicts.length && req.body?.acceptOverlap !== true) {
+            const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16) + ' UTC';
+            const names = [...new Set(conflicts.map((c) => c.other.ownerName || c.other.owner))];
+            const first = conflicts[0]!;
+            return res.status(409).json({
+              success: false, code: 'schedule_overlap',
+              error: `This schedule overlaps "${names.join('", "')}" on the same browser branch (first at ${hhmm(first.mine.start)}–${hhmm(first.mine.end)}). Only one profile of a branch runs at a time: the later run will WAIT until the earlier one has finished. Save anyway to accept this, or choose another time or a profile in another branch.`,
+              conflicts: conflicts.slice(0, 20), behaviour: 'wait',
+            });
+          }
+        }
       }
       const scheduleName = body.name
         ? String(body.name).substring(0, 50).replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -459,7 +590,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // ── Check Schedule Limit (From User's Plan) ──
       const maxSchedules = plan.maxSchedules;
       
-      const existingSchedules = await queue.getRepeatableJobs();
+      const existingSchedules = await repeatablesWithIds(queue);
       const userScheduleCount = existingSchedules.filter(
         job => job.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
       ).length;
@@ -514,8 +645,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         }
       );
 
+      resyncReservations();
       // ── Calculate Next Run ──
-      const repeatableJobs = await queue.getRepeatableJobs();
+      const repeatableJobs = await repeatablesWithIds(queue);
       const thisSchedule = repeatableJobs.find(j => j.id === scheduleId);
 
       res.json({
@@ -551,11 +683,20 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const maxSchedules = plan.maxSchedules;
 
       // Get all repeatable jobs
-      const repeatableJobs = await queue.getRepeatableJobs();
+      const repeatableJobs = await repeatablesWithIds(queue);
       
       // Filter jobs belonging to this user
       const userSchedules = repeatableJobs.filter(
         job => job.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
+      );
+
+      // Schedules whose profile cannot be known (no queued job carries their
+      // data, e.g. created before profile reservations existed): they reserve
+      // nothing, and the list says so instead of staying silent.
+      const unknownKeys = new Set(
+        (profileCoordinator?.unresolvedSchedules
+          ? await profileCoordinator.unresolvedSchedules().catch(() => [] as Array<{ key: string }>)
+          : []).map((u) => u.key),
       );
 
       // Parse schedule info from ID
@@ -571,7 +712,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           cron: job.pattern,
           nextRun: job.next ? new Date(job.next).toISOString() : 'pending',
           createdAt: createdAt ? new Date(createdAt).toISOString() : null,
-          timezone: job.tz || 'UTC'
+          timezone: job.tz || 'UTC',
+          // 'unknown' = no reservation can be planned for it (see above).
+          reservation: unknownKeys.has(job.key) ? 'unknown' : 'planned',
+          ...(unknownKeys.has(job.key) ? { reservationNote: 'Its browser profile is unknown until its next run is queued, so nothing is reserved for it. Delete and re-create the schedule to reserve its profile.' } : {}),
         };
       });
 
@@ -599,7 +743,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const userId = sanitizeUserId(req.params.userId);
       const key = decodeURIComponent(req.params.key);
 
-      const repeatableJobs = await queue.getRepeatableJobs();
+      const repeatableJobs = await repeatablesWithIds(queue);
       const schedule = repeatableJobs.find(j => j.key === key);
 
       if (!schedule) {
@@ -618,6 +762,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       }
 
       const removed = await queue.removeRepeatableByKey(key);
+      if (removed) resyncReservations();
 
       if (!removed) {
         return res.status(500).json({ 
@@ -1005,6 +1150,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
+      {
+        const v = await lockViolationsOf(userId, null, steps, body.profileId ? profileIdOrThrow(body.profileId) : null);
+        if (v.length) return res.status(409).json(lockRefusal(v, 'Choose another profile.'));
+      }
       const wf = await workflowService.create(userId, {
         name: body.name,
         description: body.description ?? null,
@@ -1012,6 +1161,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         headless: body.headless ?? null,
         webhookUrl,
         ...(body.profileId ? { profileId: profileIdOrThrow(body.profileId) } : {}),
+        ...(body.afterRun ? { afterRun: body.afterRun } : {}),
       });
       await provisionWorkspace(userId, wf.id);
       return res.status(201).json({ success: true, workflow: wf });
@@ -1167,6 +1317,14 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       const steps = validateSteps(body.steps, plan, { allowEmpty: true });
       const webhookUrl = validateWebhookUrl(body.webhookUrl);
 
+      {
+        // Only the profiles this save would make the workflow use. The current
+        // profile is kept when profileId is omitted.
+        const cur = body.profileId !== undefined ? null : await workflowService.get(userId, workflowId);
+        const pid = body.profileId !== undefined ? profileIdOrThrow(body.profileId) : cur?.profileId;
+        const v = await lockViolationsOf(userId, workflowId, steps, pid);
+        if (v.length) return res.status(409).json(lockRefusal(v, 'Choose another profile.'));
+      }
       const wf = await workflowService.update(userId, workflowId, {
         name: body.name,
         description: body.description ?? null,
@@ -1176,8 +1334,10 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         // Workflow Settings: which browser profile its runs use (one run per
         // profile at a time, core/ProfileLease). Omitted = unchanged.
         ...(body.profileId !== undefined ? { profileId: profileIdOrThrow(body.profileId) } : {}),
+        ...(body.afterRun ? { afterRun: body.afterRun } : {}),
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+      if (body.profileId !== undefined) resyncReservations();
       return res.json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;
@@ -1193,9 +1353,12 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       if (!isValidWorkflowId(workflowId)) {
         return res.status(400).json({ success: false, error: 'Invalid workflow id' });
       }
+      const gone = await workflowService.get(userId, workflowId).catch(() => null);
       const removed = await workflowService.remove(userId, workflowId);
       if (!removed) return res.status(404).json({ success: false, error: 'Workflow not found' });
-      return res.json({ success: true, deleted: true, workflowId });
+      // Section 6.6: its locks are released with it (and logged).
+      const released = await releaseLocksOfWorkflow(userId, workflowId, gone?.name || workflowId, 'workflow deleted');
+      return res.json({ success: true, deleted: true, workflowId, releasedLocks: released });
     } catch (e: unknown) {
       const error = e as Error;
       res.status(500).json({ success: false, error: error.message });
@@ -1449,6 +1612,23 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
           moduleExists: installedModuleExists,
         });
         if (issues.length) return refuse(issues.map(formatActivationIssue));
+        // Every referenced browser profile must exist with its branch and
+        // folder on disk; otherwise name each one and refuse.
+        const broken = await brokenProfilesOf(userId, current.steps, current.profileId, { id: current.id, name: current.name, profileMissing: current.profileMissing }, 'activation');
+        if (broken.length) {
+          return res.status(422).json({
+            success: false, code: 'profile_missing',
+            error: 'The workflow uses a browser profile that is missing or broken and cannot be activated. Assign another profile.',
+            details: broken.map((b) => `${b.message} (${b.detail})`),
+            profiles: broken, action: 'assign_profile', active: current.active,
+          });
+        }
+        // Section 6.2/6.5: a profile locked to ANOTHER workflow -> refused
+        // with "profile locked to <workflow>" (also catches imports).
+        {
+          const v = await lockViolationsOf(userId, current.id, current.steps, current.profileId);
+          if (v.length) return res.status(409).json({ ...lockRefusal(v, 'It cannot be activated: choose another profile.'), active: current.active });
+        }
         // Filled-in fields are not proof that the workflow works: a page may
         // never show the element, a site may refuse the request. Like n8n's
         // publish, the design must have passed a real run first - the last
@@ -1472,6 +1652,9 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
         activeSnapshot,
       });
       if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+      // Activation changes whether its schedules reserve a profile. It does
+      // NOT touch the profile itself, any open browser, or any hold.
+      resyncReservations();
       return res.json({ success: true, workflow: wf });
     } catch (e: unknown) {
       const error = e as Error;
@@ -1498,7 +1681,7 @@ export const createUserRoutes = (deps: UserRoutesDeps): Router => {
       // ── Schedules: repeatable jobs are keyed `sched:<userId>:<ts>:<name>`, and
       // the UI names a workflow's schedules after the workflow, so the name
       // segment is what attributes a schedule to a row.
-      const repeatables = await queue.getRepeatableJobs();
+      const repeatables = await repeatablesWithIds(queue);
       const userSchedules = repeatables.filter(
         (j) => j.id?.startsWith(`${SCHEDULE_PREFIX}:${userId}:`)
       );

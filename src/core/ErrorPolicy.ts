@@ -17,11 +17,39 @@ export const MAX_RETRY_TRIES = 10;
 export const MAX_RETRY_WAIT_MS = 300000;
 export const DEFAULT_RETRY_WAIT_MS = 1000;
 
+export type RetryOn = 'any' | 'error' | 'timeout';
+export type RetryBackoff = 'fixed' | 'linear' | 'exponential';
+export type FailureKind = 'error' | 'timeout';
+
 export interface ResolvedErrorPolicy {
   continueOnFail: boolean;
   retryOnFail: boolean;
   maxTries: number;
   waitBetweenTriesMs: number;
+  /** Which failures are retried (phase 2: per-node retry policy). Default any. */
+  retryOn: RetryOn;
+  /** How the wait grows between tries. Default linear (the historical behaviour). */
+  backoff: RetryBackoff;
+  /** Per-node timeout in ms (0 = the server default STEP_TIMEOUT_MS / Playwright's). */
+  timeoutMs: number;
+}
+
+export const MAX_NODE_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Error or timeout? One rule for the retry policy, the Error / Timeout outputs
+ * and the run outcome (core/BrowserLifecycle.outcomeOfError uses the same words).
+ */
+export function failureKindOf(err: unknown): FailureKind {
+  const e = err as { name?: unknown; message?: unknown } | null;
+  if (e && e.name === 'TimeoutError') return 'timeout';
+  const msg = String((e && e.message) ?? err ?? '');
+  return /timed? ?out|timeout|exceeded while waiting/i.test(msg) ? 'timeout' : 'error';
+}
+
+/** Does this policy retry a failure of this kind? */
+export function retriesKind(policy: Pick<ResolvedErrorPolicy, 'retryOn'>, kind: FailureKind): boolean {
+  return policy.retryOn === 'any' || policy.retryOn === kind;
 }
 
 function toInt(v: unknown, fallback: number): number {
@@ -53,12 +81,30 @@ export function normalizeErrorPolicy(step: Partial<AutomationStep> | null | unde
   if (waitBetweenTriesMs < 0) waitBetweenTriesMs = 0;
   waitBetweenTriesMs = clamp(waitBetweenTriesMs, 0, MAX_RETRY_WAIT_MS);
 
+  const ro = (s as { retryOn?: unknown }).retryOn;
+  const bo = (s as { retryBackoff?: unknown }).retryBackoff;
+  let timeoutMs = toInt((s as { timeoutMs?: unknown }).timeoutMs, 0);
+  if (timeoutMs < 0) timeoutMs = 0;
+  timeoutMs = clamp(timeoutMs, 0, MAX_NODE_TIMEOUT_MS);
+
   return {
     continueOnFail: toBool(s.continueOnFail),
     retryOnFail,
     maxTries: retryOnFail ? maxTries : 1,
     waitBetweenTriesMs,
+    retryOn: ro === 'error' || ro === 'timeout' ? ro : 'any',
+    backoff: bo === 'fixed' || bo === 'exponential' ? bo : 'linear',
+    timeoutMs,
   };
+}
+
+/** Wait before the next try, for a backoff mode. `attempt` is 1-based. */
+export function backoffDelayMs(attempt: number, baseMs: number, mode: RetryBackoff): number {
+  const a = Math.max(1, toInt(attempt, 1));
+  const base = clamp(toInt(baseMs, DEFAULT_RETRY_WAIT_MS), 0, MAX_RETRY_WAIT_MS);
+  if (mode === 'fixed') return base;
+  if (mode === 'exponential') return clamp(base * Math.pow(2, a - 1), 0, MAX_RETRY_WAIT_MS);
+  return retryDelayMs(a, base);
 }
 
 /**

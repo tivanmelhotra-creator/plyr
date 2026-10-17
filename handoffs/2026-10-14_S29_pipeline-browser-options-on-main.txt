@@ -1,0 +1,31 @@
+The CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.
+
+ RUN  v2.1.9 /tmp/main-wt
+
+stdout | tests/browser/pipeline-browser-options.test.ts
+[CONFIG] 🏠 Self-hosted single-owner instance (environment: test).
+
+ ❯ tests/browser/pipeline-browser-options.test.ts (2 tests | 1 failed) 6619ms
+   × runPipeline applies Launch Browser options > options reach the real browser, and changing them relaunches the reused VIP browser 542ms
+     → Cannot read properties of undefined (reading 'evaluate')
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/browser/pipeline-browser-options.test.ts > runPipeline applies Launch Browser options > options reach the real browser, and changing them relaunches the reused VIP browser
+TypeError: Cannot read properties of undefined (reading 'evaluate')
+ ❯ read tests/browser/pipeline-browser-options.test.ts:58:54
+     56|     const launch = (o: unknown) => ({ action: 'launch', params: { url,…
+     57|     const pageOf = () => pm.getVipContext('bo-user')?.context.pages()[…
+     58|     const read = async () => JSON.parse(await pageOf()!.evaluate(() =>…
+       |                                                      ^
+     59| 
+     60|     // 1) options set -> applied
+ ❯ tests/browser/pipeline-browser-options.test.ts:63:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  18:55:06
+   Duration  10.50s (transform 1.42s, setup 27ms, collect 2.41s, tests 6.62s, environment 0ms, prepare 116ms)
+

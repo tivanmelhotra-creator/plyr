@@ -1,0 +1,251 @@
+===== ref=main mode=drawer =====
+UP after 8s; :3000 served by pid 3148 from /home/user/wt-main
+RESULT {
+ "ref": "main",
+ "mode": "drawer",
+ "openAction": "Local Browser: Turn on",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?api_key=…&workflowId=wf_e96ac4aafeba8e9f",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "viewerClosed": true,
+ "msToClose": 843,
+ "browsersAfter": 0,
+ "requestsAfterAction": [
+  "/browser/real/health 200 -> {\"success\":true,\"enabled\":true,\"running\":true,\"responsive\":false}"
+ ]
+}
+===== ref=main mode=window =====
+UP after 5s; :3000 served by pid 3628 from /home/user/wt-main
+RESULT {
+ "ref": "main",
+ "mode": "window",
+ "openAction": "Local Browser: Turn on",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?api_key=…&workflowId=wf_9cf3b441813cc7c7",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "windowsClosed": 1,
+ "viewerClosed": true,
+ "msToClose": 1081,
+ "browsersAfter": 0,
+ "requestsAfterAction": [
+  "/browser/real/health 200 -> {\"success\":true,\"enabled\":true,\"running\":true,\"responsive\":false}",
+  "/browser/real/health 200 -> {\"success\":true,\"enabled\":true,\"running\":false,\"responsive\":false}"
+ ]
+}
+===== ref=984fa62~1 mode=drawer =====
+UP after 7s; :3000 served by pid 4019 from /home/user/wt-984fa62_1
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+page.evaluate: Target page, context or browser has been closed
+    at /home/user/wt-984fa62_1/.s35-viewer-scenario.mjs:61:16
+Node.js v22.23.2
+===== ref=984fa62~1 mode=window =====
+UP after 5s; :3000 served by pid 4378 from /home/user/wt-984fa62_1
+RESULT {
+ "ref": "984fa62~1",
+ "mode": "window",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_3adaac19c5c6482a",
+ "browsersBefore": 1,
+ "closedBeforeAction": true,
+ "windowsClosed": 1,
+ "viewerClosed": true,
+ "msToClose": 15036,
+ "browsersAfter": 0,
+ "requestsAfterAction": []
+}
+===== ref=984fa62 mode=drawer =====
+UP after 6s; :3000 served by pid 4844 from /home/user/wt-984fa62
+RESULT {
+ "ref": "984fa62",
+ "mode": "drawer",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_02aea7533e1525ed",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "viewerClosed": false,
+ "msToClose": null,
+ "browsersAfter": 1,
+ "viewerState": {
+  "path": "/desktop/chrome",
+  "viewerGone": false,
+  "endedDialog": true,
+  "text": "Chromium Session Closed\n\nThe browser window has been closed. You can close this tab or relaunch a fr"
+ },
+ "requestsAfterAction": [
+  "/browser/real/close 200 -> {\"success\":true,\"running\":false,\"otherSessions\":[{\"id\":\"default\",\"kind\":\"profile\",\"profileId\":\"default\",\"name\":\"Default\",\"visibility\":\"visible\",\"runs\""
+ ]
+}
+===== ref=984fa62 mode=window =====
+UP after 5s; :3000 served by pid 5253 from /home/user/wt-984fa62
+RESULT {
+ "ref": "984fa62",
+ "mode": "window",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_4513315322c1efff",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "windowsClosed": 1,
+ "viewerClosed": false,
+ "msToClose": null,
+ "browsersAfter": 0,
+ "viewerState": {
+  "path": "/desktop/chrome",
+  "viewerGone": false,
+  "endedDialog": true,
+  "text": "Chromium Session Closed\n\nThe browser window has been closed. You can close this tab or relaunch a fr"
+ },
+ "requestsAfterAction": [
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}"
+ ]
+}
+===== ref=b36f6ba mode=drawer =====
+UP after 6s; :3000 served by pid 5603 from /home/user/wt-b36f6ba
+RESULT {
+ "ref": "b36f6ba",
+ "mode": "drawer",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_eddc37145aea203f",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "viewerClosed": false,
+ "msToClose": null,
+ "browsersAfter": 1,
+ "viewerState": {
+  "path": "/desktop/chrome",
+  "viewerGone": false,
+  "endedDialog": true,
+  "text": "Chromium Session Closed\n\nThe browser window has been closed. You can close this tab or relaunch a fr"
+ },
+ "requestsAfterAction": [
+  "/browser/real/close 200 -> {\"success\":true,\"running\":false,\"otherSessions\":[{\"id\":\"default\",\"kind\":\"profile\",\"profileId\":\"default\",\"name\":\"Default\",\"visibility\":\"visible\",\"runs\""
+ ]
+}
+===== ref=b36f6ba mode=window =====
+UP after 4s; :3000 served by pid 6180 from /home/user/wt-b36f6ba
+RESULT {
+ "ref": "b36f6ba",
+ "mode": "window",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_61cbe3368b8310a0",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "windowsClosed": 1,
+ "viewerClosed": false,
+ "msToClose": null,
+ "browsersAfter": 0,
+ "viewerState": {
+  "path": "/desktop/chrome",
+  "viewerGone": false,
+  "endedDialog": true,
+  "text": "Chromium Session Closed\n\nThe browser window has been closed. You can close this tab or relaunch a fr"
+ },
+ "requestsAfterAction": [
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}"
+ ]
+}
+===== ref=491de46(origin) mode=drawer =====
+UP after 5s; :3000 served by pid 6530 from /home/user/wt-491de46
+RESULT {
+ "ref": "491de46(origin)",
+ "mode": "drawer",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_b426ed6c5eb04a00",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "viewerClosed": false,
+ "msToClose": null,
+ "browsersAfter": 1,
+ "viewerState": {
+  "path": "/desktop/chrome",
+  "viewerGone": false,
+  "endedDialog": false,
+  "text": "0"
+ },
+ "requestsAfterAction": [
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[{\"id\":\"default\",\"kind\":\"profile\",\"profileId\":\"default\",\"name\":\"Default\",\"visibility\":\"vis",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[{\"id\":\"default\",\"kind\":\"profile\",\"profileId\":\"default\",\"name\":\"Default\",\"visibility\":\"vis",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[{\"id\":\"default\",\"kind\":\"profile\",\"profileId\":\"default\",\"name\":\"Default\",\"visibility\":\"vis",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[{\"id\":\"default\",\"kind\":\"profile\",\"profileId\":\"default\",\"name\":\"Default\",\"visibility\":\"vis"
+ ]
+}
+===== ref=491de46(origin) mode=window =====
+UP after 4s; :3000 served by pid 6897 from /home/user/wt-491de46
+RESULT {
+ "ref": "491de46(origin)",
+ "mode": "window",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=default&api_key=…&workflowId=wf_88ef35252b382a33",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "windowsClosed": 1,
+ "viewerClosed": false,
+ "msToClose": null,
+ "browsersAfter": 0,
+ "viewerState": {
+  "path": "/desktop/chrome",
+  "viewerGone": true,
+  "endedDialog": false,
+  "text": ""
+ },
+ "requestsAfterAction": [
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}"
+ ]
+}
+===== ref=HEAD+fix mode=drawer =====
+UP after 6s; :3000 served by pid 7263 from /home/user/webapp
+RESULT {
+ "ref": "HEAD+fix",
+ "mode": "drawer",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=prf_a19b04cae061&api_key=…&workflowId=wf_1650f231d12e7f79",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "viewerClosed": true,
+ "msToClose": 3085,
+ "browsersAfter": 0,
+ "requestsAfterAction": [
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}"
+ ]
+}
+===== ref=HEAD+fix mode=window =====
+UP after 5s; :3000 served by pid 7644 from /home/user/webapp
+RESULT {
+ "ref": "HEAD+fix",
+ "mode": "window",
+ "openAction": "Browser Profiles: tick + Open",
+ "viewerOpener": true,
+ "viewerPath": "/desktop/chrome?profile=prf_6f9502eef490&api_key=…&workflowId=wf_a4e19529715eeb59",
+ "browsersBefore": 1,
+ "closedBeforeAction": false,
+ "windowsClosed": 1,
+ "viewerClosed": true,
+ "msToClose": 3089,
+ "browsersAfter": 0,
+ "requestsAfterAction": [
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}",
+  "/browser/sessions 200 -> {\"success\":true,\"localBrowser\":{\"running\":false},\"sessions\":[]}"
+ ]
+}
+ALLDONE

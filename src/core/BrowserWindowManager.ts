@@ -178,6 +178,17 @@ export function parseChromeCmdline(cmdline: string): { userDataDir?: string; pro
 export class BrowserWindowManager {
   private static sessions = new Map<string, BrowserWindowInfo>();
 
+  /**
+   * user-data-dir -> { id, name } of the registry profile that owns it.
+   * Set by index.ts (the owner of the ProfileRegistry). With it a window is
+   * labelled with the profile's REAL name ("22") instead of a label built
+   * from directory names ("prf_aa91b811ffd7 · Default Profile").
+   */
+  private static profileOfDir: ((dir: string) => Promise<{ id: string; name: string } | null>) | null = null;
+  static setProfileResolver(fn: ((dir: string) => Promise<{ id: string; name: string } | null>) | null): void {
+    this.profileOfDir = fn;
+  }
+
   /** Register or update a browser session (used by callers that own one). */
   static register(info: Partial<BrowserWindowInfo> & { id: string }): BrowserWindowInfo {
     const existing = this.sessions.get(info.id);
@@ -287,13 +298,22 @@ export class BrowserWindowManager {
         label = profiles.find((p) => p.dir === dir)?.name || dir;
       }
       if (dir === 'Default') label = DEFAULT_PROFILE_LABEL;
-      if (separateInstance) label = `${path.basename(udd)} · ${label}`;
+      let owner: { id: string; name: string } | null = null;
+      if (this.profileOfDir && udd) owner = await this.profileOfDir(udd).catch(() => null);
+      if (owner) {
+        // One registry profile = one whole user-data-dir: its name IS the label.
+        label = owner.name;
+      } else if (udd && defaultDir && udd === defaultDir) {
+        label = 'Local Browser';
+      } else if (separateInstance) {
+        label = `${path.basename(udd)} · ${label}`;
+      }
 
       out.push({
         id: row.windowId,
         windowId: row.windowId,
         pid: row.pid || undefined,
-        profileId: instancePrefix + dir,
+        profileId: owner ? owner.id : instancePrefix + dir,
         profileName: label,
         title: parsed.page,
         state: props.hidden ? 'minimized' : 'active',
@@ -383,6 +403,29 @@ export class BrowserWindowManager {
     session.focused = true;
     session.updatedAt = Date.now();
     return session;
+  }
+
+  /**
+   * Bring the window of ONE profile to the front: the first managed Chromium
+   * window whose process runs on `userDataDir` (from /proc/<pid>/cmdline;
+   * Chromium's renderer children share the browser's argv, the top-level
+   * window belongs to the browser process). Used by the profile view so that,
+   * with several profile browsers on one desktop, /desktop/chrome?profile=<id>
+   * shows THAT profile. Returns the window, or null (no X tools / not found).
+   */
+  static async focusByUserDataDir(userDataDir: string): Promise<BrowserWindowInfo | null> {
+    const want = path.resolve(userDataDir);
+    const listing = await this.run('wmctrl', ['-l', '-p', '-x']);
+    if (listing === null) return null;
+    for (const row of parseWmctrlList(listing).filter((r) => isBrowserWindowClass(r.wmClass))) {
+      const props = await this.windowProps(row.windowId);
+      if (!props.normal || props.skipTaskbar) continue;
+      const cmd = await this.readCmdline(row.pid);
+      if (!cmd.userDataDir || path.resolve(cmd.userDataDir) !== want) continue;
+      await this.list().catch(() => null);
+      return this.restore(row.windowId).catch(() => null);
+    }
+    return null;
   }
 
   /** Reset in-memory state (primarily for unit tests). */

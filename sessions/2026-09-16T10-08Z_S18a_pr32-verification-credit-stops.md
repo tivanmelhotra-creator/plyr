@@ -162,7 +162,7 @@ latest_runtime_backup.tar.gz → /home/user/webapp/artifacts
 - Directory: /home/user/webapp/artifacts
 - Path: /home/user/webapp/artifacts/latest_runtime_backup.tar.gz
 - Size: 15.25 MB
-- Source: https://www.genspark.ai/api/files/s/bZJuAgJm
+- Source: (backup link removed)
 
 ### TOOL CALL
 TYPE: Read File
@@ -1024,7 +1024,7 @@ Your credit balance is negative. This run was stopped. Please top up to continue
 
 **بکاپ پروژه:**
 
-https://www.genspark.ai/api/files/s/AfCv7Bbv
+(backup link removed)
 
 مأموریت را کامل کن.
 
@@ -1081,7 +1081,7 @@ recovery_2026-09-16.tar.gz → /home/user/webapp/artifacts
 - Directory: /home/user/webapp/artifacts
 - Path: /home/user/webapp/artifacts/recovery_2026-09-16.tar.gz
 - Size: 15.20 MB
-- Source: https://www.genspark.ai/api/files/s/AfCv7Bbv
+- Source: (backup link removed)
 
 ### TOOL CALL
 TYPE: Bash Command
@@ -1603,7 +1603,7 @@ Your credit balance is negative. This run was stopped. Please top up to continue
 ## MESSAGE 60 — USER
 
 بکاپ:
-https://www.genspark.ai/api/files/s/GLYekxDZ
+(backup link removed)
 
 ---
 

@@ -28,6 +28,9 @@ import path from 'path';
 import { config } from '../config';
 import { liveBrowserSessions } from '../core/LiveSessions';
 import { RealChrome, RealChromeError } from '../core/RealChrome';
+import { browserSessions } from '../core/BrowserSessions';
+import { LOCAL_BROWSER_SESSION, LOCAL_BROWSER_DEPENDENT, summarize } from '../core/SharedBrowsers';
+import { profileAccess } from '../core/ProfileAccess';
 import { ExtensionPickerError } from '../core/ExtensionPagePicker';
 import { BrowserWindowManager } from '../core/BrowserWindowManager';
 import { flagCatalogue } from '../core/ChromeFlags';
@@ -337,18 +340,67 @@ export const createBrowserRoutes = (): Router => {
    * Fully close the active browser session and tabs for the user.
    */
   router.post(['/browser/close', '/browser/real/close'], async (req: AuthenticatedRequest, res) => {
+    // TURN OFF = close the LOCAL BROWSER session, decided by the ONE session
+    // registry (core/SharedBrowsers). Ownership rules:
+    //   - a run depending on the Local Browser (extension run) -> refused 409,
+    //     the run is never cut off;
+    //   - profile browsers opened from Browser Profiles belong to their own
+    //     holds: they are NOT closed here, and the answer lists them so the UI
+    //     can say so instead of pretending everything is off;
+    //   - every close step is bounded, so this always answers.
+    const sessions = browserSessions();
+    const others = async () => {
+      const names = await profileNames(resolveUserId(req));
+      return summarize(sessions.list().filter((r) => r.leaseId !== LOCAL_BROWSER_SESSION), (id) => names.get(id));
+    };
     try {
       const userId = resolveUserId(req);
-      const session = liveBrowserSessions.forUser(userId);
-      if (session) {
-        await session.closeBrowser();
-      } else if (RealChrome.isRunning()) {
-        await RealChrome.closeBrowser();
+      const d = sessions.canClose(LOCAL_BROWSER_SESSION, LOCAL_BROWSER_DEPENDENT);
+      if (!d.ok && d.reason === 'in_use') {
+        res.status(409).json({
+          success: false, code: 'in_use',
+          error: 'The Local Browser is in use by a running workflow and was not closed. It can be turned off when the run has finished.',
+          dependents: d.dependents.length, running: RealChrome.isRunning(), otherSessions: await others(),
+        });
+        return;
       }
-      res.json({ success: true });
+      const session = liveBrowserSessions.forUser(userId);
+      const work = (async () => {
+        if (session) await session.closeBrowser();
+        if (RealChrome.isRunning()) await RealChrome.closeBrowser();
+      })();
+      // The close steps are bounded inside; this is the last line of defence.
+      const done = await Promise.race([work.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 20_000))]);
+      if (!done) {
+        res.status(504).json({ success: false, code: 'close_timeout', retryable: true, error: 'The Local Browser did not close in time. It may still be closing; try Turn off again.', running: RealChrome.isRunning(), otherSessions: await others() });
+        return;
+      }
+      res.json({ success: true, running: RealChrome.isRunning(), otherSessions: await others() });
     } catch (e) {
       sendError(res, e);
     }
+  });
+
+  /** Registry names for session summaries (never paths). */
+  async function profileNames(userId: string): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    const access = profileAccess();
+    if (access) for (const p of await access.registry.list(userId).catch(() => [])) names.set(p.id, p.name);
+    return names;
+  }
+
+  /**
+   * Every live browser on the desktop, from the ONE session registry: the
+   * Local Browser and every profile browser. What the viewer watches (it
+   * ends only when the session it shows is gone) and what the drawer shows.
+   * No paths, no URLs.
+   */
+  router.get('/browser/sessions', async (req: AuthenticatedRequest, res) => {
+    try {
+      const names = await profileNames(resolveUserId(req));
+      const list = summarize(browserSessions().list(), (id) => names.get(id));
+      res.json({ success: true, localBrowser: { running: RealChrome.isRunning() }, sessions: list });
+    } catch (e) { sendError(res, e); }
   });
 
   // ─────────────────────────────────────────────────────────────────────────

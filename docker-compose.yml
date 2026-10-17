@@ -64,6 +64,7 @@ services:
       APP_ENV: "${APP_ENV:-server}"
       STORAGE_DRIVER: "${STORAGE_DRIVER:-sqlite}"
       SQLITE_PATH: /app/data/plyr.db
+      BRANCH_BASE_DIR: /app/profiles/branches
     ports:
       - "3000:3000"
     # Chrome needs more than the default 64MB of shared memory. Without this the

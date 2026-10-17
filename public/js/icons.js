@@ -78,6 +78,8 @@
     download: ['<path d="M21 15.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3.5"/>', '<path d="m7.5 10.5 4.5 4.5 4.5-4.5"/>', '<path d="M12 15V3"/>'],
     eye: ['<path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/>', '<circle cx="12" cy="12" r="2.9"/>'],
     'eye-off': ['<path d="M10.7 6c.4-.1.9-.2 1.3-.2 6 0 9.5 6.2 9.5 6.2s-1 1.8-2.7 3.4"/>', '<path d="M6.6 7.9C4.1 9.6 2.5 12 2.5 12S6 18.2 12 18.2c1.6 0 3-.4 4.2-1"/>', '<path d="M10 10a2.9 2.9 0 0 0 4 4"/>', '<path d="m3.5 3.5 17 17"/>'],
+    // Show a running browser in a (new) viewer tab: Browser Profiles' link icon (owner brief 4.5 / B).
+    'external-link': ['<path d="M14 4h6v6"/>', '<path d="M20 4 11 13"/>', '<path d="M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>'],
     'file-text': ['<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>', '<path d="M14 3v5h5"/>', '<path d="M9 13.5h6"/>', '<path d="M9 17h4"/>'],
     // Workflow Files drawer toolbar (public/js/workflow-files.js): a document
     // and a folder each with a plus, matching the reference UI in upload-ui/.
@@ -211,6 +213,7 @@
     'switch-tab': 'layers',
     'close-tab': 'square-x',
     'close-browser': 'power',
+    'continue-session': 'link',
     close: 'power',
     'handle-dialog': 'message-square',
     // interaction

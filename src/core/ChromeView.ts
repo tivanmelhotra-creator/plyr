@@ -658,54 +658,14 @@ export function chromeViewHtml(): string {
   .edfoot #edstatus.dirty { color: #f0862f; }
   #edmeta { color: #6d7382; }
 
-  /* ── The session ended overlay ─────────────────────────────────────────
-     Presents a clean card when Chromium is closed, rather than leaving the
-     operator staring at the pitch-black canvas of an empty virtual desktop. */
-  #ended {
-    position: fixed; inset: 0; z-index: 50; display: flex;
-    flex-direction: column; align-items: center; justify-content: center;
-    gap: 16px; background: rgba(20, 20, 25, 0.95); backdrop-filter: blur(6px);
-    color: #e6e6ee; text-align: center; padding: 24px;
-    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  #ended[hidden] { display: none; }
-  .endedcard {
-    background: #23252d; border: 1px solid #3d404c; border-radius: 10px;
-    padding: 28px; max-width: 26rem; box-shadow: 0 16px 40px rgba(0,0,0,0.5);
-  }
-  .endedicon { margin-bottom: 12px; color: #6da2ff; }
-  .endedcard h3 { margin: 0 0 8px; font-size: 17px; font-weight: 600; color: #fff; }
-  .endedcard p { margin: 0 0 20px; font-size: 13px; color: #a4a6b2; line-height: 1.5; }
-  .endedbtns { display: flex; gap: 10px; justify-content: center; }
-  .btnclose {
-    font: inherit; color: #fff; background: #e04545;
-    border: 1px solid #eb5555; border-radius: 6px;
-    padding: 7px 18px; cursor: pointer;
-  }
-  .btnclose:hover { background: #ee5555; }
-  .btnreopen {
-    font: inherit; color: #eaeaf0; background: #33333c;
-    border: 1px solid #4a4a55; border-radius: 6px;
-    padding: 7px 18px; cursor: pointer;
-  }
-  .btnreopen:hover { background: #3d3d47; }
+  /* The viewer after its last browser closed, for the instant before it
+     closes or moves to the app's main page: nothing of the dead viewer. */
+  body.viewer-gone > * { display: none !important; }
+  body.viewer-gone { background: #0f1117; }
 </style>
 </head>
 <body>
 <div id="screen"></div>
-<div id="ended" hidden>
-  <div class="endedcard">
-    <div class="endedicon">
-      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
-    </div>
-    <h3>Chromium Session Closed</h3>
-    <p>The browser window has been closed. You can close this tab or relaunch a fresh session.</p>
-    <div class="endedbtns">
-      <button class="btnclose" id="btnendedclose" type="button">Close Tab</button>
-      <button class="btnreopen" id="btnendedreopen" type="button">Relaunch</button>
-    </div>
-  </div>
-</div>
 <!-- Permanent controls: Task View & Workflow Files drawer -->
 <button id="btn-taskview" type="button" title="Task View (Browser Windows)" aria-label="Task View" hidden>
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
@@ -1006,7 +966,31 @@ function showFix(fixable) {
 // so no second hostname is ever needed (see DesktopProxy). wss when the page
 // itself is https, or the browser blocks the socket as mixed content.
 const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-const wsUrl  = scheme + '://' + location.host + '/desktop/websockify';
+// A profile view tells the server which profile it shows, so closing this tab
+// stops counting as "the operator uses this browser" (core/ProfileViewers).
+// ONE SHARED VIEWER. The desktop is one display holding every browser window
+// (Local Browser and each profile), so one tab shows them all. This tab keeps
+// the set of profiles it was asked to show (sessionStorage = this tab only;
+// survives the reload a second Open causes), and its VNC socket carries the
+// whole set: while the tab is connected the operator counts as watching EVERY
+// one of them; closing the tab detaches all of them after the grace period.
+const VIEW_SET_KEY = 'aria.viewer.profiles';
+const PROFILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+function viewSet() {
+  let list = [];
+  try { list = JSON.parse(sessionStorage.getItem(VIEW_SET_KEY) || '[]'); } catch (e) { list = []; }
+  if (!Array.isArray(list)) list = [];
+  const add = qs.get('profile');
+  if (add && PROFILE_ID_RE.test(add) && list.indexOf(add) < 0) list.push(add);
+  list = list.filter((x) => typeof x === 'string' && PROFILE_ID_RE.test(x)).slice(-20);
+  try { sessionStorage.setItem(VIEW_SET_KEY, JSON.stringify(list)); } catch (e) { /* private mode */ }
+  return list;
+}
+const viewProfiles = viewSet();
+const wsViewQuery = viewProfiles.length
+  ? '?profiles=' + encodeURIComponent(viewProfiles.join(',')) + (qs.get('workflowId') ? '&workflowId=' + encodeURIComponent(qs.get('workflowId')) : '')
+  : '';
+const wsUrl  = scheme + '://' + location.host + '/desktop/websockify' + wsViewQuery;
 
 let rfb = null;
 
@@ -1079,6 +1063,35 @@ function explainStartFailure(status, body) {
 async function startThenConnect(attempt) {
   attempt = attempt || 1;
   const MAX_ATTEMPTS = 6;
+
+  // A PROFILE view (?profile=<id>, opened from the Workflow Files profile
+  // panel): that profile's browser was already started by POST
+  // /profiles/<id>/open on this same desktop. Starting Real Chrome here too
+  // would put a second, unrelated browser on screen, so this view only makes
+  // sure the desktop is up and connects to it.
+  const viewProfile = qs.get('profile');
+  // ATTACH (Show browser / a profile view): put the shared desktop back on
+  // screen WITHOUT starting or restarting any browser; only the display and
+  // VNC stack are ensured. Only the path below (no profile, no attach)
+  // starts the RealChrome browser from this page.
+  const attachOnly = qs.get('attach') === '1' || viewProfiles.length > 0;
+  if (viewProfile || attachOnly) {
+    show('Connecting to the browser of this profile\\u2026', true);
+    try {
+      const r0 = await fetch('/browser/desktop/start', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: '{}',
+        credentials: 'same-origin',
+      });
+      if (!r0.ok && attempt < MAX_ATTEMPTS) {
+        setTimeout(function () { void startThenConnect(attempt + 1); }, Math.min(attempt * 2000, 10000));
+        return;
+      }
+    } catch (e) { /* connect() below says what is wrong */ }
+    connect();
+    return;
+  }
 
   show(attempt === 1
     ? 'Starting Chromium\\u2026'
@@ -1203,9 +1216,6 @@ function attach() {
 
   rfb.addEventListener('connect', () => {
     browserEverConnected = true;
-    sessionClosedHandled = false;
-    const endedEl = document.getElementById('ended');
-    if (endedEl) endedEl.hidden = true;
     note.hidden = true;
     // Only once there is a desktop to exchange files WITH. Showing the
     // hamburger over the "Starting Chromium..." spinner would offer a drawer
@@ -1620,32 +1630,27 @@ const dcloseBrowserBtn = document.getElementById('dclosebrowser');
 if (dcloseBrowserBtn) {
   dcloseBrowserBtn.addEventListener('click', () => {
     if (confirm('Close Chromium session and all open tabs?')) {
-      fetch('/browser/real/close', {
-        method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        credentials: 'same-origin',
-        body: '{}',
-      }).finally(() => {
-        handleSessionClosed();
+      // S35 (owner brief 2 / A, cause 2): this used to call ONLY
+      // /browser/real/close, which closes the Local Browser (RealChrome) and
+      // never a Browser-Profiles browser. A profile viewer's browser therefore
+      // stayed open, /browser/sessions never reached zero, and the tab stayed.
+      // Now: close the browsers THIS viewer shows (its profile set), each
+      // through its own route and ownership rule (POST /profiles/:id/close as
+      // this viewer's workflow owner); a viewer without a set (attach / the
+      // Local Browser view) closes the Local Browser as on main.
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, authHeaders());
+      const wf = WORKFLOW_ID_RE.test(qs.get('workflowId') || '') ? qs.get('workflowId') : '';
+      const body = JSON.stringify(wf ? { workflowId: wf } : {});
+      const targets = viewProfiles.length
+        ? viewProfiles.map((id) => '/profiles/' + encodeURIComponent(id) + '/close')
+        : ['/browser/real/close'];
+      targets.forEach((u) => {
+        fetch(u, { method: 'POST', headers, credentials: 'same-origin', body })
+          .catch(() => { /* the session watch below reports the real state */ });
       });
+      // No immediate "ended" here: whether this tab closes is decided ONLY
+      // by the session watch (pollBrowserHealth), from /browser/sessions.
     }
-  });
-}
-
-const btnEndedClose = document.getElementById('btnendedclose');
-if (btnEndedClose) {
-  btnEndedClose.addEventListener('click', () => {
-    try { window.close(); } catch (e) {}
-  });
-}
-
-const btnEndedReopen = document.getElementById('btnendedreopen');
-if (btnEndedReopen) {
-  btnEndedReopen.addEventListener('click', () => {
-    const endedEl = document.getElementById('ended');
-    if (endedEl) endedEl.hidden = true;
-    sessionClosedHandled = false;
-    void startThenConnect(1);
   });
 }
 
@@ -2194,34 +2199,97 @@ let seeded = false;
 
 let watching = false;
 let browserEverConnected = false;
-let sessionClosedHandled = false;
+let viewerEnded = false;
 
-function handleSessionClosed() {
-  if (sessionClosedHandled) return;
-  sessionClosedHandled = true;
+/**
+ * The LAST browser of this viewer's set is gone (confirmed, see
+ * pollBrowserHealth): the tab has no purpose any more and goes away.
+ *
+ * This is main's mechanism (handleSessionClosed on main: rfb.disconnect(),
+ * then an UNCONDITIONAL window.close()), restored in S35. The regression on
+ * feat/profile-infrastructure (owner brief 2 / A):
+ *   - 984fa62 removed the window.close() call (the tab was to stay and show a
+ *     "Chromium Session Closed" dialog instead);
+ *   - 4f1cd0c removed the dialog but put window.close() behind
+ *     "if (window.opener)". The app's pages are served with
+ *     Cross-Origin-Opener-Policy: same-origin (helmet) and the viewer page is
+ *     not, so the tab is put in a new browsing-context group and
+ *     window.opener is ALWAYS null in the viewer (measured on main and on the
+ *     branch, tools/s35/opener-probe.mjs). window.close() was therefore never
+ *     tried, and the tab stayed black. Chromium still lets the tab close
+ *     itself (it was opened by a script and has one history entry).
+ * A tab that refuses the close (the user typed the address, so Chromium
+ * does not let a script close it) is sent to the app's main page (owner
+ * brief 2.2 + owner decision S35): never a black or empty page, never a
+ * dialog. location.replace, so Back does not return to the dead viewer.
+ */
+const VIEWER_CLOSE_WAIT_MS = 300;
+function endViewer() {
+  if (viewerEnded) return;
+  viewerEnded = true;
   watching = false;
   if (rfb) {
     try { rfb.disconnect(); } catch (e) {}
     rfb = null;
   }
-  try { window.close(); } catch (e) {}
-  const endedEl = document.getElementById('ended');
-  if (endedEl) endedEl.hidden = false;
+  try { sessionStorage.removeItem(VIEW_SET_KEY); } catch (e) { /* fine */ }
+  try { window.close(); } catch (e) { /* refused: main page below */ }
+  document.body.classList.add('viewer-gone');
+  setTimeout(function () {
+    if (window.closed) return;
+    try { window.location.replace('/'); } catch (e) { window.location.href = '/'; }
+  }, VIEWER_CLOSE_WAIT_MS);
 }
 
+/**
+ * WHEN THIS VIEWER CLOSES ITSELF — the only rule.
+ *
+ * S27 root cause #1: the viewer polled /browser/real/health (Local Browser
+ * only), read a false "not running" for a profile browser and closed itself
+ * after 1-2 s. So:
+ *   - the ONLY source is GET /browser/sessions (the ONE session registry);
+ *     no other route can end the viewer;
+ *   - "live" = visible sessions whose profile is in THIS viewer's set
+ *     (viewProfiles, the profiles this tab was opened for). A viewer with no
+ *     set (attach=1) counts every visible session on the desktop;
+ *   - it ends only after TWO consecutive successful answers that both say
+ *     zero, the second at least VIEWER_END_CONFIRM_MS after the first;
+ *   - a failed, non-OK or malformed answer is NOT a zero: it resets the
+ *     count, so a single failed probe can never end the viewer.
+ * One profile closing while another of the set is open: live > 0, nothing
+ * happens; its window simply disappears from the shared desktop and it
+ * leaves this tab's set.
+ */
+const VIEWER_END_CONFIRM_MS = 2000;
+let firstZeroAt = 0;
+let zeroAnswers = 0;
+function liveForThisViewer(sessions) {
+  const visible = sessions.filter((x) => x && x.visibility !== 'hidden');
+  if (!viewProfiles.length) return visible.length;
+  return visible.filter((x) => x.profileId && viewProfiles.indexOf(x.profileId) >= 0).length;
+}
 function pollBrowserHealth() {
-  if (!browserEverConnected || sessionClosedHandled) return Promise.resolve();
-  return fetch('/browser/real/health?watch=1', {
+  if (!browserEverConnected || viewerEnded) return Promise.resolve();
+  const reset = () => { firstZeroAt = 0; zeroAnswers = 0; };
+  return fetch('/browser/sessions?watch=1', {
     headers: authHeaders(),
     credentials: 'same-origin',
   })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => {
-      if (j && j.success && j.running === false) {
-        handleSessionClosed();
-      }
+      if (!j || !j.success || !Array.isArray(j.sessions)) { reset(); return; }
+      // Profiles whose browser is gone leave this tab's set.
+      try {
+        const open = j.sessions.map((x) => x && x.profileId).filter(Boolean);
+        sessionStorage.setItem(VIEW_SET_KEY, JSON.stringify(viewProfiles.filter((id) => open.indexOf(id) >= 0)));
+      } catch (e) { /* fine */ }
+      if (liveForThisViewer(j.sessions) > 0) { reset(); return; }
+      const now = Date.now();
+      if (!zeroAnswers) firstZeroAt = now;
+      zeroAnswers++;
+      if (zeroAnswers >= 2 && now - firstZeroAt >= VIEWER_END_CONFIRM_MS) endViewer();
     })
-    .catch(() => {});
+    .catch(() => { reset(); });
 }
 
 /** Start the watch loop. Called once, when the desktop connects. */

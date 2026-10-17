@@ -156,6 +156,7 @@ describe('action catalog — Step 32 backend/UI sync (Single Source of Truth)', 
     'mouse-move': ['mouse', 'move-mouse'],
     'drag-drop': ['drag', 'dragAndDrop'],
     'close-browser': ['close_browser', 'close'],
+    'continue-session': ['continue_session'],
     // Designed core nodes added alongside their pipeline handlers
     // (docs/uiux/00-PROCESS-node-design.md). `launch` / `parse-json` accept
     // snake+dash spellings; the rest are exact ids with no alternatives.

@@ -262,9 +262,11 @@ export async function listExtensions(extensionsDir: string): Promise<InstalledEx
 export async function listProfileExtensions(
   userDataDir: string,
   exclude: Iterable<string> = [],
+  /** The pinned --profile-directory (core/ChromiumProfileLocation). */
+  profileDirectory = 'Default',
 ): Promise<InstalledExtension[]> {
   const skip = new Set(exclude);
-  const profileDir = path.join(userDataDir, 'Default');
+  const profileDir = path.join(userDataDir, profileDirectory);
 
   // Chrome splits its prefs across two files depending on build; read both and
   // let the later (plain Preferences) fill gaps, never overwrite a known entry.

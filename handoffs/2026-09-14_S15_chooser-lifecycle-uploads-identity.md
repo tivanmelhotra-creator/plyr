@@ -5,8 +5,8 @@ PREVIOUS SESSION: S14 — 2026-09-14T18:43Z (credit stop at MESSAGE 72/73 while 
 
 PROJECT STATE: branch genspark_ai_developer @ 9674007 (1 commit on top of origin/main 022d3ae = PR #29 merged).
                NOT PUSHED: sandbox has no GitHub credential (setup_github_environment → no token; git push → no username).
-CURRENT BACKUP: https://www.genspark.ai/api/files/s/sEwkbhf9  (backup13, webapp_backup_2026-09-14_S15_p1-p4.tar.gz, 15.22 MB, tree == 45b08fe, includes .git)
-PREVIOUS BACKUP: https://www.genspark.ai/api/files/s/YNwHDINY  (backup12, webapp_backup_ijsxiwud.tar.gz, 14.95 MB,
+CURRENT BACKUP: (backup link removed)  (backup13, webapp_backup_2026-09-14_S15_p1-p4.tar.gz, 15.22 MB, tree == 45b08fe, includes .git)
+PREVIOUS BACKUP: (backup link removed)  (backup12, webapp_backup_ijsxiwud.tar.gz, 14.95 MB,
                  S14 end: tree = 022d3ae + 5 UNCOMMITTED files; message-72 test edit NOT in it)
 
 OBJECTIVE:
